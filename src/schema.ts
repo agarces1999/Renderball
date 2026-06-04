@@ -1,0 +1,262 @@
+/**
+ * Script JSON schema — V1 (2026-05-28 cleanup pass).
+ *
+ * Contract between Agent 1 (Script Generator) and the rendering
+ * pipeline (Design Agent + Choreography Agent + wrapper + Remotion
+ * renderer). After this cleanup the schema only carries fields the
+ * current architecture actually populates and consumes — the V0.1
+ * element-based types are gone, along with QA / SFX / video-asset
+ * scaffolding that was never wired up.
+ *
+ * If you add a new field, also add it to lib/agents/schema-validator.ts
+ * so Agent 1 outputs are validated against the type.
+ */
+
+// ─── Identity & top-level ─────────────────────────────────────────────
+
+export type ScriptStatus =
+  | "draft"
+  | "approved"
+  | "rendering"
+  | "rendered"
+  | "delivered"
+  | "archived";
+
+export type VoicePreset =
+  | "Avery"
+  | "Iris"
+  | "Marcus"
+  | "Nova"
+  | "Hollis"
+  | "Reese"
+  | "Edmund"
+  | "Imogen";
+
+export interface Script {
+  id: string; // ulid
+  customer_id: string;
+  brand_kit_id: string | null;
+  created_at: string; // ISO 8601
+  schema_version: "1.0";
+
+  // Stage 0 — customer inputs
+  brief: {
+    purpose: string;
+    about: string;
+    cta: string;
+    source_assets?: string[]; // S3 URIs
+  };
+
+  /**
+   * The story spine the whole piece follows. Agent 1 designs this FIRST
+   * — before any section — then stages each section as a move within
+   * it. This is what makes the rendered frontend read as ONE narrative
+   * (tension that builds, a turn, a payoff) rather than a deck of
+   * disconnected sections.
+   *
+   * Threaded to the Design Agent at build time so the composition
+   * reinforces the arc + recurring motif across sections. Optional for
+   * back-compat with scripts generated before this field existed;
+   * new Agent 1 output always populates it.
+   */
+  narrative?: {
+    /** One sentence: who it's for, the tension, the transformation. */
+    logline: string;
+    /**
+     * How the story moves across the sections — the shape of tension
+     * and release. e.g. "Open on the cost of the status quo, escalate
+     * the friction, turn on the product as the unlock, prove it in
+     * use, resolve on the invitation."
+     */
+    arc: string;
+    /**
+     * A recurring motif that threads the sections into one story — a
+     * visual object, a phrase that recurs and evolves, a number that
+     * grows, a color that shifts from cold to warm. Optional.
+     */
+    throughline?: string;
+  };
+
+  // Agent inferences, user-overridable at the script gate.
+  config: {
+    duration_seconds: number; // 5–60 (capped to keep render cost predictable + dead-air rules satisfiable)
+    aspect_ratio: "16:9" | "9:16" | "1:1";
+    resolution: "1080p" | "4k";
+    tone: string;
+    pacing: "fast" | "medium" | "slow";
+    /** @deprecated kept transiently for migration; not used. */
+    fps?: 30;
+  };
+
+  /**
+   * Audio plan. The voiceover + music are populated by Agent 1 as
+   * placeholders for future TTS / music-library integration. The
+   * renderer doesn't currently consume them — they survive on the
+   * script for when Task 10 (VO + music) lands.
+   */
+  audio: {
+    voiceover: {
+      voice_preset: VoicePreset;
+      script: string; // full VO text
+      language: "en-US" | "en-GB";
+    } | null;
+    music: {
+      source: "library" | "uploaded";
+      asset_id: string;
+      mood_tags: string[];
+      license: string;
+      volume_db: number;
+    } | null;
+    /** Always empty in V1; reserved for future SFX cues. */
+    sfx: never[];
+  };
+
+  /**
+   * Asset manifest. Only `fonts` + `images` are consumed by the
+   * current pipeline; audio + videos arrays survive as `never[]`
+   * placeholders for Task 10.
+   */
+  assets: {
+    fonts: FontAsset[];
+    images: ImageAsset[];
+    audio: never[];
+    videos: never[];
+  };
+
+  scenes: Scene[];
+
+  status: ScriptStatus;
+  approved_at?: string;
+}
+
+// ─── Assets ───────────────────────────────────────────────────────────
+
+export interface FontAsset {
+  id: string;
+  family: string;
+  weights: number[];
+  styles: ("normal" | "italic")[];
+  src: string;
+  format: "woff2" | "woff" | "ttf" | "otf";
+  fallback_chain: string[];
+  license_id: string;
+  preload: true;
+}
+
+export interface ImageAsset {
+  id: string;
+  src: string;
+  width: number;
+  height: number;
+  format: "png" | "jpg" | "webp" | "svg";
+  alt_text?: string;
+  license_id: string;
+}
+
+// ─── Scenes ───────────────────────────────────────────────────────────
+
+/**
+ * The deliberate visual "shape" of a scene, assigned by the Script Agent to
+ * force variety across the sequence so consecutive scenes don't all wear the
+ * same editorial template (the repetition the non-tech pilot exposed). The
+ * Design Agent maps each register to a distinct layout archetype.
+ */
+export type SceneRegister =
+  | "stat" // one massive number/metric, minimal supporting copy
+  | "quote" // a pull-quote / manifesto line, centered, large
+  | "full-bleed" // edge-to-edge imagery or color field with overlaid text
+  | "split" // asymmetric left/right (text vs visual)
+  | "list" // a real list of points / steps / features
+  | "centered"; // classic centered headline + lede (the current default)
+
+export interface Scene {
+  id: string; // ulid
+  index: number; // 0-based
+  label: string; // human-readable, short (2-6 words)
+  /**
+   * One-sentence intent for this scene — what idea it conveys, not
+   * the on-screen text. In manual mode this is the user's
+   * `moments[i].description` verbatim. In auto/freeform mode the
+   * agent writes it as part of script generation.
+   */
+  description?: string;
+  /**
+   * The visual concept the agent CHOSE for this moment. Two-part
+   * brief: a Composition sentence (what's on the page) followed by
+   * an Animations list (each entry = element + animation name +
+   * timing in seconds).
+   *
+   * Example: "Composition: split layout with a VS-Code-style IDE on
+   * the left and a terminal panel on the right. ... Animations: IDE
+   * fadeRise at 0s duration 0.8s. Code lines typewriter-reveal from
+   * 1s with 0.15s stagger. ..."
+   */
+  visual_concept: string;
+  /**
+   * The deliberate visual shape for this scene. The Script Agent assigns it
+   * to vary the sequence; the Design Agent maps it to a layout archetype.
+   * Optional for back-compat; defaults to "centered" when absent.
+   */
+  register?: SceneRegister;
+  /**
+   * The content manifest — every named copy slot a viewer reads, plus
+   * the assets and illustration intent the section incorporates.
+   *
+   * The Design Agent maps each field to a specific layout slot:
+   * eyebrow above, headline next, lede below, bullets as a list,
+   * meta as a footer grid OR KPI tile grid when numeric.
+   */
+  content: {
+    /** Optional small uppercase category label (e.g. "THE LEGACY TRAP"). */
+    eyebrow?: string;
+    /** The hero text. REQUIRED. ≤80 chars. */
+    headline: string;
+    /** 1-2 sentence supporting paragraph that establishes context. ≤240 chars. */
+    lede?: string;
+    /** 2-4 supporting points rendered as a <ul><li>. Each ≤80 chars. */
+    bullets?: string[];
+    /** Small support text under primary content. ≤100 chars. */
+    caption?: string;
+    /** Footer key-value pairs OR KPI tiles when values are numeric. */
+    meta?: { label: string; value: string }[];
+    /** CTA copy for the closing section. */
+    cta?: { primary: string; secondary?: string };
+    /**
+     * Inline-SVG illustration intent. Design Agent renders a matching
+     * SVG from its codified library. Freeform descriptors allowed.
+     */
+    illustration?:
+      | "checkmark"
+      | "arrow-flow"
+      | "lock"
+      | "gear"
+      | "concentric-rings"
+      | "phone-mockup"
+      | "browser-tab"
+      | "code-window"
+      | "dashboard-grid"
+      | "stat-counter"
+      | "line-chart"
+      | "bar-chart"
+      | "sparkline"
+      | "data-waterfall"
+      | (string & {});
+    /** Image asset refs to mount with <Img>. Resolve via script.assets.images. */
+    asset_ids: string[];
+    /** @deprecated kept for legacy scripts; new scripts use the typed fields above. */
+    texts?: string[];
+  };
+  /** When this section starts in the timeline, measured in seconds from t=0. */
+  start_seconds: number;
+  /** When this section ends in the timeline, in seconds from t=0. */
+  end_seconds: number;
+  /** @deprecated migration-only; wrapper converts seconds → frames. */
+  start_frame?: number;
+  /** @deprecated migration-only. */
+  end_frame?: number;
+  /**
+   * Set by the per-scene regenerate endpoint. Lets downstream callers
+   * track which scenes have been touched since the last full build.
+   */
+  regenerated_at?: string;
+}

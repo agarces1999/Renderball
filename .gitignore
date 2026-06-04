@@ -1,0 +1,15 @@
+node_modules/
+out/
+public/renders/
+public/uploads/
+src/generated/
+.data/
+.DS_Store
+*.log
+.env
+.env.local
+.next/
+dist/
+.vercel
+next-env.d.ts
+.gstack/
