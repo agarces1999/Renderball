@@ -1,4 +1,5 @@
 import type { BrandExtract } from "../../app/new/schema";
+import { extractPaletteFromImage } from "./vision-brand";
 
 /**
  * Website crawl + brand extract — V0.3.
@@ -134,8 +135,20 @@ export const extractBrand = async (
   const fontsFromInline = extractInlineFontFamilies(html);
   const fonts = mergeFonts(fontsFromCss, fontsFromGoogle, fontsFromInline);
   const font_roles = classifyFontRoles(fonts);
-  const palette = extractPalette(allCss, theme_color);
+  let palette = extractPalette(allCss, theme_color);
   const motion_signal = classifyMotion(allCss);
+
+  // CSS-frequency palette picks up site-builder DEFAULTS — Webflow's link-blue
+  // out-counts the brand's real colors (fusefinance.com returned Webflow blue
+  // #3898ec when the brand is deep maroon + orange). When a hero/share image
+  // is available, read the TRUE palette off what actually renders, via vision.
+  // Best-effort: keeps the CSS palette on any failure (no key, timeout, etc.).
+  try {
+    const visionPalette = await extractPaletteFromImage(og_image);
+    if (visionPalette.length >= 3) palette = visionPalette;
+  } catch {
+    /* keep the CSS palette */
+  }
 
   return {
     url,
