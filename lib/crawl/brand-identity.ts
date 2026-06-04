@@ -46,6 +46,13 @@ const UI_GLYPH_RX =
   /\b(search|magnif|menu|hamburger|burger|cart|bag|close|times|arrow|chevron|caret|nav|spinner|loader|play|pause|share|heart|star|plus|minus|check|x-?icon)\b/i;
 // URL substrings that mean "this is a social/share card, not a logo".
 const SHARE_IMG_RX = /\b(og[-_]?image|og[-_]?fcom|social|share|twitter|opengraph|card)\b/i;
+// Junk a brand sometimes wires into its logo/og/icon meta on a site builder —
+// a screenshot or placeholder, not a real mark (Fuse's Webflow site set its
+// logo_hd / apple-touch / favicon all to a "Screenshot ….png"). Reject → wordmark.
+// No \b: filenames embed these after underscores ("…_Screenshot 2026….png"),
+// where \b fails because "_" is a word char. Substring match — these words
+// don't appear in real logo filenames.
+const JUNK_IMG_RX = /(screenshot|screen-?shot|untitled|placeholder)/i;
 
 export interface ResolvedFont {
   family: string;
@@ -80,18 +87,41 @@ const isLoadableUrl = (u: string): boolean =>
 const hasUsableSrc = (src?: string): boolean =>
   typeof src === "string" && isLoadableUrl(src);
 
-/** Derive a human brand name from the page title or the hostname. */
+/**
+ * Derive a clean brand name from the page title + hostname.
+ * The brand can be EITHER side of the title separator ("Brand | Tagline" OR
+ * "Tagline | Brand" — Fuse's title is "AI-Powered Loan Origination Software |
+ * Fuse"), so we pick the title segment that matches the hostname rather than
+ * blindly taking the first. Splits on title separators only — NOT hyphen, so
+ * "AI-Powered" stays one word.
+ */
 export const deriveBrandName = (extract: Partial<BrandExtract>): string => {
+  const host = (extract.url || "")
+    .replace(/^https?:\/\//i, "")
+    .replace(/^www\./i, "")
+    .split(/[/?#]/)[0];
+  const hostLabel = host.split(".")[0] || ""; // "fusefinance"
   const title = extract.title?.trim();
   if (title) {
-    // Take the segment before the first separator: "Falabella.com | ..." → "Falabella.com"
-    const seg = title.split(/[|–—\-:·•]/)[0].trim();
-    if (seg) return seg.replace(/\.com$|\.[a-z]{2,}$/i, "").trim() || seg;
+    const segs = title
+      .split(/\s*[|–—:·•]\s*/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (segs.length > 0) {
+      const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
+      // Prefer the segment that matches the hostname (the brand usually does).
+      const byHost = segs.find((s) => {
+        const n = norm(s);
+        return n && hostLabel && (hostLabel.includes(n) || n.includes(hostLabel));
+      });
+      // Else the shortest segment — taglines are long, brand names are short.
+      const chosen = byHost || [...segs].sort((a, b) => a.length - b.length)[0];
+      const clean = chosen.replace(/\.(com|io|co|app|ai|net|org)$/i, "").trim();
+      if (clean) return clean;
+    }
   }
-  const url = extract.url || "";
-  const host = url.replace(/^https?:\/\//i, "").replace(/^www\./i, "").split(/[/?#]/)[0];
-  const label = host.split(".")[0] || "Brand";
-  return label.charAt(0).toUpperCase() + label.slice(1);
+  if (hostLabel) return hostLabel.charAt(0).toUpperCase() + hostLabel.slice(1);
+  return "Brand";
 };
 
 /** Light/dark placement hints from the logo URL filename. */
@@ -128,6 +158,7 @@ const pickLogo = (extract: Partial<BrandExtract>): BrandIdentity["logo"] => {
     if (typeof url !== "string" || !isLoadableUrl(url)) continue;
     if (UI_GLYPH_RX.test(url)) continue; // search/menu/cart icon, not a logo
     if (SHARE_IMG_RX.test(url)) continue; // OG/social card, not a logo
+    if (JUNK_IMG_RX.test(url)) continue; // screenshot/placeholder, not a logo
     if (ogImage && url === ogImage) continue; // share image masquerading as logo
     return { url, ...luminanceFromUrl(url) };
   }

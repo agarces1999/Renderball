@@ -388,7 +388,7 @@ const buildUserMessage = (brief: AgentBrief): string => {
       `- Required output: exactly ${momentCount} sections. You pick the narrative SHAPE — transformation, revelation/build, walkthrough/journey, manifesto, or single-thread escalation (see the system prompt). Do NOT default to "intro → features → CTA".`,
     );
     lines.push(
-      "- For each scene: pick a short label (2-6 words, like 'Brand Opening' or 'Solution Reveal'), write a 1-sentence INTENT in scene.description (what this moment accomplishes — NOT the on-screen text), pick a creativity level, and build the visual content.",
+      "- For each scene: pick a short label (2-6 words, like 'Brand Opening' or 'Solution Reveal'), write a 1-sentence INTENT in scene.description (what this moment accomplishes — NOT the on-screen text), pick a creativity level, assign a `register` (stat | quote | full-bleed | split | list | centered — varied across scenes, no two adjacent the same), and build the visual content.",
     );
     lines.push(
       "- The FINAL scene contains the CTA. Extract it from the prompt if stated; otherwise infer a sensible one for the use case.",
@@ -564,7 +564,7 @@ const buildUserMessage = (brief: AgentBrief): string => {
   lines.push("");
   lines.push("Your job:");
   lines.push(
-    "- For each scene, write visual_concept (1-3 sentences specifying composition + motion + atmosphere) and content { texts, asset_ids }. Nothing else.",
+    "- For each scene, write visual_concept (1-3 sentences specifying composition + motion + atmosphere), a `register` (one of stat | quote | full-bleed | split | list | centered), and the structured content fields. VARY the register across scenes — no two adjacent scenes share one, ≥3 distinct across the video (see the system prompt's rule 10); this is what stops every scene looking like the same template.",
   );
   lines.push(
     "- Brainstorm 3-5 DISTINCT visual concepts per scene internally; pick the strongest; write it as visual_concept. Different metaphors, different compositions — not variations of the same idea.",

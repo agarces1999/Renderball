@@ -151,7 +151,10 @@ export const buildAgentInputFromBrief = (
     verified_claims: brief?.verified_claims,
     palette_roles: brief?.palette_roles,
     brand_extract: be,
-    brand_identity: resolveBrandIdentity(be, { brandName: be?.title }),
+    // Let resolveBrandIdentity derive a CLEAN brand name (deriveBrandName picks
+    // the brand segment of the title by hostname match) — don't pass the raw
+    // page title, which becomes a junk wordmark ("AI-Powered … | Fuse").
+    brand_identity: resolveBrandIdentity(be),
   };
 };
 
