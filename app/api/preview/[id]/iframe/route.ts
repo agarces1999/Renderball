@@ -103,6 +103,10 @@ export async function GET(
         // it's not server-bundled. getRemotionEnvironment() reports
         // isRendering:false here → the shim renders a plain <video>.
         "remotion",
+        // The Lottie shim imports @remotion/lottie at module scope, but in
+        // the static-preview branch it renders a plain container (the iframe's
+        // injected lottie-web plays it). Externalize so it's not bundled here.
+        "@remotion/lottie",
       ],
       logLevel: "silent",
     });
@@ -164,6 +168,38 @@ export async function GET(
   }
 
   const dims = dimensionsForScript(script);
+
+  // If the comp uses Lottie, the static HTML can't animate it (no JS runtime),
+  // so inject lottie-web + a mount script that brings every .rb-lottie
+  // container to life client-side. Only injected when actually needed.
+  const lottieMount = sectionHtml.includes("rb-lottie")
+    ? `<script src="https://cdnjs.cloudflare.com/ajax/libs/lottie-web/5.12.2/lottie.min.js"></script>
+<script>
+  (function () {
+    function play() {
+      var els = document.querySelectorAll('.rb-lottie[data-lottie-src]');
+      for (var i = 0; i < els.length; i++) {
+        var el = els[i];
+        if (el.getAttribute('data-rb-init') || !window.lottie) continue;
+        el.setAttribute('data-rb-init', '1');
+        try {
+          window.lottie.loadAnimation({
+            container: el,
+            path: el.getAttribute('data-lottie-src'),
+            renderer: 'svg',
+            loop: el.getAttribute('data-lottie-loop') !== '0',
+            autoplay: true,
+          });
+        } catch (e) {}
+      }
+    }
+    if (window.lottie) play();
+    document.addEventListener('DOMContentLoaded', play);
+    window.addEventListener('load', play);
+  })();
+</script>`
+    : "";
+
   const doc = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -203,6 +239,7 @@ export async function GET(
 </head>
 <body>
 <div class="renderball-canvas">${sectionHtml}</div>
+${lottieMount}
 </body>
 </html>`;
 

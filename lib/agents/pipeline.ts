@@ -501,9 +501,9 @@ export const buildAnimatedSections = async (
         },
         type: {
           type: "string",
-          enum: ["photo", "video"],
+          enum: ["photo", "video", "lottie"],
           description:
-            "photo = a still image (default). video = a short b-roll clip for a moving background (atmosphere/lifestyle). Use video sparingly — as a backdrop with text/brand chrome on top, not the whole scene.",
+            "photo = a still image (default). video = a short b-roll clip for a moving background (atmosphere/lifestyle), used sparingly as a backdrop. lottie = a vector micro-animation (loaders, success checks, abstract loops) — note: auto-search isn't wired yet, so for decorative motion prefer the SVG animated-primitive catalog (license-free).",
         },
         orientation: {
           type: "string",
@@ -520,7 +520,21 @@ export const buildAnimatedSections = async (
     const query = typeof toolInput?.query === "string" ? toolInput.query.trim() : "";
     if (!query) return JSON.stringify({ results: [], note: "query required" });
     const orientation = toolInput?.orientation ?? defaultOrientation;
-    const assetType = toolInput?.type === "video" ? "video" : "photo";
+    const assetType =
+      toolInput?.type === "video"
+        ? "video"
+        : toolInput?.type === "lottie"
+          ? "lottie"
+          : "photo";
+    // Lottie auto-search has no commercial-safe source wired yet (LottieFiles
+    // needs a key + per-asset license vetting). Steer to license-free options.
+    if (assetType === "lottie") {
+      assetSearchLog.push({ query, type: "lottie", candidates: [] });
+      return JSON.stringify({
+        results: [],
+        note: "Lottie auto-search isn't configured (no commercial-safe source wired). For decorative motion, build an SVG animated primitive from the catalog (license-free). The render supports <Lottie src=\"<url>\" /> if you have a specific commercial-safe Lottie JSON URL.",
+      });
+    }
     try {
       const cands =
         assetType === "video"

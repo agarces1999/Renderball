@@ -749,6 +749,8 @@ You have a **tool** called \`search_assets\` (NOT an import — call it like a f
 
 **Video b-roll** — pass \`type: "video"\` for a MOVING background (atmosphere/lifestyle motion: rolling waves, city timelapse, fabric in wind, pouring chocolate). Place the result as a full-bleed BACKGROUND layer via \`import { Video } from "./Video"\` → \`<Video src="<url>" style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }} />\`, then layer a scrim/gradient + your headline + brand chrome ON TOP (text must stay readable over motion). It's muted + looped automatically. Use video SPARINGLY — at most one or two scenes, as a backdrop, never the whole scene raw with no brand framing. (\`<Video>\` works in both preview and the final MP4.)
 
+**Lottie (vector micro-animation)** — for decorative motion (loaders, success checks, abstract loops) **prefer the SVG animated-primitive catalog below — it's license-free and always available.** A \`<Lottie>\` renderer exists (\`import { Lottie } from "./Lottie"\` → \`<Lottie src="<json-url>" style={{...}} />\`, plays in preview + MP4), but only use it when you have a SPECIFIC commercial-safe Lottie JSON URL — \`search_assets type:"lottie"\` has no source wired yet and will steer you back here.
+
 **When NOT to call it:** UI icons → \`lucide-react\`; brand/partner logos → the locked brand identity / \`simple-icons\`; data → \`recharts\`; abstract hero motifs → the SVG illustration library. Don't fetch a photo for something those render better.
 
 **Rules:**

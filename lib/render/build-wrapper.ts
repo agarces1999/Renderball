@@ -238,6 +238,51 @@ export const Video: React.FC<VideoProps> = (props) => {
 };
 `;
 
+/**
+ * Dual-context Lottie shim. Lottie needs a JS runtime to animate, which the
+ * static-HTML preview does NOT have — so the two contexts diverge more than
+ * photo/video:
+ * - RENDER → @remotion/lottie's <Lottie> (frame-accurate). We fetch the JSON
+ *   ourselves and hold the frame via delayRender until it's loaded.
+ * - PREVIEW → an empty container tagged data-lottie-src; the iframe route
+ *   injects a vanilla lottie-web player that finds these containers and plays
+ *   them client-side (since the static HTML can't run React/@remotion/lottie).
+ * Requires "@remotion/lottie" + "remotion" as esbuild externals in the iframe.
+ */
+export const LOTTIE_SHIM_SOURCE = `import React from "react";
+import { getRemotionEnvironment, delayRender, continueRender } from "remotion";
+import { Lottie as RemotionLottie } from "@remotion/lottie";
+
+export type LottieProps = { src: string; loop?: boolean; style?: React.CSSProperties; className?: string };
+
+const RenderLottie: React.FC<LottieProps> = ({ src, loop, style, className }) => {
+  const [data, setData] = React.useState(null);
+  const [handle] = React.useState(() => delayRender("lottie"));
+  React.useEffect(() => {
+    let active = true;
+    fetch(src)
+      .then(function (r) { return r.json(); })
+      .then(function (j) { if (active) { setData(j); continueRender(handle); } })
+      .catch(function () { continueRender(handle); });
+    return function () { active = false; };
+  }, [src, handle]);
+  if (!data) return null;
+  return React.createElement(RemotionLottie, { animationData: data, loop: loop !== false, style: style, className: className });
+};
+
+export const Lottie: React.FC<LottieProps> = (props) => {
+  let isRendering = false;
+  try { isRendering = getRemotionEnvironment().isRendering; } catch (e) { isRendering = false; }
+  if (isRendering) return React.createElement(RenderLottie, props);
+  return React.createElement("div", {
+    className: "rb-lottie " + (props.className || ""),
+    "data-lottie-src": props.src,
+    "data-lottie-loop": props.loop === false ? "0" : "1",
+    style: props.style,
+  });
+};
+`;
+
 /** The files that make up one generated composition under src/generated/<id>/. */
 export interface GeneratedFiles {
   designCode: string;
@@ -265,6 +310,7 @@ export const writeGeneratedFiles = async (
   await fs.mkdir(genDir, { recursive: true });
   await fs.writeFile(path.join(genDir, "Img.tsx"), IMG_SHIM_SOURCE, "utf-8");
   await fs.writeFile(path.join(genDir, "Video.tsx"), VIDEO_SHIM_SOURCE, "utf-8");
+  await fs.writeFile(path.join(genDir, "Lottie.tsx"), LOTTIE_SHIM_SOURCE, "utf-8");
   await fs.writeFile(
     path.join(genDir, "Composition.design.tsx"),
     files.designCode,
