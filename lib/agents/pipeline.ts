@@ -11,6 +11,7 @@ import {
   type AspectRatio,
 } from "./quality-gates";
 import { resolveBrandIdentity, type BrandIdentity } from "../crawl/brand-identity";
+import { makeImageProbe, repairBrokenImages } from "../render/image-integrity";
 import { searchPexelsPhotos, searchPexelsVideos } from "../assets/sources/pexels";
 import type { AssetSearchEntry } from "../assets/types";
 import type { Script } from "../../src/schema";
@@ -210,6 +211,8 @@ export interface BuildWarnings {
   throughline_drift?: { slug: string; axis: "x" | "y" | "both"; driftX: number; driftY: number; occurrences: number }[];
   /** Script has a narrative.throughline but the design carried it across too few scenes. */
   throughline_absent?: { throughline: string; tagged: number; scenes: number };
+  /** Broken/invented image URLs the integrity pass repaired (swapped or neutralized). */
+  images_repaired?: { replaced: number; neutralized: number };
   /** Brand logo still rendered at >1 site after the structural retry (count of sites). */
   duplicate_logo?: number;
   /** Element widths that still cross the canvas edge after the structural retry. */
@@ -461,9 +464,19 @@ export const regenerateScene = async (
   // URLs are self-contained, so they render in both the preview iframe and the
   // Remotion render with no base-URL needed. Done before warnings so the gates
   // see the real composition.
+  // Finalize: inject the brand LOGO_SRC + guarantee no broken/invented image URL
+  // ships (same pass as the main build). Scene-regen has no search_assets log,
+  // so the replacement pool is the crawled page images + og.
   const logoSrc = input.brand_identity?.logo?.url;
-  const finalCodeOut = injectLogoSrc(finalCode, logoSrc);
-  const designCodeOut = injectLogoSrc(designCode, logoSrc);
+  let finalCodeOut = injectLogoSrc(finalCode, logoSrc);
+  let designCodeOut = injectLogoSrc(designCode, logoSrc);
+  const imagePool = [
+    ...(input.brand_extract?.page_images ?? []).map((p) => p.src),
+    ...(input.brand_extract?.og_image ? [input.brand_extract.og_image] : []),
+  ].filter((u): u is string => typeof u === "string" && u.length > 0);
+  const probe = makeImageProbe();
+  finalCodeOut = (await repairBrokenImages(finalCodeOut, imagePool, probe)).code;
+  designCodeOut = (await repairBrokenImages(designCodeOut, imagePool, probe)).code;
 
   // Build soft warnings — quality signals surfaced to the user but
   // not blocking the build. The strict gates (density, dead-air,
@@ -1027,12 +1040,47 @@ export const buildAnimatedSections = async (
     }
   }
 
-  const warnings = buildBuildWarnings(finalCode, input);
+  // Finalize the composition (applies to BOTH the animated + design comps, so
+  // preview and MP4 stay identical):
+  //   1. inject the brand LOGO_SRC const (so a long data: logo never has to be
+  //      reproduced by either agent),
+  //   2. GUARANTEE no broken/invented image URL ships — validate every image
+  //      URL and swap dead ones to a real search_assets photo (or neutralize).
+  const logoSrc = input.brand_identity?.logo?.url;
+  let finalCodeOut = injectLogoSrc(finalCode, logoSrc);
+  let designCodeOut = injectLogoSrc(designCode, logoSrc);
+  const imagePool = [
+    ...assetSearchLog.flatMap((e) => e.candidates.map((c) => c.url)),
+    ...(input.brand_extract?.page_images ?? []).map((p) => p.src),
+    ...(input.brand_extract?.og_image ? [input.brand_extract.og_image] : []),
+  ].filter((u): u is string => typeof u === "string" && u.length > 0);
+  const probe = makeImageProbe();
+  const finalRepair = await repairBrokenImages(finalCodeOut, imagePool, probe);
+  const designRepair = await repairBrokenImages(designCodeOut, imagePool, probe);
+  finalCodeOut = finalRepair.code;
+  designCodeOut = designRepair.code;
+  if (finalRepair.replaced.length || finalRepair.neutralized.length) {
+    console.warn(
+      "[pipeline] image-integrity repaired:",
+      JSON.stringify({
+        replaced: finalRepair.replaced,
+        neutralized: finalRepair.neutralized,
+      }),
+    );
+  }
+
+  const warnings = buildBuildWarnings(finalCodeOut, input);
+  if (finalRepair.replaced.length || finalRepair.neutralized.length) {
+    warnings.images_repaired = {
+      replaced: finalRepair.replaced.length,
+      neutralized: finalRepair.neutralized.length,
+    };
+  }
 
   return {
     ok: true,
-    code: finalCode,
-    designCode,
+    code: finalCodeOut,
+    designCode: designCodeOut,
     warnings,
     asset_manifest: assetSearchLog.length > 0 ? assetSearchLog : undefined,
     usage: {
