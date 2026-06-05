@@ -76,7 +76,8 @@ PREFER (in this order):
 NO EMPTY HANDS: if none of the on-page candidates is the clean brand mark, USE the web_search tool — search "{brand} logo svg", "{brand} logo png", "{brand} brand assets", "{brand} press kit logo". Prefer a URL on the brand's own domain or a recognized brand-asset host. Only return null if the web search ALSO fails to surface the real logo.
 
 OUTPUT (always JSON, never prose):
-- Winner: {"chosen_url":"https://...","source":"inline-svg|static-path|header-img|css-bg|simple-icons|clearbit|apple-touch|web-search","rationale":"one sentence"}
+- A candidate from the numbered list: {"chosen_index": <the candidate's NUMBER from the list>, "rationale":"one sentence"}. Use the index number — NEVER paste a long data: URL back (it will be truncated).
+- A logo you found via web_search (NOT in the list): {"chosen_url":"https://...","source":"web-search","rationale":"one sentence"}
 - None qualify even after web_search: {"chosen_url":null,"reason":"one sentence"}
 Only the JSON object. No markdown fence, no commentary.`;
 
@@ -276,7 +277,13 @@ export const findBrandLogo = async (
   const parse = (
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     response: any,
-  ): { chosen_url?: string | null; source?: string; rationale?: string; reason?: string } | null => {
+  ): {
+    chosen_index?: number;
+    chosen_url?: string | null;
+    source?: string;
+    rationale?: string;
+    reason?: string;
+  } | null => {
     const textBlock = [...response.content].reverse().find((b: { type: string }) => b.type === "text");
     if (!textBlock || textBlock.type !== "text") return null;
     const rawTxt = textBlock.text.trim().replace(/^```(?:json)?\s*|\s*```$/g, "");
@@ -287,7 +294,33 @@ export const findBrandLogo = async (
     }
   };
 
-  let parsed: { chosen_url?: string | null; source?: string; rationale?: string; reason?: string } | null;
+  // Resolve a parsed result to a concrete pick. A chosen_index maps to the FULL
+  // candidate URL on our side — the agent never echoes a long data: URL (it
+  // would truncate it, the bug this fixes). chosen_url is for web_search finds.
+  type Chosen = { url: string; source?: string; rationale?: string };
+  const resolveChosen = (
+    p: { chosen_index?: number; chosen_url?: string | null; source?: string; rationale?: string } | null,
+  ): Chosen | null => {
+    if (!p) return null;
+    if (typeof p.chosen_index === "number") {
+      const i = p.chosen_index - 1;
+      if (i >= 0 && i < candidates.length) {
+        return { url: candidates[i].url, source: candidates[i].source, rationale: p.rationale };
+      }
+    }
+    if (typeof p.chosen_url === "string" && p.chosen_url) {
+      return { url: p.chosen_url, source: p.source, rationale: p.rationale };
+    }
+    return null;
+  };
+
+  let parsed: {
+    chosen_index?: number;
+    chosen_url?: string | null;
+    source?: string;
+    rationale?: string;
+    reason?: string;
+  } | null;
   try {
     parsed = parse(await runOnce([{ role: "user", content }]));
   } catch (err) {
@@ -296,9 +329,10 @@ export const findBrandLogo = async (
       reason: `logo agent API error: ${err instanceof Error ? err.message : String(err)}`,
     };
   }
+  let chosen = resolveChosen(parsed);
 
   // ── Round 2: persistence — force a web search when the page came up empty ──
-  if (!parsed || !parsed.chosen_url) {
+  if (!chosen) {
     const webPrompt = [
       `Brand: ${brandTitle ?? brandHostname} (${brandHostname}).`,
       "None of the on-page candidates was the brand's clean logo.",
@@ -309,6 +343,7 @@ export const findBrandLogo = async (
     ].join(" ");
     try {
       parsed = parse(await runOnce([{ role: "user", content: webPrompt }]));
+      chosen = resolveChosen(parsed);
     } catch {
       // keep round-1 (null) result
     }
@@ -322,7 +357,7 @@ export const findBrandLogo = async (
   // a header img. These are the brand's own files, so they're safe without the
   // agent's screenshot-rejection. Only when NONE of those exist do we give up
   // (→ the resolver renders a clean wordmark, never a fabricated mark).
-  if (!parsed || !parsed.chosen_url) {
+  if (!chosen) {
     // Among inline-svg candidates prefer the LARGEST decoded mark — a wordmark
     // is wider/bigger than a tiny nav icon that happened to score well.
     const widestInlineSvg = candidates
@@ -350,9 +385,9 @@ export const findBrandLogo = async (
 
   // Validate the chosen URL is reachable (HEAD). Kills hallucinated web URLs.
   // data: URLs (inline-svg candidates) are self-contained — skip the probe.
-  if (!parsed.chosen_url.startsWith("data:")) {
+  if (!chosen.url.startsWith("data:")) {
     try {
-      const probe = await fetch(parsed.chosen_url, {
+      const probe = await fetch(chosen.url, {
         method: "HEAD",
         signal: AbortSignal.timeout(3500),
         headers: { "User-Agent": userAgent },
@@ -369,19 +404,19 @@ export const findBrandLogo = async (
     }
   }
 
-  // Real source = the candidate the URL matches, else what the agent claimed,
-  // else web-search. Confidence derives from the real source + decoded shape.
-  const matched = candidates.find((c) => c.url === parsed!.chosen_url);
-  const source = (matched?.source ??
-    (parsed.source as LogoCandidate["source"]) ??
+  // Real source = the resolved candidate's source (index pick) or what the agent
+  // claimed (web-search). Confidence derives from the real source + decoded shape.
+  const matched = candidates.find((c) => c.url === chosen!.url);
+  const source = (chosen.source ??
+    matched?.source ??
     "web-search") as LogoCandidate["source"];
-  const confidence = scoreConfidence(source, byUrl.get(parsed.chosen_url));
+  const confidence = scoreConfidence(source, byUrl.get(chosen.url));
 
   return {
     ok: true,
-    url: parsed.chosen_url,
+    url: chosen.url,
     source,
     confidence,
-    rationale: parsed.rationale ?? "",
+    rationale: chosen.rationale ?? "",
   };
 };
