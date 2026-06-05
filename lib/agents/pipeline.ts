@@ -29,9 +29,14 @@ const LOGO_SENTINEL = "__BRAND_LOGO_SRC__";
 
 const injectLogoSrc = (code: string, logoSrc: string | undefined): string => {
   if (!logoSrc) return code;
-  // Drop any agent-authored `const LOGO_SRC = "...";` (may hold the sentinel or a
-  // value the animation pass corrupted) + collapse any bare sentinel literal.
+  // Drop anything the agent authored for LOGO_SRC so our injected const is the
+  // single source of truth: a `declare const LOGO_SRC` type stub, a real
+  // `const LOGO_SRC = "...";` (may hold the sentinel or a corrupted value), and
+  // collapse any bare sentinel literal. The agent sometimes also writes a
+  // defensive `RESOLVED_LOGO = typeof LOGO_SRC !== "undefined" ? LOGO_SRC : "<inlined>"`
+  // — that's left intact and simply resolves to our real LOGO_SRC at runtime.
   let out = code
+    .replace(/^[ \t]*declare\s+const\s+LOGO_SRC\b[^\n]*\r?\n/gm, "")
     .replace(
       /^[ \t]*const\s+LOGO_SRC\s*=\s*["'`][^"'`]*["'`]\s*;?[ \t]*\r?\n?/gm,
       "",
@@ -1387,7 +1392,7 @@ const appendBrandContext = (
         id.logo.url.startsWith("data:") || id.logo.url.length > 300;
       if (longOrData) {
         lines.push(
-          `- LOGO: render the brand logo with <Img src={LOGO_SRC} ... />. \`LOGO_SRC\` is a module-scope constant injected at build time holding the brand logo URL — REFERENCE it, do NOT declare it yourself, and do NOT inline the URL (it is long). The logo appears ONCE, in BrandChrome.`,
+          `- LOGO: render the brand logo with <Img src={LOGO_SRC} ... /> EXACTLY ONCE, inside BrandChrome only. \`LOGO_SRC\` is a module-scope string constant that ALREADY EXISTS (injected at build time, guaranteed defined). Just reference it. Do NOT \`declare const LOGO_SRC\`, do NOT define it, do NOT add a \`typeof LOGO_SRC\` fallback, do NOT inline the URL, and do NOT render the logo in any individual scene (no opening/CTA logo) — BrandChrome is the single logo site.`,
         );
       } else {
         lines.push(`- LOGO (the ONLY brand-logo image; use this exact URL): ${id.logo.url}`);
