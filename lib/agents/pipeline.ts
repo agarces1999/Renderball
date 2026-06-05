@@ -7,6 +7,7 @@ import {
   findOverflowingElements,
   findDuplicateLogos,
   assessContinuity,
+  assessThroughlinePresence,
   type AspectRatio,
 } from "./quality-gates";
 import { resolveBrandIdentity, type BrandIdentity } from "../crawl/brand-identity";
@@ -172,6 +173,8 @@ export interface BuildWarnings {
   missing_charts?: string[];
   /** Recurring throughline motifs whose anchor jumps >10% canvas between scenes. */
   throughline_drift?: { slug: string; axis: "x" | "y" | "both"; driftX: number; driftY: number; occurrences: number }[];
+  /** Script has a narrative.throughline but the design carried it across too few scenes. */
+  throughline_absent?: { throughline: string; tagged: number; scenes: number };
   /** Brand logo still rendered at >1 site after the structural retry (count of sites). */
   duplicate_logo?: number;
   /** Element widths that still cross the canvas edge after the structural retry. */
@@ -740,6 +743,15 @@ export const buildAnimatedSections = async (
       ? `Duplicate brand logo — the brand logo image appears at ${logoCount} places in the file. BrandChrome already renders the logo on every scene; individual scenes (including the opening and CTA) must NOT render their own brand logo. Remove the scene-level logo <Img>s and rely on BrandChrome as the single persistent mark.`
       : null;
 
+  // Throughline-presence guard (polish). The script's narrative.throughline
+  // names the connective motif; the design agent must instantiate it as ONE
+  // recurring `data-throughline`-tagged element carried + evolved across
+  // scenes. When it's absent (the Fuse failure: 0 tags → scenes read as
+  // disconnected facts), force a retry to carry it. Only fires when the
+  // script HAS a throughline and there are ≥3 scenes.
+  const throughlinePresence = assessThroughlinePresence(designCode, input.script);
+  const throughlineFailure = throughlinePresence?.message ?? null;
+
   // Split the gate by class. STRUCTURAL failures (a crash, a cropped
   // element, a duplicated logo) make the output look broken to anyone
   // watching, so they MUST be fixed even on the fast preview path — the
@@ -752,7 +764,8 @@ export const buildAnimatedSections = async (
   const structuralFailure = iconFailure || overflowFailure || logoFailure;
   const includePolish = !skipRetries;
   const polishFailure =
-    includePolish && (!gateReport.ok || claimFailure || contrastFailure);
+    includePolish &&
+    (!gateReport.ok || claimFailure || contrastFailure || throughlineFailure);
 
   if (structuralFailure || polishFailure) {
     const retryMessage = [
@@ -761,6 +774,7 @@ export const buildAnimatedSections = async (
         : null,
       includePolish ? claimFailure : null,
       includePolish ? contrastFailure : null,
+      includePolish ? throughlineFailure : null,
       iconFailure,
       overflowFailure,
       logoFailure,
@@ -1138,7 +1152,7 @@ const buildDesignUserMessage = (input: BuildInput): string => {
         narr.logline ? `- Story: ${narr.logline}` : "",
         narr.arc ? `- Arc across the sections: ${narr.arc}` : "",
         narr.throughline
-          ? `- Throughline motif (carry it across the relevant sections so the story coheres visually): ${narr.throughline}`
+          ? `- Throughline (REQUIRED — this is the connective tissue): ${narr.throughline}\n  → Instantiate this as ONE concrete recurring visual element (translate the idea into something you can draw — a shape, an object, a motif). Render it in MOST sections, let it EVOLVE along the arc (it transforms / opens / grows / connects, it does not reset to a fresh thing each cut), keep its on-canvas anchor stable, and wrap it in \`<div data-throughline="<same-slug>">\` (SAME slug) in every section it appears. Without this the sections read as disconnected facts, not one story.`
           : "",
         "- Reflect the arc's progression in the composition: let early-section tone and later-section tone differ (e.g. cramped/cool → open/brand-warm) so the sequence visibly builds. Recurring motifs should evolve, not reset, between sections.",
         "",
@@ -1719,6 +1733,18 @@ const buildBuildWarnings = (
       driftY: d.driftY,
       occurrences: d.occurrences,
     }));
+  }
+  // Throughline-PRESENCE: the script defined a connective motif but the design
+  // carried it across too few scenes (the Fuse failure). Reported even after
+  // the single retry, so the user sees "story didn't cohere" rather than us
+  // silently shipping N disconnected scenes.
+  const absence = assessThroughlinePresence(code, input.script);
+  if (absence) {
+    out.throughline_absent = {
+      throughline: absence.throughline,
+      tagged: absence.tagged,
+      scenes: absence.scenes,
+    };
   }
   // Residual structural defects. The Pass-1 structural retry SHOULD have
   // fixed these, but a single retry doesn't always make the agent comply

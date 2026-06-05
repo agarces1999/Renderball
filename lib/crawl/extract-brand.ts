@@ -1,5 +1,9 @@
 import type { BrandExtract } from "../../app/new/schema";
-import { extractPaletteFromImage } from "./vision-brand";
+import {
+  extractPaletteFromImage,
+  extractPaletteFromPixels,
+  refinePaletteWithPixels,
+} from "./vision-brand";
 
 /**
  * Website crawl + brand extract — V0.3.
@@ -27,6 +31,10 @@ const CSS_TIMEOUT_MS = 5_000;
 // 10 because modern sites stack 6-8 stylesheets (framework + global + page +
 // fonts CDN + UI lib) and the Google Fonts link is often last in the head.
 const MAX_STYLESHEETS = 10;
+// Stylesheets pulled via `@import` inside the site CSS (one level deep). Font
+// services — Adobe Fonts/Typekit especially — are often loaded this way rather
+// than via a <link rel=stylesheet>, so a plain link scan misses their fonts.
+const MAX_IMPORTED_SHEETS = 5;
 const MAX_CSS_BYTES = 500_000; // per stylesheet
 const USER_AGENT =
   "Mozilla/5.0 (compatible; RenderballBrandExtract/0.3; +https://renderball.com/bot)";
@@ -117,7 +125,21 @@ export const extractBrand = async (
   const fetchedCss = await Promise.all(
     cssLinks.map((href) => fetchCss(href).catch(() => "")),
   );
-  const allCss = [inlineCss, ...fetchedCss].join("\n");
+  const baseCss = [inlineCss, ...fetchedCss].join("\n");
+
+  // Follow `@import`'d stylesheets one level deep. Font services (Adobe
+  // Fonts/Typekit, Fontshare, …) are frequently pulled via
+  // `@import url("https://use.typekit.net/xxx.css")` inside the site CSS rather
+  // than a <link rel=stylesheet>, so the link scan above never sees them and
+  // their @font-face declarations are lost. Bounded + best-effort; font-service
+  // imports are fetched first so the cap favors brand fonts over UI imports.
+  const importHrefs = extractCssImports(baseCss, url)
+    .filter((href) => !cssLinks.includes(href))
+    .slice(0, MAX_IMPORTED_SHEETS);
+  const importedCss = importHrefs.length
+    ? await Promise.all(importHrefs.map((href) => fetchCss(href).catch(() => "")))
+    : [];
+  const allCss = [baseCss, ...importedCss].join("\n");
 
   // Two complementary font discovery paths:
   //   1. @font-face blocks in inline + linked CSS (the existing path)
@@ -140,12 +162,30 @@ export const extractBrand = async (
 
   // CSS-frequency palette picks up site-builder DEFAULTS — Webflow's link-blue
   // out-counts the brand's real colors (fusefinance.com returned Webflow blue
-  // #3898ec when the brand is deep maroon + orange). When a hero/share image
-  // is available, read the TRUE palette off what actually renders, via vision.
-  // Best-effort: keeps the CSS palette on any failure (no key, timeout, etc.).
+  // #3898ec when the brand is deep maroon + orange). When a hero/share image is
+  // available, read the TRUE palette off what actually renders. Two readers,
+  // each strong where the other is weak:
+  //   • vision (Haiku) — SELECTS the brand colors semantically (it knows Fuse's
+  //     orange is an accent even though it's a tiny share-image area) but only
+  //     ESTIMATES the hex by eye (#3d1625 for a true ~#440c12).
+  //   • pixel clustering (sharp) — EXACT hex of whatever's prominent, but blind
+  //     to small accents (misses that orange entirely).
+  // So: vision selects, pixels correct. Snap each vision color to the nearest
+  // precise pixel cluster when close; keep vision's value for accents pixels
+  // didn't capture. Degrades cleanly: vision-only, then pixel-only, then CSS.
+  // All best-effort (no key, no sharp binary, timeout → keep what we have).
   try {
-    const visionPalette = await extractPaletteFromImage(og_image);
-    if (visionPalette.length >= 3) palette = visionPalette;
+    const [visionPalette, pixelPalette] = await Promise.all([
+      extractPaletteFromImage(og_image),
+      extractPaletteFromPixels(og_image, { maxColors: 8 }),
+    ]);
+    if (visionPalette.length >= 3 && pixelPalette.length >= 2) {
+      palette = refinePaletteWithPixels(visionPalette, pixelPalette);
+    } else if (visionPalette.length >= 3) {
+      palette = visionPalette;
+    } else if (pixelPalette.length >= 3) {
+      palette = pixelPalette.slice(0, 5); // pixel-only: trim noisy tail clusters
+    }
   } catch {
     /* keep the CSS palette */
   }
@@ -646,6 +686,36 @@ const extractStylesheetLinks = (html: string, baseUrl: string): string[] => {
     if (resolved) hrefs.push(resolved);
   }
   return Array.from(new Set(hrefs));
+};
+
+// Font-service hosts whose @import'd CSS most likely carries brand fonts.
+// Followed first so MAX_IMPORTED_SHEETS favors fonts over generic UI imports.
+const FONT_IMPORT_HINT_RX =
+  /typekit|adobe|fonts\.googleapis|fonts\.bunny|fontshare|cloud\.typography|fonts\.net|fast\.fonts|fontawesome/i;
+
+// Parse `@import url("…")` / `@import "…"` targets out of CSS. Resolves to
+// absolute http(s) URLs (font-service imports are always absolute) and orders
+// known font-service hosts first.
+const extractCssImports = (css: string, baseUrl: string): string[] => {
+  // Two forms: `@import url(<target>)` (target may be quoted; capture to the
+  // closing paren so embedded `;` like Google's `wght@400;700` survives) and
+  // `@import "<target>"` (capture to the closing quote). Bare unquoted targets
+  // ending at `;`/whitespace are the legacy fallback.
+  const rx =
+    /@import\s+(?:url\(\s*["']?([^)"']+)["']?\s*\)|["']([^"']+)["']|([^\s;"']+))/gi;
+  const urls: string[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = rx.exec(css)) !== null) {
+    const target = m[1] || m[2] || m[3];
+    if (!target) continue;
+    const resolved = resolveMaybe(target, baseUrl);
+    if (resolved && /^https?:\/\//i.test(resolved)) urls.push(resolved);
+  }
+  const ordered = [
+    ...urls.filter((u) => FONT_IMPORT_HINT_RX.test(u)),
+    ...urls.filter((u) => !FONT_IMPORT_HINT_RX.test(u)),
+  ];
+  return Array.from(new Set(ordered));
 };
 
 const fetchCss = async (href: string): Promise<string> => {

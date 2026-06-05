@@ -293,3 +293,68 @@ export const assessContinuity = (
   }
   return out;
 };
+
+// ─── #1 Throughline-PRESENCE gate (retry-forcing, polish-tier) ───────
+//
+// assessContinuity (above) checks an EXISTING recurring tag for positional
+// DRIFT. This checks the opposite, more common failure: the throughline is
+// never instantiated at all. The script's `narrative.throughline` names the
+// connective motif that should thread the scenes into one story; the design
+// agent is told to render it as ONE concrete recurring element, carried (and
+// evolved) across scenes and tagged `data-throughline="<slug>"`. When the
+// agent instead composes every scene independently (the Fuse failure: 0 tags),
+// the piece reads as N disconnected facts rather than one story.
+//
+// This gate fires only when the story HAS a throughline AND there are enough
+// scenes for connective tissue to mean anything (≥3), and the dominant tagged
+// slug appears in fewer than a majority of them. Returns a retry message
+// (folded into the single Design retry) or null when satisfied / N/A.
+
+// Count occurrences of each data-throughline slug across the whole file.
+// Fresh regex per call (no shared lastIndex). Tolerant of attribute order.
+const countThroughlineSlugs = (code: string): Map<string, number> => {
+  const re = /\bdata-throughline\s*=\s*["']([\w-]+)["']/g;
+  const counts = new Map<string, number>();
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(code)) !== null) {
+    counts.set(m[1], (counts.get(m[1]) || 0) + 1);
+  }
+  return counts;
+};
+
+export interface ThroughlineAbsence {
+  throughline: string; // the script's connective motif text
+  tagged: number; // occurrences of the dominant data-throughline slug
+  scenes: number; // total scene count
+  bar: number; // how many scenes the anchor needed to appear in
+  message: string; // retry instruction (folded into the single Design retry)
+}
+
+export const assessThroughlinePresence = (
+  code: string,
+  script: { scenes?: unknown[]; narrative?: { throughline?: string } },
+): ThroughlineAbsence | null => {
+  const throughline = script.narrative?.throughline?.trim();
+  const sceneCount = Array.isArray(script.scenes) ? script.scenes.length : 0;
+  // Only meaningful when the story HAS a throughline and there are enough
+  // scenes for "connective tissue" to read (a 1-2 scene piece can't thread).
+  if (!throughline || sceneCount < 3) return null;
+
+  const counts = countThroughlineSlugs(code);
+  const dominant = counts.size > 0 ? Math.max(...counts.values()) : 0;
+
+  // The anchor should appear in a MAJORITY of scenes to read as a thread.
+  // Bar: ceil(60% of scenes), floor 2. 3→2, 4→3, 5→3, 6→4. Raw occurrence
+  // count over-counts a twice-in-one-scene anchor — that bias is toward NOT
+  // firing (safe direction; favors false negatives like the drift gate).
+  const bar = Math.max(2, Math.ceil(sceneCount * 0.6));
+  if (dominant >= bar) return null;
+
+  const message = [
+    `Throughline not carried — the story's connective motif is: "${throughline}".`,
+    `Your composition instantiates it as a recurring tagged element in only ${dominant} of ${sceneCount} scenes (need ≥${bar}). As-is the scenes read as ${sceneCount} disconnected facts, not one continuous story — the #1 quality complaint.`,
+    `Fix: choose ONE concrete visual element that embodies that throughline (translate the idea into something you can actually draw — a shape, an object, a recurring motif), render it in at least ${bar} scenes, and let it EVOLVE along the arc (it transforms / opens / grows / connects scene to scene — it does NOT reset to a fresh thing each cut). Wrap it in \`<div data-throughline="<same-slug>">\` in every scene it appears, using the SAME slug each time, and keep its on-canvas anchor stable (it can grow or gain detail, but it must not hop sides between scenes).`,
+  ].join("\n");
+
+  return { throughline, tagged: dominant, scenes: sceneCount, bar, message };
+};

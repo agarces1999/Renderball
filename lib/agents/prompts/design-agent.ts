@@ -489,26 +489,40 @@ const BrandChrome: React.FC<{
 
 **Why this matters:** when frames flick by in the captured video, the brand chrome acts as a "frame" the eye anchors to. Identical chrome across every frame = the viewer's gaze is free to move to the content. Inconsistent chrome = the viewer re-orients on every cut.
 
-## ⚠️ Throughline anchor — spatial continuity HARD RULE
+## ⚠️ Throughline anchor — REQUIRED connective element (HARD RULE)
 
-The script carries a \`narrative.throughline\` — the one connective motif that recurs across scenes (e.g. a product card, a chat popup, a dashboard, a customer avatar). When that SAME motif appears in more than one scene, it must read as **one continuous object the story moves around** — not a fresh element that teleports to a new spot each cut.
+The user message carries a \`narrative.throughline\` — the ONE connective idea that should thread every scene into a single story. **This is the #1 thing that separates a film from a slideshow, and the #1 complaint when it's missing** ("the scenes don't connect — it's just different facts about the brand"). You MUST carry it. This is not optional and not conditional.
 
-**The bug this prevents:** the Notion test rendered the same popup centered in scene 3, hard-right in scene 4, centered again in scene 5. With no transitions between scenes (hard cuts), a recurring element that jumps position reads as a glitch — the eye loses the thread.
+**Step 1 — translate the throughline into ONE concrete element you can draw.** The throughline is often written as an ABSTRACT progression or metaphor, not a ready-made object. Your job is to pick a single concrete visual element that *embodies* it, and reuse THAT element across scenes. Examples of the translation:
+- Throughline: *"rigid geometric forms that gradually open and flow into fluid, interconnected systems"* → a recurring **angular locked block** in scene 1 that, scene by scene, cracks open → unfolds → becomes a network of connected nodes by the finale. Same object, transformed.
+- Throughline: *"a brand-purple glow that intensifies section by section"* → the **same glow halo** behind the focal element in every scene, dim at the open, blinding behind the CTA.
+- Throughline: *"one unbroken code path from keystroke to result"* → the **same line of code / request token** that appears in the editor (scene 1), runs in the terminal (scene 2), lands as a result (scene 3).
+- Throughline: *"a timer that tightens toward the deadline"* → the **same countdown/progress element** draining across scenes.
 
-**The rule — when a motif recurs across scenes, hold its anchor:**
-- **Stable center.** Keep its center within ~10% of the canvas (≈190px on 1920w, ≈110px on 1080w) of where it sat in the previous scene. It can grow, shrink, gain detail, or get annotated — but it does not hop sides.
-- **Stable size band.** Don't swing from 40%-width in one scene to full-bleed the next and back. Scale changes should be monotonic or small (it zooms IN as the story focuses, it doesn't pulse big/small/big).
-- **Intentional moves are fine — random ones are not.** If the motif is *meant* to travel (slides left to make room for a chart), that's a deliberate, single-direction move. Center → right → center is not deliberate; it's the agent re-improvising layout each scene.
+If the throughline names a discrete object already (a product card, a chat popup, a dashboard, an avatar), use it directly — you've skipped step 1.
 
-**Tag it so this is verifiable.** Put \`data-throughline="<slug>"\` on the outer wrapper of the recurring motif in EVERY scene it appears (same slug each time), e.g.:
+**Step 2 — render that element in MOST scenes (aim for all; a 5-scene video needs it in ≥3).** It is the spine the eye follows across hard cuts. A video where the connective element appears in only one scene has no throughline.
+
+**Step 3 — let it EVOLVE along the arc, but hold its anchor.** It is ONE continuous object the story moves *through* and *transforms* — not a fresh element that teleports each cut.
+- **Evolve, don't reset.** It transforms / opens / grows / fills / connects monotonically along the arc (constraint → capability). It can gain detail, brighten, unfold, multiply. It does NOT become an unrelated thing scene to scene.
+- **Stable center.** Keep its center within ~10% of the canvas (≈190px on 1920w, ≈110px on 1080w) of where it sat in the previous scene. It can grow or gain annotation — but it does not hop sides.
+- **Stable size band.** Don't swing 40%-width → full-bleed → 40% and back. Scale changes are monotonic or small (it zooms IN as the story focuses; it doesn't pulse big/small/big).
+- **Intentional single-direction moves are fine** (it slides left once to make room for a chart). Center → right → center is NOT deliberate — that's re-improvising layout each scene (the Notion popup glitch).
+
+**Step 4 — TAG IT so it's verifiable.** Wrap the element's outer container in \`data-throughline="<slug>"\` in EVERY scene it appears, using the SAME slug each time:
 \`\`\`tsx
-<div data-throughline="chat-popup" style={{ position: "absolute", left: 660, top: 280, width: 600 }}>
-  {/* the popup */}
+// scene 0 — the locked block, rigid
+<div data-throughline="form-state" style={{ position: "absolute", left: 1180, top: 360, width: 520 }}>
+  {/* angular, closed */}
+</div>
+// scene 3 — SAME element, now opening (same slug, anchor held, evolved)
+<div data-throughline="form-state" style={{ position: "absolute", left: 1160, top: 340, width: 560 }}>
+  {/* unfolding into connected nodes */}
 </div>
 \`\`\`
-A build-time gate reads the \`left\`/\`top\` of each \`data-throughline\` group across sections and flags a recurring motif that jumps its anchor between scenes. The slug is a stable identity ("this is the same object"); the position is what the gate checks for continuity.
+Two build-time gates read these tags: one fails the build if the throughline element appears in too few scenes (PRESENCE — the failure this rule exists to prevent); the other flags an element whose \`left\`/\`top\` anchor jumps between scenes (DRIFT). The slug is a stable identity ("this is the same object across scenes"); evolving its *content* is encouraged, moving its *anchor* is not.
 
-**Scope:** this applies only to a motif that genuinely RECURS. A primitive used once in one scene needs no tag and no anchor constraint — compose it wherever it reads best.
+**Scope:** the throughline element is required across the sequence. A DIFFERENT primitive used only once in a single scene needs no tag and no anchor constraint — compose those wherever they read best. The tag is reserved for the one connective element.
 
 ## ⚠️ Impact / shake animations — HARD RULE
 
