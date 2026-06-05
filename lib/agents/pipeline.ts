@@ -19,6 +19,11 @@ import type {
   AgentFileRef,
 } from "./script-generator";
 
+// Placeholder the design agent copies as the brand-logo <Img> src when the real
+// logo URL is too long to reproduce reliably (a data: URL inline-svg mark). The
+// pipeline substitutes the real URL at the end of buildAnimatedSections.
+const LOGO_SENTINEL = "__BRAND_LOGO_SRC__";
+
 /**
  * Agent 2 — two-pass design + animation pipeline.
  *
@@ -419,15 +424,30 @@ export const regenerateScene = async (
     };
   }
 
+  // Substitute the brand-logo sentinel with the real logo URL. When the logo is
+  // a long data: URL (an inline-svg mark), the design agent is handed the short
+  // LOGO_SENTINEL token instead — an LLM can't reliably reproduce ~3KB of base64
+  // in <Img src>, so it copies the token and we bake the real URL in here. data:
+  // URLs are self-contained, so they render in both the preview iframe and the
+  // Remotion render with no base-URL needed. Done before warnings so the gates
+  // see the real composition.
+  const logoSrc = input.brand_identity?.logo?.url;
+  const finalCodeOut = logoSrc
+    ? finalCode.split(LOGO_SENTINEL).join(logoSrc)
+    : finalCode;
+  const designCodeOut = logoSrc
+    ? designCode.split(LOGO_SENTINEL).join(logoSrc)
+    : designCode;
+
   // Build soft warnings — quality signals surfaced to the user but
   // not blocking the build. The strict gates (density, dead-air,
   // hallucination) already ran above.
-  const warnings = buildBuildWarnings(finalCode, input);
+  const warnings = buildBuildWarnings(finalCodeOut, input);
 
   return {
     ok: true,
-    code: finalCode,
-    designCode,
+    code: finalCodeOut,
+    designCode: designCodeOut,
     warnings,
     usage: {
       input_tokens:
@@ -1339,7 +1359,18 @@ const appendBrandContext = (
           : id.logo.onDark && !id.logo.onLight
             ? "this is a LIGHT/white logo → only place it on a DARK background, NEVER on a light one (it would vanish)"
             : "this is a DARK/colored logo → only place it on a LIGHT background, NEVER on a dark one";
-      lines.push(`- LOGO (the ONLY brand-logo image; use this exact URL): ${id.logo.url}`);
+      // A short normal URL the agent can copy verbatim. A long/data: URL (an
+      // inline-svg mark, ~3KB of base64) is NOT reproducible by an LLM, so hand
+      // it the LOGO_SENTINEL token and substitute the real URL at build time.
+      const longOrData =
+        id.logo.url.startsWith("data:") || id.logo.url.length > 300;
+      if (longOrData) {
+        lines.push(
+          `- LOGO: render the brand logo as <Img src={"${LOGO_SENTINEL}"} ... /> using the EXACT literal string "${LOGO_SENTINEL}" as the src. The real logo URL is long and is substituted in at build time — copy the token verbatim, do NOT alter or shorten it, and do NOT invent a different URL.`,
+        );
+      } else {
+        lines.push(`- LOGO (the ONLY brand-logo image; use this exact URL): ${id.logo.url}`);
+      }
       lines.push(
         `    Placement: ${place}. Do NOT use any other image as the logo, do NOT use a page URL as an <img src>, do NOT grab a UI/search SVG.`,
       );
