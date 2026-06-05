@@ -82,25 +82,44 @@ export const extractBrand = async (
     };
   }
 
+  // https-near-universal upgrade for image meta URLs. Vision + pixel palette and
+  // SVG-logo rasterization are https-only, so an http:// og:image (liquiddeath.com)
+  // silently disables them and the palette degrades to the CSS-frequency fallback.
+  const upgradeToHttps = (u: string | undefined): string | undefined =>
+    u && /^http:\/\//i.test(u) ? u.replace(/^http:\/\//i, "https://") : u;
+
   // Pull HTML signals.
   const headSlice =
     html.match(/<head[\s\S]*?<\/head>/i)?.[0] ?? html.slice(0, 50_000);
-  const bodySlice = html.slice(0, 80_000);
+  // Body content for headline / excerpt / image extraction. Strip <script>/
+  // <style>/<noscript> FIRST, then slice — heavy SPAs (Shopify Hydrogen, Next)
+  // embed hundreds of KB of JSON in <script>, which otherwise eats the slice cap
+  // before any real <h1>/<p> (liquiddeath.com: 66 headlines, all past the old
+  // 80KB raw cap → 0 extracted).
+  const bodyHtml = html.match(/<body[\s\S]*?<\/body>/i)?.[0] ?? html;
+  const bodySlice = bodyHtml
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<noscript[\s\S]*?<\/noscript>/gi, " ")
+    .slice(0, 200_000);
 
   const title = decode(extractTitle(headSlice));
   const description = decode(extractMetaName(headSlice, "description"));
-  const og_image = resolveMaybe(
-    extractMetaProperty(headSlice, "og:image"),
-    url,
+  const og_image = upgradeToHttps(
+    resolveMaybe(extractMetaProperty(headSlice, "og:image"), url),
   );
   const theme_color = extractMetaName(headSlice, "theme-color");
-  const favicon = resolveMaybe(
-    extractLinkRel(headSlice, /(?:^|\s)(?:shortcut\s+)?icon(?:\s|$)/i),
-    url,
+  const favicon = upgradeToHttps(
+    resolveMaybe(
+      extractLinkRel(headSlice, /(?:^|\s)(?:shortcut\s+)?icon(?:\s|$)/i),
+      url,
+    ),
   );
-  const apple_touch_icon = resolveMaybe(
-    extractLinkRel(headSlice, /(?:^|\s)apple-touch-icon(?:\s|$)/i),
-    url,
+  const apple_touch_icon = upgradeToHttps(
+    resolveMaybe(
+      extractLinkRel(headSlice, /(?:^|\s)apple-touch-icon(?:\s|$)/i),
+      url,
+    ),
   );
   const headlines = extractHeadlines(bodySlice);
   const body_excerpts = extractBodyExcerpts(bodySlice);
@@ -676,7 +695,7 @@ const getHeaderRegions = (html: string): string[] => {
   if (h) regions.push(...h);
   if (n) regions.push(...n);
   const brandIdx = html.search(
-    /\bw-nav-brand\b|class=["'][^"']*(?:nav-?brand|logo-?link|navbar[^"']*logo|brand[^"']*logo)[^"']*["']/i,
+    /\bw-nav-brand\b|class=["'][^"']*(?:nav-?brand|logo-?link|logo-?block|logo-?wrap|site-?logo|header-?logo|navbar[^"']*logo|brand[^"']*logo)[^"']*["']/i,
   );
   if (brandIdx >= 0) {
     const aStart = html.lastIndexOf("<a", brandIdx);
