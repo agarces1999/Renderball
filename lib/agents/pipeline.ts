@@ -483,6 +483,18 @@ export const regenerateScene = async (
   // hallucination) already ran above.
   const warnings = buildBuildWarnings(finalCodeOut, input);
 
+  // Hard syntax gate (see buildAnimatedSections) — never ship a scene-regen
+  // that can't parse. ok:true === "this compiles."
+  const compileErr = await verifyCompilable(finalCodeOut);
+  if (compileErr) {
+    console.error("[pipeline] regen composition failed to compile:", compileErr);
+    return {
+      ok: false,
+      stage: "animation",
+      error: `Regenerated Composition.tsx does not compile: ${compileErr}`,
+    };
+  }
+
   return {
     ok: true,
     code: finalCodeOut,
@@ -1093,6 +1105,21 @@ export const buildAnimatedSections = async (
     warnings.images_repaired = {
       replaced: finalRepair.replaced.length,
       neutralized: finalRepair.neutralized.length,
+    };
+  }
+
+  // Hard syntax gate — ok:true must mean "this Composition compiles." Without
+  // it, a malformed file (leaked prose, truncation) was written to disk and
+  // the build reported success; only the iframe/MP4 esbuild later surfaced the
+  // error. stripCodeFence should keep this from ever firing; it is the
+  // deterministic backstop that makes the false-positive impossible.
+  const compileErr = await verifyCompilable(finalCodeOut);
+  if (compileErr) {
+    console.error("[pipeline] composition failed to compile:", compileErr);
+    return {
+      ok: false,
+      stage: "animation",
+      error: `Generated Composition.tsx does not compile: ${compileErr}`,
     };
   }
 
@@ -2121,13 +2148,85 @@ const findInventedClaims = (
  * New strategy: strip the leading fence and trailing fence
  * independently. Either can be missing.
  */
+/**
+ * Normalise an agent's response down to clean TS/TSX module text.
+ *
+ * Agents emit code three ways, and all three must yield a file that starts at
+ * the first real module line:
+ *   1. wrapped in a ```tsx … ``` fence (sometimes with prose before AND after),
+ *   2. raw code with no fence,
+ *   3. an explanatory preamble ("The dead-air checker reads the actual JSX
+ *      delays…") followed by raw, UNFENCED code.
+ *
+ * Case 3 is the one that bit us: the old stripper only removed a fence when it
+ * was the very first token, so the preamble landed on line 1 above the imports.
+ * esbuild then died with `Expected ";" but found "dead"` — yet the build
+ * endpoint still returned ok:true (it never compiles the result) and the
+ * text-based verifier passed (the real code is all there, just below prose).
+ * This normaliser is deterministic: prefer a fenced block; otherwise drop any
+ * leading prose before the first module line (an import or a "use" directive).
+ */
 const stripCodeFence = (s: string): string => {
   let out = s.trim();
-  // Strip a leading ```language line if present.
-  out = out.replace(/^```(?:tsx|typescript|ts|jsx|javascript|js)?\s*\n?/, "");
-  // Strip a trailing ``` line if present.
-  out = out.replace(/\n?\s*```\s*$/, "");
+
+  // 1. If a fenced code block exists anywhere, take the largest one's body.
+  //    This transparently discards prose BEFORE and AFTER the fence.
+  const fenceRe =
+    /```(?:tsx|typescript|ts|jsx|javascript|js)?[ \t]*\r?\n([\s\S]*?)\r?\n```/g;
+  let best = "";
+  for (let m = fenceRe.exec(out); m; m = fenceRe.exec(out)) {
+    if (m[1].length > best.length) best = m[1];
+  }
+  if (best) {
+    out = best.trim();
+  } else {
+    // No closing fence — strip a dangling opening/closing fence if present.
+    out = out
+      .replace(/^```(?:tsx|typescript|ts|jsx|javascript|js)?[ \t]*\r?\n?/, "")
+      .replace(/\r?\n?[ \t]*```[ \t]*$/, "");
+  }
+
+  // 2. Drop any leading prose before the first real module line. Generated
+  //    comps always begin with an import (or a "use client"/"use strict"
+  //    directive). Anchoring here is safe — prose never starts a line with
+  //    `import `, and a legitimate leading directive is preserved.
+  const lines = out.split("\n");
+  const moduleStart =
+    /^\s*(?:import[\s{*"']|export\s|['"]use (?:client|strict)['"])/;
+  for (let i = 0; i < lines.length; i++) {
+    if (moduleStart.test(lines[i])) {
+      if (i > 0) out = lines.slice(i).join("\n");
+      break;
+    }
+  }
+
   return out.trim();
+};
+
+/**
+ * Fast, dependency-free syntax gate. Runs esbuild's transform (NOT bundle) on
+ * the emitted component so a file that can't even parse never ships as a
+ * "successful" build. Returns null when it parses, or the error message when
+ * it doesn't. transform resolves no imports, so it's pure syntax validation
+ * (catches the leaked-prose / truncation class) and costs ~1ms.
+ *
+ * This is the deterministic backstop behind stripCodeFence: even if some
+ * future agent finds a new way to emit unparseable text, ok:true can no
+ * longer be a false positive — the preview/MP4 path will surface ok:false
+ * with the exact compiler error instead of writing a broken Composition.tsx.
+ */
+const verifyCompilable = async (code: string): Promise<string | null> => {
+  try {
+    const esbuild = await import("esbuild");
+    await esbuild.transform(code, {
+      loader: "tsx",
+      jsx: "automatic",
+      logLevel: "silent",
+    });
+    return null;
+  } catch (err) {
+    return err instanceof Error ? err.message : String(err);
+  }
 };
 
 /**
