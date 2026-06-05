@@ -175,18 +175,26 @@ export const generateScript = async (
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     let response;
     try {
-      response = await client.messages.create({
-        model: MODELS.scriptGenerator,
-        max_tokens: 16000,
-        system: [
-          {
-            type: "text",
-            text: SCRIPT_GENERATOR_SYSTEM_PROMPT,
-            cache_control: { type: "ephemeral" },
-          },
-        ],
-        messages: history,
-      });
+      // Streaming, not messages.create: a 16k-token non-streaming Sonnet call
+      // exceeds the SDK request timeout under load ("Request timed out" — the
+      // exact reason the Opus design/animation calls were moved to streaming).
+      // Richer brand context (e.g. liquiddeath.com's 8 headlines + body
+      // excerpts) makes the generation long enough to trip it. .finalMessage()
+      // returns the same Message shape, so downstream parsing is unchanged.
+      response = await client.messages
+        .stream({
+          model: MODELS.scriptGenerator,
+          max_tokens: 16000,
+          system: [
+            {
+              type: "text",
+              text: SCRIPT_GENERATOR_SYSTEM_PROMPT,
+              cache_control: { type: "ephemeral" },
+            },
+          ],
+          messages: history,
+        })
+        .finalMessage();
     } catch (err) {
       return {
         ok: false,
