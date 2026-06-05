@@ -123,12 +123,22 @@ const prepareCandidate = async (
     }
     if (!sharp || !raw) return { cand, note: "no preview" };
 
-    // Rasterize (SVG at higher density) + read true dimensions.
+    // Read true dimensions from the original bytes.
     const pipeline = isSvg ? sharp(raw, { density: 200 }) : sharp(raw);
     const meta = await pipeline.metadata().catch(() => null);
     const width = meta?.width;
     const height = meta?.height;
-    const visionBuf = await sharp(raw, isSvg ? { density: 200 } : {})
+    // Make the vision preview legible: marks frequently use fill="currentColor"
+    // (renders BLACK on transparent → invisible to the model, which then waffles
+    // and returns null). Force a dark fill and flatten onto white so the agent
+    // reliably SEES the mark. (Affects only the preview the agent reviews, not
+    // the stored logo_hd.)
+    const rasterBytes =
+      isSvg && raw
+        ? Buffer.from(raw.toString("utf8").replace(/currentColor/gi, "#111827"))
+        : raw;
+    const visionBuf = await sharp(rasterBytes, isSvg ? { density: 200 } : {})
+      .flatten({ background: "#ffffff" })
       .resize(384, 384, { fit: "inside", withoutEnlargement: true })
       .png()
       .toBuffer();
@@ -304,7 +314,28 @@ export const findBrandLogo = async (
     }
   }
 
+  // Deterministic floor — "no empty hands". The vision agent is nondeterministic
+  // and sometimes returns null even when the page has a clear brand mark (a
+  // currentColor inline-svg renders faintly in the preview). Rather than lose it,
+  // fall back to the strongest on-page candidate: an inline-svg (already filtered
+  // to logo-shaped, in the brand's own nav) > a deliberate /logo.* static file >
+  // a header img. These are the brand's own files, so they're safe without the
+  // agent's screenshot-rejection. Only when NONE of those exist do we give up
+  // (→ the resolver renders a clean wordmark, never a fabricated mark).
   if (!parsed || !parsed.chosen_url) {
+    const floor =
+      candidates.find((c) => c.source === "inline-svg") ??
+      candidates.find((c) => c.source === "static-path") ??
+      candidates.find((c) => c.source === "header-img");
+    if (floor) {
+      return {
+        ok: true,
+        url: floor.url,
+        source: floor.source,
+        confidence: Math.min(0.75, SOURCE_PRIOR[floor.source] ?? 0.7),
+        rationale: "deterministic floor: strong on-page candidate (agent returned no pick)",
+      };
+    }
     return {
       ok: false,
       reason: parsed?.reason ?? "no candidate or web result qualified",
