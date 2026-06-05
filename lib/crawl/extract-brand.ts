@@ -1185,37 +1185,49 @@ const SERIF_RX =
   /\b(tiempos|merriweather|playfair|lora|freight|garamond|caslon|bodoni|didot|minion|miller|noe|times|georgia|cambria|baskerville|crimson|cormorant|libre[\s-]*baskerville|source[\s-]*serif|noto[\s-]*serif|roboto[\s-]*serif|pt[\s-]*serif|sentinel|chronicle|gt[\s-]*super|portrait|larken|fraunces|signifier|romana|literata|recoleta|reckless|romie|domaine|saol)\b/i;
 const DISPLAY_HINT_RX = /\b(headline|display|hero|h1|h2|title)\b/i;
 const SERIF_FAMILY_RX = /\bserif\b/i; // catches "X Serif" naming
+// Distinctive display / slab / condensed family names so a real headline face
+// (SuperClarendon, Druk, Anton, Splash, …) is recognized as DISPLAY rather than
+// silently demoted to the body sans (the Liquid Death miss: FONT_DISPLAY became
+// "Acumin Pro" because SuperClarendon/Splash matched no display regex).
+const DISPLAY_FAMILY_RX =
+  /\b(clarendon|druk|knockout|trade[\s-]*gothic|bebas|anton|oswald|teko|tungsten|rockwell|sentinel|recoleta|migra|canela|austin|ogg|reckless|romie|signifier|splash|monument|druk|condensed|compressed|poster)\b/i;
 
 export const classifyFontRoles = (fonts: CrawledFont[]): FontRoles => {
   const roles: FontRoles = {};
+  // Collect distinct text faces in order; pull out mono. Icon fonts are skipped
+  // (routing them onto h*/p would render glyphs).
+  const text: string[] = [];
   for (const f of fonts) {
     const name = f.family;
     if (!name) continue;
-    // Skip icon fonts entirely — they're not text faces and routing
-    // them onto h*/p/span would render headlines as icon glyphs.
     if (ICON_FONT_RX.test(name)) continue;
     if (!roles.mono && MONO_RX.test(name)) {
       roles.mono = name;
       continue;
     }
-    if (
-      !roles.display &&
-      (SERIF_RX.test(name) ||
-        DISPLAY_HINT_RX.test(name) ||
-        SERIF_FAMILY_RX.test(name))
-    ) {
-      roles.display = name;
-      continue;
-    }
-    if (!roles.body) {
-      roles.body = name;
-    }
+    if (!text.includes(name)) text.push(name);
   }
-  // Reasonable fallbacks: if we have a body but no display, the body family
-  // becomes the display too (still better than system-ui). If display but no
-  // body, body falls back to display.
-  if (!roles.display && roles.body) roles.display = roles.body;
-  if (!roles.body && roles.display) roles.body = roles.display;
+  if (text.length === 0) return roles;
+
+  const isDisplayName = (n: string): boolean =>
+    SERIF_RX.test(n) ||
+    DISPLAY_HINT_RX.test(n) ||
+    SERIF_FAMILY_RX.test(n) ||
+    DISPLAY_FAMILY_RX.test(n);
+
+  // Display = a name-recognized display/serif/slab face if present; otherwise the
+  // FIRST face that differs from the body (the 2nd distinct face is almost always
+  // the headline/accent — body is the most-used face and is listed first). This
+  // stops a plain body sans (Acumin/Inter/Helvetica) from being chosen as display
+  // just because no curated name matched.
+  const namedDisplay = text.find(isDisplayName);
+  if (namedDisplay) {
+    roles.display = namedDisplay;
+    roles.body = text.find((n) => n !== namedDisplay) ?? namedDisplay;
+  } else {
+    roles.body = text[0];
+    roles.display = text.find((n) => n !== text[0]) ?? text[0];
+  }
   return roles;
 };
 

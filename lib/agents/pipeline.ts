@@ -822,6 +822,20 @@ export const buildAnimatedSections = async (
       ? `No real logo exists for this brand — the brand mark MUST be the WORDMARK "${input.brand_identity?.wordmark?.text ?? ""}" rendered as styled text in BrandChrome. Your output references a drawn logo/brand-mark. Remove any INVENTED mark (geometric shapes, monogram, "two squares", abstract glyph) and render the wordmark text instead. Never fabricate a logo, and never make a drawn mark the throughline.`
       : null;
 
+  // Logo-NOT-rendered guard (structural). The mirror of the fabrication gate: a
+  // REAL, confident logo was resolved but the agent rendered neither it nor the
+  // injected LOGO_SRC const — it fell back to the brand NAME as text (Liquid
+  // Death: the skull logo, discovered @0.95, shipped as "LIQUID DEATH" text). The
+  // logo is the brand's primary mark; force a retry to place it. (Short logo URLs
+  // get inlined directly, so we accept either the LOGO_SRC ref OR the url itself.)
+  const realLogoUrl = input.brand_identity?.logo?.url;
+  const logoNotRenderedFailure =
+    realLogoUrl &&
+    !designCode.includes("LOGO_SRC") &&
+    !designCode.includes(realLogoUrl)
+      ? `The brand logo was NOT rendered — you fell back to text/omitted it. A real brand logo IS provided. Render it EXACTLY ONCE in BrandChrome as <Img src={LOGO_SRC} style={{ height: 28, width: "auto" }} />. \`LOGO_SRC\` is a module-scope string constant injected at build time — reference it, do NOT declare it, do NOT inline a URL. Do NOT render the brand NAME as text in place of the logo image.`
+      : null;
+
   // Split the gate by class. STRUCTURAL failures (a crash, a cropped
   // element, a duplicated logo) make the output look broken to anyone
   // watching, so they MUST be fixed even on the fast preview path — the
@@ -832,7 +846,11 @@ export const buildAnimatedSections = async (
   // total), so when we're not skipping, a structural fix carries the polish
   // fixes along for free.
   const structuralFailure =
-    iconFailure || overflowFailure || logoFailure || fabricatedLogoFailure;
+    iconFailure ||
+    overflowFailure ||
+    logoFailure ||
+    fabricatedLogoFailure ||
+    logoNotRenderedFailure;
   const includePolish = !skipRetries;
   const polishFailure =
     includePolish &&
@@ -850,6 +868,7 @@ export const buildAnimatedSections = async (
       overflowFailure,
       logoFailure,
       fabricatedLogoFailure,
+      logoNotRenderedFailure,
       "",
       "Re-emit the COMPLETE Composition.tsx file with these issues fixed. The full content-mapping discipline still applies — render EVERY content field present in each section's input (eyebrow, headline, lede, bullets, caption, meta, cta, illustration):",
       "  • eyebrow → an <h6> or styled <div> with uppercase tracking-wide text above the headline",
