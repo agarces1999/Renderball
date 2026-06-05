@@ -513,11 +513,18 @@ const buildUserMessage = (brief: AgentBrief): string => {
         }[b.motion_signal];
         lines.push(`    Motion signal: ${motionGuide}`);
       }
-      if (b.logo_hd) lines.push(`    HD logo URL (high-res, use this for opening/closing scenes): ${b.logo_hd}`);
-      if (b.favicon) lines.push(`    Favicon URL (low-res; prefer logo_hd above): ${b.favicon}`);
+      // The script agent writes COPY + visual concepts; it references assets by
+      // intent/id, never by raw URL (the design agent resolves URLs from the
+      // brief). So never dump a raw asset URL into this prompt — a data: URL
+      // logo can be huge (liquiddeath.com: a 28KB inline-svg) and bloats the
+      // input + sends the model into slow/degenerate generation (~390s timeout).
+      const assetRef = (u: string): string =>
+        /^data:/i.test(u) || u.length > 150 ? "[available — the design agent places it]" : u;
+      if (b.logo_hd) lines.push(`    HD logo (high-res, use this for opening/closing scenes): ${assetRef(b.logo_hd)}`);
+      if (b.favicon) lines.push(`    Favicon (low-res; prefer logo above): ${assetRef(b.favicon)}`);
       if (b.apple_touch_icon && b.apple_touch_icon !== b.logo_hd)
-        lines.push(`    Apple touch icon URL: ${b.apple_touch_icon}`);
-      if (b.og_image) lines.push(`    OG image URL (hero image of the site): ${b.og_image}`);
+        lines.push(`    Apple touch icon: ${assetRef(b.apple_touch_icon)}`);
+      if (b.og_image) lines.push(`    OG image (hero image of the site): ${assetRef(b.og_image)}`);
       if (b.headlines && b.headlines.length > 0) {
         lines.push("    Headlines from the site (echo voice/tone — the brand's actual phrasing):");
         for (const h of b.headlines) lines.push(`      "${h}"`);
