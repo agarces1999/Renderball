@@ -19,10 +19,35 @@ import type {
   AgentFileRef,
 } from "./script-generator";
 
-// Placeholder the design agent copies as the brand-logo <Img> src when the real
-// logo URL is too long to reproduce reliably (a data: URL inline-svg mark). The
-// pipeline substitutes the real URL at the end of buildAnimatedSections.
+// The design agent references the brand logo as the constant LOGO_SRC and never
+// reproduces the (possibly 3KB data:) URL itself — an LLM mangles long base64,
+// and a literal sentinel string gets altered across the design→animation passes.
+// The pipeline OWNS the value: it strips any LOGO_SRC the agent declared (and any
+// leftover sentinel), then injects the real const after the imports. Both agents
+// only carry the short identifier through, which they preserve reliably.
 const LOGO_SENTINEL = "__BRAND_LOGO_SRC__";
+
+const injectLogoSrc = (code: string, logoSrc: string | undefined): string => {
+  if (!logoSrc) return code;
+  // Drop any agent-authored `const LOGO_SRC = "...";` (may hold the sentinel or a
+  // value the animation pass corrupted) + collapse any bare sentinel literal.
+  let out = code
+    .replace(
+      /^[ \t]*const\s+LOGO_SRC\s*=\s*["'`][^"'`]*["'`]\s*;?[ \t]*\r?\n?/gm,
+      "",
+    )
+    .split(LOGO_SENTINEL)
+    .join(logoSrc);
+  if (!/\bLOGO_SRC\b/.test(out)) return out; // agent didn't reference it
+  const decl = `const LOGO_SRC = ${JSON.stringify(logoSrc)};\n`;
+  const imports = [...out.matchAll(/^import[^\n]*\n/gm)];
+  if (imports.length) {
+    const last = imports[imports.length - 1];
+    const at = (last.index ?? 0) + last[0].length;
+    return out.slice(0, at) + decl + out.slice(at);
+  }
+  return decl + out;
+};
 
 /**
  * Agent 2 — two-pass design + animation pipeline.
@@ -432,12 +457,8 @@ export const regenerateScene = async (
   // Remotion render with no base-URL needed. Done before warnings so the gates
   // see the real composition.
   const logoSrc = input.brand_identity?.logo?.url;
-  const finalCodeOut = logoSrc
-    ? finalCode.split(LOGO_SENTINEL).join(logoSrc)
-    : finalCode;
-  const designCodeOut = logoSrc
-    ? designCode.split(LOGO_SENTINEL).join(logoSrc)
-    : designCode;
+  const finalCodeOut = injectLogoSrc(finalCode, logoSrc);
+  const designCodeOut = injectLogoSrc(designCode, logoSrc);
 
   // Build soft warnings — quality signals surfaced to the user but
   // not blocking the build. The strict gates (density, dead-air,
@@ -1360,13 +1381,13 @@ const appendBrandContext = (
             ? "this is a LIGHT/white logo → only place it on a DARK background, NEVER on a light one (it would vanish)"
             : "this is a DARK/colored logo → only place it on a LIGHT background, NEVER on a dark one";
       // A short normal URL the agent can copy verbatim. A long/data: URL (an
-      // inline-svg mark, ~3KB of base64) is NOT reproducible by an LLM, so hand
-      // it the LOGO_SENTINEL token and substitute the real URL at build time.
+      // inline-svg mark, ~3KB of base64) is NOT reproducible by an LLM, so have
+      // it REFERENCE the injected constant LOGO_SRC instead of inlining the URL.
       const longOrData =
         id.logo.url.startsWith("data:") || id.logo.url.length > 300;
       if (longOrData) {
         lines.push(
-          `- LOGO: render the brand logo as <Img src={"${LOGO_SENTINEL}"} ... /> using the EXACT literal string "${LOGO_SENTINEL}" as the src. The real logo URL is long and is substituted in at build time — copy the token verbatim, do NOT alter or shorten it, and do NOT invent a different URL.`,
+          `- LOGO: render the brand logo with <Img src={LOGO_SRC} ... />. \`LOGO_SRC\` is a module-scope constant injected at build time holding the brand logo URL — REFERENCE it, do NOT declare it yourself, and do NOT inline the URL (it is long). The logo appears ONCE, in BrandChrome.`,
         );
       } else {
         lines.push(`- LOGO (the ONLY brand-logo image; use this exact URL): ${id.logo.url}`);

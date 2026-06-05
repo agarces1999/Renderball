@@ -36,6 +36,7 @@ export async function GET(request: Request) {
       motion_signal: extract.motion_signal,
       headline_count: extract.headlines?.length ?? 0,
       logo_hd: extract.logo_hd?.slice(0, 90),
+      logo_hd_len: extract.logo_hd?.length,
       logo_source: extract.logo_source,
       logo_confidence: extract.logo_confidence,
     },

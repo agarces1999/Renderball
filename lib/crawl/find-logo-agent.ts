@@ -68,7 +68,7 @@ HARD REJECTS — never return any of these as the logo:
 - A favicon when a higher-resolution mark is available.
 
 PREFER (in this order):
-- An inline <svg> mark from the site's <header>/<nav> (the brand's own rendered logo).
+- An inline <svg> mark from the site's <header>/<nav> (the brand's own rendered logo). Between a WIDE wordmark and a tiny square icon, choose the wordmark — a small square is usually an app-icon/favicon, not the primary logo (the dimension note on each candidate tells you which is which).
 - A same-origin static file: /logo.svg, /assets/logo.png, a header <img> whose path says "logo".
 - A simple-icons brand match, or Clearbit's logo, for well-known brands.
 - apple-touch-icon ONLY as a low-res last resort (and never if it's actually a screenshot).
@@ -323,8 +323,14 @@ export const findBrandLogo = async (
   // agent's screenshot-rejection. Only when NONE of those exist do we give up
   // (→ the resolver renders a clean wordmark, never a fabricated mark).
   if (!parsed || !parsed.chosen_url) {
+    // Among inline-svg candidates prefer the LARGEST decoded mark — a wordmark
+    // is wider/bigger than a tiny nav icon that happened to score well.
+    const widestInlineSvg = candidates
+      .filter((c) => c.source === "inline-svg")
+      .map((c) => ({ c, w: byUrl.get(c.url)?.width ?? 0 }))
+      .sort((a, b) => b.w - a.w)[0]?.c;
     const floor =
-      candidates.find((c) => c.source === "inline-svg") ??
+      widestInlineSvg ??
       candidates.find((c) => c.source === "static-path") ??
       candidates.find((c) => c.source === "header-img");
     if (floor) {
