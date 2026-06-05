@@ -221,6 +221,60 @@ const resolveFont = (
     : { family: FALLBACK_DISPLAY_SANS, fallback: true, generic: "sans-serif" };
 };
 
+// Relative luminance (0=black, 1=white) of a #rrggbb color.
+const luminanceOf = (hex: string): number | null => {
+  const m = /^#?([0-9a-fA-F]{6})$/.exec(hex.trim());
+  if (!m) return null;
+  const n = parseInt(m[1], 16);
+  const r = (n >> 16) & 255,
+    g = (n >> 8) & 255,
+    b = n & 255;
+  return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+};
+
+// Pick an "ink" color for a monochrome logo: the palette's darkest non-trivial
+// color (so the mark reads as a real brand color — e.g. Fuse maroon — not
+// generic black), falling back to near-black.
+const pickInk = (palette: string[]): string => {
+  const dark = palette
+    .map((h) => ({ h, l: luminanceOf(h) }))
+    .filter((x): x is { h: string; l: number } => x.l !== null && x.l < 0.55)
+    .sort((a, b) => a.l - b.l)[0];
+  return dark ? dark.h : "#111111";
+};
+
+/**
+ * Bake an explicit ink color into a monochrome inline-svg logo.
+ *
+ * `<Img src="data:image/svg+xml,...">` is color-ISOLATED: a `fill="currentColor"`
+ * mark resolves currentColor to its default (black) regardless of the
+ * surrounding CSS, so a wordmark renders BLACK and can vanish on a colored scene
+ * (Fuse's wordmark is currentColor → black-on-maroon). Replace currentColor with
+ * a real palette ink and flag it as a dark/colored mark so the design agent
+ * places it on a LIGHT surface. Only touches inline-svg logos that actually use
+ * currentColor; colored logos pass through untouched.
+ */
+const recolorMonochromeLogo = (
+  logo: BrandIdentity["logo"],
+  palette: string[],
+): BrandIdentity["logo"] => {
+  if (!logo || !/^data:image\/svg\+xml/i.test(logo.url)) return logo;
+  let svg: string;
+  try {
+    const b64 = logo.url.split(",")[1] ?? "";
+    svg = Buffer.from(b64, "base64").toString("utf-8");
+  } catch {
+    return logo;
+  }
+  if (!/currentColor/i.test(svg)) return logo; // already explicitly colored
+  const ink = pickInk(palette);
+  const recolored = svg.replace(/currentColor/gi, ink);
+  const url =
+    "data:image/svg+xml;base64," + Buffer.from(recolored).toString("base64");
+  // Dark/colored ink → safe on a light surface, not a dark one.
+  return { url, onLight: true, onDark: false };
+};
+
 export const resolveBrandIdentity = (
   extract: Partial<BrandExtract> | undefined,
   opts?: { brandName?: string },
@@ -244,7 +298,7 @@ export const resolveBrandIdentity = (
   const brandName = opts?.brandName?.trim() || deriveBrandName(e);
 
   return {
-    logo: pickLogo(e),
+    logo: recolorMonochromeLogo(pickLogo(e), e.palette ?? []),
     wordmark: { text: brandName, font: display.family },
     fonts: { display, body, ...(mono ? { mono } : {}) },
     palette: e.palette ?? [],

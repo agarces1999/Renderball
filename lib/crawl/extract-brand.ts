@@ -4,6 +4,7 @@ import {
   extractPaletteFromPixels,
   refinePaletteWithPixels,
 } from "./vision-brand";
+import { readLogoCache, writeLogoCache } from "./logo-cache";
 
 /**
  * Website crawl + brand extract — V0.3.
@@ -483,6 +484,12 @@ const discoverLogoHd = async (
     return undefined;
   }
 
+  // Cache hit → skip the candidate sweep + vision agent. Repeat crawls of the
+  // same domain are instant + deterministic (and can't regress a good result to
+  // a flaky one).
+  const cached = await readLogoCache(baseHostname);
+  if (cached) return cached;
+
   const candidates = await collectLogoCandidates(
     html,
     baseUrl,
@@ -497,8 +504,15 @@ const discoverLogoHd = async (
   // ANTHROPIC_API_KEY isn't configured (e.g. CLI tests).
   const { findBrandLogo } = await import("./find-logo-agent");
   const result = await findBrandLogo(baseHostname, brandTitle, candidates);
-  if (result.ok)
-    return { url: result.url, confidence: result.confidence, source: result.source };
+  if (result.ok) {
+    const out = {
+      url: result.url,
+      confidence: result.confidence,
+      source: result.source,
+    };
+    await writeLogoCache(baseHostname, out); // only successes are cached
+    return out;
+  }
   // Agent rejected all candidates → return undefined so the wizard
   // prompts the user to upload a logo PNG/SVG.
   return undefined;
