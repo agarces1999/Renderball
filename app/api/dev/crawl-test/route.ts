@@ -35,6 +35,9 @@ export async function GET(request: Request) {
       font_urls: extract.fonts?.map((f) => f.src),
       motion_signal: extract.motion_signal,
       headline_count: extract.headlines?.length ?? 0,
+      logo_hd: extract.logo_hd?.slice(0, 90),
+      logo_source: extract.logo_source,
+      logo_confidence: extract.logo_confidence,
     },
   });
 }

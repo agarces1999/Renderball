@@ -110,7 +110,7 @@ export const extractBrand = async (
   // or "real product imagery."
   const bodyWithoutLogoGrids = stripLogoGridContainers(bodySlice);
   const page_images = extractPageImages(bodyWithoutLogoGrids, url);
-  const logo_hd = await discoverLogoHd(
+  const logoResult = await discoverLogoHd(
     bodyWithoutLogoGrids,
     url,
     og_image,
@@ -201,7 +201,9 @@ export const extractBrand = async (
     headlines,
     body_excerpts,
     page_images,
-    logo_hd,
+    logo_hd: logoResult?.url,
+    logo_confidence: logoResult?.confidence,
+    logo_source: logoResult?.source,
     fonts,
     font_roles,
     palette,
@@ -473,7 +475,7 @@ const discoverLogoHd = async (
   appleTouchIcon: string | undefined,
   faviconUrl: string | undefined,
   brandTitle: string | undefined,
-): Promise<string | undefined> => {
+): Promise<{ url: string; confidence: number; source: string } | undefined> => {
   let baseHostname: string;
   try {
     baseHostname = new URL(baseUrl).hostname.replace(/^www\./, "");
@@ -495,7 +497,8 @@ const discoverLogoHd = async (
   // ANTHROPIC_API_KEY isn't configured (e.g. CLI tests).
   const { findBrandLogo } = await import("./find-logo-agent");
   const result = await findBrandLogo(baseHostname, brandTitle, candidates);
-  if (result.ok) return result.url;
+  if (result.ok)
+    return { url: result.url, confidence: result.confidence, source: result.source };
   // Agent rejected all candidates → return undefined so the wizard
   // prompts the user to upload a logo PNG/SVG.
   return undefined;
@@ -582,6 +585,17 @@ const collectLogoCandidates = async (
     add(url, "header-img", "Image found inside <header>/<nav>");
   }
 
+  // 3b. Inline <svg> + CSS background-image marks in <header>/<nav>. The brand's
+  //     real logo is often NOT an <img> (inline SVG on Webflow/React, or a CSS
+  //     background div) — this is the Fuse miss. Highest-prior on-page source.
+  const vectors = collectHeaderVectorsAndBg(html, baseUrl, baseHostname);
+  for (const url of vectors.svgDataUrls) {
+    add(url, "inline-svg", "Inline <svg> in the site's header/nav — usually the brand's own mark");
+  }
+  for (const url of vectors.bgUrls) {
+    add(url, "css-bg", "CSS background-image in header/nav — sometimes the brand logo");
+  }
+
   // 4. simple-icons brand match. Heuristic: hostname's first label
   //    (e.g. "stripe" from stripe.com) checked against the package's
   //    slug map. We import lazily to keep cold-start fast.
@@ -615,18 +629,137 @@ const collectLogoCandidates = async (
   return out;
 };
 
+/**
+ * Inline-vector + CSS-background logo candidates from <header>/<nav>.
+ *
+ * The brand's real mark is frequently an inline <svg> (Webflow / React inline
+ * their nav logo) or a <div> with a CSS background-image — NEITHER is an <img>,
+ * so collectHeaderImgs misses both. This was the Fuse failure: the actual logo
+ * was an inline nav <svg>, never a candidate, so the agent fell back to the
+ * screenshot apple-touch-icon.
+ *
+ * Inline SVGs are scored (logo-marked / first-in-header / wide-aspect = keep;
+ * tiny-square / menu-search-cart context = drop) and returned as data: URLs so
+ * the logo agent can rasterize + SEE them. Anthropic vision rejects raw SVG, so
+ * the agent rasterizes these to PNG before the vision pass.
+ */
+const LOGO_CTX_RX = /\b(logo|brand|wordmark|site-?title|navbar-?brand)\b/i;
+const ICON_CTX_RX =
+  /\b(menu|hamburger|search|cart|basket|close|toggle|chevron|arrow|caret|social|hamburger|burger)\b/i;
+
+/**
+ * Header/nav regions to scan for the brand mark. Beyond semantic <header>/<nav>,
+ * grab a window around the first brand-link (w-nav-brand / *logo-link / navbar
+ * brand) — Webflow/React render the navbar as a <div class="navbar... w-nav">,
+ * NOT a <nav> tag, so the logo lives OUTSIDE <header>/<nav>. That was the Fuse
+ * miss: its inline-svg wordmark sat in a Webflow navbar div and was never
+ * scanned. Shared by collectHeaderImgs + collectHeaderVectorsAndBg.
+ */
+const getHeaderRegions = (html: string): string[] => {
+  const regions: string[] = [];
+  const h = html.match(/<header\b[\s\S]*?<\/header>/gi);
+  const n = html.match(/<nav\b[\s\S]*?<\/nav>/gi);
+  if (h) regions.push(...h);
+  if (n) regions.push(...n);
+  const brandIdx = html.search(
+    /\bw-nav-brand\b|class=["'][^"']*(?:nav-?brand|logo-?link|navbar[^"']*logo|brand[^"']*logo)[^"']*["']/i,
+  );
+  if (brandIdx >= 0) {
+    const aStart = html.lastIndexOf("<a", brandIdx);
+    const start = Math.max(0, (aStart >= 0 ? aStart : brandIdx) - 40);
+    // 4000 chars: a wordmark <svg> with one path per letter runs ~2KB+ (Fuse's
+    // is 2170) — too small a window truncates it before </svg> and the match fails.
+    regions.push(html.slice(start, brandIdx + 4000)); // brand link + its logo
+  }
+  if (regions.length === 0) regions.push(html.slice(0, 8_000));
+  return regions;
+};
+
+const collectHeaderVectorsAndBg = (
+  html: string,
+  baseUrl: string,
+  baseHostname: string,
+): { svgDataUrls: string[]; bgUrls: string[] } => {
+  const region = getHeaderRegions(html).join("\n");
+
+  // ── inline <svg> marks ──────────────────────────────────────────
+  const svgDataUrls: string[] = [];
+  const scored: { svg: string; score: number }[] = [];
+  const svgRe = /<svg\b[\s\S]*?<\/svg>/gi;
+  let sm: RegExpExecArray | null;
+  let i = 0;
+  // Scan generously — navbars stack many UI-glyph SVGs (menu, social, arrows)
+  // and the brand mark can sit after them. Scoring filters the glyphs out.
+  while ((sm = svgRe.exec(region)) !== null && i < 30) {
+    const svg = sm[0];
+    const before = region.slice(Math.max(0, sm.index - 160), sm.index);
+    const attrs = svg.match(/<svg\b([^>]*)>/i)?.[1] ?? "";
+    let score = 0;
+    if (LOGO_CTX_RX.test(attrs) || LOGO_CTX_RX.test(before)) score += 3;
+    if (i === 0) score += 2; // first svg in a header is usually the brand mark
+    const vb = svg.match(/viewBox=["']\s*[\d.-]+\s+[\d.-]+\s+([\d.]+)\s+([\d.]+)/i);
+    const w = vb ? parseFloat(vb[1]) : parseFloat(svg.match(/\bwidth=["']?([\d.]+)/i)?.[1] ?? "0");
+    const h = vb ? parseFloat(vb[2]) : parseFloat(svg.match(/\bheight=["']?([\d.]+)/i)?.[1] ?? "0");
+    if (w && h) {
+      const aspect = w / h;
+      if (aspect >= 1.6) score += 1; // wide → wordmark
+      if (Math.max(w, h) < 32 && aspect > 0.7 && aspect < 1.4) score -= 3; // tiny square icon
+    }
+    if (ICON_CTX_RX.test(attrs) || ICON_CTX_RX.test(before)) score -= 2;
+    scored.push({ svg, score });
+    i++;
+  }
+  scored
+    .filter((s) => s.score >= 2)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 3)
+    .forEach(({ svg }) => {
+      const withNs = /xmlns=/.test(svg)
+        ? svg
+        : svg.replace(/<svg\b/i, '<svg xmlns="http://www.w3.org/2000/svg"');
+      svgDataUrls.push(
+        "data:image/svg+xml;base64," + Buffer.from(withNs).toString("base64"),
+      );
+    });
+
+  // ── CSS background-image marks ──────────────────────────────────
+  const bgUrls: string[] = [];
+  const seenBg = new Set<string>();
+  const bgRe = /background(?:-image)?\s*:\s*[^;"']*url\(\s*["']?([^"')]+)["']?\s*\)/gi;
+  let bm: RegExpExecArray | null;
+  while ((bm = bgRe.exec(region)) !== null && bgUrls.length < 3) {
+    const raw = bm[1];
+    if (!/\.(png|jpe?g|webp|svg)(\?|#|$)/i.test(raw)) continue;
+    if (/favicon|sprite|icon-\d/i.test(raw)) continue;
+    const resolved = resolveMaybe(raw, baseUrl);
+    if (!resolved || seenBg.has(resolved)) continue;
+    seenBg.add(resolved);
+    try {
+      const host = new URL(resolved).hostname.replace(/^www\./, "");
+      const brandLabel = baseHostname.split(".")[0].toLowerCase();
+      const fn = (resolved.split("/").pop() ?? "").toLowerCase();
+      if (
+        host === baseHostname ||
+        (brandLabel.length >= 4 && fn.includes(brandLabel)) ||
+        /logo|brand|wordmark/.test(fn)
+      ) {
+        bgUrls.push(resolved);
+      }
+    } catch {
+      // skip malformed
+    }
+  }
+
+  return { svgDataUrls, bgUrls };
+};
+
 const collectHeaderImgs = (
   html: string,
   baseUrl: string,
   baseHostname: string,
 ): string[] => {
   const out: string[] = [];
-  const regions: string[] = [];
-  const headerMatches = html.match(/<header\b[\s\S]*?<\/header>/gi);
-  const navMatches = html.match(/<nav\b[\s\S]*?<\/nav>/gi);
-  if (headerMatches) regions.push(...headerMatches);
-  if (navMatches) regions.push(...navMatches);
-  if (regions.length === 0) regions.push(html.slice(0, 6_000));
+  const regions = getHeaderRegions(html);
 
   const customerLogoCtxRx =
     /\b(customer|client|partner|trusted[-_]?by|press|featured[-_]?in|as[-_]?seen[-_]?in|logo[-_]?grid|logo[-_]?cloud|logos?[-_]?grid|case[-_]?stud|testimonial|integration)/i;
@@ -637,7 +770,12 @@ const collectHeaderImgs = (
     let match: RegExpExecArray | null;
     while ((match = imgRe.exec(region))) {
       const tag = match[0];
-      const srcMatch = tag.match(/\bsrc=["']([^"']+)["']/i);
+      // Logos are often lazy-loaded (data-src) or only in srcset — fall back to
+      // both so a deferred nav logo still becomes a candidate.
+      const srcMatch =
+        tag.match(/\bsrc=["']([^"']+)["']/i) ||
+        tag.match(/\bdata-src=["']([^"']+)["']/i) ||
+        tag.match(/\bsrcset=["']([^"',\s]+)/i);
       if (!srcMatch) continue;
       const src = srcMatch[1];
       const haystack = tag.toLowerCase();

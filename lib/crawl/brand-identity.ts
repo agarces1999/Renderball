@@ -147,8 +147,30 @@ const luminanceFromUrl = (url: string): { onLight: boolean; onDark: boolean } =>
  * glyph or a share image, then the apple-touch-icon, then the favicon.
  * Returns null when nothing brand-correct is available (→ wordmark).
  */
+// Trust a logo the agentic finder picked at or above this confidence. Below it
+// (or with no confidence at all — a legacy/stale cached brief) we re-apply the
+// regex reject filters as a safety net.
+const LOGO_TRUST_THRESHOLD = 0.6;
+
 const pickLogo = (extract: Partial<BrandExtract>): BrandIdentity["logo"] => {
   const ogImage = extract.og_image;
+
+  // The agentic logo finder already vetted candidates with vision + decoded
+  // dimensions and rejected screenshots / customer logos. When it returns a
+  // confident pick, TRUST it — re-applying the regex here is exactly what nulled
+  // a *correct* pick before (Fuse: agent would pick the real mark, regex would
+  // not, but the screenshot path also failed). Only re-litigate logo_hd when it
+  // carries no confidence (a brief crawled before this finder existed).
+  const conf = typeof extract.logo_confidence === "number" ? extract.logo_confidence : undefined;
+  if (
+    typeof extract.logo_hd === "string" &&
+    isLoadableUrl(extract.logo_hd) &&
+    conf !== undefined &&
+    conf >= LOGO_TRUST_THRESHOLD
+  ) {
+    return { url: extract.logo_hd, ...luminanceFromUrl(extract.logo_hd) };
+  }
+
   const candidates: Array<string | undefined> = [
     extract.logo_hd,
     extract.apple_touch_icon,

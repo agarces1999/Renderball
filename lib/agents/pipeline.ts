@@ -752,6 +752,17 @@ export const buildAnimatedSections = async (
   const throughlinePresence = assessThroughlinePresence(designCode, input.script);
   const throughlineFailure = throughlinePresence?.message ?? null;
 
+  // Fabricated-logo guard (structural). When the brand identity resolved NO real
+  // logo, the brand mark MUST be the wordmark text — not a drawn substitute. This
+  // catches the exact regression where the agent invents a mark and labels it the
+  // brand's logo (Fuse's "two offset squares" logo-mark). Narrow trigger (no real
+  // logo AND the code calls something a logo/brand-mark) → low false-positive.
+  const noRealLogo = input.brand_identity ? !input.brand_identity.logo : false;
+  const fabricatedLogoFailure =
+    noRealLogo && /\b(logo[-\s]?mark|brand[-\s]?mark)\b/i.test(designCode)
+      ? `No real logo exists for this brand — the brand mark MUST be the WORDMARK "${input.brand_identity?.wordmark?.text ?? ""}" rendered as styled text in BrandChrome. Your output references a drawn logo/brand-mark. Remove any INVENTED mark (geometric shapes, monogram, "two squares", abstract glyph) and render the wordmark text instead. Never fabricate a logo, and never make a drawn mark the throughline.`
+      : null;
+
   // Split the gate by class. STRUCTURAL failures (a crash, a cropped
   // element, a duplicated logo) make the output look broken to anyone
   // watching, so they MUST be fixed even on the fast preview path — the
@@ -761,7 +772,8 @@ export const buildAnimatedSections = async (
   // iteration stays fast. Both share ONE retry (a single Opus pass paid
   // total), so when we're not skipping, a structural fix carries the polish
   // fixes along for free.
-  const structuralFailure = iconFailure || overflowFailure || logoFailure;
+  const structuralFailure =
+    iconFailure || overflowFailure || logoFailure || fabricatedLogoFailure;
   const includePolish = !skipRetries;
   const polishFailure =
     includePolish &&
@@ -778,6 +790,7 @@ export const buildAnimatedSections = async (
       iconFailure,
       overflowFailure,
       logoFailure,
+      fabricatedLogoFailure,
       "",
       "Re-emit the COMPLETE Composition.tsx file with these issues fixed. The full content-mapping discipline still applies — render EVERY content field present in each section's input (eyebrow, headline, lede, bullets, caption, meta, cta, illustration):",
       "  • eyebrow → an <h6> or styled <div> with uppercase tracking-wide text above the headline",

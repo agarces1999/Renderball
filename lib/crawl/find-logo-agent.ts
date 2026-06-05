@@ -1,25 +1,23 @@
 /**
- * Logo-discovery agent.
+ * Logo-discovery agent — persistent, "no empty hands".
  *
- * The old heuristic-only logo discovery picked wrong logos consistently:
- *   - og:image was often a share-card screenshot, not a wordmark
- *   - first <img> in nav was sometimes a customer logo from a marquee
- *   - filename heuristics caught CFSB.png but not lowercase customer logos
+ * The brand's real mark is found by an agent that (1) inspects on-page
+ * candidates with vision and (2) searches the web when the page comes up empty.
+ * It is mandated NOT to return a fabricated mark, a screenshot, or a customer
+ * logo — a real logo, or nothing (→ the resolver renders a clean wordmark, never
+ * an invented mark).
  *
- * This agent evaluates ALL candidates with Claude Sonnet (vision) and
- * picks the one that's the brand's primary mark. If none of the
- * candidates are the brand's logo, the agent returns "NONE" and the
- * pipeline falls back to a wizard upload prompt.
+ * Candidates come from a wide net (inline <svg>, CSS background, header <img>,
+ * static /logo.* paths, Clearbit, simple-icons, apple-touch, og, favicon). Two
+ * upgrades over the old one-shot pick:
+ *   - SVG candidates are RASTERIZED to PNG (Anthropic vision rejects raw SVG), so
+ *     the agent actually SEES the inline nav mark — the Fuse miss.
+ *   - Each previewed candidate is decoded (sharp) for dimensions; large ~square
+ *     images are flagged as likely screenshots/share-cards so the agent doesn't
+ *     mistake the homepage screenshot for the logo.
  *
- * Candidates come from a wide net: Clearbit Logo API, common static
- * paths (/logo.svg, /logo.png), header/nav <img> tags, simple-icons
- * brand match, apple-touch-icon, favicon, og:image. The agent ALSO
- * has the Anthropic web_search tool available to find additional
- * candidates when the crawled set is weak.
- *
- * Latency: ~10-20s per logo discovery. Acceptable inside the
- * extractBrand call which the wizard already runs in the background
- * while the user types.
+ * Latency: ~10-25s (vision + optional web_search round). Runs inside extractBrand
+ * which the wizard fires in the background while the user types.
  */
 
 import { getAnthropic, MODELS } from "../anthropic";
@@ -27,52 +25,155 @@ import { getAnthropic, MODELS } from "../anthropic";
 export interface LogoCandidate {
   url: string;
   source:
+    | "inline-svg"
+    | "css-bg"
     | "clearbit"
     | "static-path"
     | "header-img"
     | "simple-icons"
     | "apple-touch"
     | "favicon"
-    | "og-image";
+    | "og-image"
+    | "web-search";
   hint?: string;
 }
 
 export type LogoAgentResult =
-  | { ok: true; url: string; source: string; rationale: string }
+  | { ok: true; url: string; source: string; confidence: number; rationale: string }
   | { ok: false; reason: string };
+
+// Source → base confidence prior. The brand's own on-page files rank highest;
+// generic share/icon assets rank low. Vision + dimensions nudge from here.
+const SOURCE_PRIOR: Record<LogoCandidate["source"], number> = {
+  "inline-svg": 0.9,
+  "static-path": 0.85,
+  "simple-icons": 0.8,
+  "header-img": 0.78,
+  "css-bg": 0.72,
+  "web-search": 0.7,
+  clearbit: 0.68,
+  "apple-touch": 0.5,
+  favicon: 0.32,
+  "og-image": 0.25,
+};
 
 const SYSTEM_PROMPT = `You are a brand-logo identification expert.
 
-Given a list of image candidates from a brand's website + meta tags, pick the ONE candidate that IS the brand's primary logo or wordmark — the asset you'd use on a launch video to represent the brand.
+Given image candidates from a brand's website + meta tags, pick the ONE candidate that IS the brand's primary logo or wordmark — the asset you'd put on a launch video to represent the brand. If none qualify, you MUST search the web for the official logo before giving up.
 
-REJECT candidates that are:
-- A different company's logo (customer marquee, partner grid, "as featured in" social proof)
-- A generic share/OG image (full screenshots, hero/product photography, abstract gradients)
-- A favicon-only asset when a higher-resolution version is available
-- Stock illustrations / generic icons
-- Screenshots of UI mockups
+HARD REJECTS — never return any of these as the logo:
+- A screenshot of the website / a hero or product photo / a UI mockup — EVEN IF it shows the brand name. A logo is a compact mark or wordmark, not a picture of the page. Candidates flagged "LARGE, likely a screenshot" are almost never the logo.
+- A different company's logo (customer marquee, partner grid, "as featured in").
+- A generic share/OG card or an abstract gradient.
+- A favicon when a higher-resolution mark is available.
 
-PREFER:
-- Clearbit's logo (\`logo.clearbit.com/{domain}\`) — almost always correct for known brands
-- Same-domain static paths like \`/logo.svg\`, \`/assets/logo.png\` — site authors explicitly put these there
-- Wordmark / brand-mark SVGs in the site's <header> or <nav>
-- simple-icons brand match when domain matches a popular brand
-- apple-touch-icon as last resort (always brand but low-res, 180x180)
+PREFER (in this order):
+- An inline <svg> mark from the site's <header>/<nav> (the brand's own rendered logo).
+- A same-origin static file: /logo.svg, /assets/logo.png, a header <img> whose path says "logo".
+- A simple-icons brand match, or Clearbit's logo, for well-known brands.
+- apple-touch-icon ONLY as a low-res last resort (and never if it's actually a screenshot).
 
-If you use the \`web_search\` tool, search for "{brand} logo png svg" or "{brand} brand assets" or "{brand} press kit logo." Prefer URLs from the brand's own domain or well-known press/brand-asset hosts.
+NO EMPTY HANDS: if none of the on-page candidates is the clean brand mark, USE the web_search tool — search "{brand} logo svg", "{brand} logo png", "{brand} brand assets", "{brand} press kit logo". Prefer a URL on the brand's own domain or a recognized brand-asset host. Only return null if the web search ALSO fails to surface the real logo.
 
 OUTPUT (always JSON, never prose):
-- If you find a clear winner: \`{"chosen_url": "https://...", "source": "clearbit|static-path|header-img|simple-icons|apple-touch|web-search", "rationale": "one-sentence why this is the brand's mark"}\`
-- If NONE of the candidates are the brand's actual logo: \`{"chosen_url": null, "reason": "one-sentence why none qualify (e.g. 'all candidates are customer logos from the trusted-by grid')"}\`
+- Winner: {"chosen_url":"https://...","source":"inline-svg|static-path|header-img|css-bg|simple-icons|clearbit|apple-touch|web-search","rationale":"one sentence"}
+- None qualify even after web_search: {"chosen_url":null,"reason":"one sentence"}
+Only the JSON object. No markdown fence, no commentary.`;
 
-Only the JSON object. No markdown fence, no prose, no commentary.`;
+const RASTER_RX = /\.(jpe?g|png|gif|webp)(\?|#|$)/i;
+
+interface PreparedCandidate {
+  cand: LogoCandidate;
+  visionPng?: string; // base64 PNG, vision-safe (SVG rasterized, raster re-encoded)
+  width?: number;
+  height?: number;
+  note: string; // dimension/shape annotation for the text list
+}
 
 /**
- * Run the logo-discovery agent.
- *
- * Always returns within ~30s. Network failures, API errors, and parsing
- * errors all degrade to \`{ ok: false }\` — the caller falls back to
- * pure-heuristic discovery OR prompts the user to upload.
+ * Fetch/rasterize a candidate to a vision-safe PNG + read its dimensions.
+ * Best-effort: returns a text-only PreparedCandidate when sharp/fetch fails so
+ * the candidate still appears in the list (the agent can pick it by URL).
+ */
+const prepareCandidate = async (
+  cand: LogoCandidate,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  sharp: any,
+  userAgent: string,
+): Promise<PreparedCandidate> => {
+  try {
+    const isSvg =
+      cand.url.startsWith("data:image/svg") ||
+      /\.svg(\?|#|$)/i.test(cand.url) ||
+      cand.source === "inline-svg";
+    let raw: Buffer | null = null;
+
+    if (cand.url.startsWith("data:")) {
+      raw = Buffer.from(cand.url.split(",")[1] ?? "", "base64");
+    } else if (isSvg || RASTER_RX.test(cand.url)) {
+      const r = await fetch(cand.url, {
+        signal: AbortSignal.timeout(4500),
+        headers: { "User-Agent": userAgent },
+        redirect: "follow",
+      });
+      if (!r.ok) return { cand, note: "unreachable" };
+      raw = Buffer.from(await r.arrayBuffer());
+    } else {
+      return { cand, note: "no preview (non-image URL)" };
+    }
+    if (!sharp || !raw) return { cand, note: "no preview" };
+
+    // Rasterize (SVG at higher density) + read true dimensions.
+    const pipeline = isSvg ? sharp(raw, { density: 200 }) : sharp(raw);
+    const meta = await pipeline.metadata().catch(() => null);
+    const width = meta?.width;
+    const height = meta?.height;
+    const visionBuf = await sharp(raw, isSvg ? { density: 200 } : {})
+      .resize(384, 384, { fit: "inside", withoutEnlargement: true })
+      .png()
+      .toBuffer();
+
+    let note = width && height ? `${width}x${height}px` : "unknown size";
+    if (width && height) {
+      const aspect = width / height;
+      if (width >= 900 && height >= 600 && aspect > 0.55 && aspect < 2.2) {
+        note += " — LARGE, likely a screenshot/share-card, NOT a logo";
+      } else if (aspect >= 1.4) {
+        note += " — wide, logo/wordmark-shaped";
+      } else if (Math.abs(aspect - 1) < 0.2 && Math.max(width, height) <= 256) {
+        note += " — small square (icon/favicon)";
+      }
+    }
+    return { cand, visionPng: visionBuf.toString("base64"), width, height, note };
+  } catch {
+    return { cand, note: "decode failed" };
+  }
+};
+
+// Confidence from the (real) source of the chosen URL + its decoded shape.
+const scoreConfidence = (
+  source: LogoCandidate["source"],
+  prepared: PreparedCandidate | undefined,
+): number => {
+  let c = SOURCE_PRIOR[source] ?? 0.6;
+  if (prepared?.width && prepared.height) {
+    const aspect = prepared.width / prepared.height;
+    if (aspect >= 1.4) c += 0.05; // logo-shaped
+    if (
+      prepared.width >= 900 &&
+      prepared.height >= 600 &&
+      aspect > 0.55 &&
+      aspect < 2.2
+    ) {
+      c -= 0.4; // screenshot-shaped — the agent shouldn't have picked it
+    }
+  }
+  return Math.max(0, Math.min(1, Math.round(c * 100) / 100));
+};
+
+/**
+ * Run the logo-discovery agent. Always returns within ~30s. Network/API/parse
+ * failures degrade to { ok:false } → caller renders a clean wordmark.
  */
 export const findBrandLogo = async (
   brandHostname: string,
@@ -93,133 +194,157 @@ export const findBrandLogo = async (
     };
   }
 
-  // Build the user message: text-list of candidates + each image as a
-  // vision content block. Only URLs that look like images get embedded
-  // as vision blocks (some candidates are static-path probes that may
-  // 404 — those go in the text list only).
+  const userAgent =
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36";
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const sharp = await import("sharp").then((m) => m.default).catch(() => null);
+
+  // Prepare up to 8 candidates as vision-safe PNGs (rasterize SVGs, decode dims).
+  const prepared = await Promise.all(
+    candidates.slice(0, 8).map((c) => prepareCandidate(c, sharp, userAgent)),
+  );
+  const byUrl = new Map(prepared.map((p) => [p.cand.url, p]));
+
   type ContentBlock =
     | { type: "text"; text: string }
-    | { type: "image"; source: { type: "url"; url: string } };
-
-  // Anthropic vision supports JPEG/PNG/GIF/WebP only. SVG, ICO, AVIF
-  // return `image.source.base64.data: invalid format`. SVGs are common
-  // candidates from header <img> + simple-icons (those are SVG strings
-  // we encoded as data URLs above) — they go in the text list but not
-  // as vision blocks. The model can still pick the URL by reading the
-  // numbered text list.
-  const isVisionSafeImage = (u: string): boolean =>
-    /^data:image\/(jpeg|png|gif|webp);base64,/i.test(u) ||
-    /\.(jpe?g|png|gif|webp)(\?|#|$)/i.test(u);
+    | {
+        type: "image";
+        source:
+          | { type: "url"; url: string }
+          | { type: "base64"; media_type: "image/png"; data: string };
+      };
 
   const textIntro = [
     `Brand: ${brandTitle ?? brandHostname} (${brandHostname})`,
     "",
-    "Candidates (numbered, then shown as images below):",
-    ...candidates.map(
-      (c, i) =>
-        `  ${i + 1}. [${c.source}] ${c.url}${c.hint ? ` — ${c.hint}` : ""}`,
-    ),
+    "Candidates (numbered; previews shown below where available):",
+    ...candidates.map((c, i) => {
+      const p = byUrl.get(c.url);
+      const note = p?.note ? ` [${p.note}]` : "";
+      const shown = p?.visionPng ? "" : " (no preview — judge by source/URL)";
+      return `  ${i + 1}. [${c.source}] ${c.url.slice(0, 120)}${note}${c.hint ? ` — ${c.hint}` : ""}${shown}`;
+    }),
     "",
-    "Pick the candidate (by URL) that's the brand's primary logo, OR return chosen_url:null with a reason if none qualify.",
+    "Pick the brand's primary logo. If none qualify, web_search for the official logo before returning null.",
   ].join("\n");
 
   const content: ContentBlock[] = [{ type: "text", text: textIntro }];
-  // Cap at 8 vision blocks — Anthropic's per-message vision limit + cost control.
-  for (const c of candidates.slice(0, 8)) {
-    if (isVisionSafeImage(c.url)) {
-      content.push({ type: "image", source: { type: "url", url: c.url } });
+  for (const p of prepared) {
+    if (p.visionPng) {
+      content.push({
+        type: "image",
+        source: { type: "base64", media_type: "image/png", data: p.visionPng },
+      });
     }
   }
 
-  let response;
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const params: any = {
-      model: MODELS.logoAgent,
-      max_tokens: 1024,
-      system: SYSTEM_PROMPT,
-      messages: [{ role: "user", content }],
-      tools: [
-        {
-          type: "web_search_20250305",
-          name: "web_search",
-          max_uses: 3,
-        },
-      ],
-    };
-    response = await client.messages.create(params);
-  } catch (err) {
-    // web_search may not be available on all accounts — retry without tools.
+  // ── Round 1: vision over candidates (web_search available) ──────────
+  const runOnce = async (
+    messages: { role: "user"; content: ContentBlock[] | string }[],
+  ) => {
     try {
-      response = await client.messages.create({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const params: any = {
         model: MODELS.logoAgent,
         max_tokens: 1024,
         system: SYSTEM_PROMPT,
-        messages: [{ role: "user", content }],
+        messages,
+        tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 4 }],
+      };
+      return await client.messages.create(params);
+    } catch {
+      // web_search may be unavailable on the account — retry without tools.
+      return await client.messages.create({
+        model: MODELS.logoAgent,
+        max_tokens: 1024,
+        system: SYSTEM_PROMPT,
+        messages,
       });
-    } catch (err2) {
-      return {
-        ok: false,
-        reason: `logo agent API error: ${err2 instanceof Error ? err2.message : String(err2)} (initial attempt: ${err instanceof Error ? err.message : String(err)})`,
-      };
     }
-  }
+  };
 
-  // The model may stream tool_use blocks before the final text. We only
-  // care about the LAST text block.
-  const textBlock = [...response.content]
-    .reverse()
-    .find((b) => b.type === "text");
-  if (!textBlock || textBlock.type !== "text") {
-    return { ok: false, reason: "agent returned no text content" };
-  }
-
-  // Strip any markdown fence the model might've emitted despite instructions.
-  const raw = textBlock.text.trim().replace(/^```(?:json)?\s*|\s*```$/g, "");
-
-  let parsed: { chosen_url?: string | null; source?: string; rationale?: string; reason?: string };
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return {
-      ok: false,
-      reason: `agent output wasn't valid JSON. First 200 chars: ${raw.slice(0, 200)}`,
-    };
-  }
-
-  if (!parsed.chosen_url) {
-    return {
-      ok: false,
-      reason: parsed.reason ?? "agent chose no candidate (no reason given)",
-    };
-  }
-
-  // Validate the chosen URL is reachable (HEAD probe). If the agent
-  // hallucinated a URL from web_search that 404s, we'd otherwise mount
-  // a broken image. 3s timeout to keep latency bounded.
-  try {
-    const probe = await fetch(parsed.chosen_url, {
-      method: "HEAD",
-      signal: AbortSignal.timeout(3_000),
-      redirect: "follow",
-    });
-    if (!probe.ok) {
-      return {
-        ok: false,
-        reason: `chosen URL ${parsed.chosen_url} returned ${probe.status}`,
-      };
+  const parse = (
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    response: any,
+  ): { chosen_url?: string | null; source?: string; rationale?: string; reason?: string } | null => {
+    const textBlock = [...response.content].reverse().find((b: { type: string }) => b.type === "text");
+    if (!textBlock || textBlock.type !== "text") return null;
+    const rawTxt = textBlock.text.trim().replace(/^```(?:json)?\s*|\s*```$/g, "");
+    try {
+      return JSON.parse(rawTxt);
+    } catch {
+      return null;
     }
+  };
+
+  let parsed: { chosen_url?: string | null; source?: string; rationale?: string; reason?: string } | null;
+  try {
+    parsed = parse(await runOnce([{ role: "user", content }]));
   } catch (err) {
     return {
       ok: false,
-      reason: `chosen URL probe failed: ${err instanceof Error ? err.message : String(err)}`,
+      reason: `logo agent API error: ${err instanceof Error ? err.message : String(err)}`,
     };
   }
+
+  // ── Round 2: persistence — force a web search when the page came up empty ──
+  if (!parsed || !parsed.chosen_url) {
+    const webPrompt = [
+      `Brand: ${brandTitle ?? brandHostname} (${brandHostname}).`,
+      "None of the on-page candidates was the brand's clean logo.",
+      "Use web_search NOW to find the official logo. Search \"" +
+        `${brandTitle ?? brandHostname} logo svg`,
+      "\", press kit, or brand assets. Prefer the brand's own domain or a recognized brand-asset host.",
+      'Return JSON: {"chosen_url":"https://...","source":"web-search","rationale":"..."} or {"chosen_url":null,"reason":"..."}.',
+    ].join(" ");
+    try {
+      parsed = parse(await runOnce([{ role: "user", content: webPrompt }]));
+    } catch {
+      // keep round-1 (null) result
+    }
+  }
+
+  if (!parsed || !parsed.chosen_url) {
+    return {
+      ok: false,
+      reason: parsed?.reason ?? "no candidate or web result qualified",
+    };
+  }
+
+  // Validate the chosen URL is reachable (HEAD). Kills hallucinated web URLs.
+  // data: URLs (inline-svg candidates) are self-contained — skip the probe.
+  if (!parsed.chosen_url.startsWith("data:")) {
+    try {
+      const probe = await fetch(parsed.chosen_url, {
+        method: "HEAD",
+        signal: AbortSignal.timeout(3500),
+        headers: { "User-Agent": userAgent },
+        redirect: "follow",
+      });
+      if (!probe.ok) {
+        return { ok: false, reason: `chosen URL returned ${probe.status}` };
+      }
+    } catch (err) {
+      return {
+        ok: false,
+        reason: `chosen URL probe failed: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+  }
+
+  // Real source = the candidate the URL matches, else what the agent claimed,
+  // else web-search. Confidence derives from the real source + decoded shape.
+  const matched = candidates.find((c) => c.url === parsed!.chosen_url);
+  const source = (matched?.source ??
+    (parsed.source as LogoCandidate["source"]) ??
+    "web-search") as LogoCandidate["source"];
+  const confidence = scoreConfidence(source, byUrl.get(parsed.chosen_url));
 
   return {
     ok: true,
     url: parsed.chosen_url,
-    source: parsed.source ?? "unknown",
+    source,
+    confidence,
     rationale: parsed.rationale ?? "",
   };
 };

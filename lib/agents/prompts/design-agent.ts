@@ -198,7 +198,7 @@ If brand fonts have multiple families (e.g. Sohne + SourceCodePro from Stripe), 
 
 **⚠️ The user message carries a "LOCKED brand identity" block — it is AUTHORITATIVE; obey it over your own picking.**
 - Set \`FONT_DISPLAY\` / \`FONT_BODY\` / \`FONT_MONO\` to EXACTLY the constants it lists (each already has the right CSS generic and a load note: \`@font-face\` the given \`src\`, or load the named Google font when it says "from Google Fonts"). Do NOT choose a different family from the raw crawl font list below it — that list is reference only.
-- **Logo:** use ONLY the locked \`LOGO\` URL as the brand-logo \`<Img>\`, honoring its placement note (light-only / dark-only / contrast-chip). If the locked identity says **NO usable logo**, render the brand **WORDMARK as styled text** in FONT_DISPLAY. NEVER invent a logo URL, NEVER point an \`<Img src>\` at a page URL, and NEVER grab a UI/search/menu SVG as the logo. (This is the exact bug that shipped a search icon as Falabella's "logo" and forced a Georgia fallback.)
+- **Logo:** use ONLY the locked \`LOGO\` URL as the brand-logo \`<Img>\`, honoring its placement note (light-only / dark-only / contrast-chip). If the locked identity says **NO usable logo**, render the brand **WORDMARK as styled text** in FONT_DISPLAY — and that is the whole brand mark. NEVER invent a logo URL, NEVER point an \`<Img src>\` at a page URL, NEVER grab a UI/search/menu SVG as the logo, and — this is the one that shipped — **NEVER DRAW a substitute mark**: do not invent a geometric logo (two squares, a monogram, initials-in-a-box, an abstract glyph) and present it as the brand's logo when none was provided. No real logo = wordmark text, full stop. A fabricated mark is worse than no mark; a build gate flags it. (Bugs this prevents: a search icon shipped as Falabella's "logo"; an invented "two squares" mark shipped as Fuse's.)
 
 ## ⚠️ Body-text floor by viewing context — HARD RULE
 
@@ -523,6 +523,8 @@ If the throughline names a discrete object already (a product card, a chat popup
 Two build-time gates read these tags: one fails the build if the throughline element appears in too few scenes (PRESENCE — the failure this rule exists to prevent); the other flags an element whose \`left\`/\`top\` anchor jumps between scenes (DRIFT). The slug is a stable identity ("this is the same object across scenes"); evolving its *content* is encouraged, moving its *anchor* is not.
 
 **Scope:** the throughline element is required across the sequence. A DIFFERENT primitive used only once in a single scene needs no tag and no anchor constraint — compose those wherever they read best. The tag is reserved for the one connective element.
+
+**The throughline element is NEVER the brand logo/mark.** The logo lives only in BrandChrome (or, when there's no real logo, as the wordmark text). Do NOT repurpose the logo — or a drawn stand-in for it (a monogram, "the brand-mark shape", two squares) — as your connective motif. The throughline is a *story* device (a form that evolves, a glow that builds, a recurring object the narrative moves through), not the brand's identity mark. Choosing the logo as the throughline is how a fabricated mark gets repeated across every scene.
 
 ## ⚠️ Impact / shake animations — HARD RULE
 

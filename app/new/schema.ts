@@ -251,6 +251,10 @@ export interface BrandExtract {
   apple_touch_icon?: string;
   /** High-resolution brand logo discovered via <img>/static-path probe/Clearbit fallback. Distinct from favicon. */
   logo_hd?: string;
+  /** Confidence (0-1) the logo agent assigned to logo_hd. <0.6 → wizard nudges a manual upload. */
+  logo_confidence?: number;
+  /** Where logo_hd came from: inline-svg | static-path | header-img | css-bg | clearbit | simple-icons | web-search | apple-touch | favicon. */
+  logo_source?: string;
   headlines?: string[]; // h1/h2/h3 text, deduped
   /** Body-copy excerpts (<p> + <li>) so Agent 1 can stick to the brand's actual claims. */
   body_excerpts?: string[];
