@@ -12,4 +12,5 @@ src/generated/
 dist/
 .vercel
 next-env.d.ts
+*.tsbuildinfo
 .gstack/

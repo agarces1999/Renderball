@@ -1,6 +1,7 @@
 import { getAnthropic, MODELS } from "../anthropic";
 import { DESIGN_AGENT_SYSTEM_PROMPT } from "./prompts/design-agent";
 import { ANIMATION_AGENT_SYSTEM_PROMPT } from "./prompts/animation-agent";
+import { stripCodeFence, verifyCompilable } from "./code-extraction";
 import { dimensionsForScript } from "../render/build-wrapper";
 import {
   findSlowTextEntrances,
@@ -482,6 +483,18 @@ export const regenerateScene = async (
   // not blocking the build. The strict gates (density, dead-air,
   // hallucination) already ran above.
   const warnings = buildBuildWarnings(finalCodeOut, input);
+
+  // Hard syntax gate (see buildAnimatedSections) — never ship a scene-regen
+  // that can't parse. ok:true === "this compiles."
+  const compileErr = await verifyCompilable(finalCodeOut);
+  if (compileErr) {
+    console.error("[pipeline] regen composition failed to compile:", compileErr);
+    return {
+      ok: false,
+      stage: "animation",
+      error: `Regenerated Composition.tsx does not compile: ${compileErr}`,
+    };
+  }
 
   return {
     ok: true,
@@ -1093,6 +1106,21 @@ export const buildAnimatedSections = async (
     warnings.images_repaired = {
       replaced: finalRepair.replaced.length,
       neutralized: finalRepair.neutralized.length,
+    };
+  }
+
+  // Hard syntax gate — ok:true must mean "this Composition compiles." Without
+  // it, a malformed file (leaked prose, truncation) was written to disk and
+  // the build reported success; only the iframe/MP4 esbuild later surfaced the
+  // error. stripCodeFence should keep this from ever firing; it is the
+  // deterministic backstop that makes the false-positive impossible.
+  const compileErr = await verifyCompilable(finalCodeOut);
+  if (compileErr) {
+    console.error("[pipeline] composition failed to compile:", compileErr);
+    return {
+      ok: false,
+      stage: "animation",
+      error: `Generated Composition.tsx does not compile: ${compileErr}`,
     };
   }
 
@@ -2107,27 +2135,6 @@ const findInventedClaims = (
     }
   }
   return suspicious;
-};
-
-/**
- * Strip markdown code fences from agent output.
- *
- * The agent sometimes emits ` ```tsx ` at the top + a closing ` ``` `
- * at the bottom despite prompt instructions otherwise. The old regex
- * only matched a CLOSED pair. When the output was truncated by
- * max_tokens, the closing fence never landed and the leading fence
- * survived — esbuild then choked on `\`\`\`tsx` as invalid TS syntax.
- *
- * New strategy: strip the leading fence and trailing fence
- * independently. Either can be missing.
- */
-const stripCodeFence = (s: string): string => {
-  let out = s.trim();
-  // Strip a leading ```language line if present.
-  out = out.replace(/^```(?:tsx|typescript|ts|jsx|javascript|js)?\s*\n?/, "");
-  // Strip a trailing ``` line if present.
-  out = out.replace(/\n?\s*```\s*$/, "");
-  return out.trim();
 };
 
 /**
