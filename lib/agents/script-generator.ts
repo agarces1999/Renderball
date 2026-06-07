@@ -1,6 +1,7 @@
 import { getAnthropic, MODELS } from "../anthropic";
 import { SCRIPT_GENERATOR_SYSTEM_PROMPT } from "./prompts/script-generator";
 import { validateScript } from "./schema-validator";
+import { pickSignatureColor } from "../crawl/brand-identity";
 import { ulid } from "../ulid";
 import type { Script } from "../../src/schema";
 
@@ -379,7 +380,7 @@ const buildUserMessage = (brief: AgentBrief): string => {
   // sections as moves within it, rather than emitting independent slides.
   lines.push(
     "Design the STORYLINE first (before any section):",
-    "- Populate the top-level `narrative` spine: logline (who it's for / the tension / the transformation), arc (how tension builds and releases across the sections), and throughline (the recurring motif — an object, a phrase, a growing number, a tonal shift — that threads the sections into ONE story).",
+    "- Populate the top-level `narrative` spine: logline (who it's for / the tension / the transformation), arc (how tension builds and releases across the sections), and throughline (the recurring motif — an object, a phrase, a growing number, a tonal shift — that threads the sections into ONE story). PREFER a concrete object/shape/phrase motif over a pure color-wash; if the throughline involves color at all, it is the SIGNATURE BRAND COLOR named in the brand context — NEVER an off-brand or invented hue.",
     isFreeform
       ? "- Treat the prompt as raw material to DRAMATIZE into a story — find the protagonist, the tension, the turn, the payoff. Don't just chop it into labels."
       : "- The user wrote the moments; your job is to find the STORY across them — the arc connecting them and a throughline that makes them read as one narrative, not a list.",
@@ -462,16 +463,31 @@ const buildUserMessage = (brief: AgentBrief): string => {
       lines.push("  Crawled brand signals (USE these to ground type, color, voice):");
       if (b.title) lines.push(`    Site title: ${b.title}`);
       if (b.description) lines.push(`    Description: ${b.description}`);
-      if (b.theme_color)
+      // Signature color (QA S3): the hue a viewer associates with the brand —
+      // the most vivid palette member, theme_color preferred when chromatic.
+      // The script agent used to be told "theme_color = primary accent, lean on
+      // it", which let an off-brand hue leak into the throughline (Fuse's
+      // throughline literally said "brand-orange" when Fuse is blue). Lead with
+      // the signature instead so the script names the RIGHT color.
+      const signature = pickSignatureColor(b.palette ?? [], b.theme_color);
+      if (signature) {
+        lines.push(
+          `    SIGNATURE BRAND COLOR: ${signature}  ← the hue a viewer associates with this brand; THE accent to lean on (headlines, accent bars, glows) and the only color to name in the throughline. Never call a different/off-brand hue "the brand color".`,
+        );
+        if (b.theme_color && b.theme_color.trim().toLowerCase() !== signature.toLowerCase())
+          lines.push(`    Theme color (meta tag): ${b.theme_color}  ← supporting only, not the lead`);
+      } else if (b.theme_color) {
+        // Monochrome brand (no chromatic signature) — keep the original guidance.
         lines.push(
           `    Theme color: ${b.theme_color}  ← primary brand accent; lean on this for headlines, accent bars, glows`,
         );
+      }
       if (b.palette && b.palette.length > 0) {
         lines.push(
           `    Brand palette (sampled from the site's CSS, frequency-ranked, near-grays filtered): ${b.palette.join(", ")}`,
         );
         lines.push(
-          `      → USE the full palette in visual_concepts. Don't stick to a single accent — mix brand color + secondary accent + neutrals for depth. Mention specific hexes when the concept calls for them.`,
+          `      → USE the full palette in visual_concepts: the SIGNATURE color leads, secondary accents + neutrals add depth. Mention specific hexes when the concept calls for them.`,
         );
       }
       if (b.fonts && b.fonts.length > 0) {
