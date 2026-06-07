@@ -885,18 +885,22 @@ export const buildAnimatedSections = async (
     logoFailure ||
     fabricatedLogoFailure ||
     logoNotRenderedFailure ||
-    severeContrastFailure;
+    severeContrastFailure ||
+    // Invented numeric claims are a TRUST/correctness failure — fabricated
+    // stats like "30 days"/"00X" must not ship, so block, don't warn (QA E2).
+    claimFailure;
   const includePolish = !skipRetries;
   const polishFailure =
     includePolish &&
-    (!gateReport.ok || claimFailure || contrastFailure || throughlineFailure);
+    (!gateReport.ok || contrastFailure || throughlineFailure);
 
   if (structuralFailure || polishFailure) {
     const retryMessage = [
       includePolish && !gateReport.ok
         ? `Your previous output failed the density check: ${gateReport.error}`
         : null,
-      includePolish ? claimFailure : null,
+      // Invented claims are structural — always sent, regardless of path (E2).
+      claimFailure,
       // Severe contrast is structural — always sent, regardless of path.
       // (The softer <4.5:1 contrastFailure stays polish-gated below it.)
       severeContrastFailure,
@@ -941,6 +945,13 @@ export const buildAnimatedSections = async (
       const retrySevereContrast = assessContrast(retryCode).filter(
         (f) => f.ratio < SEVERE_CONTRAST_RATIO,
       ).length;
+      const retryInvented = findInventedClaims(
+        retryCode,
+        input.script,
+        input.script?.brief?.about ?? input.script?.brief?.purpose,
+        input.brand_extract?.body_excerpts,
+        input.verified_claims,
+      ).length;
       if (
         retryCode.includes("import") &&
         retryCode.includes("export") &&
@@ -950,7 +961,9 @@ export const buildAnimatedSections = async (
         (skipRetries || assessDesignDensity(retryCode, input.script).ok) &&
         // Never accept a retry that made severe (<3:1) contrast WORSE than the
         // original — keep whichever has fewer unreadable pairs.
-        retrySevereContrast <= severeContrast.length
+        retrySevereContrast <= severeContrast.length &&
+        // Likewise, never accept a retry that ADDED invented numeric claims (E2).
+        retryInvented <= invented.length
       ) {
         designCode = retryCode;
       } else {
