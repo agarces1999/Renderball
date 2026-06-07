@@ -2,43 +2,29 @@
 
 import { useState, useTransition } from "react";
 import type { Scene, Script } from "../../../src/schema";
-import { saveScriptEdits, renderScriptToMp4 } from "./actions";
+import { saveScriptEdits } from "./actions";
 import { cn } from "../../../lib/cn";
 
 /**
  * The story screen (fluid v1) — see DESIGN.md.
  *
- * Story-first: the logline and the scene sequence are the hero. The
- * headlines, read top to bottom, are the story. The visual brief
- * (visual_concept + text strings + assets) lives in a per-scene
- * disclosure so the narrative stays clean but stays editable.
+ * Story-first: the logline and the scene sequence are the hero. The scene
+ * lines, read top to bottom, are the story. The visual brief (visual_concept
+ * + text strings + assets) lives in a per-scene disclosure so the narrative
+ * stays clean but editable.
  *
- * One loud action: "Build the video" (→ the animated preview, where the
- * user iterates per scene). MP4 render stays reachable as a quiet
- * secondary control.
+ * One loud action: "Build the video" (→ the live preview, where the user
+ * iterates per scene and exports the MP4). Export lives on the preview screen,
+ * not here — this screen is about approving the story.
  */
-
-type RenderState =
-  | { kind: "idle" }
-  | { kind: "rendering" }
-  | { kind: "done"; url: string }
-  | { kind: "error"; message: string };
-
 export function EditableReview({
   initialScript,
-  briefId,
-  existingRenderUrl,
 }: {
   initialScript: Script;
-  briefId: string;
-  existingRenderUrl: string | null;
 }) {
   const [script, setScript] = useState<Script>(initialScript);
   const [pendingSave, startSave] = useTransition();
   const [saveError, setSaveError] = useState<string | null>(null);
-  const [renderState, setRenderState] = useState<RenderState>(
-    existingRenderUrl ? { kind: "done", url: existingRenderUrl } : { kind: "idle" },
-  );
 
   const RENDER_FPS = 30;
   const lastScene = script.scenes[script.scenes.length - 1];
@@ -82,51 +68,27 @@ export function EditableReview({
     persist(nextScript);
   };
 
-  const handleRender = () => {
-    setRenderState({ kind: "rendering" });
-    startSave(async () => {
-      const saveRes = await saveScriptEdits(script);
-      if (!saveRes.ok) {
-        setRenderState({ kind: "error", message: saveRes.error });
-        return;
-      }
-      const renderRes = await renderScriptToMp4(briefId);
-      if (!renderRes.ok) {
-        setRenderState({ kind: "error", message: renderRes.error });
-        return;
-      }
-      setRenderState({ kind: "done", url: renderRes.url });
-    });
-  };
-
   return (
     <div>
-      {/* Action bar */}
-      <div className="sticky top-0 z-10 -mx-6 mb-10 flex flex-wrap items-center justify-between gap-4 border-b border-hairline bg-canvas px-6 py-4">
+      {/* Action bar — sits just under the global header */}
+      <div className="sticky top-[53px] z-10 -mx-6 mb-10 flex flex-wrap items-center justify-between gap-4 border-b border-hairline bg-canvas/90 px-6 py-4 backdrop-blur-md">
         <div className="font-mono text-[12px] text-muted">
           {totalSeconds.toFixed(0)}s · {script.config.aspect_ratio} ·{" "}
           {script.config.resolution} ·{" "}
           {pendingSave ? (
             <span className="text-accent-text">saving…</span>
           ) : saveError ? (
-            <span className="text-red-400">save error</span>
+            <span className="text-red-500">save error</span>
           ) : (
             <span>edits auto-save</span>
           )}
         </div>
-        <div className="flex items-center gap-3">
-          <RenderControls
-            state={renderState}
-            onRender={handleRender}
-            disabled={pendingSave && renderState.kind !== "rendering"}
-          />
-          <a
-            href={`/preview/${script.id}`}
-            className="rounded-md bg-accent px-5 py-2.5 text-[14px] font-semibold text-accent-ink transition-all hover:brightness-110"
-          >
-            Build the video →
-          </a>
-        </div>
+        <a
+          href={`/preview/${script.id}`}
+          className="rounded-md bg-accent px-5 py-2.5 text-[14px] font-semibold text-accent-ink transition-all hover:brightness-110"
+        >
+          Build the video →
+        </a>
       </div>
 
       {/* Story spine */}
@@ -166,8 +128,8 @@ export function EditableReview({
       </div>
 
       <p className="mt-8 text-center font-mono text-[12px] text-faint">
-        Edit any headline or visual brief, then build. Nothing renders until
-        you say so.
+        Edit any line or visual brief, then build. Nothing renders until you
+        say so.
       </p>
     </div>
   );
@@ -204,8 +166,17 @@ function StoryScene({
         : 0;
   const texts = scene.content?.texts ?? [];
   const assetIds = scene.content?.asset_ids ?? [];
-  const role = scene.description?.trim();
-  const isTurn = TURN_RX.test(role ?? "") || TURN_RX.test(scene.label ?? "");
+
+  // The scene's primary line is the headline if the agent wrote one; otherwise
+  // fall back to the role/description, then the label, so the spine never reads
+  // "Untitled scene". The green role line only shows when it adds something
+  // beyond the headline (no duplicate text).
+  const headline = scene.content?.headline?.trim() ?? "";
+  const desc = scene.description?.trim() ?? "";
+  const label = scene.label?.trim() ?? "";
+  const primary = headline || desc || label || `Scene ${index + 1}`;
+  const showRole = Boolean(headline && desc && desc !== headline);
+  const isTurn = TURN_RX.test(desc) || TURN_RX.test(label);
 
   return (
     <div
@@ -220,13 +191,10 @@ function StoryScene({
           {end.toFixed(0)}s
         </div>
         <div className="min-w-0 flex-1">
-          <EditableHeadline
-            value={scene.content?.headline ?? ""}
-            onBlur={onHeadlineBlur}
-          />
-          {role && (
+          <EditableHeadline value={primary} onBlur={onHeadlineBlur} />
+          {showRole && (
             <div className="mt-1.5 text-[12.5px] font-medium text-accent-text">
-              {role}
+              {desc}
             </div>
           )}
 
@@ -299,74 +267,6 @@ function StoryScene({
       </div>
     </div>
   );
-}
-
-function RenderControls({
-  state,
-  onRender,
-  disabled,
-}: {
-  state: RenderState;
-  onRender: () => void;
-  disabled: boolean;
-}) {
-  switch (state.kind) {
-    case "idle":
-      return (
-        <button
-          type="button"
-          onClick={onRender}
-          disabled={disabled}
-          className="rounded-md border border-hairline-strong px-4 py-2.5 text-[13px] text-muted transition-colors hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          Render MP4
-        </button>
-      );
-    case "rendering":
-      return (
-        <div className="flex items-center gap-2 font-mono text-[13px] text-muted">
-          <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-accent" />
-          rendering…
-        </div>
-      );
-    case "done":
-      return (
-        <div className="flex items-center gap-3">
-          <a
-            href={state.url}
-            target="_blank"
-            rel="noreferrer"
-            className="text-[13px] text-accent-text hover:underline"
-          >
-            ↓ MP4
-          </a>
-          <button
-            type="button"
-            onClick={onRender}
-            disabled={disabled}
-            className="text-[12px] text-faint transition-colors hover:text-ink"
-          >
-            re-render
-          </button>
-        </div>
-      );
-    case "error":
-      return (
-        <div className="flex max-w-[260px] flex-col items-end gap-0.5">
-          <span className="font-mono text-[12px] text-red-400">render failed</span>
-          <span className="break-words text-right text-[11px] text-red-400/80">
-            {state.message}
-          </span>
-          <button
-            type="button"
-            onClick={onRender}
-            className="text-[12px] text-muted transition-colors hover:text-ink"
-          >
-            retry
-          </button>
-        </div>
-      );
-  }
 }
 
 function EditableHeadline({

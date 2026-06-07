@@ -1,4 +1,5 @@
 import { BriefForm } from "./BriefForm";
+import { AppHeader } from "../../components/AppHeader";
 
 /**
  * /new — the front door (fluid v1).
@@ -15,6 +16,7 @@ export default function NewBriefPage() {
     // from DESIGN.md's quiet-chrome rule, scoped to the front door; the rest
     // of the app keeps the greyscale chrome.
     <main className="brand-field relative min-h-screen">
+      <AppHeader tone="light" />
       <BriefForm />
     </main>
   );
