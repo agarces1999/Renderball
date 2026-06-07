@@ -6,7 +6,10 @@
  * the headline kicker (Coniglio "COMIENZA EL DÍA", Stripe "THE CHALLENGE").
  * No API key, no network.
  */
-import { findDuplicatedEyebrows } from "./quality-gates";
+import {
+  findDuplicatedEyebrows,
+  findDecorativeFillerIcons,
+} from "./quality-gates";
 
 let passed = 0;
 let failed = 0;
@@ -63,6 +66,20 @@ check("multiple scenes — only the duplicated tag is flagged", () => {
     !dup.includes("THE TURN") && dup.includes("THE PROOF"),
     `got ${JSON.stringify(dup)}`,
   );
+});
+
+// ── D4: generic decorative-filler icons (Sparkles/Sparkle) ───────────
+check("flags Sparkles + Sparkle filler icons", () => {
+  const code = `<Sparkles size={12} /> ... <Sparkle /> ... <Check />`;
+  assert(findDecorativeFillerIcons(code) === 2, "should count both shine icons");
+});
+check("does not flag literal icons (Check / Lock / Zap)", () => {
+  const code = `<Check /><Lock /><Zap /><Leaf /><Recycle />`;
+  assert(findDecorativeFillerIcons(code) === 0, "literal icons are fine");
+});
+check("does not match a longer identifier that starts with Sparkle", () => {
+  // \\b guards against <SparkleField> etc.
+  assert(findDecorativeFillerIcons("<SparkleField />") === 0, "no false match");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

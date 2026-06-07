@@ -725,11 +725,11 @@ import { Shield, Lock, Zap, Check, ArrowRight, TrendingUp, Sparkles, Clock, Buil
 
 **Use lucide icons for:**
 - Bullet list markers (\`<Check size={16} color={BRAND_ACCENT} />\` instead of a plain dot)
-- Eyebrow decorations (\`<Sparkles size={12} />\` next to the eyebrow text)
+- Eyebrow markers — a small leading dash or dot. Do NOT reach for \`<Sparkles>\` as default eyebrow filler.
 - KPI tile prefixes (\`<TrendingUp size={16} />\` next to a stat)
 - Action affordances inside diegetic UI (\`<ArrowRight />\` on CTAs, \`<X />\` on close buttons)
 - Status dots (\`<CheckCircle />\` for "Approved", \`<Clock />\` for "Pending")
-- Decorative anchors on cards (\`<Shield />\` for trust, \`<Zap />\` for speed, \`<Lock />\` for security)
+- Card icons that LITERALLY match the card's content (\`<Shield />\` for trust, \`<Zap />\` for speed, \`<Lock />\` for security). If nothing fits literally, omit it.
 
 **Common icons by category** — these are guaranteed to exist; many more are available on lucide.dev:
 
@@ -754,6 +754,7 @@ import { Shield, Lock, Zap, Check, ArrowRight, TrendingUp, Sparkles, Clock, Buil
 - Sizes: 12-18px for inline decorations, 20-32px for bullet markers, 48-80px for hero icons.
 - Don't overuse — 2-4 icons per section is right. More than 8 reads as cluttered.
 - Lucide icons are PURELY visual. Their meaning comes from CONTEXT — a \`<Lock />\` next to "Custody" means custody; next to "Security" means security. Pick by semantic fit, not by name.
+- ⚠️ ICONS MUST BE LITERAL — anti-slop. Pick the icon that matches the label's literal meaning. If no lucide icon literally fits — a fashion product ("Tailored blazer"), a person's name, a place, an abstract value — use a small NUMBER/index (01 · 02 · 03) or NO icon at all. NEVER drop a generic decorator (\`Sparkles\`, \`Sparkle\`, \`Star\`) next to unrelated content just to fill the spot — a sparkle next to "Structured trousers" is the #1 AI-slop tell. The "Branding / shine" icons are ONLY for content literally about shine / quality / rating / AI, never universal filler.
 
 The hand-coded SVG Illustration Library below is for LARGER hero illustrations (60-240px) that need brand-specific styling. Lucide is for the small consistent icon vocabulary throughout the section. Use BOTH.
 
