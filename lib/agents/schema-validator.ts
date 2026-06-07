@@ -42,6 +42,34 @@ export const headlineProblem = (headline: string): string | null => {
   return null;
 };
 
+/**
+ * QA S5: catch invented numeric claims at the SCRIPT stage (the design stage's
+ * E2 gate backstops it, but this is the earlier, cheaper catch). Conservative
+ * by design — only flags STAT-SHAPED numbers (currency, %, ×N, K/M/B counts),
+ * never bare integers or years, so legit qualitative copy isn't rejected. A
+ * claim is grounded if its digit-core appears in the source text (crawled
+ * body_excerpts + user-verified claims + brief). Returns the ungrounded tokens.
+ */
+const STAT_CLAIM_RX =
+  /\$\s?\d[\d,.]*\s?(?:k|m|b|bn|billion|million|thousand)?\+?|\d[\d,.]*\s?%|\d[\d,.]*\s?[x×]\b|\d[\d,.]*\s?(?:k|m|b|bn|billion|million|thousand)\+?\b/gi;
+
+export const findUngroundedClaims = (
+  scriptText: string,
+  sourceText: string,
+): string[] => {
+  const src = sourceText.toLowerCase().replace(/[\s,]/g, "");
+  const out: string[] = [];
+  for (const m of scriptText.matchAll(STAT_CLAIM_RX)) {
+    const token = m[0].trim();
+    const digits = token.replace(/[^\d.]/g, "");
+    if (!digits) continue;
+    const tokenNorm = token.toLowerCase().replace(/[\s,]/g, "");
+    if (src.includes(tokenNorm) || src.includes(digits)) continue; // grounded
+    if (!out.includes(token)) out.push(token);
+  }
+  return out;
+};
+
 export const validateScript = (input: unknown): ValidationResult => {
   if (typeof input !== "object" || input === null) {
     return { ok: false, error: "Output is not a JSON object." };

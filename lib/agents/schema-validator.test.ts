@@ -2,7 +2,7 @@
  * Regression tests for headlineProblem (QA S4) — hero headlines must be one
  * punchy clause, not a crammed headline+subhead. Run: `npm test`.
  */
-import { headlineProblem } from "./schema-validator";
+import { headlineProblem, findUngroundedClaims } from "./schema-validator";
 
 let passed = 0;
 let failed = 0;
@@ -39,6 +39,28 @@ check("paragraph (>72c) → flagged for length", () => {
   const long = "This is an extremely long headline that reads like a full paragraph and keeps going well past any reasonable hero limit";
   const p = headlineProblem(long);
   assert(p !== null && /cap at 72/.test(p), `expected length flag, got ${p}`);
+});
+
+// ── S5: ungrounded numeric claims ────────────────────────────────────
+check("flags a stat not in the source", () => {
+  const u = findUngroundedClaims("We process $840M every year. 99.97% uptime.", "Fuse helps banks move money.");
+  assert(u.includes("$840M") && u.some((t) => t.includes("99.97")), `expected both flagged, got ${JSON.stringify(u)}`);
+});
+check("grounded stat (digits present in source) → not flagged", () => {
+  const u = findUngroundedClaims("$840M processed annually", "We process $840M in volume across 2.4 million accounts.");
+  assert(u.length === 0, `expected none, got ${JSON.stringify(u)}`);
+});
+check("digit-core match grounds a variant", () => {
+  const u = findUngroundedClaims("$2.4M in fees", "serving 2.4 million customers");
+  assert(u.length === 0, `2.4 present in source → grounded, got ${JSON.stringify(u)}`);
+});
+check("bare integers / years / qualitative copy are NOT flagged", () => {
+  const u = findUngroundedClaims("5 sourcing principles, 3 weeks, founded 2024, Millions joined", "");
+  assert(u.length === 0, `expected none, got ${JSON.stringify(u)}`);
+});
+check("multiplier + percent are stat-shaped and checked", () => {
+  const u = findUngroundedClaims("10x faster", "");
+  assert(u.includes("10x"), `expected 10x flagged, got ${JSON.stringify(u)}`);
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);
