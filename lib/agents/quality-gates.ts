@@ -241,6 +241,33 @@ export const findDuplicatedEyebrows = (
 export const findDecorativeFillerIcons = (code: string): number =>
   (code.match(/<Sparkles?\b/g) || []).length;
 
+// ─── Display-font fidelity (QA C2) ───────────────────────────────────
+//
+// When the crawl resolved a REAL brand display font (not a curated fallback),
+// the composition's FONT_DISPLAY constant should actually use it. If the agent
+// set FONT_DISPLAY to some other family, the video is off-brand at the type
+// level. Returns the resolved family when there's a mismatch, else null.
+//
+// Only fires when displayIsFallback === false — if the crawl had no real brand
+// font, any reasonable display face the agent picked is legitimate, not an
+// infidelity. Family match is normalized (lowercase, alphanumerics only) so
+// `'"Cabinet Grotesk", sans-serif'` correctly contains `Cabinet Grotesk`.
+const normFont = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]/g, "");
+
+export const assessFontFidelity = (
+  code: string,
+  displayFamily: string | undefined,
+  displayIsFallback: boolean,
+): string | null => {
+  if (displayIsFallback || !displayFamily) return null;
+  const m = code.match(/FONT_DISPLAY\s*[:=]\s*([^\n;]+)/);
+  if (!m) return null; // no FONT_DISPLAY constant → other gates handle it
+  const declared = normFont(m[1]);
+  const want = normFont(displayFamily);
+  if (!want) return null;
+  return declared.includes(want) ? null : displayFamily;
+};
+
 // ─── #2 Spatial-continuity gate (coarse v1, ADVISORY) ────────────────
 //
 // A motif that recurs across scenes (tagged `data-throughline="<slug>"`)
