@@ -25,6 +25,7 @@
     "src/**/*",
     "app/**/*",
     "lib/**/*",
+    "components/**/*",
     "remotion.config.ts",
     ".next/types/**/*.ts"
   ],

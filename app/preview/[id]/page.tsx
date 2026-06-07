@@ -2,21 +2,18 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { promises as fs } from "fs";
 import path from "path";
-import { loadScript } from "../../../lib/store";
+import { loadScript, loadBriefByScriptId } from "../../../lib/store";
+import { AppHeader } from "../../../components/AppHeader";
 import { PreviewClient } from "./PreviewClient";
 import { BuildPreviewClient } from "./BuildPreviewClient";
 
 /**
  * /preview/[id] — browser preview of the agent-emitted Composition.tsx.
  *
- * Per the V0.4 preview-before-MP4 flow, this page mounts the static
- * React composition the Design+Choreography agents produced and plays
- * each scene back-to-back. CSS animations run natively in the browser
- * — no Remotion runtime needed. Users iterate here BEFORE paying for
- * an MP4 render.
- *
- * The [id] param is the scriptId (matches the directory under
- * src/generated/<scriptId>/Composition.tsx).
+ * The [id] param is the scriptId (matches src/generated/<scriptId>/). If no
+ * composition exists yet, the build ceremony runs (BuildPreviewClient);
+ * otherwise the live playback surface mounts (PreviewClient). Per DESIGN.md
+ * the chrome stays quiet here so the user's brand-colored video is loudest.
  */
 export default async function PreviewPage({
   params,
@@ -26,8 +23,6 @@ export default async function PreviewPage({
   const script = await loadScript(params.id);
   if (!script) notFound();
 
-  // Verify the composition file exists — if Pass 1+2 hasn't run yet,
-  // there's nothing to preview.
   const compPath = path.join(
     process.cwd(),
     "src",
@@ -43,33 +38,41 @@ export default async function PreviewPage({
     compositionExists = false;
   }
 
+  // Recover the brief id so "back to story" lands on the right review page
+  // (review is keyed by briefId, not scriptId).
+  const brief = await loadBriefByScriptId(params.id);
+  const backHref = brief ? `/review/${brief.id}` : "/videos";
+
   return (
-    <main className="container-narrow py-12">
-      <Link
-        href={`/review/${params.id}`}
-        className="text-xs uppercase tracking-widest text-gray-500 hover:text-gray-900 transition-colors"
-      >
-        ← back to script
-      </Link>
-
-      <div className="mt-6 mb-6">
-        <div className="text-xs uppercase tracking-widest text-gray-500 mb-2">
-          preview · browser playback
-        </div>
-        <h1 className="text-3xl font-semibold tracking-tight text-gray-900">
-          {script.brief?.purpose ?? "Preview"}
-        </h1>
-        <p className="text-sm text-gray-600 mt-2">
-          Frontend animations playing live. Iterate scenes here before
-          rendering to MP4.
-        </p>
-      </div>
-
+    <>
+      <AppHeader />
       {!compositionExists ? (
-        <BuildPreviewClient scriptId={params.id} />
+        <BuildPreviewClient
+          scriptId={params.id}
+          sceneLabels={script.scenes.map((s) => s.label ?? "")}
+        />
       ) : (
-        <PreviewClient scriptId={params.id} script={script} />
+        <main className="mx-auto max-w-5xl px-6 py-8">
+          <Link
+            href={backHref}
+            className="font-mono text-[11px] uppercase tracking-[0.18em] text-muted transition-colors hover:text-ink"
+          >
+            ← story
+          </Link>
+          <div className="mb-6 mt-5">
+            <div className="mb-2 font-mono text-[11px] uppercase tracking-[0.18em] text-muted">
+              Preview · live playback
+            </div>
+            <h1 className="font-display text-[clamp(22px,3vw,30px)] font-semibold tracking-tight text-ink">
+              {script.brief?.purpose ?? "Preview"}
+            </h1>
+            <p className="mt-1.5 text-[14px] leading-relaxed text-muted">
+              Playing live in your browser. Tweak any scene, then export to MP4.
+            </p>
+          </div>
+          <PreviewClient scriptId={params.id} script={script} />
+        </main>
       )}
-    </main>
+    </>
   );
 }

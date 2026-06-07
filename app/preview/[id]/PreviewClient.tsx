@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Script } from "../../../src/schema";
+import { cn } from "../../../lib/cn";
 
 interface Props {
   scriptId: string;
@@ -11,21 +12,15 @@ interface Props {
 /**
  * Client-side preview of the agent-emitted Composition.tsx.
  *
- * Architecture (rewritten 2026-05-28 — iframe + on-demand SSR):
- * - Webpack's `import(\`...${var}...\`)` builds a context-module at
- *   compile time and bakes in chunk references for the directories
- *   present then. New `src/generated/<newId>/` dirs created after the
- *   dev server started AREN'T in the chunk map and the dynamic import
- *   throws "Cannot find module".
- * - Instead: each scene is rendered server-side via
- *   /api/preview/[id]/iframe?scene=N and mounted in an <iframe>. The
- *   server compiles the Composition.tsx on demand via esbuild, so
- *   every request reads fresh source from disk — no webpack involved.
- * - Scene change = iframe.src change = browser reloads iframe = CSS
- *   animations naturally restart. No more `key={}` remount juggling.
+ * Each scene is rendered server-side via /api/preview/[id]/iframe?scene=N and
+ * mounted in an <iframe> (esbuild compiles Composition.tsx on demand, so every
+ * request reads fresh source — per-scene "Regenerate" writes new source and
+ * the next iframe load picks it up). Scene change = iframe.src change = the
+ * browser reloads the iframe so CSS animations restart.
  *
- * Per-scene "Regenerate" still works: the regen endpoint writes new
- * Composition.tsx to disk, the next iframe load reads the new file.
+ * Chrome stays quiet (DESIGN.md): a dark canvas frames the brand-colored
+ * video, controls use the greyscale + emerald tokens, and the one loud action
+ * is "Export MP4".
  */
 type Mp4State =
   | { kind: "idle" }
@@ -34,15 +29,20 @@ type Mp4State =
   | { kind: "error"; message: string };
 
 /**
- * Soft quality warnings the pipeline can attach to a build result:
- * invented numeric claims, low-contrast color pairings, scenes that
- * should have charts but don't. Matches BuildWarnings in pipeline.ts.
+ * Soft quality warnings the pipeline can attach to a build result. Matches
+ * BuildWarnings in pipeline.ts. All non-blocking — surfaced as quiet notes.
  */
 interface PreviewWarnings {
   invented_claims?: string[];
   low_contrast?: { fg: string; bg: string; ratio: number }[];
   missing_charts?: string[];
-  throughline_drift?: { slug: string; axis: "x" | "y" | "both"; driftX: number; driftY: number; occurrences: number }[];
+  throughline_drift?: {
+    slug: string;
+    axis: "x" | "y" | "both";
+    driftX: number;
+    driftY: number;
+    occurrences: number;
+  }[];
   duplicate_logo?: number;
   overflow_crop?: number[];
 }
@@ -70,7 +70,6 @@ export function PreviewClient({ scriptId, script }: Props) {
     if (durMs <= 0) return;
     const t = setTimeout(() => {
       setSceneIndex((i) => (i + 1) % script.scenes.length);
-      // Bump reload key so even loop-back (N → 0) re-fetches & restarts anims.
       setReloadKey((k) => k + 1);
     }, durMs);
     return () => clearTimeout(t);
@@ -100,8 +99,6 @@ export function PreviewClient({ scriptId, script }: Props) {
         warnings?: PreviewWarnings;
       };
       if (json.warnings) setWarnings(json.warnings);
-      // Bump reload key — the iframe re-fetches and the server reads
-      // the freshly-written Composition.tsx.
       setReloadKey((k) => k + 1);
     } catch (e) {
       setRegenError(e instanceof Error ? e.message : String(e));
@@ -139,11 +136,20 @@ export function PreviewClient({ scriptId, script }: Props) {
   const currentScene = script.scenes[sceneIndex];
   const iframeSrc = `/api/preview/${scriptId}/iframe?scene=${sceneIndex}&v=${reloadKey}`;
 
+  const hasWarnings =
+    warnings &&
+    (warnings.invented_claims?.length ||
+      warnings.low_contrast?.length ||
+      warnings.missing_charts?.length ||
+      warnings.throughline_drift?.length ||
+      (warnings.duplicate_logo ?? 0) > 1 ||
+      warnings.overflow_crop?.length);
+
   return (
     <div>
-      {/* Canvas — iframe-rendered Section at natural resolution, scaled to fit */}
+      {/* Canvas — the brand-colored video; dark frame so it's the loudest thing */}
       <div
-        className="rounded-xl overflow-hidden bg-black ring-1 ring-gray-200 mb-6 relative"
+        className="relative mb-5 overflow-hidden rounded-lg border border-hairline bg-[#0b0d12]"
         style={{ aspectRatio: `${dims.width}/${dims.height}` }}
       >
         <iframe
@@ -156,106 +162,115 @@ export function PreviewClient({ scriptId, script }: Props) {
             width: "100%",
             height: "100%",
             border: 0,
-            background: "#000",
+            background: "#0b0d12",
           }}
         />
       </div>
 
-      {/* Scene navigation */}
-      <div className="flex flex-wrap items-center gap-2 mb-4">
+      {/* Scene rail */}
+      <div className="mb-4 flex flex-wrap items-center gap-1.5">
         {script.scenes.map((s, i) => (
           <button
             key={i}
+            type="button"
             onClick={() => selectScene(i)}
-            className={`text-xs px-3 py-1.5 rounded-md ring-1 transition-colors ${
+            className={cn(
+              "rounded-full border px-3 py-1.5 text-[12px] transition-colors",
               i === sceneIndex
-                ? "bg-gray-900 text-white ring-gray-900"
-                : "bg-white text-gray-700 ring-gray-300 hover:ring-gray-500"
-            }`}
+                ? "border-accent-line bg-accent-soft text-ink"
+                : "border-hairline-strong text-muted hover:text-ink",
+            )}
           >
-            {i + 1}. {s.label}
+            <span className="font-mono text-faint">{i + 1}</span>{" "}
+            {s.label}
           </button>
         ))}
       </div>
 
-      {/* Playback controls */}
-      <div className="flex flex-wrap items-center gap-3 mb-6">
+      {/* Playback + actions */}
+      <div className="mb-6 flex flex-wrap items-center gap-2">
         <button
+          type="button"
           onClick={() => setPlaying((p) => !p)}
-          className="px-4 py-2 rounded-md bg-gray-900 text-white text-sm hover:bg-gray-700"
+          className="rounded-md border border-hairline-strong bg-surface px-4 py-2 text-[13px] text-ink transition-colors hover:bg-surface-2"
         >
           {playing ? "Pause" : "Play"}
         </button>
         <button
+          type="button"
           onClick={replayScene}
-          className="px-4 py-2 rounded-md bg-white text-gray-900 text-sm ring-1 ring-gray-300 hover:ring-gray-500"
+          className="rounded-md border border-hairline-strong bg-surface px-4 py-2 text-[13px] text-ink transition-colors hover:bg-surface-2"
         >
           Replay scene
         </button>
         <button
+          type="button"
           onClick={handleRegenerate}
           disabled={regenerating}
-          className="px-4 py-2 rounded-md bg-amber-100 text-amber-900 text-sm ring-1 ring-amber-300 hover:ring-amber-500 disabled:opacity-60 disabled:cursor-not-allowed"
+          className="rounded-md border border-hairline-strong px-4 py-2 text-[13px] text-muted transition-colors hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
         >
           {regenerating
             ? "Regenerating…"
             : `Regenerate scene ${sceneIndex + 1}`}
         </button>
-        {mp4State.kind === "done" ? (
-          <a
-            href={mp4State.url}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="px-4 py-2 rounded-md bg-emerald-600 text-white text-sm hover:bg-emerald-700"
-          >
-            View MP4 ↗
-          </a>
-        ) : (
-          <button
-            type="button"
-            onClick={handleRenderMp4}
-            disabled={mp4State.kind === "rendering"}
-            className="px-4 py-2 rounded-md bg-emerald-600 text-white text-sm hover:bg-emerald-700 disabled:opacity-60 disabled:cursor-not-allowed"
-          >
-            {mp4State.kind === "rendering"
-              ? "Rendering MP4… (~2-4 min)"
-              : "Render to MP4 →"}
-          </button>
-        )}
+
+        <div className="ml-auto">
+          {mp4State.kind === "done" ? (
+            <a
+              href={mp4State.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-2 rounded-md bg-accent px-5 py-2 text-[13px] font-semibold text-accent-ink transition-all hover:brightness-110"
+            >
+              View MP4 ↗
+            </a>
+          ) : (
+            <button
+              type="button"
+              onClick={handleRenderMp4}
+              disabled={mp4State.kind === "rendering"}
+              className="inline-flex items-center gap-2 rounded-md bg-accent px-5 py-2 text-[13px] font-semibold text-accent-ink transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {mp4State.kind === "rendering" ? (
+                <>
+                  <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-accent-ink" />
+                  Rendering MP4… (~2-4 min)
+                </>
+              ) : (
+                "Export MP4 →"
+              )}
+            </button>
+          )}
+        </div>
       </div>
 
       {mp4State.kind === "error" && (
-        <div className="p-4 rounded-md bg-red-50 ring-1 ring-red-200 text-xs font-mono text-red-900 mb-4 whitespace-pre-wrap">
+        <div className="mb-4 whitespace-pre-wrap rounded-md border border-red-500/30 bg-red-500/5 p-4 font-mono text-[12px] text-red-500">
           MP4 render failed: {mp4State.message}
         </div>
       )}
 
-      {warnings && (warnings.invented_claims?.length ||
-        warnings.low_contrast?.length ||
-        warnings.missing_charts?.length ||
-        warnings.throughline_drift?.length ||
-        (warnings.duplicate_logo ?? 0) > 1 ||
-        warnings.overflow_crop?.length) ? (
-        <WarningsPanel warnings={warnings} />
-      ) : null}
+      {hasWarnings ? <WarningsPanel warnings={warnings!} /> : null}
 
       {regenError && (
-        <div className="p-4 rounded-md bg-red-50 ring-1 ring-red-200 text-xs font-mono text-red-900 mb-4 whitespace-pre-wrap">
+        <div className="mb-4 whitespace-pre-wrap rounded-md border border-red-500/30 bg-red-500/5 p-4 font-mono text-[12px] text-red-500">
           {regenError}
         </div>
       )}
 
       {/* Current scene meta */}
       {currentScene && (
-        <div className="text-xs text-gray-600 font-mono">
+        <div className="font-mono text-[12px] text-muted">
           <div>
             scene {sceneIndex + 1}/{script.scenes.length} ·{" "}
-            {((currentScene.end_seconds ?? 0) -
-              (currentScene.start_seconds ?? 0)).toFixed(1)}
+            {(
+              (currentScene.end_seconds ?? 0) -
+              (currentScene.start_seconds ?? 0)
+            ).toFixed(1)}
             s
           </div>
           {currentScene.description && (
-            <div className="mt-1 text-gray-500 italic">
+            <div className="mt-1 italic text-faint">
               {currentScene.description}
             </div>
           )}
@@ -266,31 +281,31 @@ export function PreviewClient({ scriptId, script }: Props) {
 }
 
 /**
- * Soft quality-warning chips. Surfaces the BuildWarnings the agents'
- * validators produced (invented numeric claims, low-contrast color
- * pairs, scenes missing charts). All warnings are non-blocking — the
- * design ships either way; this panel just makes the issues visible
- * so the user can decide whether to regenerate the affected scene.
+ * Soft quality notes — the BuildWarnings the validators produced (invented
+ * numeric claims, low-contrast pairs, scenes missing charts, drifting motifs,
+ * duplicate logos, cropped elements). All non-blocking: the design ships
+ * either way; this panel just makes the issues visible so the user can decide
+ * whether to regenerate the affected scene. Quiet on purpose (surface-2 +
+ * muted), not an alarm.
  */
 function WarningsPanel({ warnings }: { warnings: PreviewWarnings }) {
   return (
-    <div className="mb-6 p-4 rounded-lg bg-amber-50 ring-1 ring-amber-200">
-      <div className="flex items-center gap-2 text-xs uppercase tracking-widest text-amber-900 font-semibold mb-3">
-        Quality warnings
+    <div className="mb-6 rounded-md border border-hairline bg-surface-2 p-4">
+      <div className="mb-3 font-mono text-[11px] uppercase tracking-[0.16em] text-muted">
+        Quality notes
       </div>
       <div className="space-y-3">
         {warnings.invented_claims && warnings.invented_claims.length > 0 && (
           <div>
-            <div className="text-[11px] uppercase tracking-wide text-amber-800 mb-1.5">
-              Invented numeric claims ({warnings.invented_claims.length}) —
-              not supported by your brief, body excerpts, or verified
-              claims
+            <div className="mb-1.5 text-[11px] text-muted">
+              Invented numeric claims ({warnings.invented_claims.length}) — not
+              supported by your brief, body excerpts, or verified claims
             </div>
             <div className="flex flex-wrap gap-1.5">
               {warnings.invented_claims.slice(0, 8).map((c, i) => (
                 <span
                   key={i}
-                  className="px-2 py-0.5 rounded bg-amber-100 text-amber-900 text-xs font-mono ring-1 ring-amber-200"
+                  className="rounded border border-hairline-strong bg-surface px-2 py-0.5 font-mono text-[11px] text-ink-soft"
                 >
                   {c}
                 </span>
@@ -301,22 +316,18 @@ function WarningsPanel({ warnings }: { warnings: PreviewWarnings }) {
 
         {warnings.low_contrast && warnings.low_contrast.length > 0 && (
           <div>
-            <div className="text-[11px] uppercase tracking-wide text-amber-800 mb-1.5">
-              Low-contrast text pairings ({warnings.low_contrast.length}) —
-              below WCAG 4.5:1 threshold
+            <div className="mb-1.5 text-[11px] text-muted">
+              Low-contrast text pairings ({warnings.low_contrast.length}) — below
+              WCAG 4.5:1
             </div>
             <div className="flex flex-wrap gap-2">
               {warnings.low_contrast.slice(0, 8).map((c, i) => (
                 <span
                   key={i}
-                  className="flex items-center gap-1.5 px-2 py-0.5 rounded bg-amber-100 text-amber-900 text-xs font-mono ring-1 ring-amber-200"
+                  className="flex items-center gap-1.5 rounded border border-hairline-strong bg-surface px-2 py-0.5 font-mono text-[11px] text-ink-soft"
                   title={`fg ${c.fg} on bg ${c.bg} — ${c.ratio}:1`}
                 >
-                  <span
-                    className="inline-block w-3 h-3 rounded-sm ring-1 ring-amber-300"
-                    style={{ background: c.bg }}
-                  />
-                  <span style={{ color: c.fg, background: c.bg, padding: "0 4px" }}>
+                  <span style={{ color: c.fg, background: c.bg, padding: "0 4px", borderRadius: 2 }}>
                     Aa
                   </span>
                   <span>{c.ratio}:1</span>
@@ -328,15 +339,15 @@ function WarningsPanel({ warnings }: { warnings: PreviewWarnings }) {
 
         {warnings.missing_charts && warnings.missing_charts.length > 0 && (
           <div>
-            <div className="text-[11px] uppercase tracking-wide text-amber-800 mb-1.5">
-              Scenes with numeric data but no chart —
-              consider regenerating with a real Recharts visualization
+            <div className="mb-1.5 text-[11px] text-muted">
+              Scenes with numeric data but no chart — consider regenerating with
+              a real visualization
             </div>
             <div className="flex flex-wrap gap-1.5">
               {warnings.missing_charts.slice(0, 8).map((s, i) => (
                 <span
                   key={i}
-                  className="px-2 py-0.5 rounded bg-amber-100 text-amber-900 text-xs ring-1 ring-amber-200"
+                  className="rounded border border-hairline-strong bg-surface px-2 py-0.5 text-[11px] text-ink-soft"
                 >
                   {s}
                 </span>
@@ -347,18 +358,24 @@ function WarningsPanel({ warnings }: { warnings: PreviewWarnings }) {
 
         {warnings.throughline_drift && warnings.throughline_drift.length > 0 && (
           <div>
-            <div className="text-[11px] uppercase tracking-wide text-amber-800 mb-1.5">
-              Recurring elements that jump position ({warnings.throughline_drift.length}) —
-              a motif moves &gt;10% of the canvas between scenes (reads as a teleport on the cut)
+            <div className="mb-1.5 text-[11px] text-muted">
+              Recurring elements that jump position (
+              {warnings.throughline_drift.length}) — a motif moves &gt;10% of the
+              canvas between scenes
             </div>
             <div className="flex flex-wrap gap-1.5">
               {warnings.throughline_drift.slice(0, 6).map((d, i) => (
                 <span
                   key={i}
-                  className="px-2 py-0.5 rounded bg-amber-100 text-amber-900 text-xs font-mono ring-1 ring-amber-200"
+                  className="rounded border border-hairline-strong bg-surface px-2 py-0.5 font-mono text-[11px] text-ink-soft"
                   title={`"${d.slug}" appears in ${d.occurrences} scenes; drifts ${d.driftX}px x / ${d.driftY}px y`}
                 >
-                  {d.slug} · {d.axis === "both" ? `${d.driftX}×${d.driftY}px` : d.axis === "x" ? `${d.driftX}px →` : `${d.driftY}px ↓`}
+                  {d.slug} ·{" "}
+                  {d.axis === "both"
+                    ? `${d.driftX}×${d.driftY}px`
+                    : d.axis === "x"
+                      ? `${d.driftX}px →`
+                      : `${d.driftY}px ↓`}
                 </span>
               ))}
             </div>
@@ -366,25 +383,23 @@ function WarningsPanel({ warnings }: { warnings: PreviewWarnings }) {
         )}
 
         {warnings.duplicate_logo && warnings.duplicate_logo > 1 && (
-          <div>
-            <div className="text-[11px] uppercase tracking-wide text-amber-800 mb-1.5">
-              Brand logo appears {warnings.duplicate_logo}× — BrandChrome already
-              shows it on every scene; a scene is rendering its own logo too
-              (two marks on one frame). Per-scene-regenerate to drop the extra.
-            </div>
+          <div className="text-[11px] text-muted">
+            Brand logo appears {warnings.duplicate_logo}× — a scene is drawing
+            its own logo on top of the persistent brand mark. Regenerate that
+            scene to drop the extra.
           </div>
         )}
 
         {warnings.overflow_crop && warnings.overflow_crop.length > 0 && (
           <div>
-            <div className="text-[11px] uppercase tracking-wide text-amber-800 mb-1.5">
-              Element(s) cropped at the canvas edge — width(s) crossing the frame:
+            <div className="mb-1.5 text-[11px] text-muted">
+              Element(s) cropped at the canvas edge:
             </div>
             <div className="flex flex-wrap gap-1.5">
               {warnings.overflow_crop.slice(0, 8).map((w, i) => (
                 <span
                   key={i}
-                  className="px-2 py-0.5 rounded bg-amber-100 text-amber-900 text-xs font-mono ring-1 ring-amber-200"
+                  className="rounded border border-hairline-strong bg-surface px-2 py-0.5 font-mono text-[11px] text-ink-soft"
                 >
                   {w}px
                 </span>
