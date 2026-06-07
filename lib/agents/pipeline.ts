@@ -2,6 +2,11 @@ import { getAnthropic, MODELS } from "../anthropic";
 import { DESIGN_AGENT_SYSTEM_PROMPT } from "./prompts/design-agent";
 import { ANIMATION_AGENT_SYSTEM_PROMPT } from "./prompts/animation-agent";
 import { stripCodeFence, verifyCompilable } from "./code-extraction";
+import {
+  contrastRatio,
+  MIN_CONTRAST_RATIO,
+  SEVERE_CONTRAST_RATIO,
+} from "./contrast";
 import { dimensionsForScript } from "../render/build-wrapper";
 import {
   findSlowTextEntrances,
@@ -206,6 +211,12 @@ export interface BuildWarnings {
   invented_claims?: string[];
   /** Color pairs whose WCAG contrast ratio is below 4.5:1 (body) or 3:1 (large). */
   low_contrast?: { fg: string; bg: string; ratio: number }[];
+  /**
+   * SEVERE contrast (<3:1) that survived the retry into the FINAL composition —
+   * unreadable even for headlines. Distinct from low_contrast so the preview UI
+   * / verifier can flag it loudly; should be rare after the structural gate.
+   */
+  low_contrast_severe?: { fg: string; bg: string; ratio: number }[];
   /** Scenes with numeric content.meta but no Recharts chart in the design. */
   missing_charts?: string[];
   /** Recurring throughline motifs whose anchor jumps >10% canvas between scenes. */
@@ -759,19 +770,26 @@ export const buildAnimatedSections = async (
     invented.length > 0
       ? `Invented numeric claims found on screen (not in body_excerpts or script): ${invented.slice(0, 6).join(", ")}${invented.length > 6 ? ", …" : ""}. Replace each with qualitative copy (e.g. "$2.4M" → "substantial fees"), or omit the claim entirely.`
       : null;
-  // Contrast scan — promoted from warn-level (was task #80) to a HARD
-  // retry gate per user feedback: "elements are usually the same color
-  // or similar as the background, hard to see". A failure here triggers
-  // the same retry as density / claims (one Opus pass paid total, not
-  // 3x for the same composition).
-  //
-  // Threshold: anything <4.5:1 fails. This is conservative for headlines
-  // (WCAG allows 3:1 on ≥48px), but the assessContrast helper doesn't
-  // expose fontSize per finding — so we apply the strictest threshold
-  // and accept some false positives. The retry message lists each pair;
-  // the agent can decide which to fix vs leave (large headline at 3.2:1
-  // is fine to keep).
+  // Contrast scan — two tiers (QA B1):
+  //   • SEVERE (<3:1): unreadable even for large headlines (WCAG's large-text
+  //     floor is 3:1). This is a STRUCTURAL failure — always retried, both
+  //     paths — because white-on-orange at 2.1:1 must never ship.
+  //   • MINOR (3:1–4.5:1): below the body floor but readable for large text;
+  //     stays a polish-level nudge (the agent may keep a 3.2:1 headline).
+  // assessContrast doesn't expose per-finding fontSize, so the minor tier
+  // accepts some false positives on big headlines; the severe tier doesn't
+  // need a size exemption (nothing is readable below 3:1).
   const contrastFindings = assessContrast(designCode);
+  const severeContrast = contrastFindings.filter(
+    (f) => f.ratio < SEVERE_CONTRAST_RATIO,
+  );
+  const severeContrastFailure =
+    severeContrast.length > 0
+      ? `UNREADABLE contrast — ${severeContrast.length} pair(s) below ${SEVERE_CONTRAST_RATIO}:1. These FAIL even for large headlines and MUST be changed, not left:\n${severeContrast
+          .slice(0, 8)
+          .map((f) => `  • color ${f.fg} on background ${f.bg} = ${f.ratio.toFixed(2)}:1`)
+          .join("\n")}\nFix each with an OPPOSITE-luminance pairing: near-white text on a dark/saturated surface, or the darkest palette ink on a light/accent surface. NEVER white (or a light tint) on a mid-tone accent like orange/lime/cyan, and never accent-on-accent.`
+      : null;
   const contrastFailure =
     contrastFindings.length > 0
       ? `Contrast failures (${contrastFindings.length} text-on-background pair(s) below WCAG 4.5:1 — text will be hard to read):\n${contrastFindings
@@ -863,7 +881,8 @@ export const buildAnimatedSections = async (
     overflowFailure ||
     logoFailure ||
     fabricatedLogoFailure ||
-    logoNotRenderedFailure;
+    logoNotRenderedFailure ||
+    severeContrastFailure;
   const includePolish = !skipRetries;
   const polishFailure =
     includePolish &&
@@ -875,6 +894,9 @@ export const buildAnimatedSections = async (
         ? `Your previous output failed the density check: ${gateReport.error}`
         : null,
       includePolish ? claimFailure : null,
+      // Severe contrast is structural — always sent, regardless of path.
+      // (The softer <4.5:1 contrastFailure stays polish-gated below it.)
+      severeContrastFailure,
       includePolish ? contrastFailure : null,
       includePolish ? throughlineFailure : null,
       iconFailure,
@@ -913,13 +935,19 @@ export const buildAnimatedSections = async (
     const retryText = designResponse.content.find((c) => c.type === "text");
     if (retryText && retryText.type === "text") {
       const retryCode = stripCodeFence(retryText.text.trim());
+      const retrySevereContrast = assessContrast(retryCode).filter(
+        (f) => f.ratio < SEVERE_CONTRAST_RATIO,
+      ).length;
       if (
         retryCode.includes("import") &&
         retryCode.includes("export") &&
         // On the strict path the retry must also clear density; on preview
         // we only forced a structural fix, so accept any valid re-emit —
         // don't reject a logo/crop fix just for being a touch sparse.
-        (skipRetries || assessDesignDensity(retryCode, input.script).ok)
+        (skipRetries || assessDesignDensity(retryCode, input.script).ok) &&
+        // Never accept a retry that made severe (<3:1) contrast WORSE than the
+        // original — keep whichever has fewer unreadable pairs.
+        retrySevereContrast <= severeContrast.length
       ) {
         designCode = retryCode;
       } else {
@@ -1895,11 +1923,18 @@ const buildBuildWarnings = (
   if (invented.length > 0) out.invented_claims = invented;
   const contrastFindings = assessContrast(code);
   if (contrastFindings.length > 0) {
-    out.low_contrast = contrastFindings.slice(0, 8).map((f) => ({
+    const toEntry = (f: { fg: string; bg: string; ratio: number }) => ({
       fg: f.fg,
       bg: f.bg,
       ratio: Math.round(f.ratio * 10) / 10,
-    }));
+    });
+    out.low_contrast = contrastFindings.slice(0, 8).map(toEntry);
+    // SEVERE (<3:1) pairs that survived into the final composition — flag them
+    // distinctly so they're loud (they should be rare after the B1 gate).
+    const severe = contrastFindings.filter(
+      (f) => f.ratio < SEVERE_CONTRAST_RATIO,
+    );
+    if (severe.length > 0) out.low_contrast_severe = severe.slice(0, 8).map(toEntry);
   }
   const missingCharts = findMissingCharts(code, input.script);
   if (missingCharts.length > 0) out.missing_charts = missingCharts;
@@ -2006,21 +2041,6 @@ const resolveHex = (raw: string): string | null => {
   return `#${hex.toLowerCase()}`;
 };
 
-const luminance = (hex: string): number => {
-  const r = parseInt(hex.slice(1, 3), 16) / 255;
-  const g = parseInt(hex.slice(3, 5), 16) / 255;
-  const b = parseInt(hex.slice(5, 7), 16) / 255;
-  const channel = (c: number) =>
-    c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
-  return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b);
-};
-
-const contrastRatio = (fg: string, bg: string): number => {
-  const l1 = luminance(fg);
-  const l2 = luminance(bg);
-  const [lighter, darker] = l1 > l2 ? [l1, l2] : [l2, l1];
-  return (lighter + 0.05) / (darker + 0.05);
-};
 
 /**
  * Build a map of `PALETTE.cyan` → `#0072ce` etc by scanning module-scope
@@ -2075,7 +2095,7 @@ const assessContrast = (code: string): ContrastFinding[] => {
     const bg = resolveToken(bgRaw);
     if (!fg || !bg) continue;
     const ratio = contrastRatio(fg, bg);
-    if (ratio < 4.5) {
+    if (ratio < MIN_CONTRAST_RATIO) {
       const snippet = (sb[0] || "").slice(0, 200).replace(/\s+/g, " ");
       findings.push({ fg, bg, ratio, snippet });
     }
