@@ -9,6 +9,7 @@
 import {
   findDuplicatedEyebrows,
   findDecorativeFillerIcons,
+  assessContinuity,
 } from "./quality-gates";
 
 let passed = 0;
@@ -80,6 +81,27 @@ check("does not flag literal icons (Check / Lock / Zap)", () => {
 check("does not match a longer identifier that starts with Sparkle", () => {
   // \\b guards against <SparkleField> etc.
   assert(findDecorativeFillerIcons("<SparkleField />") === 0, "no false match");
+});
+
+// ── B4: throughline-drift detection (assessContinuity) ───────────────
+const DRIFT = `
+  <div data-throughline="orb" style={{ position: "absolute", left: 120, top: 120 }} />
+  <div data-throughline="orb" style={{ position: "absolute", left: 120, top: 980 }} />`;
+const STABLE = `
+  <div data-throughline="orb" style={{ position: "absolute", left: 120, top: 120 }} />
+  <div data-throughline="orb" style={{ position: "absolute", left: 120, top: 140 }} />`;
+
+check("detects a large vertical drift (the teleport)", () => {
+  const out = assessContinuity(DRIFT, "16:9");
+  const orb = out.find((d) => d.slug === "orb");
+  assert(!!orb && orb.driftY >= 800, `expected driftY≥800, got ${JSON.stringify(out)}`);
+});
+check("stable anchor → no drift finding", () => {
+  assert(assessContinuity(STABLE, "16:9").length === 0, "small drift should not flag");
+});
+check("a motif used only once is ignored", () => {
+  const once = `<div data-throughline="orb" style={{ left: 120, top: 120 }} />`;
+  assert(assessContinuity(once, "16:9").length === 0, "single occurrence → nothing to compare");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

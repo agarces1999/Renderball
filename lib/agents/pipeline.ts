@@ -848,6 +848,24 @@ export const buildAnimatedSections = async (
   const throughlinePresence = assessThroughlinePresence(designCode, input.script);
   const throughlineFailure = throughlinePresence?.message ?? null;
 
+  // Throughline-DRIFT guard (QA B4). assessContinuity surfaces any tagged motif
+  // whose numeric-px anchor drifts >10% of the canvas as an advisory warning. A
+  // LARGE drift — a clear teleport (the LD-pre "tallboy" jumped ~800px) — is a
+  // real continuity break that undercuts the "one continuous object" story, so
+  // promote just that high-confidence tier to a polish retry. The check is coarse
+  // (numeric px only; transform/%-centered motifs are invisible to it), so gate
+  // ONLY the unambiguous cases to avoid false-positive retries.
+  const SEVERE_DRIFT_PX = 280;
+  const severeDrift = assessContinuity(designCode, gateAspect).filter(
+    (d) => Math.max(d.driftX, d.driftY) >= SEVERE_DRIFT_PX,
+  );
+  const driftFailure =
+    severeDrift.length > 0
+      ? `Throughline motif TELEPORTS between scenes — ${severeDrift
+          .map((d) => `"${d.slug}" jumps ${Math.max(d.driftX, d.driftY)}px (${d.axis})`)
+          .join("; ")}. The recurring data-throughline element MUST hold a stable anchor (≈same left/top) across scenes so it reads as ONE continuous object that evolves — not one that jumps on every cut. Keep its position consistent; animate its FORM/content, not its anchor.`
+      : null;
+
   // Fabricated-logo guard (structural). When the brand identity resolved NO real
   // logo, the brand mark MUST be the wordmark text — not a drawn substitute. This
   // catches the exact regression where the agent invents a mark and labels it the
@@ -895,7 +913,7 @@ export const buildAnimatedSections = async (
   const includePolish = !skipRetries;
   const polishFailure =
     includePolish &&
-    (!gateReport.ok || contrastFailure || throughlineFailure);
+    (!gateReport.ok || contrastFailure || throughlineFailure || driftFailure);
 
   if (structuralFailure || polishFailure) {
     const retryMessage = [
@@ -909,6 +927,7 @@ export const buildAnimatedSections = async (
       severeContrastFailure,
       includePolish ? contrastFailure : null,
       includePolish ? throughlineFailure : null,
+      includePolish ? driftFailure : null,
       iconFailure,
       overflowFailure,
       logoFailure,
