@@ -231,6 +231,16 @@ export const findDuplicatedEyebrows = (
   return dup;
 };
 
+// ─── Generic decorative-filler icons (QA D4, advisory) ───────────────
+//
+// <Sparkles> / <Sparkle> are the classic "ooh shiny" filler the agent drops
+// next to unrelated content (a sparkle on "Structured trousers"). They carry
+// almost no literal meaning, so their presence is worth a human glance.
+// ADVISORY only — a magic / AI / quality brand may use them intentionally; the
+// prompt's "icons must be literal" rule is the real behavioural fix.
+export const findDecorativeFillerIcons = (code: string): number =>
+  (code.match(/<Sparkles?\b/g) || []).length;
+
 // ─── #2 Spatial-continuity gate (coarse v1, ADVISORY) ────────────────
 //
 // A motif that recurs across scenes (tagged `data-throughline="<slug>"`)

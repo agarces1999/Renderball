@@ -13,6 +13,7 @@ import {
   findOverflowingElements,
   findDuplicateLogos,
   findDuplicatedEyebrows,
+  findDecorativeFillerIcons,
   assessContinuity,
   assessThroughlinePresence,
   type AspectRatio,
@@ -230,6 +231,8 @@ export interface BuildWarnings {
   duplicate_logo?: number;
   /** Per-scene editorial eyebrows that appear ≥2× (chrome echo of the kicker). */
   duplicate_eyebrow?: string[];
+  /** Count of generic shine-filler icons (Sparkles/Sparkle) — advisory slop tell. */
+  decorative_icons?: number;
   /** Element widths that still cross the canvas edge after the structural retry. */
   overflow_crop?: number[];
 }
@@ -1993,6 +1996,9 @@ const buildBuildWarnings = (
     .filter((e): e is string => typeof e === "string" && e.trim().length > 0);
   const dupEyebrows = findDuplicatedEyebrows(code, sceneEyebrows);
   if (dupEyebrows.length > 0) out.duplicate_eyebrow = dupEyebrows;
+  // Generic decorative-filler icons (QA D4) — advisory; flags Sparkles/Sparkle.
+  const fillerIcons = findDecorativeFillerIcons(code);
+  if (fillerIcons > 0) out.decorative_icons = fillerIcons;
   const residualOverflow = findOverflowingElements(code, gateAspect);
   if (residualOverflow.length > 0) out.overflow_crop = residualOverflow;
   return out;
