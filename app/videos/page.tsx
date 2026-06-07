@@ -1,14 +1,16 @@
 import Link from "next/link";
+import { promises as fs } from "fs";
+import path from "path";
 import { listBriefs, type BriefStatus, type StoredBrief } from "../../lib/store";
 import { AppHeader } from "../../components/AppHeader";
+import { ProjectThumb } from "../../components/ProjectThumb";
 
 /**
  * /videos — "Your videos" gallery (the app's home base for returning users).
  *
- * Lists every saved brief newest-first as quiet cards. The front door
- * (/new) stays the create-first entry; this is where you come back to
- * reopen work. Per DESIGN.md the chrome is quiet: greyscale cards, the
- * emerald accent only on status and the one loud "New video" action.
+ * Each card leads with the work: the rendered MP4 (plays on hover) when it
+ * exists, otherwise the live composition preview (loads on hover), otherwise a
+ * branded placeholder. Newest first, true aspect ratios in a masonry layout.
  */
 export const dynamic = "force-dynamic";
 
@@ -33,8 +35,52 @@ function fmtDate(iso: string): string {
   return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
 
+const exists = async (p: string): Promise<boolean> => {
+  try {
+    await fs.access(p);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+type Card = {
+  brief: StoredBrief;
+  aspect: string;
+  mp4Url: string | null;
+  previewUrl: string | null;
+};
+
 export default async function VideosPage() {
   const briefs = await listBriefs();
+
+  const cards: Card[] = await Promise.all(
+    briefs.map(async (brief): Promise<Card> => {
+      // Fall back to 16:9 for legacy briefs whose stored format isn't one of
+      // the known keys (the .data JSON predates the current type).
+      const aspect =
+        (brief.distribution_format && ASPECT[brief.distribution_format]) ||
+        "16:9";
+      const sid = brief.script_id;
+      if (!sid) return { brief, aspect, mp4Url: null, previewUrl: null };
+      const [hasMp4, hasComp] = await Promise.all([
+        exists(path.join(process.cwd(), "public", "renders", `${sid}.mp4`)),
+        exists(
+          path.join(process.cwd(), "src", "generated", sid, "Composition.tsx"),
+        ),
+      ]);
+      return {
+        brief,
+        aspect,
+        mp4Url: hasMp4 ? `/renders/${sid}.mp4` : null,
+        // Only offer the live preview when there's no finished MP4 to show.
+        previewUrl:
+          !hasMp4 && hasComp
+            ? `/api/preview/${sid}/iframe?scene=0`
+            : null,
+      };
+    }),
+  );
 
   return (
     <>
@@ -59,43 +105,40 @@ export default async function VideosPage() {
           </Link>
         </div>
 
-        {briefs.length === 0 ? (
+        {cards.length === 0 ? (
           <EmptyState />
         ) : (
-          <ul className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {briefs.map((b) => (
-              <VideoCard key={b.id} brief={b} />
+          <div className="columns-1 gap-3 sm:columns-2 lg:columns-3">
+            {cards.map((c) => (
+              <VideoCard key={c.brief.id} card={c} />
             ))}
-          </ul>
+          </div>
         )}
       </main>
     </>
   );
 }
 
-function VideoCard({ brief }: { brief: StoredBrief }) {
+function VideoCard({ card }: { card: Card }) {
+  const { brief, aspect, mp4Url, previewUrl } = card;
   const status = STATUS[brief.status];
-  const aspect = brief.distribution_format
-    ? ASPECT[brief.distribution_format]
-    : null;
   const title = brief.purpose?.trim() || "Untitled video";
 
   return (
-    <li>
-      <Link
-        href={`/review/${brief.id}`}
-        className="group flex h-full flex-col rounded-md border border-hairline bg-surface p-5 transition-all hover:border-hairline-strong hover:shadow-[0_14px_34px_-22px_rgba(18,26,43,0.4)]"
-      >
-        <div className="mb-3 flex items-center justify-between gap-2 font-mono text-[11px] text-faint">
+    <Link
+      href={`/review/${brief.id}`}
+      className="group mb-3 block break-inside-avoid overflow-hidden rounded-md border border-hairline bg-surface transition-all hover:border-hairline-strong hover:shadow-[0_14px_34px_-22px_rgba(18,26,43,0.4)]"
+    >
+      <ProjectThumb aspect={aspect} mp4Url={mp4Url} previewUrl={previewUrl} />
+      <div className="p-4">
+        <div className="mb-2 flex items-center justify-between gap-2 font-mono text-[11px] text-faint">
           <span className="uppercase tracking-[0.12em]">
-            {aspect ?? "—"} · {brief.duration_seconds}s
+            {aspect} · {brief.duration_seconds}s
           </span>
           <span>{fmtDate(brief.created_at)}</span>
         </div>
-        <p className="line-clamp-3 flex-1 text-[15px] leading-snug text-ink transition-colors group-hover:text-ink">
-          {title}
-        </p>
-        <div className="mt-4 flex items-center gap-2">
+        <p className="line-clamp-3 text-[14px] leading-snug text-ink">{title}</p>
+        <div className="mt-3 flex items-center gap-2">
           <StatusChip tone={status.tone} label={status.label} />
           {brief.brand_kit_url && (
             <span className="truncate font-mono text-[11px] text-faint">
@@ -103,8 +146,8 @@ function VideoCard({ brief }: { brief: StoredBrief }) {
             </span>
           )}
         </div>
-      </Link>
-    </li>
+      </div>
+    </Link>
   );
 }
 
