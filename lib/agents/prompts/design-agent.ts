@@ -39,9 +39,10 @@ import { Img } from "./Img";
 interface Script { /* type-only, no runtime use */ }
 
 const PALETTE = {
-  primary: "#440c12",
-  accent: "#3898ec",
-  // … pulled from the brand context in your user message
+  primary: "#0a0a0a", // structural surface — a neutral (light or dark) carries layout
+  accent: "#0052cc",  // the brand's SIGNATURE hue — keep it PROMINENT and recurring
+  // … exact values pulled from your user message. Lead with the signature color;
+  //    never let a dark neutral dominate while the brand hue is absent.
 };
 
 const BRAND_FONTS_CSS = \`@font-face { … }\`;
