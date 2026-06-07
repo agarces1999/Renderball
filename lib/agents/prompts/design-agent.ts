@@ -364,7 +364,7 @@ Varying the emphasis device scene to scene is what makes the piece feel designed
 - ❌ Italic word in base color, not accent (loses the visual hierarchy)
 - ❌ Random word italicized that isn't semantically the focus
 
-This is non-negotiable. The validator counts \`<em\` tags against \`<h1/h2\` count — they must be ≥ 1:1.
+The validator no longer requires an \`<em\` on every headline — that old mandate produced the "same outfit every scene" tell (an italicized word on literally every hero). Ration the italic move to 1-2 scenes (typically the thesis or turn beat) and vary the emphasis device on the rest, per the counter-examples above.
 
 ## ⚠️ Strikethrough + underline accents — typography moves
 
@@ -426,7 +426,7 @@ The underline bar sits 6-10px below the baseline, full-width of the phrase, in b
 
 - **Strikethrough**: ONLY when the headline contains an explicit OLD vs NEW contrast (legacy systems, outdated tools, "the old way", "yesterday's approach", "manual processes").
 - **Underline**: ONLY on a single thesis word/phrase that carries the headline's meaning (the product category, the differentiator, the call to action's verb).
-- **Italic-accent (the required one)**: always — at least one per headline as established above.
+- **Italic-accent**: rationed — 1-2 scenes per video (the thesis/turn beat), NOT every headline. On the other scenes, either stand the headline clean or use a different device (color shift, weight contrast, underline) so the sequence doesn't repeat one trick.
 
 You may stack: italic-accent ON the same word + underline UNDER the same word = the deck's signature combo. Never more than one strikethrough OR one underline per headline.
 
