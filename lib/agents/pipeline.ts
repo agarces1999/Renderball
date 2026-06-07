@@ -12,6 +12,7 @@ import {
   findSlowTextEntrances,
   findOverflowingElements,
   findDuplicateLogos,
+  findDuplicatedEyebrows,
   assessContinuity,
   assessThroughlinePresence,
   type AspectRatio,
@@ -227,6 +228,8 @@ export interface BuildWarnings {
   images_repaired?: { replaced: number; neutralized: number };
   /** Brand logo still rendered at >1 site after the structural retry (count of sites). */
   duplicate_logo?: number;
+  /** Per-scene editorial eyebrows that appear ≥2× (chrome echo of the kicker). */
+  duplicate_eyebrow?: string[];
   /** Element widths that still cross the canvas edge after the structural retry. */
   overflow_crop?: number[];
 }
@@ -1967,6 +1970,16 @@ const buildBuildWarnings = (
   // tries to fix; this reports what's left so the user can per-scene-regen.
   const residualLogos = findDuplicateLogos(code);
   if (residualLogos > 1) out.duplicate_logo = residualLogos;
+  // Eyebrow/kicker duplication (B3): the per-scene editorial tag echoed in the
+  // chrome shows the same label twice. Gather each scene's eyebrow and flag any
+  // that appear ≥2× in the composition.
+  const sceneEyebrows = (
+    (input.script.scenes ?? []) as Array<{ content?: Record<string, unknown> }>
+  )
+    .map((s) => s.content?.eyebrow)
+    .filter((e): e is string => typeof e === "string" && e.trim().length > 0);
+  const dupEyebrows = findDuplicatedEyebrows(code, sceneEyebrows);
+  if (dupEyebrows.length > 0) out.duplicate_eyebrow = dupEyebrows;
   const residualOverflow = findOverflowingElements(code, gateAspect);
   if (residualOverflow.length > 0) out.overflow_crop = residualOverflow;
   return out;

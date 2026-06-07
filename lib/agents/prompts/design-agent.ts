@@ -442,9 +442,11 @@ Premium decks are recognizable from any frame because the brand chrome is IDENTI
 const BrandChrome: React.FC<{
   sceneIndex: number;
   totalScenes: number;
-  eyebrow?: string;     // section-specific tag, e.g. "THE RESULT"
-  category?: string;    // event/category pill content, e.g. "LAUNCH · SPONSOR SESSION"
-}> = ({ sceneIndex, totalScenes, eyebrow, category }) => (
+  category?: string;    // STABLE context pill, e.g. "LAUNCH · SPONSOR SESSION".
+  // ⚠️ Do NOT pass the scene's eyebrow/kicker text here. That editorial tag
+  // (e.g. "THE CHALLENGE", "COMIENZA EL DÍA") is rendered ONCE as the headline
+  // kicker inside the section — echoing it in the chrome is the #1 redundancy.
+}> = ({ sceneIndex, totalScenes, category }) => (
   <>
     {/* Top-left: brand logo mark + wordmark */}
     <div style={{ position: "absolute", top: 32, left: 40, display: "flex", alignItems: "center", gap: 10, zIndex: 10 }}>
@@ -484,7 +486,8 @@ const BrandChrome: React.FC<{
 - The component is defined ONCE at module scope (outside Section{N}). All sections import + render it.
 - Positions are IDENTICAL across sections — never change \`top\`/\`left\`/\`bottom\` between scenes.
 - Brand logo + wordmark always upper-left. Category pill always upper-right. Pagination dots always bottom-center.
-- Only the **eyebrow** (per-section editorial tag) and **category** (per-section context) vary. The chrome structure does not.
+- The chrome's upper-right **category** pill must be a STABLE context label (brand tagline, event, or section context) — NOT the scene's editorial eyebrow. The editorial eyebrow/kicker (e.g. "THE CHALLENGE") belongs ONLY above the headline, rendered once per section; never duplicate it in the chrome.
+- Only the **category** pill content + the active pagination dot vary per section. The chrome structure does not.
 - Use the script's \`scenes.length\` for \`totalScenes\` and the current scene index for \`sceneIndex\`.
 - If the brief includes an \`event_name\` / \`category\` context, pipe it into the pill. Otherwise omit just the pill (keep logo + dots).
 

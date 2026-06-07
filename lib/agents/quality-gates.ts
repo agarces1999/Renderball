@@ -201,6 +201,36 @@ export const findDuplicateLogos = (code: string): number => {
   return (code.match(re) || []).length;
 };
 
+// ─── Eyebrow/kicker duplication (QA B3) ──────────────────────────────
+//
+// The per-scene editorial eyebrow (e.g. "THE CHALLENGE", "COMIENZA EL DÍA")
+// should appear ONCE — as the headline kicker. When the agent ALSO pipes it
+// into the BrandChrome category pill, the same tag shows twice in the frame.
+// Given each scene's eyebrow text, flag any that appears ≥2 times in the code.
+// Case-insensitive substring count, so the dash-prefixed kicker ("— THE
+// CHALLENGE") and the bare chrome pill ("THE CHALLENGE") both match. Eyebrows
+// are short uppercase tags unlikely to recur in body copy → low false-positive.
+export const findDuplicatedEyebrows = (
+  code: string,
+  eyebrows: string[],
+): string[] => {
+  const hay = code.toLowerCase();
+  const dup: string[] = [];
+  for (const raw of eyebrows) {
+    const e = (raw ?? "").trim();
+    if (e.length < 3) continue; // skip trivial / empty tags
+    const needle = e.toLowerCase();
+    let count = 0;
+    let idx = hay.indexOf(needle);
+    while (idx !== -1) {
+      count++;
+      idx = hay.indexOf(needle, idx + needle.length);
+    }
+    if (count >= 2 && !dup.includes(e)) dup.push(e);
+  }
+  return dup;
+};
+
 // ─── #2 Spatial-continuity gate (coarse v1, ADVISORY) ────────────────
 //
 // A motif that recurs across scenes (tagged `data-throughline="<slug>"`)
