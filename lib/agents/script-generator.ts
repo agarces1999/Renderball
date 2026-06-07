@@ -1,6 +1,6 @@
 import { getAnthropic, MODELS } from "../anthropic";
 import { SCRIPT_GENERATOR_SYSTEM_PROMPT } from "./prompts/script-generator";
-import { validateScript } from "./schema-validator";
+import { validateScript, findUngroundedClaims } from "./schema-validator";
 import { pickSignatureColor } from "../crawl/brand-identity";
 import { ulid } from "../ulid";
 import type { Script } from "../../src/schema";
@@ -262,6 +262,43 @@ export const generateScript = async (
             gotSec,
             validation.script.scenes.length,
           ),
+        });
+        continue;
+      }
+      // Invented-claim guard (QA S5): reject stat-shaped numbers in the copy
+      // that aren't grounded in the crawl/brief. Cheaper than catching it at the
+      // design stage (E2 backstops it); the agent gets the exact tokens to fix.
+      const sourceText = [
+        brief.freeform_prompt,
+        brief.purpose,
+        brief.verified_claims,
+        ...(brief.brand_extract?.body_excerpts ?? []),
+      ]
+        .filter(Boolean)
+        .join(" \n ");
+      const scriptCopy = validation.script.scenes
+        .map((sc) => {
+          const c = (sc as { content?: Record<string, unknown> }).content ?? {};
+          const bullets = Array.isArray(c.bullets)
+            ? (c.bullets as unknown[])
+                .map((b) => (typeof b === "string" ? b : (b as { text?: string })?.text || ""))
+                .join(" ")
+            : "";
+          const meta = Array.isArray(c.meta)
+            ? (c.meta as { value?: unknown }[]).map((m) => String(m?.value ?? "")).join(" ")
+            : "";
+          return [c.headline, c.lede, c.caption, c.eyebrow, bullets, meta]
+            .filter(Boolean)
+            .join(" ");
+        })
+        .join(" \n ");
+      const ungrounded = findUngroundedClaims(scriptCopy, sourceText);
+      if (ungrounded.length > 0 && attempt < MAX_ATTEMPTS) {
+        lastError = `Ungrounded numeric claims: ${ungrounded.join(", ")}`;
+        history.push({ role: "assistant", content: raw });
+        history.push({
+          role: "user",
+          content: `These numeric claims aren't supported by the brief or the crawled site content: ${ungrounded.join(", ")}. Replace each with qualitative copy (e.g. "$840M processed" → "billions processed") or remove it — never invent specific stats.`,
         });
         continue;
       }
