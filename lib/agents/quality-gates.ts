@@ -268,6 +268,28 @@ export const assessFontFidelity = (
   return declared.includes(want) ? null : displayFamily;
 };
 
+// ─── Register variety (QA D3) ────────────────────────────────────────
+//
+// Each scene carries a `register` (stat | quote | full-bleed | split | list |
+// centered) and the script-gen rule is "≥3 distinct across the video" — that's
+// what stops every scene looking like the same template. This MEASURES whether
+// the generated script actually complied. Returns {distinct,total} when a video
+// of ≥3 scenes has fewer than 3 distinct registers, else null. (Registers are a
+// script-generator decision, so this surfaces as a warning, not a build retry —
+// the build can't reassign them; a script regen can.)
+export const assessRegisterVariety = (
+  registers: (string | undefined | null)[],
+): { distinct: number; total: number } | null => {
+  const total = registers.length;
+  if (total < 3) return null; // too few scenes to demand variety
+  const distinct = new Set(
+    registers
+      .map((r) => (r ?? "").trim().toLowerCase())
+      .filter((r) => r.length > 0),
+  ).size;
+  return distinct < 3 ? { distinct, total } : null;
+};
+
 // ─── #2 Spatial-continuity gate (coarse v1, ADVISORY) ────────────────
 //
 // A motif that recurs across scenes (tagged `data-throughline="<slug>"`)

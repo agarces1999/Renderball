@@ -15,6 +15,7 @@ import {
   findDuplicatedEyebrows,
   findDecorativeFillerIcons,
   assessFontFidelity,
+  assessRegisterVariety,
   assessContinuity,
   assessThroughlinePresence,
   type AspectRatio,
@@ -236,6 +237,8 @@ export interface BuildWarnings {
   decorative_icons?: number;
   /** Brand display font name when FONT_DISPLAY uses a different family. */
   font_infidelity?: string;
+  /** Fewer than 3 distinct scene registers across the video → same-y layouts. */
+  low_register_variety?: { distinct: number; total: number };
   /** Element widths that still cross the canvas edge after the structural retry. */
   overflow_crop?: number[];
 }
@@ -2060,6 +2063,14 @@ const buildBuildWarnings = (
   const dispFont = input.brand_identity?.fonts?.display;
   const fontMiss = assessFontFidelity(code, dispFont?.family, dispFont?.fallback ?? true);
   if (fontMiss) out.font_infidelity = fontMiss;
+  // Register variety (QA D3) — measures whether the script's scenes use ≥3
+  // distinct layout registers (same-y layouts otherwise). Surfaced for review.
+  const regVariety = assessRegisterVariety(
+    (input.script.scenes ?? []).map(
+      (s) => (s as { register?: string }).register,
+    ),
+  );
+  if (regVariety) out.low_register_variety = regVariety;
   const residualOverflow = findOverflowingElements(code, gateAspect);
   if (residualOverflow.length > 0) out.overflow_crop = residualOverflow;
   return out;
