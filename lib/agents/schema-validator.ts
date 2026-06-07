@@ -20,6 +20,28 @@ export type ValidationResult =
   | { ok: true; script: Script }
   | { ok: false; error: string };
 
+const HEADLINE_MAX = 72;
+const HEADLINE_TWO_SENTENCE_MIN = 44;
+
+/**
+ * QA S4: a hero headline must be ONE punchy clause. The old cap was 120 chars,
+ * which let the agent cram a headline + subhead into the headline field (Fuse:
+ * "Building takes years. Buying means losing control." — 50c, two sentences).
+ * Flags paragraphs (>72c) and LONG two-sentence crams (a mid-headline sentence
+ * break + more words on a headline >44c). Short stylistic two-beats ("Move fast.
+ * Break things." 24c) pass. Returns the problem clause, or null if clean.
+ */
+export const headlineProblem = (headline: string): string | null => {
+  const h = headline.trim();
+  if (h.length > HEADLINE_MAX) {
+    return `is ${h.length} chars; cap at ${HEADLINE_MAX}. Make headlines pop, not paragraphs.`;
+  }
+  if (h.length > HEADLINE_TWO_SENTENCE_MIN && /[.?!]\s+\p{L}/u.test(h)) {
+    return `is two sentences ("${h}") — a hero headline is ONE clause. Move the second sentence into the lede.`;
+  }
+  return null;
+};
+
 export const validateScript = (input: unknown): ValidationResult => {
   if (typeof input !== "object" || input === null) {
     return { ok: false, error: "Output is not a JSON object." };
@@ -155,11 +177,11 @@ export const validateScript = (input: unknown): ValidationResult => {
         ok: false,
         error: `Section ${idx} content.headline "${headline}" is not readable. Must contain at least 2 letters/digits.`,
       };
-    } else if (headline.length > 120) {
-      return {
-        ok: false,
-        error: `Section ${idx} content.headline is ${headline.length} chars; cap at 120. Make headlines pop, not paragraphs.`,
-      };
+    } else {
+      const problem = headlineProblem(headline);
+      if (problem) {
+        return { ok: false, error: `Section ${idx} content.headline ${problem}` };
+      }
     }
 
     // lede — optional, length-capped
