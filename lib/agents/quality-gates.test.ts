@@ -11,6 +11,7 @@ import {
   findDecorativeFillerIcons,
   assessContinuity,
   assessFontFidelity,
+  assessRegisterVariety,
 } from "./quality-gates";
 
 let passed = 0;
@@ -120,6 +121,27 @@ check("never flags when the brand font is a fallback", () => {
 });
 check("null when there is no FONT_DISPLAY constant", () => {
   assert(assessFontFidelity("const x = 1;", "Splash", false) === null, "no const → null");
+});
+
+// ── D3: register variety ─────────────────────────────────────────────
+check("flags a 5-scene video with all-same register", () => {
+  const r = assessRegisterVariety(["centered", "centered", "centered", "centered", "centered"]);
+  assert(!!r && r.distinct === 1 && r.total === 5, `expected {1,5}, got ${JSON.stringify(r)}`);
+});
+check("passes a varied video (≥3 distinct)", () => {
+  const r = assessRegisterVariety(["full-bleed", "split", "quote", "stat", "centered"]);
+  assert(r === null, `expected null, got ${JSON.stringify(r)}`);
+});
+check("flags 4 scenes with only 2 distinct registers", () => {
+  const r = assessRegisterVariety(["split", "split", "centered", "centered"]);
+  assert(!!r && r.distinct === 2, `expected distinct 2, got ${JSON.stringify(r)}`);
+});
+check("ignores videos with <3 scenes", () => {
+  assert(assessRegisterVariety(["split", "split"]) === null, "2 scenes → null");
+});
+check("treats missing registers as non-distinct", () => {
+  const r = assessRegisterVariety(["split", undefined, "", "split"]);
+  assert(!!r && r.distinct === 1, `expected distinct 1, got ${JSON.stringify(r)}`);
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);
