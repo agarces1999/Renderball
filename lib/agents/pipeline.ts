@@ -1524,9 +1524,26 @@ const appendBrandContext = (
     if (b.description) lines.push(`- Description: ${b.description}`);
     if (b.theme_color) lines.push(`- Theme color: ${b.theme_color}`);
     if (b.palette && b.palette.length > 0) {
-      lines.push(
-        `- Brand palette (use ALL, not just one): ${b.palette.join(", ")}`,
+      // Lead with the brand's SIGNATURE color so the brand hue is prominent
+      // instead of buried under a dark neutral (the Fuse-maroon / Tony's-brown
+      // failure). When the user explicitly picked colors in the wizard, that
+      // block below is authoritative, so skip the auto signature framing.
+      const sig = input.brand_identity?.signature;
+      const userPickedColor = !!(
+        input.palette_roles?.primary || input.palette_roles?.accent
       );
+      if (sig && !userPickedColor) {
+        lines.push(
+          `- SIGNATURE BRAND COLOR: ${sig} — the hue a viewer associates with this brand. It MUST be visually prominent and RECUR across scenes: as a dominant color field, the primary accent (headline em-words, key surfaces, CTAs), or both. NEVER let a dark/neutral color (near-black, a deep shade) dominate the frame while the signature color is absent or shrunk to a tiny detail — that is the #1 brand-fidelity failure.`,
+        );
+        lines.push(
+          `- Supporting palette (neutrals = structure for backgrounds / text / surfaces, NOT the brand's lead hue): ${b.palette.join(", ")}`,
+        );
+      } else {
+        lines.push(
+          `- Brand palette (use ALL, not just one): ${b.palette.join(", ")}`,
+        );
+      }
     }
     // User-picked palette roles override the auto-pick. When set, the
     // Design Agent MUST use the user's choice for PALETTE.primary etc

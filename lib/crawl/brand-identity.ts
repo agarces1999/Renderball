@@ -79,6 +79,14 @@ export interface BrandIdentity {
   wordmark: { text: string; font: string };
   fonts: { display: ResolvedFont; body: ResolvedFont; mono?: ResolvedFont };
   palette: string[];
+  /**
+   * The brand's SIGNATURE color — the vivid, chromatic hue a viewer associates
+   * with the brand (Fuse blue, Tony's red), as opposed to the dark/neutral that
+   * merely covers the most pixels (Fuse maroon, Tony's brown). null for
+   * genuinely monochrome brands (Liquid Death). The design agent leads with
+   * this so the brand color is prominent instead of buried under a neutral.
+   */
+  signature: string | null;
 }
 
 const isLoadableUrl = (u: string): boolean =>
@@ -232,6 +240,72 @@ const luminanceOf = (hex: string): number | null => {
   return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
 };
 
+// HSV-style saturation (0–1) from a hex string. 0 = grey, 1 = fully chromatic.
+const saturationOf = (hex: string): number | null => {
+  const m = /^#?([0-9a-fA-F]{6})$/.exec(hex.trim());
+  if (!m) return null;
+  const n = parseInt(m[1], 16);
+  const r = ((n >> 16) & 255) / 255,
+    g = ((n >> 8) & 255) / 255,
+    b = (n & 255) / 255;
+  const max = Math.max(r, g, b),
+    min = Math.min(r, g, b);
+  return max === 0 ? 0 : (max - min) / max;
+};
+
+const isHex6 = (h: unknown): h is string =>
+  typeof h === "string" && /^#?[0-9a-fA-F]{6}$/.test(h.trim());
+
+const normHex = (h: string): string => {
+  const t = h.trim();
+  return t.startsWith("#") ? t.toLowerCase() : `#${t.toLowerCase()}`;
+};
+
+// A color is a usable SIGNATURE candidate when it's chromatic enough to read as
+// "a color" and neither near-black nor near-white (those are structure, not the
+// brand hue). Tuned to reject Fuse maroon (#440b12, too dark) and near-whites.
+const isSignatureCandidate = (hex: string): boolean => {
+  const sat = saturationOf(hex),
+    lum = luminanceOf(hex);
+  return sat !== null && lum !== null && sat >= 0.3 && lum >= 0.15 && lum <= 0.85;
+};
+
+/**
+ * Pick the brand's SIGNATURE color from its palette.
+ *
+ * Problem this solves: the palette is a flat list, so the design agent led with
+ * whatever color covered the most pixels — usually a dark neutral (Fuse maroon,
+ * Tony's brown) — leaving the actual brand hue (Fuse blue, Tony's red) buried.
+ *
+ * Strategy, most-authoritative first:
+ *   1. theme_color (<meta name="theme-color">) when it's a real chromatic color
+ *      — brands set this to their primary far more often than not.
+ *   2. else the most "vivid" palette member: saturation, biased toward
+ *      mid-luminance so a deep shade doesn't beat a clean brand hue. Still
+ *      strictly better than leading with a near-black neutral.
+ *   3. null when nothing qualifies — a genuinely monochrome brand (Liquid
+ *      Death). We never invent a color for a brand that doesn't have one.
+ */
+export const pickSignatureColor = (
+  palette: string[],
+  themeColor?: string,
+): string | null => {
+  if (isHex6(themeColor) && isSignatureCandidate(themeColor)) {
+    return normHex(themeColor);
+  }
+  const scored = (palette ?? [])
+    .filter((h) => isHex6(h) && isSignatureCandidate(h))
+    .map((h) => {
+      const sat = saturationOf(h) as number;
+      const lum = luminanceOf(h) as number;
+      // Vividness: saturation, gently penalized away from mid-luminance so a
+      // very dark or very pale-but-saturated color loses to a clean brand hue.
+      return { h: normHex(h), score: sat * (1 - Math.abs(lum - 0.5) * 0.6) };
+    })
+    .sort((a, b) => b.score - a.score);
+  return scored.length > 0 ? scored[0].h : null;
+};
+
 // Pick an "ink" color for a monochrome logo: the palette's darkest non-trivial
 // color (so the mark reads as a real brand color — e.g. Fuse maroon — not
 // generic black), falling back to near-black.
@@ -302,5 +376,6 @@ export const resolveBrandIdentity = (
     wordmark: { text: brandName, font: display.family },
     fonts: { display, body, ...(mono ? { mono } : {}) },
     palette: e.palette ?? [],
+    signature: pickSignatureColor(e.palette ?? [], e.theme_color),
   };
 };
