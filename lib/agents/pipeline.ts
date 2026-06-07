@@ -866,6 +866,22 @@ export const buildAnimatedSections = async (
           .join("; ")}. The recurring data-throughline element MUST hold a stable anchor (≈same left/top) across scenes so it reads as ONE continuous object that evolves — not one that jumps on every cut. Keep its position consistent; animate its FORM/content, not its anchor.`
       : null;
 
+  // Uncharted-numbers guard (QA E1). A scene carrying ≥2 numeric meta values but
+  // no recharts import is rendering data as flat text — the HIGH-confidence tier
+  // of the missing_charts warning, so promote just that to a polish retry. (The
+  // looser "chart-friendly concept" tier stays advisory: forcing a chart onto a
+  // vague concept is its own slop.)
+  const unchartedNumericScene =
+    !/from\s+["']recharts["']/.test(designCode) &&
+    input.script.scenes.some((scene) => {
+      const c = (scene as { content?: Record<string, unknown> }).content ?? {};
+      const meta = Array.isArray(c.meta) ? (c.meta as { value?: unknown }[]) : [];
+      return meta.filter((m) => looksLikeNumber(m?.value)).length >= 2;
+    });
+  const chartFailure = unchartedNumericScene
+    ? `Numeric data rendered as flat text — a scene has ≥2 numeric meta stats but the file imports no \`recharts\` chart. Render those numbers as a recharts chart (Bar/Line/Pie) or a bordered KPI-tile cluster — never a plain text row. Charts/tiles are how a deck makes numbers legible.`
+    : null;
+
   // Fabricated-logo guard (structural). When the brand identity resolved NO real
   // logo, the brand mark MUST be the wordmark text — not a drawn substitute. This
   // catches the exact regression where the agent invents a mark and labels it the
@@ -913,7 +929,11 @@ export const buildAnimatedSections = async (
   const includePolish = !skipRetries;
   const polishFailure =
     includePolish &&
-    (!gateReport.ok || contrastFailure || throughlineFailure || driftFailure);
+    (!gateReport.ok ||
+      contrastFailure ||
+      throughlineFailure ||
+      driftFailure ||
+      chartFailure);
 
   if (structuralFailure || polishFailure) {
     const retryMessage = [
@@ -928,6 +948,7 @@ export const buildAnimatedSections = async (
       includePolish ? contrastFailure : null,
       includePolish ? throughlineFailure : null,
       includePolish ? driftFailure : null,
+      includePolish ? chartFailure : null,
       iconFailure,
       overflowFailure,
       logoFailure,
