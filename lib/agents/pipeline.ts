@@ -14,6 +14,7 @@ import {
   findDuplicateLogos,
   findDuplicatedEyebrows,
   findDecorativeFillerIcons,
+  assessFontFidelity,
   assessContinuity,
   assessThroughlinePresence,
   type AspectRatio,
@@ -233,6 +234,8 @@ export interface BuildWarnings {
   duplicate_eyebrow?: string[];
   /** Count of generic shine-filler icons (Sparkles/Sparkle) — advisory slop tell. */
   decorative_icons?: number;
+  /** Brand display font name when FONT_DISPLAY uses a different family. */
+  font_infidelity?: string;
   /** Element widths that still cross the canvas edge after the structural retry. */
   overflow_crop?: number[];
 }
@@ -882,6 +885,18 @@ export const buildAnimatedSections = async (
     ? `Numeric data rendered as flat text — a scene has ≥2 numeric meta stats but the file imports no \`recharts\` chart. Render those numbers as a recharts chart (Bar/Line/Pie) or a bordered KPI-tile cluster — never a plain text row. Charts/tiles are how a deck makes numbers legible.`
     : null;
 
+  // Display-font fidelity (QA C2). When the crawl resolved a REAL brand display
+  // font (not a curated fallback), the comp's FONT_DISPLAY must actually use it.
+  const displayFont = input.brand_identity?.fonts?.display;
+  const fontMismatch = assessFontFidelity(
+    designCode,
+    displayFont?.family,
+    displayFont?.fallback ?? true,
+  );
+  const fontFailure = fontMismatch
+    ? `Off-brand display font — the brand's display typeface is "${fontMismatch}", but FONT_DISPLAY is set to a different family. Set FONT_DISPLAY to "${fontMismatch}" (load it via @font-face / Google Fonts as instructed) so headlines render in the brand's actual face.`
+    : null;
+
   // Fabricated-logo guard (structural). When the brand identity resolved NO real
   // logo, the brand mark MUST be the wordmark text — not a drawn substitute. This
   // catches the exact regression where the agent invents a mark and labels it the
@@ -933,7 +948,8 @@ export const buildAnimatedSections = async (
       contrastFailure ||
       throughlineFailure ||
       driftFailure ||
-      chartFailure);
+      chartFailure ||
+      fontFailure);
 
   if (structuralFailure || polishFailure) {
     const retryMessage = [
@@ -949,6 +965,7 @@ export const buildAnimatedSections = async (
       includePolish ? throughlineFailure : null,
       includePolish ? driftFailure : null,
       includePolish ? chartFailure : null,
+      includePolish ? fontFailure : null,
       iconFailure,
       overflowFailure,
       logoFailure,
@@ -2039,6 +2056,10 @@ const buildBuildWarnings = (
   // Generic decorative-filler icons (QA D4) — advisory; flags Sparkles/Sparkle.
   const fillerIcons = findDecorativeFillerIcons(code);
   if (fillerIcons > 0) out.decorative_icons = fillerIcons;
+  // Display-font fidelity (QA C2) — flags when FONT_DISPLAY isn't the brand face.
+  const dispFont = input.brand_identity?.fonts?.display;
+  const fontMiss = assessFontFidelity(code, dispFont?.family, dispFont?.fallback ?? true);
+  if (fontMiss) out.font_infidelity = fontMiss;
   const residualOverflow = findOverflowingElements(code, gateAspect);
   if (residualOverflow.length > 0) out.overflow_crop = residualOverflow;
   return out;

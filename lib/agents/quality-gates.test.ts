@@ -10,6 +10,7 @@ import {
   findDuplicatedEyebrows,
   findDecorativeFillerIcons,
   assessContinuity,
+  assessFontFidelity,
 } from "./quality-gates";
 
 let passed = 0;
@@ -102,6 +103,23 @@ check("stable anchor → no drift finding", () => {
 check("a motif used only once is ignored", () => {
   const once = `<div data-throughline="orb" style={{ left: 120, top: 120 }} />`;
   assert(assessContinuity(once, "16:9").length === 0, "single occurrence → nothing to compare");
+});
+
+// ── C2: display-font fidelity ────────────────────────────────────────
+check("flags FONT_DISPLAY using a different family than the brand font", () => {
+  const code = `const FONT_DISPLAY = '"Playfair Display", serif';`;
+  assert(assessFontFidelity(code, "Splash", false) === "Splash", "should flag mismatch");
+});
+check("passes when FONT_DISPLAY uses the brand font (quotes/spaces tolerant)", () => {
+  const code = `const FONT_DISPLAY = '"Cabinet Grotesk", sans-serif';`;
+  assert(assessFontFidelity(code, "Cabinet Grotesk", false) === null, "match → null");
+});
+check("never flags when the brand font is a fallback", () => {
+  const code = `const FONT_DISPLAY = '"Whatever", serif';`;
+  assert(assessFontFidelity(code, "Inter", true) === null, "fallback → null");
+});
+check("null when there is no FONT_DISPLAY constant", () => {
+  assert(assessFontFidelity("const x = 1;", "Splash", false) === null, "no const → null");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);
