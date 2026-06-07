@@ -9,6 +9,7 @@ import {
   buildAgentInputFromBrief,
 } from "../../../../lib/agents/pipeline";
 import { writeGeneratedFiles } from "../../../../lib/render/build-wrapper";
+import { verifyScenesRender } from "../../../../lib/render/ssr-render";
 
 /**
  * Preview-only build endpoint. Runs the Design + Choreography agents
@@ -84,6 +85,29 @@ export async function POST(request: Request) {
     warnings: result.warnings,
     assetManifest: result.asset_manifest,
   });
+
+  // SSR-render gate (QA): the pipeline's compile gate only checks that the comp
+  // PARSES (esbuild.transform). The preview/MP4 path actually bundles + evals +
+  // SSRs each Section — strictly stronger. A scene can parse yet throw at render
+  // ("Cannot read properties of undefined (reading 'hex')") or export the wrong
+  // name, and the user would see a broken preview. Verify every scene renders
+  // (same path the preview uses) before reporting success — so ok:true means
+  // "every scene actually renders", not just "parses".
+  const renderCheck = await verifyScenesRender(genDir, script.scenes.length, script);
+  if (!renderCheck.ok) {
+    console.error(
+      "[preview/build] SSR render gate failed:",
+      JSON.stringify(renderCheck.errors),
+    );
+    return NextResponse.json(
+      {
+        error: "one or more scenes failed to render",
+        stage: "render",
+        render_errors: renderCheck.errors,
+      },
+      { status: 500 },
+    );
+  }
 
   return NextResponse.json({
     ok: true,
