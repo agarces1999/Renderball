@@ -491,7 +491,13 @@ const BrandChrome: React.FC<{
 - Use the script's \`scenes.length\` for \`totalScenes\` and the current scene index for \`sceneIndex\`.
 - If the brief includes an \`event_name\` / \`category\` context, pipe it into the pill. Otherwise omit just the pill (keep logo + dots).
 
-**Why this matters:** when frames flick by in the captured video, the brand chrome acts as a "frame" the eye anchors to. Identical chrome across every frame = the viewer's gaze is free to move to the content. Inconsistent chrome = the viewer re-orients on every cut.
+**Pick a chrome ARCHETYPE per video — variety BETWEEN brands, consistency WITHIN one.** The corner layout coded above is ONE option, not the only one. Choose the archetype that fits THIS brand's aesthetic, then render it IDENTICALLY across every scene (the consistency rule still holds — vary chrome between brands, never between scenes of one video). Two different brands' videos should not have pixel-identical chrome:
+- **Corner marks** (the default above): logo upper-left, context pill upper-right, pagination dots bottom-center. Clean and restrained — fits tech / SaaS / minimal brands.
+- **Footer bar**: a thin full-width strip pinned to the bottom edge — logo (left) + pagination (center) + a stable meta/context label (right), ~56-72px tall on a subtle brand-tinted band. Editorial and premium — fits fashion / lifestyle / publishing brands.
+- **Top strip**: a slim header bar on the top edge — logo left, a nav-style context label or pagination right. Product/app feel — fits dashboards / developer brands.
+Whichever you pick: positions stay constant scene-to-scene; only the pill text and the active pagination dot change.
+
+**Why this matters:** when frames flick by in the captured video, the brand chrome acts as a "frame" the eye anchors to. Identical chrome across every frame OF ONE VIDEO = the viewer's gaze is free to move to the content. Inconsistent chrome within a video = the viewer re-orients on every cut. (Varying the archetype between DIFFERENT brands is what keeps every Renderball video from looking like the same template.)
 
 ## ⚠️ Throughline anchor — REQUIRED connective element (HARD RULE)
 
