@@ -1772,15 +1772,12 @@ const assessDesignDensity = (
     );
   }
 
-  // Italic-accent emphasis: each scene's headline should have ≥1 <em> tag
-  // wrapping 1-3 emphasis words in brand-accent color. This is the deck's
-  // signature editorial-typography move; without it every headline reads
-  // like a flat slide title.
-  if (expected.headlines > 0 && counts.italicAccents < expected.headlines) {
-    failures.push(
-      `expected at least ${expected.headlines} italic-accent <em> tag(s) (one per headline); found ${counts.italicAccents}. Wrap 1-3 emphasis words in each headline with <em style={{ fontStyle: "italic", color: BRAND_ACCENT }}>...</em>`,
-    );
-  }
+  // Italic-accent emphasis is RATIONED, not required (QA D1). Forcing ≥1 <em>
+  // per headline produced the "same outfit every scene" tell — an italicized
+  // word on literally every hero, across every brand. The design prompt now
+  // rations the move to 1-2 scenes and varies the emphasis device on the rest,
+  // so a headline that stands clean is no longer a failure. (Over-use is a
+  // taste/sameness issue surfaced as a warning, not a build-blocking failure.)
 
   // Brand-font coverage: when fonts are provided, at least 80% of text-bearing
   // elements should reference a brand font. Counts fontFamily declarations
