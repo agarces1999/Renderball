@@ -201,7 +201,10 @@ const styleClass = (family: string): "serif" | "mono" | "sans" => {
   return "sans";
 };
 
-const genericFor = (family: string): ResolvedFont["generic"] => {
+// Exported so the design pipeline can derive the SAME CSS generic the locked
+// identity uses when it surfaces FONT_* constants to the agent — a sans display
+// face (f37Bolton) must carry a `sans-serif` fallback, never `serif`.
+export const genericFor = (family: string): ResolvedFont["generic"] => {
   const c = styleClass(family);
   return c === "serif" ? "serif" : c === "mono" ? "monospace" : "sans-serif";
 };

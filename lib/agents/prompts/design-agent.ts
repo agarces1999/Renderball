@@ -133,6 +133,12 @@ If your \`visual_concept\` doesn't suggest a clear hero element for the right zo
 
 ⚠️ **Fill the full HEIGHT — HARD RULE (16:9).** The canvas is 1080px tall; use it. Do NOT float a short content block in the upper band and leave a big empty bottom. Anchor the composition to a top-to-bottom baseline grid in the ~920px safe height: eyebrow + headline + lede sit in the upper third (top edge ~120-160px), the hero element / supporting content fills the middle, and a footer row — CTA, meta key-values, or pagination — pins to the lower third (bottom edge ~120-160px). Use \`justify-content: space-between\` on the column, or explicit top AND bottom anchors, so the section breathes edge-to-edge. A composition that occupies only the top ~60% of the frame reads as unfinished. (The empty-bottom look on a 16:9 hero is a common failure — distribute the content vertically.)
 
+⚠️ **\`space-between\` is NOT a hollow barbell, and a hairline is NOT a footer.** Two failure modes of the fill-height rule, both common and both wrong:
+1. **Barbell** — a cluster jammed at the top, a cluster jammed at the bottom, and a big EMPTY band in the middle third. The middle third is the optic center; it MUST carry a dominant element (the hero number / mock / chart / diegetic prop), not be a void you stretched open with \`space-between\`. If your top and bottom rows are far apart with nothing between, either pull them together into a deliberate grid OR move the hero into the gap.
+2. **Hairline footer** — pinning a 4-8px rule, a thin progress bar, or the pagination dots to the very bottom edge does NOT count as "filling the lower third." A thin line at y≈1060 with empty space above it reads as an empty bottom with a stray UI artifact. The lower third needs REAL content (the CTA, a meta key-value row, KPI tiles, a caption cluster, a chart's x-axis) sitting around y≈720-900 — the edge hairline is *extra*, not the content.
+
+Target: the primary content's bounding box should span a CONTINUOUS ~70%+ of the safe height — no internal empty band taller than ~120px — top-anchored ~120px and bottom-anchored ~150px.
+
 ⚠️ **Negative space is EARNED, not a default — anti-void rule.** A small cluster of elements marooned in the center of a vast empty background reads as under-designed, not minimal. If more than ~40% of the frame is bare background with no structure, the composition is under-scaled — fix it by (a) **scaling the hero up** (a hero number/logo/mock should command 30-50% of the canvas — ≥320px tall on 16:9, not floating small and centered), AND (b) **adding real supporting structure** toward the edges: a chart/sparkline, KPI tiles, a diegetic prop, a labeled grid, a baseline rule, an aligned caption row. A supporting visual must be a SUBSTANTIVE, brand-relevant element — never a generic grey placeholder (a lone loading spinner, a single faded icon at 30% opacity). Faint atmosphere (drift dots, glow) does NOT count as filling the frame — it's the backdrop, not the content. Restraint means *fewer, larger, confident* elements that still reach the edges — not a few small ones in a sea of empty.
 
 ### 9:16 portrait (1080×1920) — vertical / social — MOBILE viewing context
@@ -200,7 +206,7 @@ Then every \`<h*>\`, \`<p>\`, \`<span>\`, \`<div>\` with text content has \`font
 If brand fonts have multiple families (e.g. Sohne + SourceCodePro from Stripe), use them BOTH — display sans for headlines, mono for URLs/code/IDs. Don't pick one and ignore the other.
 
 **⚠️ The user message carries a "LOCKED brand identity" block — it is AUTHORITATIVE; obey it over your own picking.**
-- Set \`FONT_DISPLAY\` / \`FONT_BODY\` / \`FONT_MONO\` to EXACTLY the constants it lists (each already has the right CSS generic and a load note: \`@font-face\` the given \`src\`, or load the named Google font when it says "from Google Fonts"). Do NOT choose a different family from the raw crawl font list below it — that list is reference only.
+- Set \`FONT_DISPLAY\` / \`FONT_BODY\` / \`FONT_MONO\` to EXACTLY the constants it lists (each already has the right CSS generic and a load note: \`@font-face\` the given \`src\`, or load the named Google font when it says "from Google Fonts"). **Copy each constant's CSS generic (\`serif\` / \`sans-serif\` / \`monospace\`) VERBATIM — do NOT "correct" it, and never default a display face to \`serif\`.** Many brand display faces are grotesque/geometric SANS (e.g. f37Bolton), so the locked \`FONT_DISPLAY\` ends in \`sans-serif\`; pairing such a face with a \`serif\` fallback renders the wrong typeface the moment the web font fails to load. Do NOT choose a different family from the raw crawl font list below it — that list is reference only.
 - **Logo:** use ONLY the locked \`LOGO\` URL as the brand-logo \`<Img>\`, honoring its placement note (light-only / dark-only / contrast-chip). If the locked identity says **NO usable logo**, render the brand **WORDMARK as styled text** in FONT_DISPLAY — and that is the whole brand mark. NEVER invent a logo URL, NEVER point an \`<Img src>\` at a page URL, NEVER grab a UI/search/menu SVG as the logo, and — this is the one that shipped — **NEVER DRAW a substitute mark**: do not invent a geometric logo (two squares, a monogram, initials-in-a-box, an abstract glyph) and present it as the brand's logo when none was provided. No real logo = wordmark text, full stop. A fabricated mark is worse than no mark; a build gate flags it. (Bugs this prevents: a search icon shipped as Falabella's "logo"; an invented "two squares" mark shipped as Fuse's.)
 
 ## ⚠️ Body-text floor by viewing context — HARD RULE
@@ -247,6 +253,8 @@ The viewer reads the video for ~30 seconds. Every readable element MUST have eno
 | Brand chrome (logo mark, progress dots, eyebrow tags) | Min 3:1 | Solid OR low-variance gradient |
 
 **⚠️ CTA color — HARD RULE.** The primary CTA (button / pill) MUST be a **SOLID fill in the SIGNATURE brand color** — the exact hex on the "SIGNATURE BRAND COLOR" line in your input — with its label in white or the palette's lightest/darkest neutral, whichever clears 4.5:1. The CTA is the single loudest on-brand moment in the whole video; it has to read as a *filled brand button*, never a faint grey/neutral **outline** pill. A \`1px solid #777\` border with neutral text is effectively invisible and off-brand — this is a recurring failure, do not ship it. If the brand is genuinely monochrome (NO signature color was provided), fill the CTA with the highest-contrast neutral (near-black on light, near-white on dark) as a SOLID button — still a solid fill, never a low-contrast outline. Let the signature recur elsewhere too: the headline accent/underline, the active pagination dot, and any glow behind the CTA should pull from the same signature hue so the brand color threads through the piece instead of appearing once.
+
+**Exception — when the SCENE BACKGROUND already IS the brand color** (a full-bleed brand-color CTA field): you can't put a brand-color button on a brand-color field (it merges). Invert: use a **SOLID white (or palette-lightest) button**, and make the **label an ink / near-black neutral — NOT the brand color**. Brand-color text on white is the brand's own weakest pairing (e.g. \`#ff5c00\` on \`#ffffff\` ≈ 3.1:1, below the 4.5 floor and barely readable). The button reads as the brand moment because the whole field is the brand color; the label just needs to be legible, so give it real contrast (ink on white), never the low-contrast brand hue.
 
 **When to use solid vs gradient backgrounds:**
 
@@ -440,7 +448,15 @@ Premium decks are recognizable from any frame because the brand chrome is IDENTI
 
 **Define a single \`BrandChrome\` component at module scope** and render it inside EVERY Section{N}. Identical position, identical styling, only \`sceneIndex\` and \`totalScenes\` props differ.
 
-⚠️ **The brand logo lives ONLY in BrandChrome — never render it again inside a scene.** BrandChrome already places the logo (top-left) on every scene. Individual Section{N} components MUST NOT render their own brand-logo \`<Img>\` — not the opening scene, not the CTA scene. A second logo collides with BrandChrome's (two logos stacked in the same corner) and reads as a bug. If the opening or CTA wants a bigger brand moment, scale the treatment inside BrandChrome via \`sceneIndex\` (e.g. a larger logo on scene 0); do not add a separate logo image. A build-time gate counts brand-logo images and forces a regeneration if more than one exists.
+⚠️ **EXACTLY ONE brand logo per frame — by default it lives ONLY in BrandChrome.** BrandChrome already places the logo (top-left) on every scene. Individual Section{N} components MUST NOT render their own brand-logo \`<Img>\` — a second logo collides with BrandChrome's and reads as a bug (the recurring \`duplicate_logo\` finding: a centered CTA logo PLUS the corner chrome logo = two logos in one frame).
+
+The ONLY sanctioned way to show a bigger brand moment (a logo-led opening or CTA) is to render that hero logo **and suppress BrandChrome's corner logo on that one scene**, so the count stays exactly one. Give BrandChrome a \`showCornerLogo\` prop and gate the corner \`<Img>\` on it:
+\`\`\`tsx
+// CTA/opening Section renders the hero logo, and tells chrome to hide its corner mark:
+<BrandChrome sceneIndex={i} totalScenes={n} category="…" showCornerLogo={false} />
+// In BrandChrome: {showCornerLogo !== false && (<div … corner logo …/>)}
+\`\`\`
+Never show both. A build-time gate counts brand-logo images and flags more than one — keep it at exactly one.
 
 \`\`\`tsx
 const BrandChrome: React.FC<{
@@ -450,21 +466,31 @@ const BrandChrome: React.FC<{
   // ⚠️ Do NOT pass the scene's eyebrow/kicker text here. That editorial tag
   // (e.g. "THE CHALLENGE", "COMIENZA EL DÍA") is rendered ONCE as the headline
   // kicker inside the section — echoing it in the chrome is the #1 redundancy.
-}> = ({ sceneIndex, totalScenes, category }) => (
+  showCornerLogo?: boolean; // set false on a scene that renders its OWN hero logo (CTA/opening) — keeps it to ONE logo per frame.
+  onBrandColorBg?: boolean; // set true on a full-bleed brand-color scene so the chrome inverts to a readable ink, not same-hue-on-same-hue.
+}> = ({ sceneIndex, totalScenes, category, showCornerLogo, onBrandColorBg }) => {
+  // Contrast-aware chrome ink: on a brand-color full-bleed field the default
+  // BRAND_LIGHT/BRAND_ACCENT tokens become invisible (e.g. orange pill text on
+  // an orange bg). Flip to a high-contrast ink for THIS scene.
+  const ink = onBrandColorBg ? "#ffffff" : BRAND_LIGHT;
+  const dot = onBrandColorBg ? "#ffffff" : BRAND_ACCENT;
+  return (
   <>
-    {/* Top-left: brand logo mark + wordmark */}
+    {/* Top-left: brand logo mark + wordmark — omitted when the scene shows its own hero logo */}
+    {showCornerLogo !== false && (
     <div style={{ position: "absolute", top: 32, left: 40, display: "flex", alignItems: "center", gap: 10, zIndex: 10 }}>
       <Img src="<HD-LOGO-URL-FROM-SCRIPT-ASSETS>" style={{ height: 28, width: "auto" }} />
-      <span style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 18, color: BRAND_LIGHT, letterSpacing: "-0.01em" }}>
+      <span style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 18, color: ink, letterSpacing: "-0.01em" }}>
         {/* brand name */}
       </span>
     </div>
+    )}
 
-    {/* Top-right: category / event pill */}
+    {/* Top-right: category / event pill — kept inside the safe area (right: 40, max-width so it never clips) */}
     {category && (
-      <div style={{ position: "absolute", top: 36, right: 40, display: "flex", alignItems: "center", gap: 8, zIndex: 10 }}>
-        <span style={{ width: 8, height: 8, borderRadius: "50%", background: BRAND_ACCENT, opacity: 0.85 }} />
-        <span style={{ fontFamily: FONT_BODY, fontSize: 11, letterSpacing: "0.18em", textTransform: "uppercase", color: BRAND_LIGHT, opacity: 0.75 }}>
+      <div style={{ position: "absolute", top: 36, right: 40, maxWidth: 460, display: "flex", alignItems: "center", gap: 8, zIndex: 10 }}>
+        <span style={{ width: 8, height: 8, borderRadius: "50%", background: dot, opacity: 0.85, flexShrink: 0 }} />
+        <span style={{ fontFamily: FONT_BODY, fontSize: 11, letterSpacing: "0.18em", textTransform: "uppercase", color: ink, opacity: onBrandColorBg ? 0.95 : 0.75, whiteSpace: "nowrap" }}>
           {category}
         </span>
       </div>
@@ -477,13 +503,14 @@ const BrandChrome: React.FC<{
           width: i === sceneIndex ? 22 : 6,
           height: 4,
           borderRadius: 2,
-          background: i === sceneIndex ? BRAND_ACCENT : "rgba(255,255,255,0.25)",
+          background: i === sceneIndex ? dot : (onBrandColorBg ? "rgba(255,255,255,0.45)" : "rgba(255,255,255,0.25)"),
           transition: "width 0.5s ease",
         }} />
       ))}
     </div>
   </>
-);
+  );
+};
 \`\`\`
 
 **Rules:**
@@ -494,6 +521,9 @@ const BrandChrome: React.FC<{
 - Only the **category** pill content + the active pagination dot vary per section. The chrome structure does not.
 - Use the script's \`scenes.length\` for \`totalScenes\` and the current scene index for \`sceneIndex\`.
 - If the brief includes an \`event_name\` / \`category\` context, pipe it into the pill. Otherwise omit just the pill (keep logo + dots).
+- ⚠️ **Adapt the chrome to the scene background.** The chrome's default ink (\`BRAND_LIGHT\`/\`BRAND_ACCENT\`) assumes a DARK scene. On a full-bleed **brand-color** scene (e.g. an orange CTA field) those tokens become invisible — orange pill text on an orange bg, an orange dot lost in the field. Pass \`onBrandColorBg\` for that scene so the chrome flips to a high-contrast ink (white on a saturated brand color). The chrome must clear 3:1 against THIS scene's actual background, every scene.
+- ⚠️ **Keep the chrome inside the safe area.** The top-right pill sits at \`right: 40\` with \`whiteSpace: nowrap\` and a \`maxWidth\` so a long \`category\` never spills off the right edge (a clipped "GET STARTE…" reads as broken). Same for the corner logo at \`left: 40\`.
+- ⚠️ **One logo per frame.** On a scene that renders its own hero logo (a logo-led opening or the CTA), pass \`showCornerLogo={false}\` so the corner mark is suppressed and the frame has exactly one logo (see the EXACTLY ONE brand logo rule above).
 
 **Pick a chrome ARCHETYPE per video — variety BETWEEN brands, consistency WITHIN one.** The corner layout coded above is ONE option, not the only one. Choose the archetype that fits THIS brand's aesthetic, then render it IDENTICALLY across every scene (the consistency rule still holds — vary chrome between brands, never between scenes of one video). Two different brands' videos should not have pixel-identical chrome:
 - **Corner marks** (the default above): logo upper-left, context pill upper-right, pagination dots bottom-center. Clean and restrained — fits tech / SaaS / minimal brands.
@@ -535,6 +565,10 @@ If the throughline names a discrete object already (a product card, a chat popup
 </div>
 \`\`\`
 Two build-time gates read these tags: one fails the build if the throughline element appears in too few scenes (PRESENCE — the failure this rule exists to prevent); the other flags an element whose \`left\`/\`top\` anchor jumps between scenes (DRIFT). The slug is a stable identity ("this is the same object across scenes"); evolving its *content* is encouraged, moving its *anchor* is not.
+
+**Step 5 — make it READ as the anchor, not as UI chrome, and TAG every instance.** Two failures seen in real output:
+- **Degraded to a hairline.** A "progress / fill" throughline rendered as a 4-8px line pinned to the absolute frame edge (y≈1060) reads as a stray UI progress bar, not a narrative spine — and it leaves the lower third empty (see the hairline-footer rule). Render it as a SUBSTANTIAL, legible element integrated into the content zone: a thicker labeled track (e.g. with a "12% · stalled" → "100%" value), or whatever concrete object embodies the metaphor, sized so the eye registers "this is the thing evolving." Let the FILL/STATE evolve across scenes — don't shrink the element itself to a thread at the edge.
+- **Drawn but not tagged.** The presence gate only counts scenes whose element carries \`data-throughline\`. If you render the element in 5 scenes but tag only 1, the build reports \`throughline_absent\` even though it's on screen every time. Put the SAME \`data-throughline="<slug>"\` on the element's container in EVERY scene it appears — no exceptions.
 
 **Scope:** the throughline element is required across the sequence. A DIFFERENT primitive used only once in a single scene needs no tag and no anchor constraint — compose those wherever they read best. The tag is reserved for the one connective element.
 
@@ -597,7 +631,7 @@ The input lists each section's \`content\` with explicit fields. Map each to a v
 | \`headline\` | Center-stage hero | Display weight. Serif if brand provides one, else heavy sans. Size: desktop ~64-128px, **mobile ≥80px (sweet spot 96-140px)**. Italic-accent on emphasis words is welcome. |
 | \`lede\` | Beneath the headline | Body font (sans), opacity ~0.85. Max-width ~600-720px desktop / ~840-960px mobile to keep readable line length. Size: desktop ~20-22px, **mobile ≥36px**. |
 | \`bullets\` | Below the lede OR in a column | **Use a real \`<ul>\` with one \`<li>\` per item.** Each \`<li>\` styled with a brand-accent leading marker (dot, dash, or check). Parallel formatting. Size: desktop ~18-20px, **mobile ≥28px**. The validator REJECTS bullets emitted as \`<div>\` rows. See template below. |
-| \`caption\` | Small support text | Opacity ~0.6-0.75. Sits under primary content or inside a diegetic UI as status text. Size: desktop ~14-16px, **mobile ≥22px**. |
+| \`caption\` | Small support text | Opacity ~0.6-0.75. Sits under primary content or inside a diegetic UI as status text. Size: desktop ~14-16px, **mobile ≥22px**. ⚠️ **Skip it when it would be REDUNDANT** — do NOT render the caption if it merely restates the headline, or repeats content already shown by an adjacent element. Real failures: a caption listing the customer names ("Artisan · AthenaHQ · Bland · Deel · Slash") directly under the row of those same customer LOGOS; a caption echoing the email subject already visible as the first row of an inbox mock. If the caption isn't adding NEW information beyond what's already on screen, omit it — duplicate text reads as a layout bug, not emphasis. |
 | \`meta\` | KPI tile grid OR footer key-value | **If \`meta\` has ≥ 2 entries with NUMERIC values OR data-style labels (\`Members\`, \`Loans/yr\`, \`Uptime\`, \`Series\`) → render as a KPI TILE GRID** (see template below). Otherwise (event/date/topic-style labels) → footer key-value row with hairline rule on top, label small uppercase muted, value larger. |
 | \`cta.primary\` | Hero of a CTA section | Spring-scale entry, large display weight, rendered as a **SOLID button filled with the SIGNATURE brand color** (see the CTA color HARD RULE) — never a grey/neutral outline. |
 | \`cta.secondary\` | Beneath cta.primary | Monospace if it's a URL, smaller weight; a neutral or signature-tinted color (the button above already carries the brand color). |
@@ -765,6 +799,7 @@ import { Shield, Lock, Zap, Check, ArrowRight, TrendingUp, Sparkles, Clock, Buil
 - Don't overuse — 2-4 icons per section is right. More than 8 reads as cluttered.
 - Lucide icons are PURELY visual. Their meaning comes from CONTEXT — a \`<Lock />\` next to "Custody" means custody; next to "Security" means security. Pick by semantic fit, not by name.
 - ⚠️ ICONS MUST BE LITERAL — anti-slop. Pick the icon that matches the label's literal meaning. If no lucide icon literally fits — a fashion product ("Tailored blazer"), a person's name, a place, an abstract value — use a small NUMBER/index (01 · 02 · 03) or NO icon at all. NEVER drop a generic decorator (\`Sparkles\`, \`Sparkle\`, \`Star\`) next to unrelated content just to fill the spot — a sparkle next to "Structured trousers" is the #1 AI-slop tell. The "Branding / shine" icons are ONLY for content literally about shine / quality / rating / AI, never universal filler.
+- ⚠️ ICONS MUST BE ANCHORED — never free-floating. Every icon belongs INSIDE a content element — a bullet row, a card, a KPI tile, a diegetic-UI control, a label cluster. An icon \`position: absolute\`-d into empty canvas with nothing attached to it (a lone padlock floating mid-frame, a stray gear in the corner) reads as clip-art litter, not design. If an icon isn't paired with a specific label or sitting in a real container, delete it. Decorative atmosphere is drift dots / glows / grain — NOT lucide glyphs.
 
 The hand-coded SVG Illustration Library below is for LARGER hero illustrations (60-240px) that need brand-specific styling. Lucide is for the small consistent icon vocabulary throughout the section. Use BOTH.
 

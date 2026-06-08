@@ -12,6 +12,7 @@ import {
   assessContinuity,
   assessFontFidelity,
   assessRegisterVariety,
+  findRedundantCaptions,
 } from "./quality-gates";
 
 let passed = 0;
@@ -142,6 +143,66 @@ check("ignores videos with <3 scenes", () => {
 check("treats missing registers as non-distinct", () => {
   const r = assessRegisterVariety(["split", undefined, "", "split"]);
   assert(!!r && r.distinct === 1, `expected distinct 1, got ${JSON.stringify(r)}`);
+});
+
+// ── V2: redundant captions ───────────────────────────────────────────────
+const corgiProofScene = {
+  scenes: [
+    {
+      content: {
+        headline: "Trusted by the best",
+        caption: "Artisan · AthenaHQ · Bland · Deel · Slash",
+        asset_ids: ["img1", "img2", "img3", "img4"],
+      },
+    },
+  ],
+  assets: {
+    images: [
+      { id: "img1", alt_text: "Artisan" },
+      { id: "img2", alt_text: "Bland" },
+      { id: "img3", alt_text: "Deel" },
+      { id: "img4", alt_text: "Slash" },
+    ],
+  },
+};
+
+check("flags a caption that lists the names already shown as logos", () => {
+  const r = findRedundantCaptions(corgiProofScene);
+  assert(r.length === 1 && r[0].reason === "lists-shown-assets", `expected lists-shown-assets, got ${JSON.stringify(r)}`);
+});
+
+check("flags a caption that just restates the headline", () => {
+  const r = findRedundantCaptions({
+    scenes: [{ content: { headline: "Quote in minutes", caption: "Quote in minutes." } }],
+  });
+  assert(r.length === 1 && r[0].reason === "echoes-headline", `expected echoes-headline, got ${JSON.stringify(r)}`);
+});
+
+check("a caption that ADDS information is NOT flagged", () => {
+  const r = findRedundantCaptions({
+    scenes: [
+      {
+        content: {
+          headline: "Trusted by the best",
+          caption: "Hundreds of startups, one platform",
+          asset_ids: ["img1", "img2", "img3", "img4"],
+        },
+      },
+    ],
+    assets: corgiProofScene.assets,
+  });
+  assert(r.length === 0, `expected none, got ${JSON.stringify(r)}`);
+});
+
+check("no caption / single asset → not flagged", () => {
+  assert(findRedundantCaptions({ scenes: [{ content: { headline: "Hi" } }] }).length === 0, "no caption");
+  assert(
+    findRedundantCaptions({
+      scenes: [{ content: { headline: "Hi", caption: "Acme", asset_ids: ["x"] } }],
+      assets: { images: [{ id: "x", alt_text: "Acme" }] },
+    }).length === 0,
+    "one asset isn't a 'list'",
+  );
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

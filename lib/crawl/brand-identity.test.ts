@@ -10,6 +10,7 @@ import {
   pickSignatureColor,
   dominantSvgColor,
   signatureWithLogoFallback,
+  genericFor,
 } from "./brand-identity";
 
 // Real palettes captured from the QA sweep.
@@ -130,6 +131,41 @@ check("monochrome brand with no logo color → null (never invent)", () => {
 check("a grey/neutral logo color is NOT a valid fallback → null", () => {
   assert(signatureWithLogoFallback(MONO, undefined, "#cccccc") === null, "grey logo → null");
   assert(signatureWithLogoFallback(MONO, undefined, "not-a-hex") === null, "garbage logo → null");
+});
+
+// ── genericFor — the CSS generic fallback per font family (corgi bug) ─────
+// f37Bolton is a grotesque SANS; the design agent shipped `'"f37Bolton", serif'`
+// so when the cross-origin web font failed to load the headline fell back to a
+// SERIF. genericFor is the single source of truth — a sans must degrade to
+// `sans-serif`, a text serif to `serif`, a code face to `monospace`.
+check("f37Bolton (grotesque sans) → sans-serif, NOT serif", () => {
+  assert(genericFor("f37Bolton") === "sans-serif", `got ${genericFor("f37Bolton")}`);
+});
+check("Geist → sans-serif", () => {
+  assert(genericFor("Geist") === "sans-serif", `got ${genericFor("Geist")}`);
+});
+check("Geist Mono → monospace", () => {
+  assert(genericFor("Geist Mono") === "monospace", `got ${genericFor("Geist Mono")}`);
+});
+check("Inter → sans-serif", () => {
+  assert(genericFor("Inter") === "sans-serif", `got ${genericFor("Inter")}`);
+});
+check("Montserrat (no style signal) → sans-serif, never serif by default", () => {
+  // Display faces are overwhelmingly sans; defaulting an unknown to serif is
+  // exactly the bug. The classifier must land on sans-serif here.
+  assert(genericFor("Montserrat") === "sans-serif", `got ${genericFor("Montserrat")}`);
+});
+check("Playfair Display → serif", () => {
+  assert(genericFor("Playfair Display") === "serif", `got ${genericFor("Playfair Display")}`);
+});
+check("Tiempos Text → serif", () => {
+  assert(genericFor("Tiempos Text") === "serif", `got ${genericFor("Tiempos Text")}`);
+});
+check("Fraunces → serif", () => {
+  assert(genericFor("Fraunces") === "serif", `got ${genericFor("Fraunces")}`);
+});
+check("JetBrains Mono → monospace", () => {
+  assert(genericFor("JetBrains Mono") === "monospace", `got ${genericFor("JetBrains Mono")}`);
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);
