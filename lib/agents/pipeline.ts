@@ -30,40 +30,10 @@ import type {
   AgentFileRef,
 } from "./script-generator";
 
-// The design agent references the brand logo as the constant LOGO_SRC and never
-// reproduces the (possibly 3KB data:) URL itself — an LLM mangles long base64,
-// and a literal sentinel string gets altered across the design→animation passes.
-// The pipeline OWNS the value: it strips any LOGO_SRC the agent declared (and any
-// leftover sentinel), then injects the real const after the imports. Both agents
-// only carry the short identifier through, which they preserve reliably.
-const LOGO_SENTINEL = "__BRAND_LOGO_SRC__";
-
-const injectLogoSrc = (code: string, logoSrc: string | undefined): string => {
-  if (!logoSrc) return code;
-  // Drop anything the agent authored for LOGO_SRC so our injected const is the
-  // single source of truth: a `declare const LOGO_SRC` type stub, a real
-  // `const LOGO_SRC = "...";` (may hold the sentinel or a corrupted value), and
-  // collapse any bare sentinel literal. The agent sometimes also writes a
-  // defensive `RESOLVED_LOGO = typeof LOGO_SRC !== "undefined" ? LOGO_SRC : "<inlined>"`
-  // — that's left intact and simply resolves to our real LOGO_SRC at runtime.
-  let out = code
-    .replace(/^[ \t]*declare\s+const\s+LOGO_SRC\b[^\n]*\r?\n/gm, "")
-    .replace(
-      /^[ \t]*const\s+LOGO_SRC\s*=\s*["'`][^"'`]*["'`]\s*;?[ \t]*\r?\n?/gm,
-      "",
-    )
-    .split(LOGO_SENTINEL)
-    .join(logoSrc);
-  if (!/\bLOGO_SRC\b/.test(out)) return out; // agent didn't reference it
-  const decl = `const LOGO_SRC = ${JSON.stringify(logoSrc)};\n`;
-  const imports = [...out.matchAll(/^import[^\n]*\n/gm)];
-  if (imports.length) {
-    const last = imports[imports.length - 1];
-    const at = (last.index ?? 0) + last[0].length;
-    return out.slice(0, at) + decl + out.slice(at);
-  }
-  return decl + out;
-};
+// LOGO_SRC ownership (strip the agent's declaration + inject the real const
+// after the import block) lives in ./logo-inject so the multi-line-import
+// handling is unit-tested in isolation.
+import { injectLogoSrc } from "./logo-inject";
 
 /**
  * Agent 2 — two-pass design + animation pipeline.
