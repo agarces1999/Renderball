@@ -6,7 +6,7 @@
  * brand's distinctive custom face (corgi.insure → f37Bolton), forcing every
  * headline into a generic serif. No API key, no network.
  */
-import { classifyFontRoles, type CrawledFont } from "./extract-brand";
+import { classifyFontRoles, extractFonts, type CrawledFont } from "./extract-brand";
 
 const f = (family: string): CrawledFont => ({ family, src: `${family}.woff2` });
 
@@ -82,6 +82,39 @@ check("icon fonts are skipped, not routed to display", () => {
 check("single face → it's the body, display falls back to the same", () => {
   const roles = classifyFontRoles([f("Geist")]);
   assert(roles.body === "Geist", `expected Geist body, got ${roles.body}`);
+});
+
+// ── Font URL resolution — resolve url() against the STYLESHEET, not the page ──
+// Locks the corgi f37Bolton bug: a relative `url(../media/x.otf)` in a sub-path
+// stylesheet must keep the sub-path (→ /_next/static/media/x.otf), not collapse
+// to the page root (→ /media/x.otf, which 404s).
+const corgiFace = `@font-face { font-family: "f37Bolton"; src: url(../media/f37_bolton_light.0o6osq.otf) format("opentype"); font-weight: 300; }`;
+
+check("relative font url() resolves against the stylesheet URL (keeps /_next/static)", () => {
+  const out = extractFonts(corgiFace, "https://corgi.insure/_next/static/css/app.abc.css");
+  assert(out.length === 1, `expected 1 font, got ${out.length}`);
+  assert(
+    out[0].src === "https://corgi.insure/_next/static/media/f37_bolton_light.0o6osq.otf",
+    `expected /_next/static/media path, got ${out[0].src}`,
+  );
+});
+
+check("resolving the SAME face against the page root drops the path (the bug)", () => {
+  // documents the old behavior the fix avoids: page-base resolution → /media/ (404)
+  const out = extractFonts(corgiFace, "https://corgi.insure/");
+  assert(out[0].src === "https://corgi.insure/media/f37_bolton_light.0o6osq.otf", `got ${out[0].src}`);
+});
+
+check("absolute font url() is unaffected by the base", () => {
+  const face = `@font-face { font-family: "Geist"; src: url(https://cdn.example.com/geist.woff2) format("woff2"); }`;
+  const out = extractFonts(face, "https://corgi.insure/_next/static/css/app.css");
+  assert(out[0].src === "https://cdn.example.com/geist.woff2", `got ${out[0].src}`);
+});
+
+check("root-absolute path resolves against the origin (not the sheet dir)", () => {
+  const face = `@font-face { font-family: "Brand"; src: url(/fonts/brand.woff2) format("woff2"); }`;
+  const out = extractFonts(face, "https://x.com/_next/static/css/a.css");
+  assert(out[0].src === "https://x.com/fonts/brand.woff2", `got ${out[0].src}`);
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

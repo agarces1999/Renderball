@@ -177,7 +177,18 @@ export const extractBrand = async (
   // Results merge with dedupe-by-family-name. Path #1 wins for any
   // family it found (it has src URL + weight); path #2 fills in
   // family names path #1 missed.
-  const fontsFromCss = extractFonts(allCss, url);
+  // Resolve each stylesheet's font url()s against THAT sheet's own URL — NOT the
+  // page URL. A CSS `url()` is relative to the stylesheet (browser behavior): a
+  // linked sheet at /_next/static/css/x.css with `url(../media/f.otf)` resolves
+  // to /_next/static/media/f.otf. Resolving against the page root instead drops
+  // the /_next/static segment, so the font 404s and never loads (the corgi
+  // f37Bolton bug — the file is fine, the crawl just recorded the wrong path).
+  // (allCss keeps the page base for palette/motion — those need no url resolution.)
+  const fontsFromCss = [
+    ...extractFonts(inlineCss, url), // inline <style>: relative to the page
+    ...fetchedCss.flatMap((css, i) => extractFonts(css, cssLinks[i])),
+    ...importedCss.flatMap((css, i) => extractFonts(css, importHrefs[i])),
+  ];
   const fontsFromGoogle = extractGoogleFontsFromLinks(html);
   const fontsFromInline = extractInlineFontFamilies(html);
   const fonts = mergeFonts(fontsFromCss, fontsFromGoogle, fontsFromInline);
