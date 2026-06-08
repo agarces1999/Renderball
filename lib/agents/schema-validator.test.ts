@@ -2,7 +2,11 @@
  * Regression tests for headlineProblem (QA S4) — hero headlines must be one
  * punchy clause, not a crammed headline+subhead. Run: `npm test`.
  */
-import { headlineProblem, findUngroundedClaims } from "./schema-validator";
+import {
+  headlineProblem,
+  findUngroundedClaims,
+  findUngroundedStageLabels,
+} from "./schema-validator";
 
 let passed = 0;
 let failed = 0;
@@ -61,6 +65,31 @@ check("bare integers / years / qualitative copy are NOT flagged", () => {
 check("multiplier + percent are stat-shaped and checked", () => {
   const u = findUngroundedClaims("10x faster", "");
   assert(u.includes("10x"), `expected 10x flagged, got ${JSON.stringify(u)}`);
+});
+
+// ── G5: ungrounded funding-stage labels ──────────────────────────────────
+check("flags an invented 'Series C' (corgi: brief only says funding round)", () => {
+  const u = findUngroundedStageLabels(
+    "Corgi just raised $250M. Series C.",
+    "Announce Corgi's $250M funding round and introduce the product.",
+  );
+  assert(u.length === 1 && /series c/i.test(u[0]), `expected Series C, got ${JSON.stringify(u)}`);
+});
+check("a grounded stage (stated in source) → not flagged", () => {
+  const u = findUngroundedStageLabels("Our Series B is closed", "We just closed our Series B round.");
+  assert(u.length === 0, `expected none, got ${JSON.stringify(u)}`);
+});
+check("pre-seed grounded across hyphen/space normalization", () => {
+  const u = findUngroundedStageLabels("Built at pre-seed", "raised at preseed stage");
+  assert(u.length === 0, `expected none (normalized match), got ${JSON.stringify(u)}`);
+});
+check("ordinary copy with 'series of' / 'a series' is NOT flagged", () => {
+  const u = findUngroundedStageLabels("a series of breakthroughs, Series Capital partners", "");
+  assert(u.length === 0, `expected none, got ${JSON.stringify(u)}`);
+});
+check("flags growth/bridge round when unsupported; dedupes", () => {
+  const u = findUngroundedStageLabels("Closed a growth round. The growth round scales us.", "");
+  assert(u.length === 1 && /growth round/i.test(u[0]), `expected one growth round, got ${JSON.stringify(u)}`);
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

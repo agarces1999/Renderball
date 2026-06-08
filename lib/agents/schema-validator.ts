@@ -70,6 +70,33 @@ export const findUngroundedClaims = (
   return out;
 };
 
+/**
+ * QA G5: catch a fabricated FUNDING STAGE label at the script stage. A brief
+ * that says "$250M funding round" does NOT state the stage — yet the script
+ * agent labeled corgi's raise "Series C" out of thin air, a specific factual
+ * claim nobody supplied. Like findUngroundedClaims this is deliberately narrow:
+ * it ONLY matches distinctive stage labels (Series A–K, pre-seed, seed/angel/
+ * growth/bridge/mezzanine round), so ordinary copy is never touched. A stage is
+ * grounded if it appears in the source text. Returns the ungrounded labels.
+ */
+const STAGE_LABEL_RX =
+  /\bseries\s+[a-k]\b|\bpre-?seed\b|\bseed\s+round\b|\bangel\s+round\b|\bgrowth\s+round\b|\bbridge\s+round\b|\bmezzanine\s+round\b/gi;
+
+export const findUngroundedStageLabels = (
+  scriptText: string,
+  sourceText: string,
+): string[] => {
+  const src = sourceText.toLowerCase().replace(/[\s-]/g, "");
+  const out: string[] = [];
+  for (const m of scriptText.matchAll(STAGE_LABEL_RX)) {
+    const token = m[0].trim().replace(/\s+/g, " ");
+    const norm = token.toLowerCase().replace(/[\s-]/g, "");
+    if (src.includes(norm)) continue; // grounded — the stage is actually stated
+    if (!out.some((t) => t.toLowerCase() === token.toLowerCase())) out.push(token);
+  }
+  return out;
+};
+
 export const validateScript = (input: unknown): ValidationResult => {
   if (typeof input !== "object" || input === null) {
     return { ok: false, error: "Output is not a JSON object." };
