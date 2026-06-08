@@ -133,6 +133,8 @@ If your \`visual_concept\` doesn't suggest a clear hero element for the right zo
 
 ⚠️ **Fill the full HEIGHT — HARD RULE (16:9).** The canvas is 1080px tall; use it. Do NOT float a short content block in the upper band and leave a big empty bottom. Anchor the composition to a top-to-bottom baseline grid in the ~920px safe height: eyebrow + headline + lede sit in the upper third (top edge ~120-160px), the hero element / supporting content fills the middle, and a footer row — CTA, meta key-values, or pagination — pins to the lower third (bottom edge ~120-160px). Use \`justify-content: space-between\` on the column, or explicit top AND bottom anchors, so the section breathes edge-to-edge. A composition that occupies only the top ~60% of the frame reads as unfinished. (The empty-bottom look on a 16:9 hero is a common failure — distribute the content vertically.)
 
+⚠️ **Negative space is EARNED, not a default — anti-void rule.** A small cluster of elements marooned in the center of a vast empty background reads as under-designed, not minimal. If more than ~40% of the frame is bare background with no structure, the composition is under-scaled — fix it by (a) **scaling the hero up** (a hero number/logo/mock should command 30-50% of the canvas — ≥320px tall on 16:9, not floating small and centered), AND (b) **adding real supporting structure** toward the edges: a chart/sparkline, KPI tiles, a diegetic prop, a labeled grid, a baseline rule, an aligned caption row. A supporting visual must be a SUBSTANTIVE, brand-relevant element — never a generic grey placeholder (a lone loading spinner, a single faded icon at 30% opacity). Faint atmosphere (drift dots, glow) does NOT count as filling the frame — it's the backdrop, not the content. Restraint means *fewer, larger, confident* elements that still reach the edges — not a few small ones in a sea of empty.
+
 ### 9:16 portrait (1080×1920) — vertical / social — MOBILE viewing context
 **Vertical stacking is the law.** No horizontal trios, no side-by-side splits — they don't fit. Instead:
 - Top third (0-640px): logo + eyebrow + headline. Headline wraps to 2-3 lines, \`fontSize\` **96-140px** (mobile floor), \`lineHeight: 1.05\`. NEVER let a single-word headline like "SPIDERMAN" exceed 920px wide as one line — wrap it or shrink it.
@@ -149,7 +151,7 @@ Tight, centered, symmetric. Primary content in a centered ~840×840 column. Head
 
 Each scene in the user message carries a \`register\` — its intended SHAPE: \`stat\` | \`quote\` | \`full-bleed\` | \`split\` | \`list\` | \`centered\`. Honor it, and let it drive a DISTINCT layout per scene so the video doesn't read as one template repeated N times (the #1 "AI slop" tell). Map register → archetype:
 
-- **stat** — one massive number/metric (200-360px) dominates the frame; minimal supporting copy. A single KPI hero, not a card grid.
+- **stat** — one massive number/metric (200-360px) dominates the frame; minimal supporting copy. A single KPI hero, not a card grid. **Render the hero number TWO-TONE, not one flat neutral:** the magnitude in the display face + high-contrast ink, with the unit/suffix (\`M\`, \`%\`, \`×\`, \`+\`, \`k\`) OR a key digit in the **SIGNATURE brand color**, so the number itself carries the brand (e.g. \`$250\` in ink, \`M\` in signature). A single-color hero number on an empty field is the flattest, most generic stat treatment — avoid it. Pair the number with a supporting structure (a thin baseline rule, a sparkline, a \`+12% YoY\` delta, a small label cluster) so it isn't marooned in negative space.
 - **quote** — a large centered pull-quote / manifesto line (60-110px), generous margins, small attribution beneath. Sparse and confident.
 - **full-bleed** — an edge-to-edge image or brand color field fills the frame; text overlaid on a scrim/gradient for contrast. The most cinematic register.
 - **split** — asymmetric left/right: editorial copy stack on one side, a substantive visual prop (UI mock, chart, animated element) on the other.
@@ -243,6 +245,8 @@ The viewer reads the video for ~30 seconds. Every readable element MUST have eno
 | Button labels / CTA primary | Min 4.5:1 ratio | Solid button background |
 | Decorative atmosphere (drift dots, orbital rings, glow blobs, grain) | NO contrast requirement | Anything — they ARE the gradient |
 | Brand chrome (logo mark, progress dots, eyebrow tags) | Min 3:1 | Solid OR low-variance gradient |
+
+**⚠️ CTA color — HARD RULE.** The primary CTA (button / pill) MUST be a **SOLID fill in the SIGNATURE brand color** — the exact hex on the "SIGNATURE BRAND COLOR" line in your input — with its label in white or the palette's lightest/darkest neutral, whichever clears 4.5:1. The CTA is the single loudest on-brand moment in the whole video; it has to read as a *filled brand button*, never a faint grey/neutral **outline** pill. A \`1px solid #777\` border with neutral text is effectively invisible and off-brand — this is a recurring failure, do not ship it. If the brand is genuinely monochrome (NO signature color was provided), fill the CTA with the highest-contrast neutral (near-black on light, near-white on dark) as a SOLID button — still a solid fill, never a low-contrast outline. Let the signature recur elsewhere too: the headline accent/underline, the active pagination dot, and any glow behind the CTA should pull from the same signature hue so the brand color threads through the piece instead of appearing once.
 
 **When to use solid vs gradient backgrounds:**
 
@@ -595,8 +599,8 @@ The input lists each section's \`content\` with explicit fields. Map each to a v
 | \`bullets\` | Below the lede OR in a column | **Use a real \`<ul>\` with one \`<li>\` per item.** Each \`<li>\` styled with a brand-accent leading marker (dot, dash, or check). Parallel formatting. Size: desktop ~18-20px, **mobile ≥28px**. The validator REJECTS bullets emitted as \`<div>\` rows. See template below. |
 | \`caption\` | Small support text | Opacity ~0.6-0.75. Sits under primary content or inside a diegetic UI as status text. Size: desktop ~14-16px, **mobile ≥22px**. |
 | \`meta\` | KPI tile grid OR footer key-value | **If \`meta\` has ≥ 2 entries with NUMERIC values OR data-style labels (\`Members\`, \`Loans/yr\`, \`Uptime\`, \`Series\`) → render as a KPI TILE GRID** (see template below). Otherwise (event/date/topic-style labels) → footer key-value row with hairline rule on top, label small uppercase muted, value larger. |
-| \`cta.primary\` | Hero of a CTA section | Spring-scale entry, large display weight, brand-accent or high-contrast color. |
-| \`cta.secondary\` | Beneath cta.primary | Monospace if it's a URL, smaller weight, brand-accent-muted color. |
+| \`cta.primary\` | Hero of a CTA section | Spring-scale entry, large display weight, rendered as a **SOLID button filled with the SIGNATURE brand color** (see the CTA color HARD RULE) — never a grey/neutral outline. |
+| \`cta.secondary\` | Beneath cta.primary | Monospace if it's a URL, smaller weight; a neutral or signature-tinted color (the button above already carries the brand color). |
 | \`illustration\` | A specific position the visual_concept calls for | An inline SVG. Pick from the SVG Illustration Library (next section) by matching the intent. |
 | \`asset_ids\` | Mounted via \`<Img>\` | Usually the brand logo or a hero image. Resolve URL from input. |
 
