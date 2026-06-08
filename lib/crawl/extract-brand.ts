@@ -5,6 +5,7 @@ import {
   refinePaletteWithPixels,
 } from "./vision-brand";
 import { readLogoCache, writeLogoCache } from "./logo-cache";
+import { dominantSvgColor } from "./brand-identity";
 
 /**
  * Website crawl + brand extract — V0.3.
@@ -138,6 +139,10 @@ export const extractBrand = async (
     favicon,
     title,
   );
+  // QA G1: the signature/lead color the agents reach for when the palette is
+  // achromatic. Pulled from the logo SVG (the one place a greyscale site still
+  // hides its real color). undefined for raster logos or monochrome marks.
+  const logo_color = await logoColorFromUrl(logoResult?.url);
 
   // Gather all CSS: inline <style> blocks + linked stylesheets.
   const inlineCss = extractInlineStyles(html);
@@ -224,6 +229,7 @@ export const extractBrand = async (
     logo_hd: logoResult?.url,
     logo_confidence: logoResult?.confidence,
     logo_source: logoResult?.source,
+    logo_color,
     fonts,
     font_roles,
     palette,
@@ -535,6 +541,52 @@ const discoverLogoHd = async (
   // Agent rejected all candidates → return undefined so the wizard
   // prompts the user to upload a logo PNG/SVG.
   return undefined;
+};
+
+/**
+ * Extract the logo's dominant chromatic color (QA G1). When the crawled palette
+ * is achromatic — greyscale marketing boilerplate, common on Webflow sites — the
+ * brand's real color often survives only inside the logo mark. Decode the
+ * discovered logo when it's an SVG (data: URI or `.svg` URL) and pull the most
+ * vivid color out via dominantSvgColor. Raster logos (PNG/JPG) return undefined:
+ * pulling a color from those needs pixel clustering, which is out of scope here.
+ * Best-effort — any fetch/parse failure yields undefined and the signature
+ * simply falls back to null (monochrome treatment).
+ */
+const logoColorFromUrl = async (
+  url: string | undefined,
+): Promise<string | undefined> => {
+  if (!url) return undefined;
+  let svg: string | null = null;
+  try {
+    if (url.startsWith("data:")) {
+      if (!/^data:image\/svg/i.test(url)) return undefined;
+      const comma = url.indexOf(",");
+      if (comma === -1) return undefined;
+      const header = url.slice(0, comma);
+      const payload = url.slice(comma + 1);
+      svg = /;base64/i.test(header)
+        ? Buffer.from(payload, "base64").toString("utf8")
+        : decodeURIComponent(payload);
+    } else if (/\.svg(\?|#|$)/i.test(url)) {
+      const r = await fetch(url, {
+        signal: AbortSignal.timeout(4_000),
+        headers: { "User-Agent": USER_AGENT },
+        redirect: "follow",
+      });
+      if (!r.ok) return undefined;
+      const ct = r.headers.get("content-type") ?? "";
+      // Tolerate a missing/incorrect content-type but reject obvious non-SVG.
+      if (ct && !/svg|xml/i.test(ct)) return undefined;
+      svg = await r.text();
+    } else {
+      return undefined; // raster — no SVG color extraction
+    }
+  } catch {
+    return undefined;
+  }
+  if (!svg) return undefined;
+  return dominantSvgColor(svg) ?? undefined;
 };
 
 /**

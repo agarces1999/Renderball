@@ -306,6 +306,54 @@ export const pickSignatureColor = (
   return scored.length > 0 ? scored[0].h : null;
 };
 
+/**
+ * The brand's signature color with the QA G1 logo fallback baked in: prefer the
+ * palette/theme-color pick, and when those are achromatic (all-grey crawl) fall
+ * back to the chromatic color the crawl pulled out of the logo SVG. Single
+ * source of truth so resolveBrandIdentity (design path) and the script generator
+ * agree on the lead hue. Returns null only for a genuinely monochrome brand.
+ */
+export const signatureWithLogoFallback = (
+  palette: string[],
+  themeColor: string | undefined,
+  logoColor: string | undefined,
+): string | null =>
+  pickSignatureColor(palette, themeColor) ??
+  (isHex6(logoColor) && isSignatureCandidate(logoColor) ? normHex(logoColor) : null);
+
+/**
+ * Extract the dominant chromatic color from an SVG's markup (QA G1). When the
+ * crawled palette is all-grey (Webflow boilerplate), the brand color often
+ * survives ONLY in the logo — corgi.insure's orange lives only in its logo SVG,
+ * so the whole video rendered greyscale. This pulls #hex and rgb() colors from
+ * the SVG's fills/strokes/stops, keeps the signature-grade ones (chromatic, not
+ * near-black/white/grey), and returns the most vivid — the brand color. null if
+ * the logo is monochrome (a black/white wordmark genuinely has no color).
+ */
+export const dominantSvgColor = (svg: string): string | null => {
+  if (!svg) return null;
+  const hex6 = svg.match(/#[0-9a-fA-F]{6}\b/g) ?? [];
+  const hex3 = (svg.match(/#[0-9a-fA-F]{3}\b/g) ?? []).map((h) => {
+    const c = h.slice(1);
+    return `#${c[0]}${c[0]}${c[1]}${c[1]}${c[2]}${c[2]}`;
+  });
+  const to2 = (n: string) =>
+    Math.max(0, Math.min(255, parseInt(n, 10))).toString(16).padStart(2, "0");
+  const rgb = [...svg.matchAll(/rgb\(\s*(\d+)[,\s]+(\d+)[,\s]+(\d+)/gi)].map(
+    (m) => `#${to2(m[1])}${to2(m[2])}${to2(m[3])}`,
+  );
+  const cands = [...hex6, ...hex3, ...rgb].filter(isSignatureCandidate);
+  if (cands.length === 0) return null;
+  const scored = cands
+    .map((h) => {
+      const sat = saturationOf(h) as number;
+      const lum = luminanceOf(h) as number;
+      return { h: normHex(h), score: sat * (1 - Math.abs(lum - 0.5) * 0.6) };
+    })
+    .sort((a, b) => b.score - a.score);
+  return scored[0].h;
+};
+
 // Pick an "ink" color for a monochrome logo: the palette's darkest non-trivial
 // color (so the mark reads as a real brand color — e.g. Fuse maroon — not
 // generic black), falling back to near-black.
@@ -376,6 +424,9 @@ export const resolveBrandIdentity = (
     wordmark: { text: brandName, font: display.family },
     fonts: { display, body, ...(mono ? { mono } : {}) },
     palette: e.palette ?? [],
-    signature: pickSignatureColor(e.palette ?? [], e.theme_color),
+    // Signature = the brand's lead hue. Prefer the palette/theme-color pick;
+    // when those are achromatic (all-grey crawl), fall back to the color the
+    // crawl extracted from the LOGO (QA G1 — corgi's orange lives only there).
+    signature: signatureWithLogoFallback(e.palette ?? [], e.theme_color, e.logo_color),
   };
 };

@@ -172,6 +172,9 @@ export const buildAgentInputFromBrief = (
         favicon: brief.brand_extract.favicon,
         apple_touch_icon: brief.brand_extract.apple_touch_icon,
         logo_hd: effectiveLogoHd,
+        // Signature fallback when the palette is achromatic (QA G1) — must reach
+        // resolveBrandIdentity(be) below, so carry it through the mapping.
+        logo_color: brief.brand_extract.logo_color,
         headlines: brief.brand_extract.headlines,
         body_excerpts: brief.brand_extract.body_excerpts,
         page_images: brief.brand_extract.page_images,
