@@ -18,9 +18,11 @@ import {
   assessRegisterVariety,
   assessContinuity,
   assessThroughlinePresence,
+  findRedundantCaptions,
   type AspectRatio,
 } from "./quality-gates";
-import { resolveBrandIdentity, type BrandIdentity } from "../crawl/brand-identity";
+import { resolveBrandIdentity, genericFor, type BrandIdentity } from "../crawl/brand-identity";
+import { makeFontFetcher, inlineFontFaces } from "../render/font-inline";
 import { makeImageProbe, repairBrokenImages } from "../render/image-integrity";
 import { searchPexelsPhotos, searchPexelsVideos } from "../assets/sources/pexels";
 import type { AssetSearchEntry } from "../assets/types";
@@ -208,6 +210,8 @@ export interface BuildWarnings {
   duplicate_eyebrow?: string[];
   /** Count of generic shine-filler icons (Sparkles/Sparkle) — advisory slop tell. */
   decorative_icons?: number;
+  /** Scene captions that merely restate the headline or list already-shown asset names (QA V2). */
+  redundant_caption?: { scene: number; caption: string; reason: string }[];
   /** Brand display font name when FONT_DISPLAY uses a different family. */
   font_infidelity?: string;
   /** Fewer than 3 distinct scene registers across the video → same-y layouts. */
@@ -474,6 +478,13 @@ export const regenerateScene = async (
   const probe = makeImageProbe();
   finalCodeOut = (await repairBrokenImages(finalCodeOut, imagePool, probe)).code;
   designCodeOut = (await repairBrokenImages(designCodeOut, imagePool, probe)).code;
+
+  // Inline brand @font-face fonts as same-origin data: URLs (same as the full
+  // build path) — a regenerated scene reuses the file's shared BRAND_FONTS_CSS,
+  // so its fonts must load cross-origin-free in the preview + MP4 too.
+  const fetchFont = makeFontFetcher();
+  finalCodeOut = (await inlineFontFaces(finalCodeOut, fetchFont)).code;
+  designCodeOut = (await inlineFontFaces(designCodeOut, fetchFont)).code;
 
   // Build soft warnings — quality signals surfaced to the user but
   // not blocking the build. The strict gates (density, dead-air,
@@ -1181,6 +1192,23 @@ export const buildAnimatedSections = async (
     );
   }
 
+  // 3. Inline brand @font-face fonts as same-origin data: URLs. A hot-linked
+  //    cross-origin font src fails CORS in BOTH the preview iframe and the
+  //    Remotion render (corgi.insure's CDN sends no Access-Control-Allow-Origin),
+  //    so the brand display face silently falls back to the generic. Downloading
+  //    the bytes once and baking them in fixes both contexts at build time.
+  const fetchFont = makeFontFetcher();
+  const finalFonts = await inlineFontFaces(finalCodeOut, fetchFont);
+  const designFonts = await inlineFontFaces(designCodeOut, fetchFont);
+  finalCodeOut = finalFonts.code;
+  designCodeOut = designFonts.code;
+  if (finalFonts.inlined.length || finalFonts.failed.length) {
+    console.warn(
+      "[pipeline] font-inline:",
+      JSON.stringify({ inlined: finalFonts.inlined.length, failed: finalFonts.failed }),
+    );
+  }
+
   const warnings = buildBuildWarnings(finalCodeOut, input);
   if (finalRepair.replaced.length || finalRepair.neutralized.length) {
     warnings.images_repaired = {
@@ -1653,17 +1681,28 @@ const appendBrandContext = (
       }
       if (b.font_roles) {
         const r = b.font_roles;
-        const parts: string[] = [];
-        if (r.display) parts.push(`FONT_DISPLAY = '"${r.display}", serif'`);
-        if (r.body) parts.push(`FONT_BODY = '"${r.body}", system-ui, sans-serif'`);
-        if (r.mono) parts.push(`FONT_MONO = '"${r.mono}", Consolas, monospace'`);
-        if (parts.length > 0) {
+        // The LOCKED identity block above already emits authoritative FONT_*
+        // constants WITH the correct CSS generic per role (genericFor). Re-emitting
+        // them here — the way this block used to, hardcoding `serif` for EVERY
+        // display family — gave the agent a second, contradictory instruction and
+        // is exactly why a SANS display face (corgi's f37Bolton) shipped with a
+        // `serif` fallback. So only surface FONT_* constants on the no-identity
+        // fallback path, and derive each generic instead of guessing `serif`.
+        if (!id) {
+          const parts: string[] = [];
+          if (r.display) parts.push(`FONT_DISPLAY = '"${r.display}", ${genericFor(r.display)}'`);
+          if (r.body) parts.push(`FONT_BODY = '"${r.body}", ${genericFor(r.body)}'`);
+          if (r.mono) parts.push(`FONT_MONO = '"${r.mono}", ${genericFor(r.mono)}'`);
+          if (parts.length > 0) {
+            lines.push(
+              `    Font role classification (crawler heuristic — use these as your FONT_* constants):`,
+            );
+            for (const p of parts) lines.push(`      const ${p};`);
+          }
+        }
+        if (r.display || r.body || r.mono) {
           lines.push(
-            `    Font role classification (crawler heuristic — use these as your FONT_* constants):`,
-          );
-          for (const p of parts) lines.push(`      const ${p};`);
-          lines.push(
-            `      → Route fontFamily by element: display for h1/h2/h3, body for p/lede/bullets, mono for URLs/code/diegetic-UI text.`,
+            `    → Route fontFamily by element: display for h1/h2/h3, body for p/lede/bullets, mono for URLs/code/diegetic-UI text.`,
           );
         }
       }
@@ -2032,6 +2071,10 @@ const buildBuildWarnings = (
   // Generic decorative-filler icons (QA D4) — advisory; flags Sparkles/Sparkle.
   const fillerIcons = findDecorativeFillerIcons(code);
   if (fillerIcons > 0) out.decorative_icons = fillerIcons;
+  // Redundant captions (QA V2) — advisory; a caption that restates the headline
+  // or lists the names already shown by the scene's logos/images.
+  const redundantCaps = findRedundantCaptions(input.script);
+  if (redundantCaps.length > 0) out.redundant_caption = redundantCaps;
   // Display-font fidelity (QA C2) — flags when FONT_DISPLAY isn't the brand face.
   const dispFont = input.brand_identity?.fonts?.display;
   const fontMiss = assessFontFidelity(code, dispFont?.family, dispFont?.fallback ?? true);

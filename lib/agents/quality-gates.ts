@@ -447,3 +447,67 @@ export const assessThroughlinePresence = (
 
   return { throughline, tagged: dominant, scenes: sceneCount, bar, message };
 };
+
+// ── Redundant caption (QA V2) ────────────────────────────────────────────────
+export interface RedundantCaption {
+  scene: number;
+  caption: string;
+  reason: "echoes-headline" | "lists-shown-assets";
+}
+
+const normCaptionText = (s: string): string =>
+  s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim().replace(/\s+/g, " ");
+
+/**
+ * QA V2: flag a scene `caption` that adds nothing — it merely restates the
+ * headline, or lists the names already shown by the scene's logos/images
+ * (corgi: a "Artisan · AthenaHQ · Bland · Deel · Slash" caption sitting right
+ * under the row of those same customer LOGOS). Duplicate text reads as a layout
+ * bug. Operates on the SCRIPT (caption/headline + the alt_texts of the scene's
+ * referenced assets), so it's deterministic and code-shape-independent.
+ * Conservative — only fires on a clear echo or a majority-name match.
+ */
+export const findRedundantCaptions = (script: {
+  scenes?: Array<{
+    content?: { caption?: string; headline?: string; asset_ids?: string[] };
+  }>;
+  assets?: { images?: Array<{ id?: string; alt_text?: string }> };
+}): RedundantCaption[] => {
+  const scenes = Array.isArray(script.scenes) ? script.scenes : [];
+  const altById = new Map<string, string>();
+  for (const img of script.assets?.images ?? []) {
+    if (img?.id && img.alt_text) altById.set(img.id, normCaptionText(img.alt_text));
+  }
+
+  const out: RedundantCaption[] = [];
+  scenes.forEach((sc, i) => {
+    const c = sc?.content ?? {};
+    const caption = (c.caption ?? "").trim();
+    const cap = normCaptionText(caption);
+    if (!cap) return;
+
+    // (a) echoes the headline (normalized equality or one containing the other)
+    const head = normCaptionText(c.headline ?? "");
+    if (
+      head &&
+      (cap === head ||
+        (head.length > 6 && cap.includes(head)) ||
+        (cap.length > 6 && head.includes(cap)))
+    ) {
+      out.push({ scene: i, caption, reason: "echoes-headline" });
+      return;
+    }
+
+    // (b) lists the names already shown as the scene's logos/images
+    const alts = (Array.isArray(c.asset_ids) ? c.asset_ids : [])
+      .map((id) => altById.get(id))
+      .filter((a): a is string => !!a);
+    if (alts.length >= 2) {
+      const matched = alts.filter((alt) => cap.includes(alt)).length;
+      if (matched >= Math.max(2, Math.ceil(alts.length * 0.6))) {
+        out.push({ scene: i, caption, reason: "lists-shown-assets" });
+      }
+    }
+  });
+  return out;
+};
