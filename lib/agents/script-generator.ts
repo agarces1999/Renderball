@@ -1,6 +1,10 @@
 import { getAnthropic, MODELS } from "../anthropic";
 import { SCRIPT_GENERATOR_SYSTEM_PROMPT } from "./prompts/script-generator";
-import { validateScript, findUngroundedClaims } from "./schema-validator";
+import {
+  validateScript,
+  findUngroundedClaims,
+  findUngroundedStageLabels,
+} from "./schema-validator";
 import { signatureWithLogoFallback } from "../crawl/brand-identity";
 import { ulid } from "../ulid";
 import type { Script } from "../../src/schema";
@@ -295,13 +299,30 @@ export const generateScript = async (
         })
         .join(" \n ");
       const ungrounded = findUngroundedClaims(scriptCopy, sourceText);
-      if (ungrounded.length > 0 && attempt < MAX_ATTEMPTS) {
-        lastError = `Ungrounded numeric claims: ${ungrounded.join(", ")}`;
+      // QA G5: also catch a fabricated funding-stage label ("Series C" when the
+      // brief only says "$250M funding round").
+      const ungroundedStages = findUngroundedStageLabels(scriptCopy, sourceText);
+      if (
+        (ungrounded.length > 0 || ungroundedStages.length > 0) &&
+        attempt < MAX_ATTEMPTS
+      ) {
+        lastError = [
+          ungrounded.length > 0 ? `Ungrounded numeric claims: ${ungrounded.join(", ")}` : "",
+          ungroundedStages.length > 0 ? `Ungrounded funding-stage labels: ${ungroundedStages.join(", ")}` : "",
+        ]
+          .filter(Boolean)
+          .join("; ");
         history.push({ role: "assistant", content: raw });
-        history.push({
-          role: "user",
-          content: `These numeric claims aren't supported by the brief or the crawled site content: ${ungrounded.join(", ")}. Replace each with qualitative copy (e.g. "$840M processed" → "billions processed") or remove it — never invent specific stats.`,
-        });
+        const msgs: string[] = [];
+        if (ungrounded.length > 0)
+          msgs.push(
+            `These numeric claims aren't supported by the brief or the crawled site content: ${ungrounded.join(", ")}. Replace each with qualitative copy (e.g. "$840M processed" → "billions processed") or remove it — never invent specific stats.`,
+          );
+        if (ungroundedStages.length > 0)
+          msgs.push(
+            `These funding-stage labels aren't stated anywhere in the brief or crawled content: ${ungroundedStages.join(", ")}. The brief mentions a raise but NOT the stage — drop the invented label (say "funding round" / "their raise"), never fabricate "Series C" or similar.`,
+          );
+        history.push({ role: "user", content: msgs.join("\n\n") });
         continue;
       }
       return {
