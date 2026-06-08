@@ -1243,6 +1243,17 @@ const SERIF_FAMILY_RX = /\bserif\b/i; // catches "X Serif" naming
 // "Acumin Pro" because SuperClarendon/Splash matched no display regex).
 const DISPLAY_FAMILY_RX =
   /\b(clarendon|druk|knockout|trade[\s-]*gothic|bebas|anton|oswald|teko|tungsten|rockwell|sentinel|recoleta|migra|canela|austin|ogg|reckless|romie|signifier|splash|monument|druk|condensed|compressed|poster)\b/i;
+// Web-safe / OS-bundled system font names. When a site self-hosts a @font-face
+// under one of these names it's almost never the brand's intentional DISPLAY
+// face — it's a minor accent or a fallback declaration (corgi.insure ships a
+// self-hosted "georgia" used 4× vs its distinctive custom "f37Bolton" used 8×,
+// yet "georgia" matched SERIF_RX and got crowned the display font, forcing every
+// headline into a generic serif). A distinctive CUSTOM face should outrank a
+// system-named one for display. NOTE: deliberately excludes licensed display
+// serifs brands actually choose (garamond, caslon, baskerville) — only the
+// classic web-safe set lands here.
+const SYSTEM_FONT_RX =
+  /\b(georgia|times(?:[\s-]*new[\s-]*roman)?|arial(?:[\s-]*black)?|helvetica(?:[\s-]*neue)?|verdana|tahoma|trebuchet(?:[\s-]*ms)?|courier(?:[\s-]*new)?|cambria|calibri|segoe(?:[\s-]*ui)?|palatino(?:[\s-]*linotype)?|book[\s-]*antiqua|lucida(?:[\s-]*grande|[\s-]*sans)?|geneva|impact|comic[\s-]*sans)\b/i;
 
 export const classifyFontRoles = (fonts: CrawledFont[]): FontRoles => {
   const roles: FontRoles = {};
@@ -1272,13 +1283,26 @@ export const classifyFontRoles = (fonts: CrawledFont[]): FontRoles => {
   // the headline/accent — body is the most-used face and is listed first). This
   // stops a plain body sans (Acumin/Inter/Helvetica) from being chosen as display
   // just because no curated name matched.
+  //
+  // BUT: a display/serif NAME that collides with a web-safe system font (a
+  // self-hosted "georgia"/"times") is a weak signal — it's usually a minor
+  // accent, not the brand's headline face. If a distinctive CUSTOM face is also
+  // present, prefer that for display. (corgi.insure: georgia matched SERIF_RX and
+  // beat the real display face f37Bolton — every headline came out generic serif.)
+  const isSystemNamed = (n: string): boolean => SYSTEM_FONT_RX.test(n);
   const namedDisplay = text.find(isDisplayName);
-  if (namedDisplay) {
+  if (namedDisplay && !isSystemNamed(namedDisplay)) {
+    // A genuine, distinctive display/serif face — trust it.
     roles.display = namedDisplay;
     roles.body = text.find((n) => n !== namedDisplay) ?? namedDisplay;
   } else {
+    // No display-named face, OR the only one is a system-font name. Body is the
+    // most-canonical (first) face; for display prefer the next DISTINCTIVE
+    // (non-system) face, then fall back to the system-named serif, then any 2nd.
     roles.body = text[0];
-    roles.display = text.find((n) => n !== text[0]) ?? text[0];
+    const distinctive = text.find((n) => n !== text[0] && !isSystemNamed(n));
+    roles.display =
+      distinctive ?? namedDisplay ?? text.find((n) => n !== text[0]) ?? text[0];
   }
   return roles;
 };
