@@ -1,7 +1,7 @@
 import { getAnthropic, MODELS } from "../anthropic";
 import { SCRIPT_GENERATOR_SYSTEM_PROMPT } from "./prompts/script-generator";
 import { validateScript, findUngroundedClaims } from "./schema-validator";
-import { pickSignatureColor } from "../crawl/brand-identity";
+import { signatureWithLogoFallback } from "../crawl/brand-identity";
 import { ulid } from "../ulid";
 import type { Script } from "../../src/schema";
 
@@ -43,6 +43,8 @@ export interface AgentBrandExtract {
   favicon?: string;
   apple_touch_icon?: string;
   logo_hd?: string;
+  /** Dominant chromatic color from the logo SVG — signature fallback (QA G1). */
+  logo_color?: string;
   headlines?: string[];
   body_excerpts?: string[];
   page_images?: { src: string; alt?: string }[];
@@ -506,7 +508,7 @@ const buildUserMessage = (brief: AgentBrief): string => {
       // it", which let an off-brand hue leak into the throughline (Fuse's
       // throughline literally said "brand-orange" when Fuse is blue). Lead with
       // the signature instead so the script names the RIGHT color.
-      const signature = pickSignatureColor(b.palette ?? [], b.theme_color);
+      const signature = signatureWithLogoFallback(b.palette ?? [], b.theme_color, b.logo_color);
       if (signature) {
         lines.push(
           `    SIGNATURE BRAND COLOR: ${signature}  ← the hue a viewer associates with this brand; THE accent to lean on (headlines, accent bars, glows) and the only color to name in the throughline. Never call a different/off-brand hue "the brand color".`,

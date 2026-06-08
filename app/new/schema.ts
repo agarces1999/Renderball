@@ -255,6 +255,10 @@ export interface BrandExtract {
   logo_confidence?: number;
   /** Where logo_hd came from: inline-svg | static-path | header-img | css-bg | clearbit | simple-icons | web-search | apple-touch | favicon. */
   logo_source?: string;
+  /** Dominant chromatic color extracted from the logo SVG — the signature
+   *  fallback when the palette is achromatic (QA G1). Hex, or undefined for a
+   *  monochrome logo. */
+  logo_color?: string;
   headlines?: string[]; // h1/h2/h3 text, deduped
   /** Body-copy excerpts (<p> + <li>) so Agent 1 can stick to the brand's actual claims. */
   body_excerpts?: string[];
