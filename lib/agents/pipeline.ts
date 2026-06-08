@@ -19,6 +19,8 @@ import {
   assessContinuity,
   assessThroughlinePresence,
   findRedundantCaptions,
+  hasCornerLogoSuppression,
+  assessVerticalFill,
   type AspectRatio,
 } from "./quality-gates";
 import { resolveBrandIdentity, genericFor, type BrandIdentity } from "../crawl/brand-identity";
@@ -210,6 +212,8 @@ export interface BuildWarnings {
   duplicate_eyebrow?: string[];
   /** Count of generic shine-filler icons (Sparkles/Sparkle) — advisory slop tell. */
   decorative_icons?: number;
+  /** Composition leaves an empty lower band (content clustered at the top) — QA V1. */
+  low_fill?: string;
   /** Scene captions that merely restate the headline or list already-shown asset names (QA V2). */
   redundant_caption?: { scene: number; caption: string; reason: string }[];
   /** Brand display font name when FONT_DISPLAY uses a different family. */
@@ -824,9 +828,13 @@ export const buildAnimatedSections = async (
   // a scene rendering its OWN logo too = two logos in the same corner (the
   // Notion CTA bug). >1 logo <Img> site means a scene added one.
   const logoCount = findDuplicateLogos(designCode);
+  // QA V4: the sanctioned logo-led CTA/opening pattern has 2 logo SITES (chrome +
+  // hero) but renders ONE per frame because that scene passes showCornerLogo=false
+  // to suppress the chrome mark. Don't false-flag it (and waste a retry).
+  const logoDuplicated = logoCount > 1 && !hasCornerLogoSuppression(designCode);
   const logoFailure =
-    logoCount > 1
-      ? `Duplicate brand logo — the brand logo image appears at ${logoCount} places in the file. BrandChrome already renders the logo on every scene; individual scenes (including the opening and CTA) must NOT render their own brand logo. Remove the scene-level logo <Img>s and rely on BrandChrome as the single persistent mark.`
+    logoDuplicated
+      ? `Duplicate brand logo — the brand logo image appears at ${logoCount} places in the file. BrandChrome already renders the logo on every scene; individual scenes (including the opening and CTA) must NOT render their own brand logo. EITHER remove the scene-level logo <Img>s, OR (for a deliberate logo-led CTA/opening) keep ONE hero logo and pass \`showCornerLogo={false}\` to BrandChrome on that scene so the corner mark is suppressed — exactly one logo per frame.`
       : null;
 
   // Throughline-presence guard (polish). The script's narrative.throughline
@@ -884,6 +892,13 @@ export const buildAnimatedSections = async (
     ? `Off-brand display font — the brand's display typeface is "${fontMismatch}", but FONT_DISPLAY is set to a different family. Set FONT_DISPLAY to "${fontMismatch}" (load it via @font-face / Google Fonts as instructed) so headlines render in the brand's actual face.`
     : null;
 
+  // Vertical-fill guard (QA V1, polish). Catches the unambiguous "empty lower
+  // band" case — content all clustered in the top with nothing anchored to the
+  // lower third (corgi scene-0: content stopped at ~53% of height). Conservative
+  // (favors false-negatives like the drift gate): only fires on an absolute
+  // top-cluster with no flex distribution / bottom anchor / tall element.
+  const fillFailure = assessVerticalFill(designCode, gateAspect);
+
   // Fabricated-logo guard (structural). When the brand identity resolved NO real
   // logo, the brand mark MUST be the wordmark text — not a drawn substitute. This
   // catches the exact regression where the agent invents a mark and labels it the
@@ -936,7 +951,8 @@ export const buildAnimatedSections = async (
       throughlineFailure ||
       driftFailure ||
       chartFailure ||
-      fontFailure);
+      fontFailure ||
+      fillFailure);
 
   if (structuralFailure || polishFailure) {
     const retryMessage = [
@@ -953,6 +969,7 @@ export const buildAnimatedSections = async (
       includePolish ? driftFailure : null,
       includePolish ? chartFailure : null,
       includePolish ? fontFailure : null,
+      includePolish ? fillFailure : null,
       iconFailure,
       overflowFailure,
       logoFailure,
@@ -2029,6 +2046,10 @@ const buildBuildWarnings = (
   // Advisory spatial-continuity check: recurring data-throughline motifs
   // that teleport between scenes. Surfaced as a chip, never a retry (coarse).
   const gateAspect = (input.script.config?.aspect_ratio ?? "16:9") as AspectRatio;
+  // Vertical fill (QA V1) — surface a persistent empty-lower-band so the user
+  // sees it even when the one retry didn't resolve it.
+  const fillMiss = assessVerticalFill(code, gateAspect);
+  if (fillMiss) out.low_fill = fillMiss;
   const drift = assessContinuity(code, gateAspect);
   if (drift.length > 0) {
     out.throughline_drift = drift.slice(0, 6).map((d) => ({
@@ -2057,7 +2078,9 @@ const buildBuildWarnings = (
   // than silently shipping the defect, report what survived — the retry
   // tries to fix; this reports what's left so the user can per-scene-regen.
   const residualLogos = findDuplicateLogos(code);
-  if (residualLogos > 1) out.duplicate_logo = residualLogos;
+  // QA V4: a logo-led CTA/opening with showCornerLogo={false} legitimately has 2
+  // logo SITES but 1 per frame — don't report it as a duplicate (it isn't one).
+  if (residualLogos > 1 && !hasCornerLogoSuppression(code)) out.duplicate_logo = residualLogos;
   // Eyebrow/kicker duplication (B3): the per-scene editorial tag echoed in the
   // chrome shows the same label twice. Gather each scene's eyebrow and flag any
   // that appear ≥2× in the composition.

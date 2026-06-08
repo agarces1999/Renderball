@@ -511,3 +511,54 @@ export const findRedundantCaptions = (script: {
   });
   return out;
 };
+
+// ── Sanctioned hero-logo suppression (QA V4) ─────────────────────────────────
+/**
+ * The duplicate-logo gate counts logo <Img> SITES in the code. The sanctioned
+ * "logo-led CTA/opening" pattern legitimately has TWO sites — BrandChrome's mark
+ * plus a hero logo — but renders only ONE per frame because that scene passes
+ * `showCornerLogo={false}` to suppress the chrome mark. Detect that opt-out so
+ * the gate doesn't false-positive (and waste a retry) on the correct pattern.
+ */
+export const hasCornerLogoSuppression = (code: string): boolean =>
+  /\bshowCornerLogo\s*=\s*\{?\s*false\s*\}?/.test(code);
+
+// ── Vertical fill (QA V1) ────────────────────────────────────────────────────
+/**
+ * QA V1: catch the "empty lower band" failure — a composition whose content all
+ * clusters in the top of the frame with nothing anchored to the lower third (the
+ * corgi scene-0 case: content stopped at ~53% of height). Deliberately
+ * CONSERVATIVE / favors false-negatives (like the drift + throughline gates): it
+ * only fires on an unambiguous ABSOLUTE-positioned top-cluster, and bails the
+ * moment there's any signal the layout fills vertically — a flex distribution
+ * (`space-between`/`flex-end`), a `bottom:` anchor, a tall element, or an element
+ * positioned past ~58%. Flex-centered/distributed under-fill is left to the
+ * prompt (not reliably detectable from static code without rendered geometry).
+ */
+export const assessVerticalFill = (
+  code: string,
+  aspect: AspectRatio,
+): string | null => {
+  const H = aspect === "9:16" ? 1920 : 1080;
+  // Any vertical-distribution or bottom-anchor signal → the lower band is in use.
+  // Match BOTH the JS style-object form (`justifyContent: "space-between"`, what
+  // the comps actually emit) AND the CSS form (`justify-content: space-between`).
+  if (/justify-?content\s*:\s*["']?\s*(space-between|flex-end|space-around|space-evenly)/i.test(code)) return null;
+  if (/\bbottom\s*:\s*\d/.test(code)) return null;
+  // A tall element (≥45% of H) spans the band on its own.
+  const heights = [...code.matchAll(/\bheight:\s*(\d{3,4})\b/g)].map((m) => Number(m[1]));
+  if (heights.some((h) => h >= H * 0.45)) return null;
+  // Explicit absolute tops (ignore the top:0 full-bleed background layers).
+  const tops = [...code.matchAll(/\btop:\s*(\d{2,4})\b/g)].map((m) => Number(m[1])).filter((n) => n > 0);
+  if (tops.length < 5) return null; // not enough positioned elements to judge
+  const threshold = Math.round(H * 0.58);
+  if (Math.max(...tops) >= threshold) return null; // something reaches the lower band
+  const lowerPin = Math.round(H * 0.7);
+  return (
+    `Empty lower band — every positioned element starts in the top ${Math.round((threshold / H) * 100)}% ` +
+    `of the ${H}px-tall canvas (lowest top is ${Math.max(...tops)}px) with nothing anchored to the lower third. ` +
+    `Distribute the composition top-to-bottom: pin a real footer row (CTA, meta key-values, a chart axis, a ` +
+    `caption cluster) to ~${lowerPin}-${Math.round(H * 0.83)}px, or scale the hero so content spans the frame. ` +
+    `A thin progress bar at the very bottom edge does NOT count as filling the lower third.`
+  );
+};

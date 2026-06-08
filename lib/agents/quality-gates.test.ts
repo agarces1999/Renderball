@@ -13,6 +13,8 @@ import {
   assessFontFidelity,
   assessRegisterVariety,
   findRedundantCaptions,
+  hasCornerLogoSuppression,
+  assessVerticalFill,
 } from "./quality-gates";
 
 let passed = 0;
@@ -203,6 +205,34 @@ check("no caption / single asset → not flagged", () => {
     }).length === 0,
     "one asset isn't a 'list'",
   );
+});
+
+// ── V4: sanctioned hero-logo suppression (don't false-flag the CTA pattern) ──
+check("hasCornerLogoSuppression detects showCornerLogo={false}", () => {
+  assert(hasCornerLogoSuppression('<BrandChrome sceneIndex={4} showCornerLogo={false} />') === true, "should detect");
+  assert(hasCornerLogoSuppression('<BrandChrome sceneIndex={4} />') === false, "no suppression");
+});
+
+// ── V1: vertical fill (empty lower band) — conservative ──────────────────────
+const topCluster = `<div style={{ position:'absolute', top: 40 }}/><div style={{ position:'absolute', top: 120 }}/><div style={{ position:'absolute', top: 200 }}/><div style={{ position:'absolute', top: 360 }}/><div style={{ position:'absolute', top: 520 }}/>`;
+check("flags a top-cluster with an empty lower band (16:9)", () => {
+  const r = assessVerticalFill(topCluster, "16:9");
+  assert(r !== null && /empty lower band/i.test(r), `expected fill failure, got ${r}`);
+});
+check("does NOT flag when an element is anchored to the bottom", () => {
+  assert(assessVerticalFill(topCluster + `<div style={{ position:'absolute', bottom: 80 }}/>`, "16:9") === null, "bottom anchor fills");
+});
+check("does NOT flag a flex space-between column", () => {
+  assert(assessVerticalFill(topCluster + `<div style={{ justifyContent: 'space-between' }}/>`, "16:9") === null, "flex distributes");
+});
+check("does NOT flag when a tall element spans the band", () => {
+  assert(assessVerticalFill(topCluster + `<div style={{ height: 720 }}/>`, "16:9") === null, "tall element fills");
+});
+check("does NOT flag when an element reaches the lower band (top: 800)", () => {
+  assert(assessVerticalFill(topCluster + `<div style={{ position:'absolute', top: 800 }}/>`, "16:9") === null, "lower band used");
+});
+check("does NOT flag a flex layout with too few absolute tops", () => {
+  assert(assessVerticalFill(`<div style={{ display:'flex' }}><h1/></div>`, "16:9") === null, "not enough positioned els");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);
