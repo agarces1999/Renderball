@@ -52,6 +52,13 @@ export interface AgentBrandExtract {
   logo_hd?: string;
   /** Dominant chromatic color from the logo SVG — signature fallback (QA G1). */
   logo_color?: string;
+  /**
+   * Vision-vetted confidence from the agentic logo finder (0-1). Must reach
+   * pickLogo's trust path — without it a confident pick whose URL happens to
+   * match a reject regex (e.g. contains "card"/"nav"/"share") is silently
+   * nulled to the wordmark fallback.
+   */
+  logo_confidence?: number;
   headlines?: string[];
   body_excerpts?: string[];
   page_images?: { src: string; alt?: string }[];

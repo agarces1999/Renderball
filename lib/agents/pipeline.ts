@@ -151,6 +151,11 @@ export const buildAgentInputFromBrief = (
         favicon: brief.brand_extract.favicon,
         apple_touch_icon: brief.brand_extract.apple_touch_icon,
         logo_hd: effectiveLogoHd,
+        // Vision-vetted finder confidence — must reach pickLogo's trust path or
+        // a confident pick whose URL matches a reject regex gets nulled to the
+        // wordmark. A user-uploaded logo is definitionally trusted (1), and the
+        // crawl's score must not apply to a file it never vetted.
+        logo_confidence: userLogo ? 1 : brief.brand_extract.logo_confidence,
         // Signature fallback when the palette is achromatic (QA G1) — must reach
         // resolveBrandIdentity(be) below, so carry it through the mapping.
         logo_color: brief.brand_extract.logo_color,
@@ -167,8 +172,9 @@ export const buildAgentInputFromBrief = (
       }
     : userLogo
       ? // Synthesize a minimal brand_extract so the user-uploaded logo
-        // still reaches the agents even when no crawl happened.
-        { url: "", logo_hd: userLogo.url, ok: true }
+        // still reaches the agents even when no crawl happened. The user's
+        // own file is definitionally trusted past the regex filters.
+        { url: "", logo_hd: userLogo.url, logo_confidence: 1, ok: true }
       : undefined;
 
   return {

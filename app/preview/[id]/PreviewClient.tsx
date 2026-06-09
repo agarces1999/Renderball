@@ -7,6 +7,8 @@ import { cn } from "../../../lib/cn";
 interface Props {
   scriptId: string;
   script: Script;
+  /** Persisted warnings.json contents, loaded server-side on first view. */
+  initialWarnings?: Record<string, unknown> | null;
 }
 
 /**
@@ -45,16 +47,24 @@ interface PreviewWarnings {
   }[];
   duplicate_logo?: number;
   overflow_crop?: number[];
+  /**
+   * Structural gate failures that survived every retry ("gate_key: detail").
+   * The LOUD tier — shipped-broken class (render crashes, drawn logo replicas,
+   * severe contrast), rendered as its own alarm panel, not a quiet note.
+   */
+  structural_unresolved?: string[];
 }
 
-export function PreviewClient({ scriptId, script }: Props) {
+export function PreviewClient({ scriptId, script, initialWarnings }: Props) {
   const [sceneIndex, setSceneIndex] = useState(0);
   const [playing, setPlaying] = useState(true);
   const [reloadKey, setReloadKey] = useState(0);
   const [regenerating, setRegenerating] = useState(false);
   const [regenError, setRegenError] = useState<string | null>(null);
   const [mp4State, setMp4State] = useState<Mp4State>({ kind: "idle" });
-  const [warnings, setWarnings] = useState<PreviewWarnings | null>(null);
+  const [warnings, setWarnings] = useState<PreviewWarnings | null>(
+    (initialWarnings as PreviewWarnings | null) ?? null,
+  );
   const iframeRef = useRef<HTMLIFrameElement>(null);
 
   const dims = useMemo(() => getDimensions(script), [script]);
@@ -250,6 +260,11 @@ export function PreviewClient({ scriptId, script }: Props) {
         </div>
       )}
 
+      {warnings?.structural_unresolved &&
+      warnings.structural_unresolved.length > 0 ? (
+        <StructuralPanel issues={warnings.structural_unresolved} />
+      ) : null}
+
       {hasWarnings ? <WarningsPanel warnings={warnings!} /> : null}
 
       {regenError && (
@@ -276,6 +291,52 @@ export function PreviewClient({ scriptId, script }: Props) {
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * The LOUD tier — structural gate failures that survived every retry. Unlike
+ * the quiet notes below, these are shipped-broken-class defects (a scene that
+ * crashes at render, a hand-drawn logo replica, severe contrast), so the panel
+ * uses the error-red convention (red-500 alpha, same as the MP4-failure and
+ * regen-error surfaces) and sits above the notes. It still must not fight the
+ * brand-color preview: a thin alarm strip, not a wall of red.
+ */
+function StructuralPanel({ issues }: { issues: string[] }) {
+  return (
+    <div className="mb-4 rounded-md border border-red-500/30 bg-red-500/5 p-4">
+      <div className="mb-1.5 font-mono text-[11px] uppercase tracking-[0.16em] text-red-500">
+        Unresolved structural issues ({issues.length})
+      </div>
+      <div className="mb-2.5 text-[12px] text-ink-soft">
+        These failed the build&apos;s structural quality gates and survived
+        every automatic retry — the video shipped with them. Regenerate the
+        affected scene, or rebuild, to clear them.
+      </div>
+      <ul className="space-y-1">
+        {issues.slice(0, 10).map((issue, i) => {
+          const sep = issue.indexOf(":");
+          const gate = sep > 0 ? issue.slice(0, sep) : null;
+          const detail = sep > 0 ? issue.slice(sep + 1).trim() : issue;
+          return (
+            <li key={i} className="flex items-baseline gap-2 text-[12px]">
+              <span className="mt-1 inline-block h-1.5 w-1.5 shrink-0 self-center rounded-full bg-red-500" />
+              {gate && (
+                <span className="shrink-0 font-mono text-[11px] text-red-500">
+                  {gate}
+                </span>
+              )}
+              <span className="text-ink-soft">{detail}</span>
+            </li>
+          );
+        })}
+        {issues.length > 10 && (
+          <li className="font-mono text-[11px] text-muted">
+            +{issues.length - 10} more in warnings.json
+          </li>
+        )}
+      </ul>
     </div>
   );
 }

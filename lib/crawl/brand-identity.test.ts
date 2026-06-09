@@ -13,6 +13,7 @@ import {
   resolveBrandIdentity,
   genericFor,
 } from "./brand-identity";
+import { buildAgentInputFromBrief } from "../agents/pipeline";
 
 // Real palettes captured from the QA sweep.
 const FUSE = ["#440b12", "#2c060b", "#5e131c", "#ff8c42", "#ecf3fb", "#1e5fb8"];
@@ -250,6 +251,50 @@ check("a deep out-of-band saturated shade is rescued before declaring monochrome
 check("rescue never invents color from true greys (Liquid Death stays null)", () => {
   assert(signatureWithLogoFallback(MONO, undefined, undefined) === null, "greys → null");
   assert(signatureWithLogoFallback(LINEAR_GREYS, undefined, undefined) === null, "linear greys → null");
+});
+
+// ── logo_confidence survives the build mapping (trust path end-to-end) ──
+//
+// The agentic finder's confidence was dropped by buildAgentInputFromBrief
+// (AgentBrandExtract had no logo_confidence field), so pickLogo fell into the
+// legacy regex branch on EVERY build — a vetted 0.95 pick whose URL contains a
+// reject word ("card", "nav", "share") was silently nulled to the wordmark,
+// exactly what the trust path exists to prevent. Test through the REAL mapping.
+// A URL the regexes hate: "card" (SHARE_IMG_RX) + "nav" (UI_GLYPH_RX).
+const REGEX_HOSTILE_LOGO = "https://cdn.example.com/nav-card-logo.png";
+const briefWith = (confidence: number | undefined) =>
+  ({
+    brand_kit_url: "https://example.com",
+    brand_extract: {
+      ok: true,
+      url: "https://example.com",
+      logo_hd: REGEX_HOSTILE_LOGO,
+      ...(confidence !== undefined ? { logo_confidence: confidence } : {}),
+      palette: FUSE,
+    },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  }) as any;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const minimalScript = { scenes: [], config: {} } as any;
+
+check("a confident pick with a reject-regex URL survives the mapping", () => {
+  const input = buildAgentInputFromBrief(briefWith(0.95), minimalScript);
+  assert(
+    input.brand_extract?.logo_confidence === 0.95,
+    `confidence dropped in mapping: ${JSON.stringify(input.brand_extract?.logo_confidence)}`,
+  );
+  assert(
+    input.brand_identity?.logo?.url === REGEX_HOSTILE_LOGO,
+    `trust path should keep the vetted pick, got ${JSON.stringify(input.brand_identity?.logo)}`,
+  );
+});
+
+check("the same URL with NO confidence is still re-litigated by the regexes", () => {
+  const input = buildAgentInputFromBrief(briefWith(undefined), minimalScript);
+  assert(
+    input.brand_identity?.logo == null,
+    `legacy pre-finder briefs must keep the regex filter, got ${JSON.stringify(input.brand_identity?.logo)}`,
+  );
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);
