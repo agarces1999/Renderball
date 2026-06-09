@@ -24,6 +24,7 @@ import {
   type AspectRatio,
 } from "./quality-gates";
 import { resolveBrandIdentity, genericFor, type BrandIdentity } from "../crawl/brand-identity";
+import { formatDesignLanguage } from "../crawl/design-language";
 import { makeFontFetcher, inlineFontFaces } from "../render/font-inline";
 import { makeImageProbe, repairBrokenImages } from "../render/image-integrity";
 import { searchPexelsPhotos, searchPexelsVideos } from "../assets/sources/pexels";
@@ -156,6 +157,8 @@ export const buildAgentInputFromBrief = (
         font_roles: brief.brand_extract.font_roles,
         palette: brief.brand_extract.palette,
         motion_signal: brief.brand_extract.motion_signal,
+        site_screenshot: brief.brand_extract.site_screenshot,
+        design_language: brief.brand_extract.design_language,
         ok: brief.brand_extract.ok,
       }
     : userLogo
@@ -1355,10 +1358,13 @@ const buildDesignReferenceImages = (
     return /\.(jpe?g|png|gif|webp)(\?|#|$)/i.test(u);
   };
 
-  // Order: og_image (best single brand-page snapshot) → logo_hd (brand
-  // mark) → first page_images (real product imagery). Cap at 4 total.
+  // Order: site_screenshot (a REAL homepage render — the most representative
+  // brand-page snapshot, better than the share-card og:image) → og_image →
+  // logo_hd (brand mark) → first page_images (real product imagery). Cap at 4.
   const candidates: string[] = [];
-  if (isVisionSafeImageUrl(b.og_image)) candidates.push(b.og_image);
+  if (isVisionSafeImageUrl(b.site_screenshot)) candidates.push(b.site_screenshot);
+  if (isVisionSafeImageUrl(b.og_image) && !candidates.includes(b.og_image))
+    candidates.push(b.og_image);
   if (isVisionSafeImageUrl(b.logo_hd) && !candidates.includes(b.logo_hd))
     candidates.push(b.logo_hd);
   if (b.page_images) {
@@ -1725,6 +1731,15 @@ const appendBrandContext = (
       }
     }
     if (b.motion_signal) lines.push(`- Motion signal: ${b.motion_signal}`);
+    if (b.design_language) {
+      const dl = formatDesignLanguage(b.design_language, "    ");
+      if (dl) {
+        lines.push(
+          `- Design language (read off the brand's homepage — the reference image above shows it). MATCH this compositional feel — type treatment, layout rhythm, shape language, imagery, mood — instead of a generic look:`,
+        );
+        lines.push(dl);
+      }
+    }
     if (b.logo_hd) {
       lines.push(`- HD logo URL (preferred for visible logo mounts): ${b.logo_hd}`);
     }

@@ -81,6 +81,10 @@ export const MODELS = {
   // Logo-discovery agent — vision evaluation of brand-logo candidates.
   // Uses Sonnet for taste/judgment; falls back to Haiku if cost matters.
   logoAgent: "claude-sonnet-4-5",
+  // Design-language analysis — reads the brand's compositional design language
+  // off a homepage screenshot (crawl-time, advisory). Haiku is vision-capable +
+  // cheap and runs every crawl; bump to Sonnet if the brief reads too generic.
+  designLanguage: "claude-haiku-4-5",
   // Stage 8 — Tweak Agent. Fast iteration on small edits.
   tweakAgent: "claude-sonnet-4-5",
 } as const;

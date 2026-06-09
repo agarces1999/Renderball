@@ -6,6 +6,7 @@ import {
 } from "./vision-brand";
 import { readLogoCache, writeLogoCache } from "./logo-cache";
 import { dominantSvgColor } from "./brand-identity";
+import { extractDesignLanguage } from "./design-language";
 
 /**
  * Website crawl + brand extract — V0.3.
@@ -226,6 +227,16 @@ export const extractBrand = async (
     /* keep the CSS palette */
   }
 
+  // Design-language analysis (best-effort): screenshot the LIVE homepage and read
+  // its compositional design language — the qualitative layer that palette/fonts/
+  // motion don't capture (type treatment, layout patterns, shape, imagery, mood).
+  // Falls back to the og:image; any failure leaves both fields undefined and the
+  // crawl proceeds unchanged.
+  const { site_screenshot, design_language } = await extractDesignLanguage(
+    url,
+    og_image,
+  );
+
   return {
     url,
     title,
@@ -245,6 +256,8 @@ export const extractBrand = async (
     font_roles,
     palette,
     motion_signal,
+    site_screenshot,
+    design_language,
     fetched_at,
     ok: true,
   };
