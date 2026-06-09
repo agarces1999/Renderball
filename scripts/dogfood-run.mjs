@@ -38,11 +38,34 @@ const lastTs = (url) => {
   const r = [...(log.runs ?? [])].reverse().find((x) => x.url === url);
   return r ? r.ts : 0;
 };
-const brand = [...brands].sort((a, b) => lastTs(a.url) - lastTs(b.url))[0];
+// NEW COMPANY EVERY RUN: least-recently-used first, and never the same brand as
+// the immediately-previous run (LRU already guarantees this with >=2 brands;
+// the guard makes it explicit). Only successful runs are logged, so a brand that
+// failed (e.g. API down) is correctly retried rather than skipped.
+const ordered = [...brands].sort((a, b) => lastTs(a.url) - lastTs(b.url));
+const lastUrl = (log.runs ?? []).slice(-1)[0]?.url;
+const brand = ordered[0]?.url === lastUrl && ordered[1] ? ordered[1] : ordered[0];
 if (!brand) {
   out({ ok: false, stage: "select", error: "no brands configured" });
   process.exit(1);
 }
+
+// NEW SCRIPT EVERY RUN: every generate call already does a fresh crawl + a new
+// ULID script (nothing is cached). To also guarantee a genuinely *different*
+// story when a brand eventually cycles back, rotate a creative angle by how many
+// times THIS brand has already run — so the repeat is a new narrative, not a
+// near-duplicate of the same prompt.
+const ANGLES = [
+  "Open on the core problem the product eliminates, then reveal the product as the turn.",
+  "Lead with a live product demo — the actual workflow/UI in motion as the hero.",
+  "Tell it through one customer's before/after: the pain, the switch, the payoff.",
+  "Frame it as a founder/vision manifesto — why this has to exist now.",
+  "Center the single most striking metric (speed / scale / savings) and prove it.",
+  "Stage the old way vs the new way as a head-to-head transformation.",
+];
+const brandRunCount = (log.runs ?? []).filter((r) => r.url === brand.url).length;
+const angleIndex = brandRunCount % ANGLES.length;
+const runPrompt = `${brand.prompt}\n\nCreative angle for THIS version (make it distinct from any prior version of this brand): ${ANGLES[angleIndex]}`;
 
 // 2. Ensure the dev server is up (self-boot the warmed wrapper if needed).
 const serverUp = async () => {
@@ -88,7 +111,7 @@ let gen;
 try {
   gen = await postJson(
     "/api/dev/generate",
-    { url: brand.url, prompt: brand.prompt, distribution_format: "landscape", duration_seconds: 30 },
+    { url: brand.url, prompt: runPrompt, distribution_format: "landscape", duration_seconds: 30 },
     300_000,
   );
 } catch (e) {
@@ -128,13 +151,15 @@ const stills = (await fs.readdir(stillsDir))
 // 6. Log + manifest.
 const ts = Number(process.env.DOGFOOD_TS) || Date.now();
 log.runs = log.runs ?? [];
-log.runs.push({ ts, url: brand.url, scriptId, warnings: build.warnings ?? {} });
+log.runs.push({ ts, url: brand.url, scriptId, angleIndex, warnings: build.warnings ?? {} });
 await fs.writeFile(logPath, JSON.stringify(log, null, 2));
 
 out({
   ok: true,
   url: brand.url,
-  prompt: brand.prompt,
+  prompt: runPrompt,
+  angleIndex,
+  angle: ANGLES[angleIndex],
   scriptId,
   previewUrl: `${base}/preview/${scriptId}`,
   stillsDir,
