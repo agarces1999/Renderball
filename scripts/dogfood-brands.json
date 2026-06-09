@@ -1,0 +1,23 @@
+{
+  "_comment": "Software-brand rotation for the dogfood loop. Each run picks the least-recently-used (tracked in .data/dogfood-log.json). Curated for reliable crawls + visual variety across categories (dev tools, SaaS, fintech, design, data, security, consumer software). Add/remove freely.",
+  "brands": [
+    { "url": "https://linear.app", "prompt": "A 30-second launch video for Linear introducing its issue tracking + project planning for modern software teams." },
+    { "url": "https://vercel.com", "prompt": "A 30-second product video for Vercel on shipping and scaling frontend apps with zero-config deploys." },
+    { "url": "https://stripe.com", "prompt": "A 30-second overview of Stripe's payments platform for internet businesses." },
+    { "url": "https://notion.so", "prompt": "A 30-second product video for Notion — one workspace for docs, notes, and projects." },
+    { "url": "https://figma.com", "prompt": "A 30-second video for Figma — collaborative interface design in the browser." },
+    { "url": "https://supabase.com", "prompt": "A 30-second product video for Supabase, the open-source Firebase alternative (Postgres, auth, storage)." },
+    { "url": "https://posthog.com", "prompt": "A 30-second video for PostHog — product analytics, session replay, and feature flags in one platform." },
+    { "url": "https://retool.com", "prompt": "A 30-second video for Retool — build internal tools fast on top of your data." },
+    { "url": "https://planetscale.com", "prompt": "A 30-second product video for PlanetScale — the serverless MySQL platform that scales." },
+    { "url": "https://railway.app", "prompt": "A 30-second video for Railway — deploy apps and databases without managing infrastructure." },
+    { "url": "https://clerk.com", "prompt": "A 30-second product video for Clerk — drop-in authentication and user management for modern apps." },
+    { "url": "https://resend.com", "prompt": "A 30-second video for Resend — the email API for developers." },
+    { "url": "https://sentry.io", "prompt": "A 30-second product video for Sentry — error monitoring and performance for every stack." },
+    { "url": "https://temporal.io", "prompt": "A 30-second video for Temporal — durable execution for reliable distributed applications." },
+    { "url": "https://mux.com", "prompt": "A 30-second product video for Mux — video streaming and analytics infrastructure for developers." },
+    { "url": "https://render.com", "prompt": "A 30-second video for Render — the cloud to build and run apps and websites." },
+    { "url": "https://neon.tech", "prompt": "A 30-second product video for Neon — serverless Postgres with branching." },
+    { "url": "https://raycast.com", "prompt": "A 30-second video for Raycast — a blazing-fast, extensible launcher for getting things done on the Mac." }
+  ]
+}
