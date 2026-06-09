@@ -21,6 +21,7 @@ import {
   findRedundantCaptions,
   hasCornerLogoSuppression,
   assessVerticalFill,
+  repairInvalidLucideImports,
   type AspectRatio,
 } from "./quality-gates";
 import { resolveBrandIdentity, genericFor, type BrandIdentity } from "../crawl/brand-identity";
@@ -493,6 +494,12 @@ export const regenerateScene = async (
   const fetchFont = makeFontFetcher();
   finalCodeOut = (await inlineFontFaces(finalCodeOut, fetchFont)).code;
   designCodeOut = (await inlineFontFaces(designCodeOut, fetchFont)).code;
+
+  // Final deterministic safety net: neutralize any invalid lucide-react imports
+  // that survived the gate's retry (e.g. brand logos like Slack/Github that don't
+  // exist → undefined component → render crash). Alias them to a real icon.
+  finalCodeOut = repairInvalidLucideImports(finalCodeOut, assessInvalidLucideImports(finalCodeOut));
+  designCodeOut = repairInvalidLucideImports(designCodeOut, assessInvalidLucideImports(designCodeOut));
 
   // Build soft warnings — quality signals surfaced to the user but
   // not blocking the build. The strict gates (density, dead-air,
@@ -1213,6 +1220,14 @@ export const buildAnimatedSections = async (
   const designFonts = await inlineFontFaces(designCodeOut, fetchFont);
   finalCodeOut = finalFonts.code;
   designCodeOut = designFonts.code;
+
+  // Final deterministic safety net: neutralize any invalid lucide-react imports
+  // that survived the icon gate's one-shot retry (a structural failure ships
+  // best-effort, so a non-compliant retry would otherwise ship a guaranteed
+  // crash — brand logos like Slack/Github don't exist in lucide → undefined
+  // component → "Element type is invalid" white screen). Alias them to a real icon.
+  finalCodeOut = repairInvalidLucideImports(finalCodeOut, assessInvalidLucideImports(finalCodeOut));
+  designCodeOut = repairInvalidLucideImports(designCodeOut, assessInvalidLucideImports(designCodeOut));
   if (finalFonts.inlined.length || finalFonts.failed.length) {
     console.warn(
       "[pipeline] font-inline:",
