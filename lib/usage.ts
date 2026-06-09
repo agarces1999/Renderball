@@ -56,7 +56,8 @@ export const addUsage = (a: Usage, b: Usage): Usage => ({
 
 /** USD per 1M tokens — base input/output rate per model (Anthropic list price). */
 const RATES: Record<string, { input: number; output: number }> = {
-  "claude-opus-4-8": { input: 15, output: 75 },
+  "claude-fable-5": { input: 10, output: 50 },
+  "claude-opus-4-8": { input: 5, output: 25 },
   "claude-sonnet-4-5": { input: 3, output: 15 },
   "claude-haiku-4-5": { input: 1, output: 5 },
 };
