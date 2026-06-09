@@ -8,6 +8,7 @@ import {
 import { signatureWithLogoFallback } from "../crawl/brand-identity";
 import { formatDesignLanguage } from "../crawl/design-language";
 import { ulid } from "../ulid";
+import { type Usage, EMPTY_USAGE, usageOf, addUsage } from "../usage";
 import type { Script } from "../../src/schema";
 import type { DesignLanguage } from "../../app/new/schema";
 
@@ -127,7 +128,7 @@ export interface AgentBrief {
 }
 
 export type ScriptGenerationResult =
-  | { ok: true; script: Script; usage: { input_tokens: number; output_tokens: number } }
+  | { ok: true; script: Script; usage: Usage }
   | { ok: false; error: string };
 
 /**
@@ -181,8 +182,7 @@ export const generateScript = async (
   type Msg = { role: "user" | "assistant"; content: string };
   const history: Msg[] = [{ role: "user", content: initialUserMessage }];
 
-  let totalIn = 0;
-  let totalOut = 0;
+  let totalUsage = EMPTY_USAGE;
   let lastError = "Unknown error.";
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
@@ -215,8 +215,7 @@ export const generateScript = async (
       };
     }
 
-    totalIn += response.usage.input_tokens;
-    totalOut += response.usage.output_tokens;
+    totalUsage = addUsage(totalUsage, usageOf(response.usage));
 
     const textBlock = response.content.find((c) => c.type === "text");
     if (!textBlock || textBlock.type !== "text") {
@@ -334,7 +333,7 @@ export const generateScript = async (
       return {
         ok: true,
         script: validation.script,
-        usage: { input_tokens: totalIn, output_tokens: totalOut },
+        usage: totalUsage,
       };
     }
 

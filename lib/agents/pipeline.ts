@@ -29,6 +29,7 @@ import { makeFontFetcher, inlineFontFaces } from "../render/font-inline";
 import { makeImageProbe, repairBrokenImages } from "../render/image-integrity";
 import { searchPexelsPhotos, searchPexelsVideos } from "../assets/sources/pexels";
 import type { AssetSearchEntry } from "../assets/types";
+import { type Usage, usageOf, addUsage } from "../usage";
 import type { Script } from "../../src/schema";
 import type {
   AgentBrandExtract,
@@ -235,7 +236,7 @@ export type BuildResult =
       warnings?: BuildWarnings;
       /** Log of search_assets calls during the design pass (license-auditable). */
       asset_manifest?: AssetSearchEntry[];
-      usage: { input_tokens: number; output_tokens: number };
+      usage: Usage;
     }
   | { ok: false; error: string; stage?: "design" | "animation" };
 
@@ -515,14 +516,7 @@ export const regenerateScene = async (
     code: finalCodeOut,
     designCode: designCodeOut,
     warnings,
-    usage: {
-      input_tokens:
-        designResponse.usage.input_tokens +
-        animationResponse.usage.input_tokens,
-      output_tokens:
-        designResponse.usage.output_tokens +
-        animationResponse.usage.output_tokens,
-    },
+    usage: addUsage(usageOf(designResponse.usage), usageOf(animationResponse.usage)),
   };
 };
 
@@ -1112,8 +1106,7 @@ export const buildAnimatedSections = async (
             "; ",
           )}. Text must become legible FAST so the viewer can read it — headline entrances ≤0.4s, body ≤0.5s — then stay settled and static to be read. Speed up these text entrances. Long / slow animation belongs on DECORATIVE elements (icons, illustrations, atmosphere), which can run concurrently while the text is already readable; never on the text itself.`
       : null;
-  let animationInputTokens = animationResponse.usage.input_tokens;
-  let animationOutputTokens = animationResponse.usage.output_tokens;
+  let animationUsage = usageOf(animationResponse.usage);
   if ((!deadAirReport.ok || readTimeFailure) && !skipRetries) {
     const retryMessage = [
       deadAirReport.ok
@@ -1163,12 +1156,10 @@ export const buildAnimatedSections = async (
           assessDeadAir(retryCode, input.script).ok
         ) {
           finalCode = retryCode;
-          animationInputTokens =
-            animationResponse.usage.input_tokens +
-            retryResponse.usage.input_tokens;
-          animationOutputTokens =
-            animationResponse.usage.output_tokens +
-            retryResponse.usage.output_tokens;
+          animationUsage = addUsage(
+            usageOf(animationResponse.usage),
+            usageOf(retryResponse.usage),
+          );
         } else {
           console.warn(
             "[pipeline] Dead-air retry didn't pass either; keeping best available.",
@@ -1258,12 +1249,7 @@ export const buildAnimatedSections = async (
     designCode: designCodeOut,
     warnings,
     asset_manifest: assetSearchLog.length > 0 ? assetSearchLog : undefined,
-    usage: {
-      input_tokens:
-        designResponse.usage.input_tokens + animationInputTokens,
-      output_tokens:
-        designResponse.usage.output_tokens + animationOutputTokens,
-    },
+    usage: addUsage(usageOf(designResponse.usage), animationUsage),
   };
 };
 

@@ -3,6 +3,8 @@ import { ulid } from "../../../../lib/ulid";
 import { saveBrief, saveScript, type StoredBrief } from "../../../../lib/store";
 import { generateScript } from "../../../../lib/agents/script-generator";
 import { extractBrand } from "../../../../lib/crawl/extract-brand";
+import { MODELS } from "../../../../lib/anthropic";
+import { recordUsage } from "../../../../lib/usage";
 import type { BrandExtract } from "../../../new/schema";
 
 /**
@@ -100,6 +102,14 @@ export async function POST(request: Request) {
   }
 
   await saveScript(result.script);
+  // Persist token usage for this script-gen call (Sonnet) — cache-aware cost.
+  await recordUsage({
+    op: "generate",
+    model: MODELS.scriptGenerator,
+    scriptId: result.script.id,
+    url: baseBrief.brand_kit_url,
+    usage: result.usage,
+  });
   await saveBrief({
     ...baseBrief,
     status: "script_generated",
