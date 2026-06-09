@@ -70,17 +70,17 @@ export function AnalyzePanel({
       <div className="py-10">
         <div className="flex items-center gap-3 mb-3">
           <div className="h-2 w-2 rounded-full bg-red-500" />
-          <span className="text-xs uppercase tracking-widest text-red-700">
+          <span className="text-xs uppercase tracking-widest text-red-500">
             something went wrong
           </span>
         </div>
-        <h2 className="text-2xl font-semibold tracking-tight text-gray-900 mb-2">
+        <h2 className="text-2xl font-semibold tracking-tight text-ink mb-2">
           The setup agent hit an error
         </h2>
-        <pre className="mt-4 p-4 rounded-lg bg-red-50 ring-1 ring-red-200 text-sm font-mono text-red-900 whitespace-pre-wrap break-words">
+        <pre className="mt-4 p-4 rounded-lg bg-red-500/5 ring-1 ring-red-500/30 text-sm font-mono text-red-500 whitespace-pre-wrap break-words">
           {agentError}
         </pre>
-        <div className="mt-4 text-xs text-gray-500">
+        <div className="mt-4 text-xs text-muted">
           You can scroll up to edit your prompt and try again.
         </div>
       </div>
@@ -99,16 +99,16 @@ export function AnalyzePanel({
       <div className="flex items-center gap-3 mb-5">
         <Spinner small />
         <div>
-          <h2 className="text-2xl font-semibold tracking-tight text-gray-900">
+          <h2 className="text-2xl font-semibold tracking-tight text-ink">
             Drafting your script
           </h2>
-          <p className="text-sm text-gray-600 mt-0.5">
+          <p className="text-sm text-ink-soft mt-0.5">
             We're reading your inputs and shaping the first draft.
           </p>
         </div>
       </div>
 
-      <div className="h-1 rounded-full bg-gray-100 overflow-hidden mb-6">
+      <div className="h-1 rounded-full bg-surface-3 overflow-hidden mb-6">
         <div
           className="h-full bg-accent transition-all duration-500"
           style={{ width: `${pct}%` }}
@@ -136,21 +136,21 @@ function StepRow({ label, status }: { label: string; status: Status }) {
     <li
       className={cn(
         "flex items-center gap-3 px-4 py-2.5 rounded-lg ring-1 transition-colors",
-        status === "done" && "bg-green-50 ring-green-100",
-        status === "active" && "bg-gray-50 ring-gray-200",
-        status === "pending" && "bg-gray-50 ring-gray-200 opacity-60",
+        status === "done" && "bg-accent-soft ring-accent-line",
+        status === "active" && "bg-surface-2 ring-[var(--hairline)]",
+        status === "pending" && "bg-surface-2 ring-[var(--hairline)] opacity-60",
       )}
     >
       <StatusDot status={status} />
       <span
         className={cn(
           "text-sm",
-          status === "done" ? "text-gray-900" : "text-gray-700",
+          status === "done" ? "text-ink" : "text-ink-soft",
           status === "active" && "font-medium",
         )}
       >
         {label}
-        {status === "active" && <span className="text-gray-500">…</span>}
+        {status === "active" && <span className="text-muted">…</span>}
       </span>
     </li>
   );
@@ -159,7 +159,7 @@ function StepRow({ label, status }: { label: string; status: Status }) {
 function StatusDot({ status }: { status: Status }) {
   if (status === "done") {
     return (
-      <div className="h-6 w-6 rounded-full bg-green-500 flex items-center justify-center shrink-0">
+      <div className="h-6 w-6 rounded-full bg-accent flex items-center justify-center shrink-0">
         <svg
           width="12"
           height="12"
@@ -169,7 +169,7 @@ function StatusDot({ status }: { status: Status }) {
         >
           <path
             d="M2.5 6.5L5 9L9.5 3.5"
-            stroke="white"
+            stroke="var(--accent-ink)"
             strokeWidth="2"
             strokeLinecap="round"
             strokeLinejoin="round"
@@ -185,7 +185,7 @@ function StatusDot({ status }: { status: Status }) {
       </div>
     );
   }
-  return <div className="h-6 w-6 rounded-full bg-gray-200 shrink-0" />;
+  return <div className="h-6 w-6 rounded-full bg-surface-3 shrink-0" />;
 }
 
 function Spinner({ small }: { small?: boolean }) {

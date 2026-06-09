@@ -295,7 +295,7 @@ export function BriefForm() {
             </span>
           )}
           {brandExtract && !brandExtract.ok && (
-            <span className="text-amber-600">
+            <span className="text-muted">
               couldn&apos;t read that site — the agent will work from your prompt
             </span>
           )}
@@ -314,7 +314,7 @@ export function BriefForm() {
               key={ex}
               type="button"
               onClick={() => setIntroPrompt(ex)}
-              className="rounded-md border border-hairline-strong bg-emerald-50/60 px-2.5 py-1 text-[12px] text-ink-soft backdrop-blur-md transition-colors hover:bg-emerald-50/85 hover:text-ink"
+              className="rounded-md border border-hairline-strong bg-accent-soft px-2.5 py-1 text-[12px] text-ink-soft backdrop-blur-md transition-colors hover:border-accent-line hover:text-ink"
             >
               {ex}
             </button>
@@ -354,7 +354,7 @@ export function BriefForm() {
           </div>
         </details>
 
-        {error && <p className="mt-4 font-mono text-[13px] text-red-400">{error}</p>}
+        {error && <p className="mt-4 font-mono text-[13px] text-red-500">{error}</p>}
 
         <button
           type="button"
@@ -460,10 +460,10 @@ function QuestionHeader({
 }) {
   return (
     <div className="mb-6">
-      <h2 className="text-3xl font-semibold tracking-tight text-gray-900 mb-2">
+      <h2 className="text-3xl font-semibold tracking-tight text-ink mb-2">
         {question}
       </h2>
-      {hint && <p className="text-sm text-gray-600 leading-relaxed">{hint}</p>}
+      {hint && <p className="text-sm text-ink-soft leading-relaxed">{hint}</p>}
     </div>
   );
 }
@@ -586,7 +586,7 @@ function StepColors({
           question="Pick your brand colors"
           hint="We couldn't crawl a palette from your site — skip this and the agent will choose sensible defaults."
         />
-        <div className="text-sm text-gray-600">
+        <div className="text-sm text-ink-soft">
           No palette available. Continue to use Renderball defaults (deep
           gray + cyan accent).
         </div>
@@ -609,7 +609,7 @@ function StepColors({
 
       {/* ── Live preview ────────────────────────────────────────── */}
       <div className="mb-6">
-        <div className="text-xs uppercase tracking-widest text-gray-500 mb-2">
+        <div className="text-xs uppercase tracking-widest text-muted mb-2">
           Preview
         </div>
         <ColorPreview value={value} />
@@ -619,7 +619,7 @@ function StepColors({
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_1fr] gap-6">
         {/* Slot column */}
         <div>
-          <div className="text-xs uppercase tracking-widest text-gray-500 mb-3">
+          <div className="text-xs uppercase tracking-widest text-muted mb-3">
             1. Pick a role
           </div>
           <div className="flex flex-col gap-2">
@@ -636,10 +636,10 @@ function StepColors({
                   className={cn(
                     "flex items-center gap-3 p-3 rounded-lg ring-1 text-left transition-all",
                     isActive
-                      ? "ring-2 ring-gray-900 bg-white"
+                      ? "ring-2 ring-ink bg-surface"
                       : assignedHex
-                        ? "ring-gray-300 bg-white hover:ring-gray-400"
-                        : "ring-gray-200 bg-white hover:ring-gray-300",
+                        ? "ring-[var(--hairline-strong)] bg-surface hover:ring-faint"
+                        : "ring-[var(--hairline)] bg-surface hover:ring-[var(--hairline-strong)]",
                   )}
                 >
                   {/* Color chip — actual swatch or "auto" placeholder */}
@@ -647,8 +647,8 @@ function StepColors({
                     className={cn(
                       "h-10 w-10 rounded-md ring-1 flex-shrink-0",
                       assignedHex
-                        ? "ring-gray-300"
-                        : "ring-dashed ring-gray-300 bg-[repeating-linear-gradient(45deg,#f3f4f6,#f3f4f6_4px,#ffffff_4px,#ffffff_8px)]",
+                        ? "ring-[var(--hairline-strong)]"
+                        : "ring-dashed ring-[var(--hairline-strong)] bg-[repeating-linear-gradient(45deg,var(--surface-2),var(--surface-2)_4px,var(--surface)_4px,var(--surface)_8px)]",
                     )}
                     style={
                       assignedHex
@@ -657,10 +657,10 @@ function StepColors({
                     }
                   />
                   <div className="flex-1 min-w-0">
-                    <div className="text-sm font-medium text-gray-900">
+                    <div className="text-sm font-medium text-ink">
                       {label}
                     </div>
-                    <div className="text-xs text-gray-500 truncate">
+                    <div className="text-xs text-muted truncate">
                       {assignedHex
                         ? `${assignedHex}`
                         : `${hint} (auto)`}
@@ -674,7 +674,7 @@ function StepColors({
                         clearSlot(key);
                         if (activeSlot === key) setActiveSlot(null);
                       }}
-                      className="text-xs text-gray-400 hover:text-red-600 px-2 py-1 rounded transition-colors"
+                      className="text-xs text-faint hover:text-red-500 px-2 py-1 rounded transition-colors"
                       aria-label={`Clear ${label}`}
                     >
                       ×
@@ -688,7 +688,7 @@ function StepColors({
             <button
               type="button"
               onClick={resetAll}
-              className="mt-3 text-xs text-gray-500 hover:text-red-600 transition-colors"
+              className="mt-3 text-xs text-muted hover:text-red-500 transition-colors"
             >
               Clear all
             </button>
@@ -697,10 +697,10 @@ function StepColors({
 
         {/* Palette column */}
         <div>
-          <div className="text-xs uppercase tracking-widest text-gray-500 mb-3">
+          <div className="text-xs uppercase tracking-widest text-muted mb-3">
             2. Click a color
             {activeSlot && (
-              <span className="ml-2 font-normal normal-case tracking-normal text-[11px] text-gray-700">
+              <span className="ml-2 font-normal normal-case tracking-normal text-[11px] text-ink-soft">
                 → fills{" "}
                 <span className="font-semibold">
                   {slots.find((s) => s.key === activeSlot)?.label}
@@ -724,13 +724,13 @@ function StepColors({
                   className={cn(
                     "h-12 w-12 rounded-md ring-1 transition-all relative",
                     usedFor
-                      ? "ring-2 ring-gray-900"
-                      : "ring-gray-300 hover:ring-gray-500",
+                      ? "ring-2 ring-ink"
+                      : "ring-[var(--hairline-strong)] hover:ring-muted",
                   )}
                   style={{ background: hex }}
                 >
                   {usedFor && (
-                    <span className="absolute -top-1.5 -right-1.5 text-[9px] font-semibold uppercase tracking-wide bg-gray-900 text-white px-1.5 py-0.5 rounded-full whitespace-nowrap">
+                    <span className="absolute -top-1.5 -right-1.5 text-[9px] font-semibold uppercase tracking-wide bg-ink text-surface px-1.5 py-0.5 rounded-full whitespace-nowrap">
                       {usedFor.label.split(" ")[0]}
                     </span>
                   )}
@@ -738,7 +738,7 @@ function StepColors({
               );
             })}
           </div>
-          <div className="mt-3 text-[11px] text-gray-500 font-mono leading-relaxed">
+          <div className="mt-3 text-[11px] text-muted font-mono leading-relaxed">
             Click a swatch to fill the active role. Tap an assigned
             swatch again to clear it. Hover a swatch to see its hex.
           </div>
@@ -746,7 +746,7 @@ function StepColors({
       </div>
 
       {!anyAssigned && (
-        <div className="mt-6 text-xs text-gray-500 italic">
+        <div className="mt-6 text-xs text-muted italic">
           Don&apos;t feel like picking? Hit Continue → and the agent will
           choose for you. You can always change them later.
         </div>
@@ -775,7 +775,7 @@ function ColorPreview({
   const cardText = value.dark ?? "#0a0a0a";
   return (
     <div
-      className="rounded-xl overflow-hidden ring-1 ring-gray-200"
+      className="rounded-xl overflow-hidden ring-1 ring-[var(--hairline)]"
       style={{ background: bg, color: text }}
     >
       <div className="p-6 grid grid-cols-1 md:grid-cols-[1.4fr_1fr] gap-6 items-center">
