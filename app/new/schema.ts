@@ -241,6 +241,20 @@ export interface BrandFont {
 
 export type BrandMotionSignal = "high" | "medium" | "low";
 
+/**
+ * Structured design-language brief read off a homepage screenshot (the
+ * qualitative/compositional layer — NOT colors or font names, which are captured
+ * by palette/fonts). Produced by lib/crawl/design-language.ts.
+ */
+export interface DesignLanguage {
+  ethos: string; // one-line design personality
+  typography: string; // type TREATMENT (scale contrast, weight, case) — not family names
+  layout: string; // composition patterns + density
+  shape: string; // corners, borders, elevation, dividers
+  imagery: string; // photography vs illustration vs flat
+  mood: string[]; // 3-5 adjectives
+}
+
 export interface BrandExtract {
   url: string; // normalized
   title?: string;
@@ -276,6 +290,10 @@ export interface BrandExtract {
   palette?: string[];
   /** Heuristic: how motion-heavy the site's CSS is. Drives Agent 2's choreography density. */
   motion_signal?: BrandMotionSignal;
+  /** Live homepage screenshot URL (microlink) — a representative page snapshot for vision/reference. */
+  site_screenshot?: string;
+  /** Structured design-language brief read off the homepage screenshot (composition / type-treatment / mood). */
+  design_language?: DesignLanguage;
   fetched_at: string;
   ok: boolean;
   error?: string;

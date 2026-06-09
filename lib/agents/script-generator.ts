@@ -6,8 +6,10 @@ import {
   findUngroundedStageLabels,
 } from "./schema-validator";
 import { signatureWithLogoFallback } from "../crawl/brand-identity";
+import { formatDesignLanguage } from "../crawl/design-language";
 import { ulid } from "../ulid";
 import type { Script } from "../../src/schema";
+import type { DesignLanguage } from "../../app/new/schema";
 
 /**
  * The agent-facing brief. Mirrors actions.ts BriefInput but doesn't
@@ -60,6 +62,10 @@ export interface AgentBrandExtract {
   };
   palette?: string[];
   motion_signal?: AgentMotionSignal;
+  /** Live homepage screenshot URL (microlink) — representative page snapshot. */
+  site_screenshot?: string;
+  /** Structured design-language brief (composition / type-treatment / mood). */
+  design_language?: DesignLanguage;
   ok: boolean;
 }
 
@@ -588,6 +594,17 @@ const buildUserMessage = (brief: AgentBrief): string => {
           low: "low — site is restrained/static. Match it: clean fades and translates, minimal background motion, let typography lead.",
         }[b.motion_signal];
         lines.push(`    Motion signal: ${motionGuide}`);
+      }
+      // Design language read off the live homepage screenshot — the brand's
+      // compositional feel (type treatment, layout, shape, imagery, mood). Use
+      // it to keep the narrative + visual_concepts true to how the brand
+      // actually presents itself, not a generic look.
+      if (b.design_language) {
+        const dl = formatDesignLanguage(b.design_language);
+        if (dl) {
+          lines.push("    Design language (from the homepage — match this feel):");
+          lines.push(dl);
+        }
       }
       // The script agent writes COPY + visual concepts; it references assets by
       // intent/id, never by raw URL (the design agent resolves URLs from the
