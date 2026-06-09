@@ -38,6 +38,26 @@ export default async function PreviewPage({
     compositionExists = false;
   }
 
+  // Persisted build warnings (warnings.json next to the composition). Without
+  // this the client only learns warnings after a regen/export action — a fresh
+  // page load of a shipped-with-defects build (structural_unresolved) would
+  // show nothing. Best-effort: a missing/corrupt file is just "no warnings".
+  let initialWarnings: Record<string, unknown> | null = null;
+  if (compositionExists) {
+    try {
+      const raw = await fs.readFile(
+        path.join(process.cwd(), "src", "generated", params.id, "warnings.json"),
+        "utf8",
+      );
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === "object" && Object.keys(parsed).length > 0) {
+        initialWarnings = parsed;
+      }
+    } catch {
+      /* no warnings file — nothing to surface */
+    }
+  }
+
   // Recover the brief id so "back to story" lands on the right review page
   // (review is keyed by briefId, not scriptId).
   const brief = await loadBriefByScriptId(params.id);
@@ -70,7 +90,11 @@ export default async function PreviewPage({
               Playing live in your browser. Tweak any scene, then export to MP4.
             </p>
           </div>
-          <PreviewClient scriptId={params.id} script={script} />
+          <PreviewClient
+            scriptId={params.id}
+            script={script}
+            initialWarnings={initialWarnings}
+          />
         </main>
       )}
     </>
