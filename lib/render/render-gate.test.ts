@@ -77,6 +77,7 @@ try {
       "Img.tsx",
       "Video.tsx",
       "Lottie.tsx",
+      "BrandChrome.tsx",
       "warnings.json",
     ]) {
       assert(existsSync(path.join(goodDir, f)), `missing ${f} in genDir`);

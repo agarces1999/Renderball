@@ -24,8 +24,10 @@ import {
   repairInvalidLucideImports,
   findUndefinedJsxComponents,
   findDrawnLogoStandIns,
+  findProvidedComponentRedefinitions,
   type AspectRatio,
 } from "./quality-gates";
+import { buildDesignConstraints } from "./design-constraints";
 import { resolveBrandIdentity, genericFor, type BrandIdentity } from "../crawl/brand-identity";
 import { formatDesignLanguage } from "../crawl/design-language";
 import { makeFontFetcher, inlineFontFaces } from "../render/font-inline";
@@ -388,6 +390,7 @@ export const regenerateScene = async (
         // the same Message shape as messages.create().
         model: MODELS.codingAgent,
         max_tokens: 32000,
+        thinking: { type: "adaptive" },
         system: [
           {
             type: "text",
@@ -444,6 +447,7 @@ export const regenerateScene = async (
       {
         model: MODELS.codingAgent,
         max_tokens: 32000,
+        thinking: { type: "adaptive" },
         system: [
           {
             type: "text",
@@ -708,6 +712,10 @@ export const buildAnimatedSections = async (
           // composition taste + density on the commit-to-MP4 path.
           model: MODELS.codingAgentBuild,
           max_tokens: 32000,
+          // Adaptive thinking: the design pass juggles ~15 simultaneous
+          // machine-checked constraints; letting Opus reason before emitting
+          // is the cheapest first-pass-compliance lever (fewer gate retries).
+          thinking: { type: "adaptive" },
           system: [
             {
               type: "text",
@@ -1032,6 +1040,7 @@ export const buildAnimatedSections = async (
         // taste + dead-air pacing. Streaming required (Opus + 32k tokens).
         model: MODELS.codingAgentBuild,
         max_tokens: 32000,
+        thinking: { type: "adaptive" },
         system: [
           {
             type: "text",
@@ -1115,6 +1124,7 @@ export const buildAnimatedSections = async (
             // non-streaming threshold.
             model: MODELS.codingAgentBuild,
             max_tokens: 32000,
+            thinking: { type: "adaptive" },
             system: [
               {
                 type: "text",
@@ -1513,6 +1523,13 @@ const buildDesignUserMessage = (input: BuildInput): string => {
     lines.push("");
   }
   appendBrandContext(lines, input);
+  // The machine contract LAST so it's the most salient thing before emission —
+  // a compact restatement, as data, of exactly what the static gates reject.
+  // Models comply far better with local, checkable constraints than with the
+  // same rules as prose mid-system-prompt (measured ~50% retry rate without).
+  lines.push("");
+  lines.push(buildDesignConstraints(aspect, { hasLogo: !!input.brand_identity?.logo }));
+  lines.push("");
   lines.push(
     "Output the complete static Composition.tsx file. Export one `Section{N}` named component per section above (numbering matches the input). Each Section is self-contained with its own `<style>` block for brand fonts. Top-level `export const Generated` lists them as siblings — used for preview only. Every element at its settled position. Density: 6-10 distinct visual elements per section minimum.",
   );
@@ -1811,7 +1828,8 @@ interface StructuralFailure {
     | "overflow_crop"
     | "duplicate_logo"
     | "fabricated_logo"
-    | "logo_not_rendered";
+    | "logo_not_rendered"
+    | "provided_component_redefined";
   message: string;
   summary: string;
 }
@@ -1828,6 +1846,19 @@ const assessStructuralGates = (
   input: BuildInput,
 ): StructuralReport => {
   const failures: StructuralFailure[] = [];
+
+  // PROVIDED-component contract: BrandChrome ships as a fixed file in every
+  // genDir (build-wrapper.ts). An emitted redefinition either shadows it (the
+  // historical duplicate/drawn-logo failure modes return) or collides with the
+  // import at compile time — both structural.
+  const redefined = findProvidedComponentRedefinitions(code);
+  if (redefined.length > 0) {
+    failures.push({
+      key: "provided_component_redefined",
+      message: `${redefined.join(", ")} is a PROVIDED component — \`import { BrandChrome } from "./BrandChrome"\` and configure it via props (variant/logoSrc/wordmark/ink/accent/fonts). DELETE your own definition; re-creating provided components is rejected.`,
+      summary: redefined.join(", "),
+    });
+  }
 
   // Invented numeric claims are a TRUST/correctness failure — fabricated
   // stats like "30 days"/"00X" must not ship, so block, don't warn (QA E2).

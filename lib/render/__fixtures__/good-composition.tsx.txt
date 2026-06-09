@@ -5,6 +5,7 @@
 import React from "react";
 import { Zap } from "lucide-react";
 import { Img } from "./Img";
+import { BrandChrome } from "./BrandChrome";
 
 interface Script {
   scenes: Array<{
@@ -60,6 +61,16 @@ export const Section0: React.FC<{ script: Script }> = ({ script }) => {
       }}
     >
       <style dangerouslySetInnerHTML={{ __html: BRAND_FONTS_CSS }} />
+      <BrandChrome
+        sceneIndex={0}
+        totalScenes={2}
+        wordmark="Acme"
+        category="Launch 2026"
+        ink={PALETTE.light}
+        accent={PALETTE.accent}
+        fontDisplay='"Geist", sans-serif'
+        fontBody='"Geist", sans-serif'
+      />
       <div
         style={{
           position: "absolute",
@@ -108,6 +119,16 @@ export const Section1: React.FC<{ script: Script }> = ({ script }) => {
         padding: 120,
       }}
     >
+      <BrandChrome
+        sceneIndex={1}
+        totalScenes={2}
+        wordmark="Acme"
+        category="Launch 2026"
+        ink={PALETTE.primary}
+        accent={PALETTE.accent}
+        fontDisplay='"Geist", sans-serif'
+        fontBody='"Geist", sans-serif'
+      />
       <div style={{ flex: 1 }}>
         <h6 style={{ color: PALETTE.accent, fontSize: 22, letterSpacing: "0.2em", margin: 0 }}>
           {content.eyebrow}
