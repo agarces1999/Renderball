@@ -22,6 +22,8 @@ import {
   hasCornerLogoSuppression,
   assessVerticalFill,
   repairInvalidLucideImports,
+  findUndefinedJsxComponents,
+  findDrawnLogoStandIns,
   type AspectRatio,
 } from "./quality-gates";
 import { resolveBrandIdentity, genericFor, type BrandIdentity } from "../crawl/brand-identity";
@@ -227,6 +229,14 @@ export interface BuildWarnings {
   low_register_variety?: { distinct: number; total: number };
   /** Element widths that still cross the canvas edge after the structural retry. */
   overflow_crop?: number[];
+  /**
+   * Structural gate failures (the crash / broken-looking tier) that survived
+   * EVERY retry and the deterministic repairs — i.e. what actually shipped.
+   * Entries are "gate_key: detail". A structural failure must never ship
+   * silently: the Supabase build hand-drew a logo replica and shipped with an
+   * empty warnings.json because nothing recorded the unresolved failure.
+   */
+  structural_unresolved?: string[];
 }
 
 export type BuildResult =
@@ -759,41 +769,21 @@ export const buildAnimatedSections = async (
 
   // Quality gate: count headlines / paragraphs / SVGs per section. If
   // the output is sparse, retry once with a specific failure message.
-  // Also scan for invented numeric claims (hallucinated dollars,
-  // percentages, timeframes) and contrast failures (text whose color
-  // is too close to its background to read).
+  // STRUCTURAL failures (crash / broken-looking — invented claims, severe
+  // contrast, invalid icons, undefined JSX tags, crops, logo defects) are
+  // assessed by assessStructuralGates so the SAME sweep re-runs on every
+  // retry's output and on the final shipped code. They used to be one-shot
+  // inline checks against attempt 0 only — which is how the Supabase build
+  // shipped a hand-drawn logo replica with an empty warnings.json.
   const gateReport = assessDesignDensity(designCode, input.script);
-  const invented = findInventedClaims(
-    designCode,
-    input.script,
-    input.script?.brief?.about ?? input.script?.brief?.purpose,
-    input.brand_extract?.body_excerpts,
-    input.verified_claims,
-  );
-  const claimFailure =
-    invented.length > 0
-      ? `Invented numeric claims found on screen (not in body_excerpts or script): ${invented.slice(0, 6).join(", ")}${invented.length > 6 ? ", …" : ""}. Replace each with qualitative copy (e.g. "$2.4M" → "substantial fees"), or omit the claim entirely.`
-      : null;
-  // Contrast scan — two tiers (QA B1):
-  //   • SEVERE (<3:1): unreadable even for large headlines (WCAG's large-text
-  //     floor is 3:1). This is a STRUCTURAL failure — always retried, both
-  //     paths — because white-on-orange at 2.1:1 must never ship.
-  //   • MINOR (3:1–4.5:1): below the body floor but readable for large text;
-  //     stays a polish-level nudge (the agent may keep a 3.2:1 headline).
-  // assessContrast doesn't expose per-finding fontSize, so the minor tier
-  // accepts some false positives on big headlines; the severe tier doesn't
-  // need a size exemption (nothing is readable below 3:1).
+  let structural = assessStructuralGates(designCode, input);
+  // Contrast scan, MINOR tier (QA B1): pairs below the 4.5:1 body floor but
+  // readable for large text stay a polish-level nudge (the agent may keep a
+  // 3.2:1 headline). The SEVERE (<3:1) tier — unreadable even for headlines —
+  // is structural and lives in assessStructuralGates. assessContrast doesn't
+  // expose per-finding fontSize, so the minor tier accepts some false
+  // positives on big headlines.
   const contrastFindings = assessContrast(designCode);
-  const severeContrast = contrastFindings.filter(
-    (f) => f.ratio < SEVERE_CONTRAST_RATIO,
-  );
-  const severeContrastFailure =
-    severeContrast.length > 0
-      ? `UNREADABLE contrast — ${severeContrast.length} pair(s) below ${SEVERE_CONTRAST_RATIO}:1. These FAIL even for large headlines and MUST be changed, not left:\n${severeContrast
-          .slice(0, 8)
-          .map((f) => `  • color ${f.fg} on background ${f.bg} = ${f.ratio.toFixed(2)}:1`)
-          .join("\n")}\nFix each with an OPPOSITE-luminance pairing: near-white text on a dark/saturated surface, or the darkest palette ink on a light/accent surface. NEVER white (or a light tint) on a mid-tone accent like orange/lime/cyan, and never accent-on-accent.`
-      : null;
   const contrastFailure =
     contrastFindings.length > 0
       ? `Contrast failures (${contrastFindings.length} text-on-background pair(s) below WCAG 4.5:1 — text will be hard to read):\n${contrastFindings
@@ -805,41 +795,8 @@ export const buildAnimatedSections = async (
           .join("\n")}${contrastFindings.length > 8 ? `\n  ...and ${contrastFindings.length - 8} more` : ""}\nFix: for each failing pair, either darken the foreground OR lighten the background. Reach for opposite-luminance palette roles (light text on dark bg, dark text on light bg) — never accent-on-primary unless they're a high-contrast pair. If the failing element is a large headline (≥48px), 3:1 is acceptable and you can leave it.`
       : null;
 
-  // Icon-import guard. lucide-react has NO brand/company logos; the agent
-  // sometimes imports a brand name (Slack, Figma, Trello, …), which resolves
-  // to `undefined` at runtime → "Element type is invalid" white screen. It
-  // compiles cleanly, so only this check catches it. Brand logos → simple-icons.
-  const badIcons = assessInvalidLucideImports(designCode);
-  const iconFailure =
-    badIcons.length > 0
-      ? `Invalid lucide-react imports — ${badIcons.join(", ")} are brand/company logos that DO NOT EXIST in lucide-react and will crash the render (undefined component, white screen). lucide-react has ZERO brand logos. Remove each: use a neutral Lucide icon (Square, LayoutGrid, AppWindow, MessageSquare, FileText) for a generic tool, OR import a real brand logo from simple-icons (e.g. import { siSlack } from "simple-icons/icons"). Never import a company/product name from lucide-react.`
-      : null;
-
-  // Overflow guard (geometry-aware). Flags elements whose real geometry
-  // crops at the canvas edge — wider than the canvas, or left-anchored so
-  // left+width spills past the right edge (the Vercel "popup cropped on the
-  // right border" bug). Centered wide elements are NOT flagged (they keep
-  // symmetric margins). Detectable, so retry rather than ship.
+  // Aspect for the geometry-aware polish gates below (drift + vertical fill).
   const gateAspect = (input.script.config?.aspect_ratio ?? "16:9") as AspectRatio;
-  const overflows = findOverflowingElements(designCode, gateAspect);
-  const safeForAspect = gateAspect === "16:9" ? 1760 : 920;
-  const overflowFailure =
-    overflows.length > 0
-      ? `Off-canvas crop — element(s) with width ${overflows.join(", ")}px cross the ${gateAspect} canvas edge (their right edge spills past the frame, or they're wider than the canvas), so they get cropped. Cap every PRIMARY element (cards, UI mocks, content blocks) at ≤${safeForAspect}px and keep left+width inside the frame; only decorative/atmosphere layers may bleed past.`
-      : null;
-
-  // Duplicate-logo guard. BrandChrome renders the brand logo on every scene;
-  // a scene rendering its OWN logo too = two logos in the same corner (the
-  // Notion CTA bug). >1 logo <Img> site means a scene added one.
-  const logoCount = findDuplicateLogos(designCode);
-  // QA V4: the sanctioned logo-led CTA/opening pattern has 2 logo SITES (chrome +
-  // hero) but renders ONE per frame because that scene passes showCornerLogo=false
-  // to suppress the chrome mark. Don't false-flag it (and waste a retry).
-  const logoDuplicated = logoCount > 1 && !hasCornerLogoSuppression(designCode);
-  const logoFailure =
-    logoDuplicated
-      ? `Duplicate brand logo — the brand logo image appears at ${logoCount} places in the file. BrandChrome already renders the logo on every scene; individual scenes (including the opening and CTA) must NOT render their own brand logo. EITHER remove the scene-level logo <Img>s, OR (for a deliberate logo-led CTA/opening) keep ONE hero logo and pass \`showCornerLogo={false}\` to BrandChrome on that scene so the corner mark is suppressed — exactly one logo per frame.`
-      : null;
 
   // Throughline-presence guard (polish). The script's narrative.throughline
   // names the connective motif; the design agent must instantiate it as ONE
@@ -903,50 +860,18 @@ export const buildAnimatedSections = async (
   // top-cluster with no flex distribution / bottom anchor / tall element.
   const fillFailure = assessVerticalFill(designCode, gateAspect);
 
-  // Fabricated-logo guard (structural). When the brand identity resolved NO real
-  // logo, the brand mark MUST be the wordmark text — not a drawn substitute. This
-  // catches the exact regression where the agent invents a mark and labels it the
-  // brand's logo (Fuse's "two offset squares" logo-mark). Narrow trigger (no real
-  // logo AND the code calls something a logo/brand-mark) → low false-positive.
-  const noRealLogo = input.brand_identity ? !input.brand_identity.logo : false;
-  const fabricatedLogoFailure =
-    noRealLogo && /\b(logo[-\s]?mark|brand[-\s]?mark)\b/i.test(designCode)
-      ? `No real logo exists for this brand — the brand mark MUST be the WORDMARK "${input.brand_identity?.wordmark?.text ?? ""}" rendered as styled text in BrandChrome. Your output references a drawn logo/brand-mark. Remove any INVENTED mark (geometric shapes, monogram, "two squares", abstract glyph) and render the wordmark text instead. Never fabricate a logo, and never make a drawn mark the throughline.`
-      : null;
-
-  // Logo-NOT-rendered guard (structural). The mirror of the fabrication gate: a
-  // REAL, confident logo was resolved but the agent rendered neither it nor the
-  // injected LOGO_SRC const — it fell back to the brand NAME as text (Liquid
-  // Death: the skull logo, discovered @0.95, shipped as "LIQUID DEATH" text). The
-  // logo is the brand's primary mark; force a retry to place it. (Short logo URLs
-  // get inlined directly, so we accept either the LOGO_SRC ref OR the url itself.)
-  const realLogoUrl = input.brand_identity?.logo?.url;
-  const logoNotRenderedFailure =
-    realLogoUrl &&
-    !designCode.includes("LOGO_SRC") &&
-    !designCode.includes(realLogoUrl)
-      ? `The brand logo was NOT rendered — you fell back to text/omitted it. A real brand logo IS provided. Render it EXACTLY ONCE in BrandChrome as <Img src={LOGO_SRC} style={{ height: 28, width: "auto" }} />. \`LOGO_SRC\` is a module-scope string constant injected at build time — reference it, do NOT declare it, do NOT inline a URL. Do NOT render the brand NAME as text in place of the logo image.`
-      : null;
-
   // Split the gate by class. STRUCTURAL failures (a crash, a cropped
-  // element, a duplicated logo) make the output look broken to anyone
-  // watching, so they MUST be fixed even on the fast preview path — the
-  // preview is exactly what the user judges quality from. SUBJECTIVE
-  // failures (density, invented claims, borderline contrast) are polish:
-  // worth a retry on the strict MP4 path, skipped on preview so first-shot
-  // iteration stays fast. Both share ONE retry (a single Opus pass paid
-  // total), so when we're not skipping, a structural fix carries the polish
-  // fixes along for free.
-  const structuralFailure =
-    iconFailure ||
-    overflowFailure ||
-    logoFailure ||
-    fabricatedLogoFailure ||
-    logoNotRenderedFailure ||
-    severeContrastFailure ||
-    // Invented numeric claims are a TRUST/correctness failure — fabricated
-    // stats like "30 days"/"00X" must not ship, so block, don't warn (QA E2).
-    claimFailure;
+  // element, a duplicated/fabricated logo) make the output look broken to
+  // anyone watching, so they MUST be fixed even on the fast preview path —
+  // the preview is exactly what the user judges quality from. SUBJECTIVE
+  // failures (density, borderline contrast, throughline) are polish: worth
+  // a retry on the strict MP4 path, skipped on preview so first-shot
+  // iteration stays fast. Budgets: polish gets ONE shared retry (a single
+  // Opus pass paid total — a structural fix carries the polish fixes along
+  // for free); STRUCTURAL failures get a SECOND, structural-only retry below
+  // when the shared retry's output still fails the sweep (total budget 2).
+  // Whatever still fails after that ships best-of-attempts and is recorded
+  // in warnings.structural_unresolved — never silently.
   const includePolish = !skipRetries;
   const polishFailure =
     includePolish &&
@@ -958,27 +883,19 @@ export const buildAnimatedSections = async (
       fontFailure ||
       fillFailure);
 
-  if (structuralFailure || polishFailure) {
+  if (structural.failures.length > 0 || polishFailure) {
     const retryMessage = [
       includePolish && !gateReport.ok
         ? `Your previous output failed the density check: ${gateReport.error}`
         : null,
-      // Invented claims are structural — always sent, regardless of path (E2).
-      claimFailure,
-      // Severe contrast is structural — always sent, regardless of path.
-      // (The softer <4.5:1 contrastFailure stays polish-gated below it.)
-      severeContrastFailure,
+      // Structural failures are always sent, regardless of path.
+      ...structural.failures.map((f) => f.message),
       includePolish ? contrastFailure : null,
       includePolish ? throughlineFailure : null,
       includePolish ? driftFailure : null,
       includePolish ? chartFailure : null,
       includePolish ? fontFailure : null,
       includePolish ? fillFailure : null,
-      iconFailure,
-      overflowFailure,
-      logoFailure,
-      fabricatedLogoFailure,
-      logoNotRenderedFailure,
       "",
       "Re-emit the COMPLETE Composition.tsx file with these issues fixed. The full content-mapping discipline still applies — render EVERY content field present in each section's input (eyebrow, headline, lede, bullets, caption, meta, cta, illustration):",
       "  • eyebrow → an <h6> or styled <div> with uppercase tracking-wide text above the headline",
@@ -1010,16 +927,10 @@ export const buildAnimatedSections = async (
     const retryText = designResponse.content.find((c) => c.type === "text");
     if (retryText && retryText.type === "text") {
       const retryCode = stripCodeFence(retryText.text.trim());
-      const retrySevereContrast = assessContrast(retryCode).filter(
-        (f) => f.ratio < SEVERE_CONTRAST_RATIO,
-      ).length;
-      const retryInvented = findInventedClaims(
-        retryCode,
-        input.script,
-        input.script?.brief?.about ?? input.script?.brief?.purpose,
-        input.brand_extract?.body_excerpts,
-        input.verified_claims,
-      ).length;
+      // RE-ASSESS the structural sweep on the retry's output — a retry chased
+      // for polish can newly INTRODUCE a structural defect (the Supabase
+      // build's retry dropped LOGO_SRC for a hand-drawn replica).
+      const retryStructural = assessStructuralGates(retryCode, input);
       if (
         retryCode.includes("import") &&
         retryCode.includes("export") &&
@@ -1027,13 +938,15 @@ export const buildAnimatedSections = async (
         // we only forced a structural fix, so accept any valid re-emit —
         // don't reject a logo/crop fix just for being a touch sparse.
         (skipRetries || assessDesignDensity(retryCode, input.script).ok) &&
-        // Never accept a retry that made severe (<3:1) contrast WORSE than the
-        // original — keep whichever has fewer unreadable pairs.
-        retrySevereContrast <= severeContrast.length &&
-        // Likewise, never accept a retry that ADDED invented numeric claims (E2).
-        retryInvented <= invented.length
+        // Never accept a retry that made the structural floor WORSE than the
+        // original: fewer-or-equal failed gates, severe (<3:1) contrast pairs
+        // not increased (QA B1), and no ADDED invented numeric claims (E2).
+        retryStructural.failures.length <= structural.failures.length &&
+        retryStructural.severeContrastCount <= structural.severeContrastCount &&
+        retryStructural.inventedClaimCount <= structural.inventedClaimCount
       ) {
         designCode = retryCode;
+        structural = retryStructural;
       } else {
         // Retry didn't pass either. Use the better of the two by raw element count.
         // (Both are rendered; we just go with what we have.)
@@ -1041,6 +954,64 @@ export const buildAnimatedSections = async (
           "[pipeline] Design retry also failed density check; proceeding with best available.",
         );
       }
+    }
+  }
+
+  // STRUCTURAL floor, second chance. If the best code so far STILL fails any
+  // structural gate (the shared retry didn't comply, or it was spent chasing
+  // polish), run ONE structural-only retry — total structural budget 2 Opus
+  // passes; polish stays at 1. Past this point whatever remains ships
+  // best-of-attempts and is recorded in warnings.structural_unresolved.
+  if (structural.failures.length > 0) {
+    const structuralRetryMessage = [
+      ...structural.failures.map((f) => f.message),
+      "",
+      "Re-emit the COMPLETE Composition.tsx file with these STRUCTURAL issues fixed. Change only what the fixes above require — keep the design, copy, layout, and every other section otherwise intact.",
+    ].join("\n");
+    try {
+      const structuralResponse = await runDesign([
+        { role: "user", content: designUserMessage },
+        { role: "assistant", content: designCode },
+        { role: "user", content: structuralRetryMessage },
+      ]);
+      const structuralText = structuralResponse.content.find(
+        (c) => c.type === "text",
+      );
+      if (structuralText && structuralText.type === "text") {
+        const structuralCode = stripCodeFence(structuralText.text.trim());
+        const reassessed = assessStructuralGates(structuralCode, input);
+        if (
+          structuralCode.includes("import") &&
+          structuralCode.includes("export") &&
+          // Best-of-attempts: take this pass only when it strictly clears
+          // structural gates without regressing the per-finding counts.
+          reassessed.failures.length < structural.failures.length &&
+          reassessed.severeContrastCount <= structural.severeContrastCount &&
+          reassessed.inventedClaimCount <= structural.inventedClaimCount
+        ) {
+          designCode = structuralCode;
+          structural = reassessed;
+          designResponse = structuralResponse; // usage accounting follows the kept pass
+        } else {
+          console.warn(
+            "[pipeline] Structural retry didn't improve; keeping best available.",
+          );
+        }
+      }
+    } catch (err) {
+      console.warn(
+        "[pipeline] Structural retry failed; proceeding with best available:",
+        err instanceof Error ? err.message : err,
+      );
+    }
+    if (structural.failures.length > 0) {
+      // Budget exhausted with structural failures remaining — ship best-of-
+      // attempts, but LOUDLY: buildBuildWarnings re-assesses the final code
+      // and records what survived under warnings.structural_unresolved.
+      console.warn(
+        "[pipeline] structural gate(s) unresolved after retries:",
+        structural.failures.map((f) => f.key).join(", "),
+      );
     }
   }
 
@@ -1241,6 +1212,13 @@ export const buildAnimatedSections = async (
       replaced: finalRepair.replaced.length,
       neutralized: finalRepair.neutralized.length,
     };
+  }
+  if (warnings.structural_unresolved && warnings.structural_unresolved.length > 0) {
+    // Loud server-side trace to pair with the persisted warnings.json entry.
+    console.warn(
+      "[pipeline] structural gates unresolved at ship:",
+      JSON.stringify(warnings.structural_unresolved),
+    );
   }
 
   // Hard syntax gate — ok:true must mean "this Composition compiles." Without
@@ -1671,6 +1649,13 @@ const appendBrandContext = (
         lines.push(
           `- Supporting palette (neutrals = structure for backgrounds / text / surfaces, NOT the brand's lead hue): ${b.palette.join(", ")}`,
         );
+      } else if (input.brand_identity?.signature_missing && !userPickedColor) {
+        // The brand is genuinely achromatic (currentColor logo + no saturated
+        // palette entry, post-rescue). Grey-by-accident reads broken; grey-by-
+        // design reads premium — make the agent commit to the latter.
+        lines.push(
+          `- NO SIGNATURE BRAND COLOR EXISTS: this brand is deliberately monochrome (palette: ${b.palette.join(", ")}). Commit to a HIGH-CRAFT MONOCHROME treatment — carry hierarchy with type scale, weight, spacing, and luminance contrast (near-white on near-black), not hue. Do NOT invent an accent color the brand doesn't own. Make the restraint look intentional: strong tonal separation between surfaces, crisp hairlines, one bright neutral (near-white) doing the work an accent would.`,
+        );
       } else {
         lines.push(
           `- Brand palette (use ALL, not just one): ${b.palette.join(", ")}`,
@@ -1795,6 +1780,190 @@ const assessInvalidLucideImports = (code: string): string[] => {
     .map((s) => s.trim().split(/\s+as\s+/)[0].trim())
     .filter(Boolean);
   return names.filter((n) => INVALID_LUCIDE_BRANDS.has(n));
+};
+
+/**
+ * STRUCTURAL gate sweep — the crash / broken-looking tier, distinct from
+ * polish (density, minor contrast, throughline, …). One reusable assessment
+ * so the pipeline runs the SAME checks on the original design output, on
+ * each retry's output, and on the final shipped code. These used to be
+ * inline one-shot checks against attempt 0 only: a retry that still failed —
+ * or newly INTRODUCED — a structural defect shipped best-effort with no
+ * record (the Supabase build hand-drew a <LogoMark> replica of a real,
+ * confidently-resolved logo and shipped with an empty warnings.json).
+ *
+ * Each failure carries the full retry instruction (`message`, folded into
+ * the design-retry prompt) and a short user-facing `summary` recorded under
+ * warnings.structural_unresolved when it survives every retry.
+ */
+interface StructuralFailure {
+  key:
+    | "invented_claims"
+    | "severe_contrast"
+    | "invalid_lucide_imports"
+    | "undefined_jsx_components"
+    | "overflow_crop"
+    | "duplicate_logo"
+    | "fabricated_logo"
+    | "logo_not_rendered";
+  message: string;
+  summary: string;
+}
+
+interface StructuralReport {
+  failures: StructuralFailure[];
+  /** Per-finding severity counts, for never-accept-a-worse-retry checks. */
+  severeContrastCount: number;
+  inventedClaimCount: number;
+}
+
+const assessStructuralGates = (
+  code: string,
+  input: BuildInput,
+): StructuralReport => {
+  const failures: StructuralFailure[] = [];
+
+  // Invented numeric claims are a TRUST/correctness failure — fabricated
+  // stats like "30 days"/"00X" must not ship, so block, don't warn (QA E2).
+  const invented = findInventedClaims(
+    code,
+    input.script,
+    input.script?.brief?.about ?? input.script?.brief?.purpose,
+    input.brand_extract?.body_excerpts,
+    input.verified_claims,
+  );
+  if (invented.length > 0) {
+    failures.push({
+      key: "invented_claims",
+      message: `Invented numeric claims found on screen (not in body_excerpts or script): ${invented.slice(0, 6).join(", ")}${invented.length > 6 ? ", …" : ""}. Replace each with qualitative copy (e.g. "$2.4M" → "substantial fees"), or omit the claim entirely.`,
+      summary: invented.slice(0, 6).join(", "),
+    });
+  }
+
+  // SEVERE contrast (<3:1, QA B1): unreadable even for large headlines
+  // (WCAG's large-text floor is 3:1) — white-on-orange at 2.1:1 must never
+  // ship. The minor 3:1–4.5:1 tier stays a polish nudge in the caller.
+  const severeContrast = assessContrast(code).filter(
+    (f) => f.ratio < SEVERE_CONTRAST_RATIO,
+  );
+  if (severeContrast.length > 0) {
+    failures.push({
+      key: "severe_contrast",
+      message: `UNREADABLE contrast — ${severeContrast.length} pair(s) below ${SEVERE_CONTRAST_RATIO}:1. These FAIL even for large headlines and MUST be changed, not left:\n${severeContrast
+        .slice(0, 8)
+        .map((f) => `  • color ${f.fg} on background ${f.bg} = ${f.ratio.toFixed(2)}:1`)
+        .join("\n")}\nFix each with an OPPOSITE-luminance pairing: near-white text on a dark/saturated surface, or the darkest palette ink on a light/accent surface. NEVER white (or a light tint) on a mid-tone accent like orange/lime/cyan, and never accent-on-accent.`,
+      summary: `${severeContrast.length} text pair(s) below ${SEVERE_CONTRAST_RATIO}:1`,
+    });
+  }
+
+  // Icon-import guard. lucide-react has NO brand/company logos; the agent
+  // sometimes imports a brand name (Slack, Figma, Trello, …), which resolves
+  // to `undefined` at runtime → "Element type is invalid" white screen. It
+  // compiles cleanly, so only this check catches it. Brand logos → simple-icons.
+  const badIcons = assessInvalidLucideImports(code);
+  if (badIcons.length > 0) {
+    failures.push({
+      key: "invalid_lucide_imports",
+      message: `Invalid lucide-react imports — ${badIcons.join(", ")} are brand/company logos that DO NOT EXIST in lucide-react and will crash the render (undefined component, white screen). lucide-react has ZERO brand logos. Remove each: use a neutral Lucide icon (Square, LayoutGrid, AppWindow, MessageSquare, FileText) for a generic tool, OR import a real brand logo from simple-icons (e.g. import { siSlack } from "simple-icons/icons"). Never import a company/product name from lucide-react.`,
+      summary: badIcons.join(", "),
+    });
+  }
+
+  // Undefined-JSX guard — the GENERIC "Element type is invalid" catch: any
+  // capitalized tag resolving to neither a local definition nor an import is
+  // a guaranteed render crash. Unlike the lucide denylist above there is NO
+  // deterministic repair (we can't invent the missing component), so a
+  // surviving failure lands in warnings.structural_unresolved with the SSR
+  // render gate as the last backstop.
+  const undefinedTags = findUndefinedJsxComponents(code);
+  if (undefinedTags.length > 0) {
+    failures.push({
+      key: "undefined_jsx_components",
+      message: `Undefined JSX component(s) — <${undefinedTags.join(">, <")}> are rendered but never defined in this file and never imported. Each resolves to \`undefined\` at runtime → React throws "Element type is invalid" → the whole render is a white screen. For each tag: define the component in this file, import it from a real module, or replace the tag with an existing element. Every capitalized JSX tag MUST resolve to a definition or an import.`,
+      summary: undefinedTags.map((t) => `<${t}>`).join(", "),
+    });
+  }
+
+  // Overflow guard (geometry-aware). Flags elements whose real geometry
+  // crops at the canvas edge — wider than the canvas, or left-anchored so
+  // left+width spills past the right edge (the Vercel "popup cropped on the
+  // right border" bug). Centered wide elements are NOT flagged (they keep
+  // symmetric margins). Detectable, so retry rather than ship.
+  const gateAspect = (input.script.config?.aspect_ratio ?? "16:9") as AspectRatio;
+  const overflows = findOverflowingElements(code, gateAspect);
+  if (overflows.length > 0) {
+    const safeForAspect = gateAspect === "16:9" ? 1760 : 920;
+    failures.push({
+      key: "overflow_crop",
+      message: `Off-canvas crop — element(s) with width ${overflows.join(", ")}px cross the ${gateAspect} canvas edge (their right edge spills past the frame, or they're wider than the canvas), so they get cropped. Cap every PRIMARY element (cards, UI mocks, content blocks) at ≤${safeForAspect}px and keep left+width inside the frame; only decorative/atmosphere layers may bleed past.`,
+      summary: `width ${overflows.join(", ")}px crosses the ${gateAspect} canvas edge`,
+    });
+  }
+
+  // Duplicate-logo guard. BrandChrome renders the brand logo on every scene;
+  // a scene rendering its OWN logo too = two logos in the same corner (the
+  // Notion CTA bug). >1 logo <Img> site means a scene added one. QA V4: the
+  // sanctioned logo-led CTA/opening pattern has 2 logo SITES (chrome + hero)
+  // but renders ONE per frame because that scene passes showCornerLogo=false
+  // to suppress the chrome mark — don't false-flag it (and waste a retry).
+  const logoCount = findDuplicateLogos(code);
+  if (logoCount > 1 && !hasCornerLogoSuppression(code)) {
+    failures.push({
+      key: "duplicate_logo",
+      message: `Duplicate brand logo — the brand logo image appears at ${logoCount} places in the file. BrandChrome already renders the logo on every scene; individual scenes (including the opening and CTA) must NOT render their own brand logo. EITHER remove the scene-level logo <Img>s, OR (for a deliberate logo-led CTA/opening) keep ONE hero logo and pass \`showCornerLogo={false}\` to BrandChrome on that scene so the corner mark is suppressed — exactly one logo per frame.`,
+      summary: `logo rendered at ${logoCount} sites`,
+    });
+  }
+
+  // Fabricated-logo guard. When the brand identity resolved NO real logo,
+  // the brand mark MUST be the wordmark text — not a drawn substitute. This
+  // catches the exact regression where the agent invents a mark and labels
+  // it the brand's logo (Fuse's "two offset squares" logo-mark). Narrow
+  // trigger (no real logo AND the code calls something a logo/brand-mark) →
+  // low false-positive.
+  const noRealLogo = input.brand_identity ? !input.brand_identity.logo : false;
+  if (noRealLogo && /\b(logo[-\s]?mark|brand[-\s]?mark)\b/i.test(code)) {
+    failures.push({
+      key: "fabricated_logo",
+      message: `No real logo exists for this brand — the brand mark MUST be the WORDMARK "${input.brand_identity?.wordmark?.text ?? ""}" rendered as styled text in BrandChrome. Your output references a drawn logo/brand-mark. Remove any INVENTED mark (geometric shapes, monogram, "two squares", abstract glyph) and render the wordmark text instead. Never fabricate a logo, and never make a drawn mark the throughline.`,
+      summary: "invented logo/brand-mark for a brand with no real logo",
+    });
+  }
+
+  // Logo-NOT-rendered guard. The mirror of the fabrication gate: a REAL,
+  // confident logo was resolved but the agent rendered neither the injected
+  // LOGO_SRC const nor the URL itself (short logo URLs are inlined directly,
+  // so the url also counts as sanctioned). Two failure shapes:
+  //   • the brand NAME shipped as text in place of the mark (Liquid Death:
+  //     the skull logo, discovered @0.95, shipped as "LIQUID DEATH" text);
+  //   • a HAND-DRAWN replica of the mark shipped as a local SVG component
+  //     (Supabase: <LogoMark> with eyeballed paths + an approximated green,
+  //     rendered 6× — looks like the logo on screen, is a fabrication).
+  const realLogoUrl = input.brand_identity?.logo?.url;
+  if (realLogoUrl && !code.includes("LOGO_SRC")) {
+    const drawn = findDrawnLogoStandIns(code);
+    if (!code.includes(realLogoUrl) || drawn.length > 0) {
+      const drawnNote =
+        drawn.length > 0
+          ? ` You defined and rendered <${drawn.join(">, <")}> — a hand-drawn REPLICA of the logo. A redrawn mark is a fabrication (paths and colors eyeballed by a model drift off-brand); DELETE the drawn component(s).`
+          : "";
+      failures.push({
+        key: "logo_not_rendered",
+        message: `The brand logo was NOT rendered — you fell back to text/omitted it.${drawnNote} A real brand logo IS provided. Render it EXACTLY ONCE in BrandChrome as <Img src={LOGO_SRC} style={{ height: 28, width: "auto" }} />. \`LOGO_SRC\` is a module-scope string constant injected at build time — reference it, do NOT declare it, do NOT inline a URL. Do NOT render the brand NAME as text in place of the logo image.`,
+        summary:
+          drawn.length > 0
+            ? `real logo replaced by hand-drawn <${drawn.join(">, <")}>`
+            : "real logo missing — text/omitted fallback",
+      });
+    }
+  }
+
+  return {
+    failures,
+    severeContrastCount: severeContrast.length,
+    inventedClaimCount: invented.length,
+  };
 };
 
 /**
@@ -2128,6 +2297,17 @@ const buildBuildWarnings = (
   if (regVariety) out.low_register_variety = regVariety;
   const residualOverflow = findOverflowingElements(code, gateAspect);
   if (residualOverflow.length > 0) out.overflow_crop = residualOverflow;
+  // A1: the structural floor, re-assessed on the SHIPPED code (this runs
+  // after the deterministic repairs, so a lucide alias-fix clears its gate).
+  // Whatever the retries could not fix is recorded here — a structural
+  // failure must never ship silently (the Supabase drawn-logo build shipped
+  // with an empty warnings.json).
+  const structuralLeft = assessStructuralGates(code, input);
+  if (structuralLeft.failures.length > 0) {
+    out.structural_unresolved = structuralLeft.failures.map(
+      (f) => `${f.key}: ${f.summary}`,
+    );
+  }
   return out;
 };
 
