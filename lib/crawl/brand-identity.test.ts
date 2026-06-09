@@ -10,6 +10,7 @@ import {
   pickSignatureColor,
   dominantSvgColor,
   signatureWithLogoFallback,
+  resolveBrandIdentity,
   genericFor,
 } from "./brand-identity";
 
@@ -166,6 +167,89 @@ check("Fraunces → serif", () => {
 });
 check("JetBrains Mono → monospace", () => {
   assert(genericFor("JetBrains Mono") === "monospace", `got ${genericFor("JetBrains Mono")}`);
+});
+
+// ── currentColor logo → null signature (linear.app, June 2026) ────────────
+// linear.app's logo SVG paints with fill="currentColor", the crawled palette
+// is pure greyscale, and logo_color was absent — recolorMonochromeLogo baked a
+// near-black ink into the mark, but resolveBrandIdentity derived the signature
+// from the ORIGINAL null crawl field, so the video shipped accidentally grey.
+const LINEAR_GREYS = ["#161719", "#fbfbfb", "#d7d7d7"];
+const LINEAR_SVG = `<svg width="100" height="100" viewBox="0 0 100 100" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M1.22541 61.5228c-.2225-.9485.90748-1.5459 1.59638-.857L39.3342 97.1782c.6889.6889.0915 1.8189-.857 1.5964C20.0515 94.4522 5.54779 79.9485 1.22541 61.5228Z"/></svg>`;
+// A mark with a REAL chromatic fill plus a currentColor wordmark — the recolor
+// fires (currentColor present), but the brand color lives in the original SVG.
+const CHROMATIC_MARK_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 40"><path fill="#f47b20" d="M10 8h22v22H10z"/><text fill="currentColor" x="40" y="26">corgi</text></svg>`;
+
+const svgDataUrl = (svg: string): string =>
+  "data:image/svg+xml;base64," + Buffer.from(svg).toString("base64");
+const decodeLogoUrl = (url: string): string =>
+  Buffer.from(url.split(",")[1] ?? "", "base64").toString("utf-8");
+
+check("chromatic SVG logo → signature = the extracted color, even after recolor", () => {
+  const id = resolveBrandIdentity({
+    url: "https://corgi.insure",
+    palette: CORGI_GREYS,
+    logo_hd: svgDataUrl(CHROMATIC_MARK_SVG),
+    logo_confidence: 0.9,
+  });
+  assert(id.signature === "#f47b20", `expected #f47b20, got ${id.signature}`);
+  assert(id.signature_missing === undefined, "flag must be absent when a signature exists");
+  // The recolor decision really happened (currentColor → palette ink) — the
+  // signature must come from the PRE-recolor markup regardless.
+  const svg = decodeLogoUrl(id.logo!.url);
+  assert(!/currentColor/i.test(svg), "currentColor should be baked to a real ink");
+});
+
+check("fresh logo extraction beats a STALE crawl logo_color field", () => {
+  const id = resolveBrandIdentity({
+    url: "https://corgi.insure",
+    palette: CORGI_GREYS,
+    logo_hd: svgDataUrl(CHROMATIC_MARK_SVG),
+    logo_confidence: 0.9,
+    logo_color: "#1e5fb8", // stale — extracted from a different candidate
+  });
+  assert(id.signature === "#f47b20", `expected the fresh #f47b20, got ${id.signature}`);
+});
+
+check("linear.app: currentColor logo + achromatic palette → signature_missing", () => {
+  const id = resolveBrandIdentity({
+    url: "https://linear.app",
+    title: "Linear – Plan and build products",
+    palette: LINEAR_GREYS,
+    logo_hd: svgDataUrl(LINEAR_SVG),
+    logo_confidence: 0.9,
+    // logo_color absent — the empirical crawl shape
+  });
+  assert(id.signature === null, `expected null, got ${id.signature}`);
+  assert(id.signature_missing === true, "must surface the no-chroma condition explicitly");
+  // The recolor still happened (the mark must not render invisible) — it just
+  // can't masquerade as a brand signature.
+  const svg = decodeLogoUrl(id.logo!.url);
+  assert(svg.includes("#161719") && !/currentColor/i.test(svg), "ink baked into the mark");
+});
+
+check("currentColor logo + ONE saturated palette accent → the accent wins", () => {
+  const id = resolveBrandIdentity({
+    url: "https://linear.app",
+    palette: ["#161719", "#fbfbfb", "#5e6ad2"], // Linear's actual brand purple
+    logo_hd: svgDataUrl(LINEAR_SVG),
+    logo_confidence: 0.9,
+  });
+  assert(id.signature === "#5e6ad2", `expected #5e6ad2, got ${id.signature}`);
+  assert(id.signature_missing === undefined, "flag must be absent when a signature exists");
+});
+
+// ── rescue pass: a deep saturated shade beats shipping grey ───────────────
+check("a deep out-of-band saturated shade is rescued before declaring monochrome", () => {
+  // #7a0c12 (wine red): lum 0.14 fails the strict 0.15 floor, but sat 0.90 —
+  // it IS the brand's chroma when the rest of the palette is grey.
+  const sig = signatureWithLogoFallback(["#161719", "#fbfbfb", "#7a0c12"], undefined, undefined);
+  assert(sig === "#7a0c12", `expected #7a0c12, got ${sig}`);
+});
+
+check("rescue never invents color from true greys (Liquid Death stays null)", () => {
+  assert(signatureWithLogoFallback(MONO, undefined, undefined) === null, "greys → null");
+  assert(signatureWithLogoFallback(LINEAR_GREYS, undefined, undefined) === null, "linear greys → null");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

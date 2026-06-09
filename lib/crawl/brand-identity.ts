@@ -87,6 +87,14 @@ export interface BrandIdentity {
    * this so the brand color is prominent instead of buried under a neutral.
    */
   signature: string | null;
+  /**
+   * True when NO chroma could be recovered anywhere — palette, theme color,
+   * AND logo are all achromatic (linear.app: a currentColor wordmark on an
+   * all-grey crawl). Set ONLY alongside `signature: null`, so the design
+   * prompt can run a DELIBERATE monochrome direction (contrast, type, motion
+   * carry the brand) instead of accidentally shipping a grey video.
+   */
+  signature_missing?: boolean;
 }
 
 const isLoadableUrl = (u: string): boolean =>
@@ -310,11 +318,48 @@ export const pickSignatureColor = (
 };
 
 /**
+ * Last-resort rescue pass before declaring a brand monochrome: scan the
+ * palette + theme color for ANY saturated entry, with the strict pick's
+ * mid-luminance band widened. The strict band (lum 0.15–0.85) exists so a deep
+ * shade loses to a clean brand hue — but when it rejected EVERY color, a deep
+ * saturated brand shade (a wine red, a midnight navy) is still the brand's
+ * chroma and beats shipping grey. Saturation stays the chromaticity bar; only
+ * the true greys fall through to null.
+ */
+const RESCUE_LUM_MIN = 0.04; // below: noise-level darks where (max-min)/max explodes
+const RESCUE_LUM_MAX = 0.96;
+
+const rescueSaturatedAccent = (
+  palette: string[],
+  themeColor?: string,
+): string | null => {
+  const scored = [themeColor, ...(palette ?? [])]
+    .filter(isHex6)
+    .filter((h) => {
+      const sat = saturationOf(h),
+        lum = luminanceOf(h);
+      return (
+        sat !== null && lum !== null && sat >= 0.3 &&
+        lum >= RESCUE_LUM_MIN && lum <= RESCUE_LUM_MAX
+      );
+    })
+    .map((h) => {
+      const sat = saturationOf(h) as number;
+      const lum = luminanceOf(h) as number;
+      return { h: normHex(h), score: sat * (1 - Math.abs(lum - 0.5) * 0.6) };
+    })
+    .sort((a, b) => b.score - a.score);
+  return scored.length > 0 ? scored[0].h : null;
+};
+
+/**
  * The brand's signature color with the QA G1 logo fallback baked in: prefer the
- * palette/theme-color pick, and when those are achromatic (all-grey crawl) fall
- * back to the chromatic color the crawl pulled out of the logo SVG. Single
- * source of truth so resolveBrandIdentity (design path) and the script generator
- * agree on the lead hue. Returns null only for a genuinely monochrome brand.
+ * palette/theme-color pick; when those are achromatic (all-grey crawl) fall
+ * back to the chromatic color extracted from the logo SVG; and when the logo is
+ * achromatic too (a currentColor wordmark) run the saturated-accent rescue over
+ * the palette before giving up. Single source of truth so resolveBrandIdentity
+ * (design path) and the script generator agree on the lead hue. Returns null
+ * only for a genuinely monochrome brand.
  */
 export const signatureWithLogoFallback = (
   palette: string[],
@@ -322,7 +367,8 @@ export const signatureWithLogoFallback = (
   logoColor: string | undefined,
 ): string | null =>
   pickSignatureColor(palette, themeColor) ??
-  (isHex6(logoColor) && isSignatureCandidate(logoColor) ? normHex(logoColor) : null);
+  (isHex6(logoColor) && isSignatureCandidate(logoColor) ? normHex(logoColor) : null) ??
+  rescueSaturatedAccent(palette, themeColor);
 
 /**
  * Extract the dominant chromatic color from an SVG's markup (QA G1). When the
@@ -357,6 +403,27 @@ export const dominantSvgColor = (svg: string): string | null => {
   return scored[0].h;
 };
 
+/**
+ * Decode an inline `data:image/svg+xml` URL to its SVG markup. Handles both
+ * base64 and percent-encoded payloads (extract-brand emits base64; other
+ * crawlers percent-encode). null when the url isn't an inline SVG or the
+ * payload won't decode — callers treat that as "no markup to inspect".
+ */
+const decodeSvgDataUrl = (url: string): string | null => {
+  if (!/^data:image\/svg\+xml/i.test(url)) return null;
+  const comma = url.indexOf(",");
+  if (comma === -1) return null;
+  const header = url.slice(0, comma);
+  const payload = url.slice(comma + 1);
+  try {
+    return /;base64/i.test(header)
+      ? Buffer.from(payload, "base64").toString("utf-8")
+      : decodeURIComponent(payload);
+  } catch {
+    return null;
+  }
+};
+
 // Pick an "ink" color for a monochrome logo: the palette's darkest non-trivial
 // color (so the mark reads as a real brand color — e.g. Fuse maroon — not
 // generic black), falling back to near-black.
@@ -383,14 +450,9 @@ const recolorMonochromeLogo = (
   logo: BrandIdentity["logo"],
   palette: string[],
 ): BrandIdentity["logo"] => {
-  if (!logo || !/^data:image\/svg\+xml/i.test(logo.url)) return logo;
-  let svg: string;
-  try {
-    const b64 = logo.url.split(",")[1] ?? "";
-    svg = Buffer.from(b64, "base64").toString("utf-8");
-  } catch {
-    return logo;
-  }
+  if (!logo) return logo;
+  const svg = decodeSvgDataUrl(logo.url);
+  if (!svg) return logo; // not an inline SVG — nothing to recolor
   if (!/currentColor/i.test(svg)) return logo; // already explicitly colored
   const ink = pickInk(palette);
   const recolored = svg.replace(/currentColor/gi, ink);
@@ -421,15 +483,34 @@ export const resolveBrandIdentity = (
   const mono = resolveFont(roles.mono, "mono", fonts);
 
   const brandName = opts?.brandName?.trim() || deriveBrandName(e);
+  const palette = e.palette ?? [];
+
+  // Extract the logo's chromatic color from the PICKED logo's markup, BEFORE
+  // recolorMonochromeLogo bakes a palette ink into it. The stored e.logo_color
+  // is a crawl-time snapshot that can be stale (extracted from a different
+  // candidate) or absent (a brief crawled before the extractor existed) — a
+  // fresh read of the actual mark we're shipping is the single source of
+  // truth, same policy as the font re-classification above. Post-recolor the
+  // SVG carries pickInk's near-black, which must never become the signature.
+  const rawLogo = pickLogo(e);
+  const logoSvg = rawLogo ? decodeSvgDataUrl(rawLogo.url) : null;
+  const logoColor = (logoSvg ? dominantSvgColor(logoSvg) : null) ?? e.logo_color;
+
+  // Signature = the brand's lead hue. Prefer the palette/theme-color pick;
+  // when those are achromatic (all-grey crawl), fall back to the color in the
+  // LOGO markup (QA G1 — corgi's orange lives only there); when the logo is
+  // achromatic too (linear.app's currentColor wordmark), the saturated-accent
+  // rescue inside signatureWithLogoFallback is the last line before null.
+  const signature = signatureWithLogoFallback(palette, e.theme_color, logoColor);
 
   return {
-    logo: recolorMonochromeLogo(pickLogo(e), e.palette ?? []),
+    logo: recolorMonochromeLogo(rawLogo, palette),
     wordmark: { text: brandName, font: display.family },
     fonts: { display, body, ...(mono ? { mono } : {}) },
-    palette: e.palette ?? [],
-    // Signature = the brand's lead hue. Prefer the palette/theme-color pick;
-    // when those are achromatic (all-grey crawl), fall back to the color the
-    // crawl extracted from the LOGO (QA G1 — corgi's orange lives only there).
-    signature: signatureWithLogoFallback(e.palette ?? [], e.theme_color, e.logo_color),
+    palette,
+    signature,
+    // No chroma ANYWHERE → say so explicitly. The design prompt switches to a
+    // deliberate monochrome direction instead of accidentally shipping grey.
+    ...(signature === null ? { signature_missing: true } : {}),
   };
 };
