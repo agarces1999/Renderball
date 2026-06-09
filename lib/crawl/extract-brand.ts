@@ -1,4 +1,5 @@
 import type { BrandExtract } from "../../app/new/schema";
+import type { Usage } from "../usage";
 import {
   extractPaletteFromImage,
   extractPaletteFromPixels,
@@ -7,6 +8,15 @@ import {
 import { readLogoCache, writeLogoCache } from "./logo-cache";
 import { dominantSvgColor } from "./brand-identity";
 import { extractDesignLanguage } from "./design-language";
+
+/**
+ * Receives the model + token usage of every Anthropic call the crawl makes —
+ * palette vision + design language (Haiku) and the logo agent (Sonnet,
+ * including its retry/web-search rounds) — so the caller can aggregate
+ * per-model totals and persist them. A logo-cache hit skips the agent
+ * entirely, so cached crawls correctly report zero usage.
+ */
+export type CrawlUsageCollector = (model: string, usage: Usage) => void;
 
 /**
  * Website crawl + brand extract — V0.3.
@@ -44,7 +54,19 @@ const USER_AGENT =
 
 export const extractBrand = async (
   rawUrl: string,
+  opts: { onUsage?: CrawlUsageCollector } = {},
 ): Promise<BrandExtract> => {
+  // Guard the caller's collector once so a throwing collector can never turn a
+  // good crawl into a failed one (every model pass below is best-effort).
+  const onUsage: CrawlUsageCollector | undefined = opts.onUsage
+    ? (model, usage) => {
+        try {
+          opts.onUsage!(model, usage);
+        } catch {
+          /* usage accounting must never break the crawl */
+        }
+      }
+    : undefined;
   const fetched_at = new Date().toISOString();
   const url = normalizeUrl(rawUrl);
   if (!url) {
@@ -139,6 +161,7 @@ export const extractBrand = async (
     apple_touch_icon,
     favicon,
     title,
+    onUsage,
   );
   // QA G1: the signature/lead color the agents reach for when the palette is
   // achromatic. Pulled from the logo SVG (the one place a greyscale site still
@@ -213,7 +236,7 @@ export const extractBrand = async (
   // All best-effort (no key, no sharp binary, timeout → keep what we have).
   try {
     const [visionPalette, pixelPalette] = await Promise.all([
-      extractPaletteFromImage(og_image),
+      extractPaletteFromImage(og_image, { onUsage }),
       extractPaletteFromPixels(og_image, { maxColors: 8 }),
     ]);
     if (visionPalette.length >= 3 && pixelPalette.length >= 2) {
@@ -235,6 +258,7 @@ export const extractBrand = async (
   const { site_screenshot, design_language } = await extractDesignLanguage(
     url,
     og_image,
+    { onUsage },
   );
 
   return {
@@ -525,6 +549,7 @@ const discoverLogoHd = async (
   appleTouchIcon: string | undefined,
   faviconUrl: string | undefined,
   brandTitle: string | undefined,
+  onUsage?: CrawlUsageCollector,
 ): Promise<{ url: string; confidence: number; source: string } | undefined> => {
   let baseHostname: string;
   try {
@@ -552,7 +577,9 @@ const discoverLogoHd = async (
   // Lazy-import the agent so the crawl module stays standalone when
   // ANTHROPIC_API_KEY isn't configured (e.g. CLI tests).
   const { findBrandLogo } = await import("./find-logo-agent");
-  const result = await findBrandLogo(baseHostname, brandTitle, candidates);
+  const result = await findBrandLogo(baseHostname, brandTitle, candidates, {
+    onUsage,
+  });
   if (result.ok) {
     const out = {
       url: result.url,

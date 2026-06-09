@@ -1,0 +1,115 @@
+// Hand-written CRASH fixture — the exact 87c785f bug class. Identical to
+// good-composition.tsx.txt except Section1 imports `Slack` from lucide-react,
+// an icon lucide does NOT ship (agents reach for brand icons that don't
+// exist). The import compiles fine — the binding is just undefined — and the
+// crash only happens at RENDER time: React throws "Element type is invalid"
+// when <Slack /> mounts. Scene 0 stays clean so the gate must attribute the
+// failure to scene 1 specifically, not the whole file.
+import React from "react";
+import { Slack, Zap } from "lucide-react";
+import { Img } from "./Img";
+
+interface Script {
+  scenes: Array<{
+    content: {
+      eyebrow?: string;
+      headline?: string;
+      lede?: string;
+      caption?: string;
+      asset_ids?: string[];
+    };
+  }>;
+  assets: {
+    images: Array<{ id: string; src: string; alt_text?: string }>;
+    fonts: Array<{ family: string }>;
+  };
+  config: Record<string, unknown>;
+}
+
+const PALETTE = {
+  primary: "#10141C",
+  accent: "#00C28A",
+  light: "#EAEDF1",
+};
+
+const SECTION_FRAME: React.CSSProperties = {
+  position: "absolute",
+  inset: 0,
+  width: "100%",
+  height: "100%",
+  overflow: "hidden",
+  boxSizing: "border-box",
+};
+
+export const Section0: React.FC<{ script: Script }> = ({ script }) => {
+  const content = script.scenes[0].content;
+  return (
+    <div
+      style={{
+        ...SECTION_FRAME,
+        background: PALETTE.primary,
+        fontFamily: '"Geist", sans-serif',
+      }}
+    >
+      <div style={{ position: "absolute", top: 320, left: 0, right: 0, textAlign: "center" }}>
+        <h6 style={{ color: PALETTE.accent, fontSize: 22, letterSpacing: "0.2em", margin: 0 }}>
+          {content.eyebrow}
+        </h6>
+        <h1 style={{ color: "#ffffff", fontSize: 96, lineHeight: 1.05, margin: "24px 0 0" }}>
+          {content.headline}
+        </h1>
+        <p style={{ color: "rgba(255,255,255,0.7)", fontSize: 28, margin: "24px auto 0" }}>
+          <Zap size={20} color={PALETTE.accent} /> {content.lede}
+        </p>
+      </div>
+    </div>
+  );
+};
+
+export const Section1: React.FC<{ script: Script }> = ({ script }) => {
+  const content = script.scenes[1].content;
+  const asset = script.assets.images.find(
+    (img) => img.id === (content.asset_ids ?? [])[0],
+  );
+  return (
+    <div
+      style={{
+        ...SECTION_FRAME,
+        background: PALETTE.light,
+        fontFamily: '"Geist", sans-serif',
+        display: "flex",
+        alignItems: "center",
+        padding: 120,
+      }}
+    >
+      <div style={{ flex: 1 }}>
+        <h6 style={{ color: PALETTE.accent, fontSize: 22, letterSpacing: "0.2em", margin: 0 }}>
+          {content.eyebrow}
+        </h6>
+        <h1 style={{ color: PALETTE.primary, fontSize: 72, lineHeight: 1.1, margin: "24px 0 0" }}>
+          {content.headline}
+        </h1>
+        <p style={{ color: PALETTE.primary, fontSize: 22, marginTop: 32 }}>
+          {/* `Slack` is undefined at runtime → render-time crash, scene 1 only */}
+          <Slack size={20} color={PALETTE.accent} /> {content.caption}
+        </p>
+      </div>
+      <div style={{ flex: 1 }}>
+        {asset ? (
+          <Img
+            src={asset.src}
+            alt={asset.alt_text ?? ""}
+            style={{ width: "100%", borderRadius: 16 }}
+          />
+        ) : null}
+      </div>
+    </div>
+  );
+};
+
+export const Generated: React.FC<{ script: Script }> = ({ script }) => (
+  <>
+    <Section0 script={script} />
+    <Section1 script={script} />
+  </>
+);

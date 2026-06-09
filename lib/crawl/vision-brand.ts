@@ -13,6 +13,7 @@
  */
 
 import { getAnthropic, MODELS } from "../anthropic";
+import { usageOf, type Usage } from "../usage";
 
 const HEX_RX = /#[0-9a-fA-F]{6}\b/g;
 
@@ -24,16 +25,24 @@ const isVisionSafe = (u?: string): u is string =>
 /**
  * Read a brand's real color palette (hex) off its hero/share image.
  * Returns 0 colors on any failure (caller falls back to the CSS palette).
+ * `opts.onUsage` (when given) receives the resolved model + token usage of the
+ * vision call so the crawl's cost lands in the usage log — fired per API call,
+ * never when the image is skipped or the call fails.
  */
 export const extractPaletteFromImage = async (
   imageUrl: string | undefined,
-  opts: { client?: ReturnType<typeof getAnthropic>; model?: string } = {},
+  opts: {
+    client?: ReturnType<typeof getAnthropic>;
+    model?: string;
+    onUsage?: (model: string, usage: Usage) => void;
+  } = {},
 ): Promise<string[]> => {
   if (!isVisionSafe(imageUrl)) return [];
   try {
     const client = opts.client ?? getAnthropic();
+    const model = opts.model ?? MODELS.qaAgent; // Haiku — vision-capable, cheap
     const resp = await client.messages.create({
-      model: opts.model ?? MODELS.qaAgent, // Haiku — vision-capable, cheap
+      model,
       max_tokens: 200,
       messages: [
         {
@@ -50,6 +59,7 @@ export const extractPaletteFromImage = async (
         },
       ],
     });
+    opts.onUsage?.(model, usageOf(resp.usage));
     const text = resp.content.find((c) => c.type === "text");
     if (!text || text.type !== "text") return [];
     const hexes = (text.text.match(HEX_RX) || []).map((h) => h.toLowerCase());

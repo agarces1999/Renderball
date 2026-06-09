@@ -1,5 +1,6 @@
 import { promises as fs } from "fs";
 import path from "path";
+import { createRequire } from "module";
 import React from "react";
 import * as esbuild from "esbuild";
 
@@ -30,10 +31,23 @@ const EXTERNALS = [
   "@remotion/lottie",
 ];
 
-// react-dom/server via runtime require (Next app-router static-analysis bypass),
-// identical to the iframe route.
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const { renderToStaticMarkup } = eval("require")("react-dom/server") as {
+// A CJS require for react-dom/server + the eval'd bundle's externals.
+// In the Next server bundle (CJS) eval("require") is the real require — the
+// app-router static-analysis bypass, identical to the iframe route. Under the
+// ESM test runner (scripts/run-tests.mjs) there is no `require` in scope, so
+// fall back to createRequire anchored at the project root: same node_modules,
+// same resolution. The Next path is untouched — eval("require") still wins
+// whenever it resolves.
+const nodeRequire: NodeRequire = (() => {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    return eval("require") as NodeRequire;
+  } catch {
+    return createRequire(path.join(process.cwd(), "package.json"));
+  }
+})();
+
+const { renderToStaticMarkup } = nodeRequire("react-dom/server") as {
   renderToStaticMarkup: (node: React.ReactNode) => string;
 };
 
@@ -85,7 +99,7 @@ export const verifyScenesRender = async (
   try {
     // eslint-disable-next-line @typescript-eslint/no-implied-eval
     const fn = new Function("module", "exports", "require", bundle);
-    fn(moduleObj, moduleObj.exports, eval("require"));
+    fn(moduleObj, moduleObj.exports, nodeRequire);
   } catch (err) {
     return {
       ok: false,

@@ -2,9 +2,11 @@
 /**
  * Real cost report from .data/usage.jsonl (written by lib/usage.ts recordUsage).
  *
- * Each line is one costing op (generate / build) with a cache-aware cost_usd
- * already computed at write time, so this script just aggregates. A "build" =
- * one scriptId that reached the build stage; its cost = generate + build.
+ * Each line is one costing op (crawl / generate / build — one crawl row per
+ * model used) with a cache-aware cost_usd already computed at write time, so
+ * this script just aggregates. A "build" = one scriptId that reached the build
+ * stage; its cost = every row stamped with that scriptId (crawl + generate +
+ * build).
  *
  * Usage: node scripts/usage-report.mjs
  */
@@ -84,7 +86,7 @@ for (const [op, o] of Object.entries(ops)) {
   console.log(`  ${op.padEnd(10)} n=${String(o.count).padStart(4)}   total ${usd(o.cost).padStart(10)}   avg ${usd(o.cost / o.count)}`);
 }
 console.log("");
-console.log(`FULL BUILDS (generate+build): ${builds.length}`);
+console.log(`FULL BUILDS (crawl+generate+build): ${builds.length}`);
 if (builds.length) {
   console.log(`  avg per build:    ${usd(avg)}`);
   console.log(`  median per build: ${usd(median)}`);

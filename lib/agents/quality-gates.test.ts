@@ -16,6 +16,8 @@ import {
   hasCornerLogoSuppression,
   assessVerticalFill,
   repairInvalidLucideImports,
+  findUndefinedJsxComponents,
+  findDrawnLogoStandIns,
 } from "./quality-gates";
 
 let passed = 0;
@@ -273,6 +275,174 @@ check("idempotent — re-running finds nothing to repair", () => {
   );
   // After repair the export is `Square`, so passing the old name again is a no-op.
   assert(repairInvalidLucideImports(once, ["Slack"]) === once, "second pass unchanged");
+});
+
+// ── A1(b): undefined JSX components (guaranteed render crash) ────────────────
+// A capitalized tag resolving to neither a local definition nor an import is
+// React's "Element type is invalid" white screen. Heavy false-positive guards
+// (the detector favors false negatives — a false positive burns an Opus retry).
+const UNDEF_BASE = `import React from "react";
+import { Img } from "./Img";
+import {
+  Check,
+  Square as Slack,
+} from "lucide-react";
+const Card = ({ title }: { title: string }) => <div>{title}</div>;
+function Banner() { return <div />; }
+export const Section0 = () => (
+  <div>
+    <Card title="x" /><Banner /><Img src="https://a/b.png" /><Slack /><Check />
+  </div>
+);`;
+
+check("clean file — locals + named/aliased/default/multi-line imports resolve", () => {
+  const r = findUndefinedJsxComponents(UNDEF_BASE);
+  assert(r.length === 0, `expected none, got ${JSON.stringify(r)}`);
+});
+
+check("flags a rendered tag with no definition or import", () => {
+  const r = findUndefinedJsxComponents(
+    UNDEF_BASE + `\nexport const Section1 = () => <HeroPanel />;`,
+  );
+  assert(r.length === 1 && r[0] === "HeroPanel", `got ${JSON.stringify(r)}`);
+});
+
+check("lists every distinct undefined tag, deduped", () => {
+  const r = findUndefinedJsxComponents(
+    UNDEF_BASE + `\nconst S = () => <><Ghost /><Ghost /><Phantom /></>;`,
+  );
+  assert(
+    r.length === 2 && r.includes("Ghost") && r.includes("Phantom"),
+    `got ${JSON.stringify(r)}`,
+  );
+});
+
+check("JSX member tags (<Foo.Bar>) are skipped", () => {
+  const r = findUndefinedJsxComponents(
+    `import * as Icons from "lucide-react";\nconst S = () => <Icons.Slack />;\nconst T = () => <Unknowns.Deep />;`,
+  );
+  assert(r.length === 0, `member tags must not flag, got ${JSON.stringify(r)}`);
+});
+
+check("lowercase html tags are never flagged", () => {
+  const r = findUndefinedJsxComponents(`const S = () => <div><p>hi</p><svg /></div>;`);
+  assert(r.length === 0, `got ${JSON.stringify(r)}`);
+});
+
+check("generics in type positions don't flag", () => {
+  const code = `import React from "react";
+type Props = { x: number };
+type Item = string;
+const f: React.FC<Props> = () => null;
+const xs = new Array<Item>(3);
+const g = <T,>(t: T): T => t;
+const h = <T extends object>(t: T) => t;
+export const Section0 = () => <div />;`;
+  const r = findUndefinedJsxComponents(code);
+  assert(r.length === 0, `got ${JSON.stringify(r)}`);
+});
+
+check("`<` comparisons with globals / defined consts don't flag", () => {
+  const code = `const START = 10;
+const S = ({ frame }: { frame: number }) => (
+  <div>{frame < START && frame < Infinity && frame < Math.PI ? "a" : "b"}</div>
+);`;
+  const r = findUndefinedJsxComponents(code);
+  assert(r.length === 0, `got ${JSON.stringify(r)}`);
+});
+
+check("strings and comments are not render sites", () => {
+  const code = `import React from "react";
+// TODO: maybe add <Ghost> here
+/* legacy: <Phantom /> */
+const label = "render <Spectre> later";
+const css = \`.x { content: "<Wraith>"; }\`;
+export const Section0 = () => <div>{label}{css}</div>;`;
+  const r = findUndefinedJsxComponents(code);
+  assert(r.length === 0, `got ${JSON.stringify(r)}`);
+});
+
+check("memo/forwardRef/styled-defined components resolve", () => {
+  const code = `import React from "react";
+const Card = React.memo(() => <div />);
+const Field = React.forwardRef(() => <input />);
+const S = () => <><Card /><Field /></>;`;
+  const r = findUndefinedJsxComponents(code);
+  assert(r.length === 0, `got ${JSON.stringify(r)}`);
+});
+
+check("destructured + plain-parameter bindings resolve", () => {
+  const code = `import { Code2, Users } from "lucide-react";
+const { Mark } = pack;
+const rows = items.map(({ icon: Icon }) => <Icon />);
+const tiles = [Code2, Users].map((Glyph, i) => <Glyph key={i} />);
+const S = () => <Mark />;`;
+  const r = findUndefinedJsxComponents(code);
+  assert(r.length === 0, `got ${JSON.stringify(r)}`);
+});
+
+check("the regression class — a hallucinated component never imported", () => {
+  // The 87c785f family: the agent renders a mark it never wrote. The lucide
+  // denylist can't see it (no lucide import involved) and esbuild compiles it
+  // clean; only the binding-level scan catches the guaranteed crash.
+  const code = `import React from "react";
+const LogoMark = () => <svg viewBox="0 0 10 10" />;
+export const Section0 = () => (
+  <div><LogoMark /><BrandBolt size={20} /></div>
+);`;
+  const r = findUndefinedJsxComponents(code);
+  assert(r.length === 1 && r[0] === "BrandBolt", `got ${JSON.stringify(r)}`);
+});
+
+// ── A1(c): drawn-logo stand-ins (the Supabase replica loophole) ──────────────
+// A real logo resolved, but the agent hand-drew a replica of the mark as a
+// local SVG component instead of mounting <Img src={LOGO_SRC}> — looks like
+// the logo on screen, is a fabrication (eyeballed paths, approximated color).
+const DRAWN_LOGO = `
+const LogoMark: React.FC<{ size?: number }> = ({ size = 64 }) => (
+  <svg viewBox="0 0 109 113" width={size}>
+    <path d="M63.7 110.2 ..." fill="#3ECF8E" />
+  </svg>
+);
+const Grain: React.FC = () => (
+  <svg viewBox="0 0 10 10"><rect /></svg>
+);
+export const Section0 = () => (<div><LogoMark size={22} /><Grain /></div>);`;
+
+check("flags a hand-drawn, logo-named, rendered SVG component", () => {
+  const r = findDrawnLogoStandIns(DRAWN_LOGO);
+  assert(
+    r.length === 1 && r[0] === "LogoMark",
+    `expected just the logo-named drawn mark, got ${JSON.stringify(r)}`,
+  );
+});
+
+check("an <Img src={LOGO_SRC}> wrapper named LogoMark is NOT a stand-in", () => {
+  const code = `
+const LogoMark = ({ h = 28 }) => <Img src={LOGO_SRC} style={{ height: h }} />;
+export const Section0 = () => <LogoMark />;`;
+  assert(findDrawnLogoStandIns(code).length === 0, "sanctioned wrapper flagged");
+});
+
+check("a drawn mark that is never rendered is not flagged", () => {
+  const code = `const LogoMark = () => (<svg viewBox="0 0 10 10" />);\nexport const Section0 = () => <div />;`;
+  assert(findDrawnLogoStandIns(code).length === 0, "unrendered def flagged");
+});
+
+check("non-logo-named svg components are not flagged", () => {
+  const code = `const Grain = () => (<svg viewBox="0 0 10 10" />);\nexport const Section0 = () => <Grain />;`;
+  assert(findDrawnLogoStandIns(code).length === 0, "Grain is not a logo name");
+});
+
+check("function-declared brand mark counts; name match is case-insensitive", () => {
+  const code = `function BrandMark() { return <svg viewBox="0 0 4 4" />; }
+const SupabaseLogo = () => (<svg viewBox="0 0 9 9" />);
+export const Section0 = () => (<div><BrandMark /><SupabaseLogo /></div>);`;
+  const r = findDrawnLogoStandIns(code);
+  assert(
+    r.includes("BrandMark") && r.includes("SupabaseLogo") && r.length === 2,
+    `got ${JSON.stringify(r)}`,
+  );
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

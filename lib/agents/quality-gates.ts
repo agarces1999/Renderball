@@ -563,6 +563,229 @@ export const assessVerticalFill = (
   );
 };
 
+// ─── Undefined JSX components (guaranteed render crash, A1) ──────────
+//
+// React's "Element type is invalid": a capitalized JSX tag whose identifier
+// resolves to NEITHER a local definition NOR an import is `undefined` at
+// runtime — the render white-screens. It compiles clean (esbuild doesn't
+// resolve bindings), so only a binding-level scan catches it. The known
+// instance class is hallucinated lucide brand icons (alias-repaired
+// deterministically below), but the agent can just as easily render a
+// component it never wrote (<HeroPanel /> with no `const HeroPanel`) — for
+// which NO deterministic repair exists (we can't invent the component). This
+// detector is the generic guard: the pipeline wires it as a structural gate,
+// and whatever survives the retries lands in warnings.structural_unresolved
+// with the SSR render gate as the last backstop.
+//
+// Favors false NEGATIVES hard (module philosophy — a false positive burns an
+// Opus retry on a healthy file):
+//   • strings + comments are blanked before scanning (a "<Foo>" in a label
+//     or comment is not a render site),
+//   • JSX member tags (<Foo.Bar>) are skipped entirely,
+//   • generics never match: the char before `<` must not be an identifier
+//     char (Array<Foo>, React.FC<Props>), the tag name must be followed by
+//     whitespace / `/` / `>` (so `<T,` drops out), and `<T extends …>` is
+//     explicitly skipped,
+//   • type-only declarations (interface/type) count as definitions, so a
+//     spaced type argument (`React.FC <Props>`) can't flag,
+//   • any brace-block entry shaped like a binding counts as defined — this
+//     resolves destructures in BOTH declarations (`const { Logo } = pack`)
+//     and arrow params (`items.map(({ icon: Icon }) => <Icon/>)`), at the
+//     cost of also swallowing object-LITERAL value refs (false-negative
+//     direction only),
+//   • runtime globals that legitimately follow a `<` comparison (Infinity,
+//     Math, …) are allowlisted, and single-letter tags (generic-parameter
+//     territory: `: <T>(t: T) => T`) are ignored.
+
+/** Runtime globals a capitalized identifier after `<` may legitimately be. */
+const JS_RUNTIME_GLOBALS = new Set([
+  "Array", "BigInt", "Boolean", "Buffer", "Date", "Error", "Infinity", "Intl",
+  "JSON", "Map", "Math", "NaN", "Number", "Object", "Promise", "RangeError",
+  "RegExp", "Set", "String", "Symbol", "TypeError", "URL", "URLSearchParams",
+  "WeakMap", "WeakSet",
+]);
+
+/**
+ * Blank string literals and comments (preserving length and the delimiter
+ * chars) so the JSX / declaration scans never match inside copy text, CSS
+ * template blocks, or commentary. A tiny state machine — regexes can't pair
+ * quotes reliably (one apostrophe in a comment would swallow real code).
+ * Known coarse spots, all biased toward false negatives: template-literal
+ * `${}` interpolations are blanked with the string; an apostrophe in JSX text
+ * blanks the rest of that line; regex literals aren't modeled (generated
+ * compositions are static JSX + style objects and don't carry them).
+ */
+const blankStringsAndComments = (code: string): string => {
+  const out = code.split("");
+  type Mode = "code" | "sq" | "dq" | "tpl" | "line" | "block";
+  let mode: Mode = "code";
+  for (let i = 0; i < code.length; i++) {
+    const ch = code[i];
+    const next = code[i + 1];
+    if (mode === "code") {
+      if (ch === "'") mode = "sq";
+      else if (ch === '"') mode = "dq";
+      else if (ch === "`") mode = "tpl";
+      else if (ch === "/" && next === "/") { mode = "line"; out[i] = " "; }
+      else if (ch === "/" && next === "*") { mode = "block"; out[i] = " "; }
+      continue;
+    }
+    if (mode === "line") {
+      if (ch === "\n") mode = "code";
+      else out[i] = " ";
+      continue;
+    }
+    if (mode === "block") {
+      if (ch === "*" && next === "/") { out[i] = " "; out[i + 1] = " "; mode = "code"; i++; }
+      else if (ch !== "\n") out[i] = " ";
+      continue;
+    }
+    // String modes: keep the delimiters, blank the contents. A backslash
+    // escapes the next char. Unterminated ' / " close at the newline
+    // (defensive — generated code keeps them single-line).
+    if (ch === "\\") {
+      out[i] = " ";
+      if (i + 1 < code.length) { out[i + 1] = " "; i++; }
+      continue;
+    }
+    if (
+      (mode === "sq" && ch === "'") ||
+      (mode === "dq" && ch === '"') ||
+      (mode === "tpl" && ch === "`")
+    ) { mode = "code"; continue; }
+    if ((mode === "sq" || mode === "dq") && ch === "\n") { mode = "code"; continue; }
+    if (ch !== "\n") out[i] = " ";
+  }
+  return out.join("");
+};
+
+/**
+ * Every capitalized JSX tag that resolves to neither a local definition nor
+ * an imported name — each one is a guaranteed "Element type is invalid"
+ * render crash. See the section comment above for the false-positive guards.
+ */
+export const findUndefinedJsxComponents = (code: string): string[] => {
+  const src = blankStringsAndComments(code);
+  const defined = new Set<string>();
+
+  // 1) Imported bindings — every clause shape, multi-line included: default
+  //    (`import React`), namespace (`* as Icons`), named (`{ A, B as C }`),
+  //    mixed (`React, { useState }`), and `import type` (a type binding
+  //    rendered as JSX is its own compile error; counting it only suppresses).
+  const importRe = /\bimport\s+([^"']+?)\s*from\s*["']/g;
+  let im: RegExpExecArray | null;
+  while ((im = importRe.exec(src)) !== null) {
+    const clause = im[1].replace(/^\s*type\s+/, "");
+    const named = clause.match(/\{([^}]*)\}/);
+    if (named) {
+      for (const raw of named[1].split(",")) {
+        const spec = raw.trim().replace(/^type\s+/, "");
+        if (!spec) continue;
+        const parts = spec.split(/\s+as\s+/);
+        const local = (parts[1] ?? parts[0]).trim();
+        if (local) defined.add(local);
+      }
+    }
+    const ns = clause.match(/\*\s*as\s+([A-Za-z_$][\w$]*)/);
+    if (ns) defined.add(ns[1]);
+    const dflt = clause.match(/^\s*([A-Za-z_$][\w$]*)\s*(?:,|$)/);
+    if (dflt) defined.add(dflt[1]);
+  }
+
+  // 2) Local declarations that create runtime bindings. Only capitalized
+  //    names matter (JSX requires one). `const X = styled/forwardRef/memo(…)`
+  //    all land here — the declared NAME is what counts, the RHS is
+  //    irrelevant. interface/type/enum are included so a spaced type argument
+  //    can never flag (false-negative direction).
+  const declRe =
+    /\b(?:const|let|var|function|class|enum|interface|type)\s+([A-Z][\w$]*)/g;
+  let dm: RegExpExecArray | null;
+  while ((dm = declRe.exec(src)) !== null) defined.add(dm[1]);
+
+  // 3) Binding-shaped brace entries (`Name`, `key: Name`, `Name = default`) —
+  //    catches const- AND param-destructures in one rule; also swallows
+  //    object-literal value refs, which only ever causes false negatives.
+  const braceRe = /\{([^{}]*)\}/g;
+  let br: RegExpExecArray | null;
+  while ((br = braceRe.exec(src)) !== null) {
+    for (const raw of br[1].split(",")) {
+      const entry = raw.trim();
+      const renamed = entry.match(/^[\w$]+\s*:\s*([A-Z][\w$]*)$/);
+      const shorthand = entry.match(/^([A-Z][\w$]*)(?:\s*=[^=].*)?$/);
+      const hit = renamed ?? shorthand;
+      if (hit) defined.add(hit[1]);
+    }
+  }
+
+  // 4) Plain parameter-ish positions: a capitalized identifier right after
+  //    `(`, `[` or `,` and right before `,` / `)` / `:` / `]` / `=` (not
+  //    `==`). Catches the common `icons.map((Icon, i) => <Icon/>)` binding;
+  //    also swallows call arguments and array members, which again only ever
+  //    causes false negatives.
+  const paramRe = /[[(,]\s*([A-Z][\w$]*)\s*(?=[,)\]:]|=(?!=))/g;
+  let pr: RegExpExecArray | null;
+  while ((pr = paramRe.exec(src)) !== null) defined.add(pr[1]);
+
+  // 5) JSX scan: opening tags only (a closing tag implies an opening one).
+  const out: string[] = [];
+  const tagRe = /<([A-Z][\w$]*)(?=[\s/>])/g;
+  let tg: RegExpExecArray | null;
+  while ((tg = tagRe.exec(src)) !== null) {
+    const name = tg[1];
+    if (name.length < 2) continue; // single letters = generic-param territory
+    // Identifier / member / closing-quote char before `<` = a type argument
+    // or comparison (Array<Foo>, React.FC<Props>, "a" < B) — never a render
+    // site. `>` and `(` and `{` etc. all stay legal JSX predecessors.
+    const before = tg.index > 0 ? src[tg.index - 1] : " ";
+    if (/[\w$.<"'\])]/.test(before)) continue;
+    // `<T extends …>` — a .tsx arrow-function generic, not a tag.
+    if (/^\s+extends\b/.test(src.slice(tg.index + 1 + name.length))) continue;
+    if (defined.has(name) || JS_RUNTIME_GLOBALS.has(name)) continue;
+    if (!out.includes(name)) out.push(name);
+  }
+  return out;
+};
+
+// ─── Drawn-logo stand-in (the Supabase replica loophole, A1) ─────────
+//
+// When a REAL brand logo resolved, the sanctioned ways to render it are the
+// injected LOGO_SRC const (<Img src={LOGO_SRC}>) or the short URL inlined
+// verbatim. The loophole this closes: the agent rendered NEITHER and instead
+// HAND-DREW a replica of the mark as a local SVG component — Supabase's
+// two-arrow mark redrawn from memory as `<LogoMark>` with eyeballed paths
+// and an approximated green, rendered 6× with an empty warnings.json. On
+// screen it reads as the brand's logo but it is a fabrication; subtle
+// path/color drift is exactly the broken-looking tier the structural gates
+// exist for.
+//
+// Detector: a locally DEFINED component whose name says "I am the logo",
+// whose body draws an inline <svg> (and mounts no <Img> — an
+// <Img src={LOGO_SRC}> wrapper named LogoMark is the sanctioned pattern, not
+// a stand-in), and which is actually RENDERED as a JSX tag. The pipeline
+// only consults this when a real logo exists, so a wordmark-text component
+// on a no-logo brand can never false-positive here.
+const LOGO_STANDIN_NAME_RX = /logo|mark|wordmark|brandbolt/i;
+
+export const findDrawnLogoStandIns = (code: string): string[] => {
+  const out: string[] = [];
+  const declRe = /\b(?:const|function|class)\s+([A-Z][\w$]*)/g;
+  let m: RegExpExecArray | null;
+  while ((m = declRe.exec(code)) !== null) {
+    const name = m[1];
+    if (!LOGO_STANDIN_NAME_RX.test(name) || out.includes(name)) continue;
+    // Body slice: from this declaration to the next top-level declaration
+    // (optionally export-prefixed, at line start) or EOF. Crude but bounded —
+    // the same slicing approach as the pipeline's per-section dead-air scan.
+    const rest = code.slice(m.index + m[0].length);
+    const end = rest.search(/\n(?:export\s+)?(?:const|function|class)\s+[A-Z$_]/);
+    const body = end === -1 ? rest : rest.slice(0, end);
+    if (!/<svg\b/i.test(body) || /<Img\b/.test(body)) continue; // not a DRAWN mark
+    // Must actually be rendered somewhere to count as a stand-in on screen.
+    if (new RegExp(`<${name}\\b`).test(code)) out.push(name);
+  }
+  return out;
+};
+
 /**
  * Deterministically neutralize invalid `lucide-react` imports so a hallucinated
  * icon can't crash the render. The agent sometimes imports brand logos
