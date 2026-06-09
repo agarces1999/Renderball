@@ -562,3 +562,46 @@ export const assessVerticalFill = (
     `A thin progress bar at the very bottom edge does NOT count as filling the lower third.`
   );
 };
+
+/**
+ * Deterministically neutralize invalid `lucide-react` imports so a hallucinated
+ * icon can't crash the render. The agent sometimes imports brand logos
+ * (`Slack`, `Github`, `Figma`) that DON'T exist in lucide-react → the binding is
+ * `undefined` → React throws "Element type is invalid" (white screen). The
+ * structural icon gate already detects this and retries once, but a structural
+ * failure ships best-effort — so a non-compliant retry would still ship a
+ * guaranteed crash. This is the guarantee that runs last: rewrite each invalid
+ * import specifier to alias a real neutral icon (`Square`), keeping the SAME
+ * local identifier so every JSX and array usage keeps resolving — and leaving
+ * string literals (e.g. a "Slack · #product" label) untouched.
+ *
+ * Pure + idempotent. `invalidNames` are the offending EXPORT names the caller's
+ * detector flagged (e.g. ["Slack", "Github"]). No-op when empty or no import.
+ */
+export const repairInvalidLucideImports = (
+  code: string,
+  invalidNames: string[],
+): string => {
+  if (invalidNames.length === 0) return code;
+  const bad = new Set(invalidNames);
+  return code.replace(
+    /import\s*\{([^}]*)\}\s*from\s*(["'])lucide-react\2/,
+    (full: string, inner: string, q: string) => {
+      const kept: string[] = [];
+      const aliased: string[] = [];
+      for (const raw of inner.split(",")) {
+        const spec = raw.trim();
+        if (!spec) continue;
+        const [exp, local] = spec.split(/\s+as\s+/).map((s) => s.trim());
+        if (bad.has(exp)) {
+          // Keep the local identifier; point it at a real icon.
+          aliased.push(`Square as ${local || exp}`);
+        } else {
+          kept.push(spec);
+        }
+      }
+      if (aliased.length === 0) return full; // nothing actually invalid here
+      return `import { ${[...kept, ...aliased].join(", ")} } from ${q}lucide-react${q}`;
+    },
+  );
+};

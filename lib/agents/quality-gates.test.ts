@@ -15,6 +15,7 @@ import {
   findRedundantCaptions,
   hasCornerLogoSuppression,
   assessVerticalFill,
+  repairInvalidLucideImports,
 } from "./quality-gates";
 
 let passed = 0;
@@ -233,6 +234,45 @@ check("does NOT flag when an element reaches the lower band (top: 800)", () => {
 });
 check("does NOT flag a flex layout with too few absolute tops", () => {
   assert(assessVerticalFill(`<div style={{ display:'flex' }}><h1/></div>`, "16:9") === null, "not enough positioned els");
+});
+
+// ── repairInvalidLucideImports (deterministic crash-prevention safety net) ──
+check("aliases invalid brand icons to a real icon, preserving local usage", () => {
+  const code = `import { Slack, CheckSquare, Github } from "lucide-react";
+const icons = [Slack, Github];
+const x = <Slack />;
+const label = "Slack · #product";`;
+  const out = repairInvalidLucideImports(code, ["Slack", "Github"]);
+  assert(/Square as Slack/.test(out), "Slack aliased to Square");
+  assert(/Square as Github/.test(out), "Github aliased to Square");
+  assert(out.includes("CheckSquare"), "valid icon kept");
+  // The bare invalid specifiers are gone — only the aliased form remains.
+  const specs = out.match(/import\s*\{([^}]*)\}/)![1].split(",").map((s) => s.trim());
+  assert(!specs.includes("Slack") && !specs.includes("Github"), "no bare invalid specifier left");
+  // Usages still reference the (now-aliased) identifiers — code unbroken.
+  assert(out.includes("[Slack, Github]") && out.includes("<Slack />"), "usages intact");
+  // String literal label is untouched.
+  assert(out.includes('"Slack · #product"'), "label string untouched");
+});
+check("no-op when there are no invalid names", () => {
+  const code = `import { Square, Zap } from "lucide-react";`;
+  assert(repairInvalidLucideImports(code, []) === code, "empty list → unchanged");
+});
+check("preserves an existing alias on an invalid icon", () => {
+  const out = repairInvalidLucideImports(
+    `import { Slack as BrandMark, Zap } from "lucide-react";`,
+    ["Slack"],
+  );
+  assert(/Square as BrandMark/.test(out), "alias target preserved");
+  assert(out.includes("Zap"), "valid icon kept");
+});
+check("idempotent — re-running finds nothing to repair", () => {
+  const once = repairInvalidLucideImports(
+    `import { Slack, Zap } from "lucide-react";`,
+    ["Slack"],
+  );
+  // After repair the export is `Square`, so passing the old name again is a no-op.
+  assert(repairInvalidLucideImports(once, ["Slack"]) === once, "second pass unchanged");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);
