@@ -86,9 +86,14 @@ check("EMPTY_USAGE is the additive identity", () => {
   );
 });
 
-check("Opus base rate: 1M in = $15, 1M out = $75", () => {
-  ok(near(costUsd("claude-opus-4-8", U(1_000_000, 0)), 15));
-  ok(near(costUsd("claude-opus-4-8", U(0, 1_000_000)), 75));
+check("Fable base rate: 1M in = $10, 1M out = $50", () => {
+  ok(near(costUsd("claude-fable-5", U(1_000_000, 0)), 10));
+  ok(near(costUsd("claude-fable-5", U(0, 1_000_000)), 50));
+});
+
+check("Opus base rate: 1M in = $5, 1M out = $25", () => {
+  ok(near(costUsd("claude-opus-4-8", U(1_000_000, 0)), 5));
+  ok(near(costUsd("claude-opus-4-8", U(0, 1_000_000)), 25));
 });
 
 check("Sonnet base rate: 1M in = $3, 1M out = $15", () => {
@@ -102,13 +107,13 @@ check("Haiku base rate: 1M in = $1, 1M out = $5", () => {
 });
 
 check("cache READ bills at 10% of input rate (Opus)", () => {
-  // 1M cache-read tokens on Opus = 0.10 × $15 = $1.50
-  ok(near(costUsd("claude-opus-4-8", U(0, 0, 0, 1_000_000)), 1.5));
+  // 1M cache-read tokens on Opus = 0.10 × $5 = $0.50
+  ok(near(costUsd("claude-opus-4-8", U(0, 0, 0, 1_000_000)), 0.5));
 });
 
 check("cache WRITE bills at 125% of input rate (Opus)", () => {
-  // 1M cache-creation tokens on Opus = 1.25 × $15 = $18.75
-  ok(near(costUsd("claude-opus-4-8", U(0, 0, 1_000_000, 0)), 18.75));
+  // 1M cache-creation tokens on Opus = 1.25 × $5 = $6.25
+  ok(near(costUsd("claude-opus-4-8", U(0, 0, 1_000_000, 0)), 6.25));
 });
 
 check("caching makes a cached-heavy build far cheaper than naive input pricing", () => {
@@ -116,11 +121,11 @@ check("caching makes a cached-heavy build far cheaper than naive input pricing",
   // big cached system prompt), 0 cache write.
   const u = U(5_000, 10_000, 0, 110_000);
   const real = costUsd("claude-opus-4-8", u);
-  // Naive (treat ALL input — fresh + cache — at full $15/M):
-  const naive = (115_000 * 15 + 10_000 * 75) / 1e6;
+  // Naive (treat ALL input — fresh + cache — at full $5/M):
+  const naive = (115_000 * 5 + 10_000 * 25) / 1e6;
   assert(real < naive, "cache-aware cost must be below naive full-rate cost");
-  // Exact: (5000*15 + 10000*75 + 110000*15*0.1)/1e6 = (75000+750000+165000)/1e6
-  ok(near(real, 0.99));
+  // Exact: (5000*5 + 10000*25 + 110000*5*0.1)/1e6 = (25000+250000+55000)/1e6
+  ok(near(real, 0.33));
 });
 
 check("unknown model falls back to Sonnet pricing (no NaN)", () => {
