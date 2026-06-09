@@ -283,6 +283,220 @@ export const Lottie: React.FC<LottieProps> = (props) => {
 };
 `;
 
+/**
+ * The PROVIDED BrandChrome — dropped next to Composition.tsx so the agent's
+ * \`import { BrandChrome } from "./BrandChrome"\` resolves locally.
+ *
+ * Why provided instead of agent-authored: the brand-mark choreography (one
+ * logo per frame, hero-CTA suppression, contrast inversion, stable positions)
+ * was the #1 retry driver and the #1 shipped-defect class — 28% of historical
+ * comps shipped duplicate logo sites and 10% drew the mark by hand. A fixed
+ * component makes that whole class impossible to author: the agent configures
+ * it (variant, colors, fonts, wordmark, logoSrc) but cannot misplace the mark.
+ * Brand variety is preserved through the three archetypes + full color/type
+ * config; consistency-within-a-video is structural.
+ *
+ * Pure inline styles, no deps beyond the local Img shim — works in preview
+ * (Next.js) and render (Remotion) identically, like the other shims.
+ */
+export const BRAND_CHROME_SOURCE = `import React from "react";
+import { Img } from "./Img";
+
+export interface BrandChromeProps {
+  sceneIndex: number;
+  totalScenes: number;
+  /** ONE archetype per video: corner (default, tech/minimal), footer
+   *  (editorial band), strip (top app-bar). Never varies between scenes. */
+  variant?: "corner" | "footer" | "strip";
+  /** Pass LOGO_SRC. Omit when the brand has no real logo — the wordmark
+   *  text then serves as the mark. */
+  logoSrc?: string;
+  /** Brand name text rendered next to the mark (or as the mark itself). */
+  wordmark?: string;
+  /** STABLE context pill (tagline / event / category) — never the scene's
+   *  editorial eyebrow. */
+  category?: string;
+  /** Set false on the ONE scene that renders its own hero logo (logo-led
+   *  opening / CTA) so the frame keeps exactly one logo. */
+  showCornerLogo?: boolean;
+  /** Set true on a full-bleed brand-color scene: chrome flips to white ink
+   *  so it clears contrast against the saturated field. */
+  onBrandColorBg?: boolean;
+  /** Chrome ink on normal (dark) scenes — e.g. BRAND_LIGHT. */
+  ink: string;
+  /** Active pagination dot / accents — e.g. BRAND_ACCENT. */
+  accent: string;
+  fontDisplay: string;
+  fontBody: string;
+  /** Optional footer-band background (footer variant only). */
+  tint?: string;
+}
+
+export const BrandChrome: React.FC<BrandChromeProps> = ({
+  sceneIndex,
+  totalScenes,
+  variant = "corner",
+  logoSrc,
+  wordmark,
+  category,
+  showCornerLogo,
+  onBrandColorBg,
+  ink,
+  accent,
+  fontDisplay,
+  fontBody,
+  tint,
+}) => {
+  const fg = onBrandColorBg ? "#ffffff" : ink;
+  const dot = onBrandColorBg ? "#ffffff" : accent;
+  const idle = onBrandColorBg ? "rgba(255,255,255,0.45)" : "rgba(255,255,255,0.25)";
+
+  const mark =
+    showCornerLogo !== false ? (
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        {logoSrc ? <Img src={logoSrc} style={{ height: 24, width: "auto" }} /> : null}
+        {wordmark ? (
+          <span
+            style={{
+              fontFamily: fontDisplay,
+              fontWeight: 600,
+              fontSize: 18,
+              color: fg,
+              letterSpacing: "-0.01em",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {wordmark}
+          </span>
+        ) : null}
+      </div>
+    ) : (
+      <div />
+    );
+
+  const pill = category ? (
+    <div style={{ display: "flex", alignItems: "center", gap: 8, maxWidth: 460 }}>
+      <span
+        style={{
+          width: 8,
+          height: 8,
+          borderRadius: "50%",
+          background: dot,
+          opacity: 0.85,
+          flexShrink: 0,
+        }}
+      />
+      <span
+        style={{
+          fontFamily: fontBody,
+          fontSize: 11,
+          letterSpacing: "0.18em",
+          textTransform: "uppercase",
+          color: fg,
+          opacity: onBrandColorBg ? 0.95 : 0.75,
+          whiteSpace: "nowrap",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+        }}
+      >
+        {category}
+      </span>
+    </div>
+  ) : null;
+
+  const dots = (
+    <div style={{ display: "flex", gap: 6 }}>
+      {Array.from({ length: totalScenes }).map((_, i) => (
+        <span
+          key={i}
+          style={{
+            width: i === sceneIndex ? 22 : 6,
+            height: 4,
+            borderRadius: 2,
+            background: i === sceneIndex ? dot : idle,
+            transition: "width 0.5s ease",
+          }}
+        />
+      ))}
+    </div>
+  );
+
+  if (variant === "footer") {
+    return (
+      <div
+        style={{
+          position: "absolute",
+          left: 0,
+          right: 0,
+          bottom: 0,
+          height: 64,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          padding: "0 40px",
+          background: tint ?? "rgba(255,255,255,0.04)",
+          zIndex: 20,
+        }}
+      >
+        {mark}
+        {dots}
+        {pill ?? <div />}
+      </div>
+    );
+  }
+
+  if (variant === "strip") {
+    return (
+      <div
+        style={{
+          position: "absolute",
+          left: 0,
+          right: 0,
+          top: 0,
+          height: 56,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          padding: "0 40px",
+          zIndex: 20,
+        }}
+      >
+        {mark}
+        <div style={{ display: "flex", alignItems: "center", gap: 24 }}>
+          {pill}
+          {dots}
+        </div>
+      </div>
+    );
+  }
+
+  // corner (default)
+  return (
+    <>
+      {showCornerLogo !== false && (
+        <div style={{ position: "absolute", top: 32, left: 40, zIndex: 20 }}>{mark}</div>
+      )}
+      {pill && (
+        <div style={{ position: "absolute", top: 36, right: 40, zIndex: 20 }}>{pill}</div>
+      )}
+      <div
+        style={{
+          position: "absolute",
+          bottom: 32,
+          left: 0,
+          right: 0,
+          display: "flex",
+          justifyContent: "center",
+          zIndex: 20,
+        }}
+      >
+        {dots}
+      </div>
+    </>
+  );
+};
+`;
+
 /** The files that make up one generated composition under src/generated/<id>/. */
 export interface GeneratedFiles {
   designCode: string;
@@ -311,6 +525,7 @@ export const writeGeneratedFiles = async (
   await fs.writeFile(path.join(genDir, "Img.tsx"), IMG_SHIM_SOURCE, "utf-8");
   await fs.writeFile(path.join(genDir, "Video.tsx"), VIDEO_SHIM_SOURCE, "utf-8");
   await fs.writeFile(path.join(genDir, "Lottie.tsx"), LOTTIE_SHIM_SOURCE, "utf-8");
+  await fs.writeFile(path.join(genDir, "BrandChrome.tsx"), BRAND_CHROME_SOURCE, "utf-8");
   await fs.writeFile(
     path.join(genDir, "Composition.design.tsx"),
     files.designCode,

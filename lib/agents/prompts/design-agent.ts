@@ -442,96 +442,38 @@ The underline bar sits 6-10px below the baseline, full-width of the phrase, in b
 
 You may stack: italic-accent ON the same word + underline UNDER the same word = the deck's signature combo. Never more than one strikethrough OR one underline per headline.
 
-## ⚠️ Cross-section brand chrome — HARD RULE
+## ⚠️ Cross-section brand chrome — PROVIDED component (HARD RULE)
 
-Premium decks are recognizable from any frame because the brand chrome is IDENTICAL across every slide: same logo position, same progress indicator, same pagination dots, same meta footer. If you let each Section{N} invent its own chrome, the video reads as a sequence of unrelated slides instead of a continuous brand experience.
-
-**Define a single \`BrandChrome\` component at module scope** and render it inside EVERY Section{N}. Identical position, identical styling, only \`sceneIndex\` and \`totalScenes\` props differ.
-
-⚠️ **EXACTLY ONE brand logo per frame — by default it lives ONLY in BrandChrome.** BrandChrome already places the logo (top-left) on every scene. Individual Section{N} components MUST NOT render their own brand-logo \`<Img>\` — a second logo collides with BrandChrome's and reads as a bug (the recurring \`duplicate_logo\` finding: a centered CTA logo PLUS the corner chrome logo = two logos in one frame).
-
-The ONLY sanctioned way to show a bigger brand moment (a logo-led opening or CTA) is to render that hero logo **and suppress BrandChrome's corner logo on that one scene**, so the count stays exactly one. Give BrandChrome a \`showCornerLogo\` prop and gate the corner \`<Img>\` on it:
-\`\`\`tsx
-// CTA/opening Section renders the hero logo, and tells chrome to hide its corner mark:
-<BrandChrome sceneIndex={i} totalScenes={n} category="…" showCornerLogo={false} />
-// In BrandChrome: {showCornerLogo !== false && (<div … corner logo …/>)}
-\`\`\`
-Never show both. A build-time gate counts brand-logo images and flags more than one — keep it at exactly one.
+Premium decks are recognizable from any frame because the brand chrome is IDENTICAL across every slide. The chrome component is **PROVIDED** — a fixed \`BrandChrome\` ships next to your file. You configure it; you never author it.
 
 \`\`\`tsx
-const BrandChrome: React.FC<{
-  sceneIndex: number;
-  totalScenes: number;
-  category?: string;    // STABLE context pill, e.g. "LAUNCH · SPONSOR SESSION".
-  // ⚠️ Do NOT pass the scene's eyebrow/kicker text here. That editorial tag
-  // (e.g. "THE CHALLENGE", "COMIENZA EL DÍA") is rendered ONCE as the headline
-  // kicker inside the section — echoing it in the chrome is the #1 redundancy.
-  showCornerLogo?: boolean; // set false on a scene that renders its OWN hero logo (CTA/opening) — keeps it to ONE logo per frame.
-  onBrandColorBg?: boolean; // set true on a full-bleed brand-color scene so the chrome inverts to a readable ink, not same-hue-on-same-hue.
-}> = ({ sceneIndex, totalScenes, category, showCornerLogo, onBrandColorBg }) => {
-  // Contrast-aware chrome ink: on a brand-color full-bleed field the default
-  // BRAND_LIGHT/BRAND_ACCENT tokens become invisible (e.g. orange pill text on
-  // an orange bg). Flip to a high-contrast ink for THIS scene.
-  const ink = onBrandColorBg ? "#ffffff" : BRAND_LIGHT;
-  const dot = onBrandColorBg ? "#ffffff" : BRAND_ACCENT;
-  return (
-  <>
-    {/* Top-left: brand logo mark + wordmark — omitted when the scene shows its own hero logo */}
-    {showCornerLogo !== false && (
-    <div style={{ position: "absolute", top: 32, left: 40, display: "flex", alignItems: "center", gap: 10, zIndex: 10 }}>
-      <Img src="<HD-LOGO-URL-FROM-SCRIPT-ASSETS>" style={{ height: 28, width: "auto" }} />
-      <span style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 18, color: ink, letterSpacing: "-0.01em" }}>
-        {/* brand name */}
-      </span>
-    </div>
-    )}
+import { BrandChrome } from "./BrandChrome";
 
-    {/* Top-right: category / event pill — kept inside the safe area (right: 40, max-width so it never clips) */}
-    {category && (
-      <div style={{ position: "absolute", top: 36, right: 40, maxWidth: 460, display: "flex", alignItems: "center", gap: 8, zIndex: 10 }}>
-        <span style={{ width: 8, height: 8, borderRadius: "50%", background: dot, opacity: 0.85, flexShrink: 0 }} />
-        <span style={{ fontFamily: FONT_BODY, fontSize: 11, letterSpacing: "0.18em", textTransform: "uppercase", color: ink, opacity: onBrandColorBg ? 0.95 : 0.75, whiteSpace: "nowrap" }}>
-          {category}
-        </span>
-      </div>
-    )}
-
-    {/* Bottom-center: pagination dots */}
-    <div style={{ position: "absolute", bottom: 32, left: 0, right: 0, display: "flex", justifyContent: "center", gap: 6, zIndex: 10 }}>
-      {Array.from({ length: totalScenes }).map((_, i) => (
-        <span key={i} style={{
-          width: i === sceneIndex ? 22 : 6,
-          height: 4,
-          borderRadius: 2,
-          background: i === sceneIndex ? dot : (onBrandColorBg ? "rgba(255,255,255,0.45)" : "rgba(255,255,255,0.25)"),
-          transition: "width 0.5s ease",
-        }} />
-      ))}
-    </div>
-  </>
-  );
-};
+// Configure ONCE at module scope, then render <Chrome …/> inside EVERY Section{N}:
+const Chrome = (p: { sceneIndex: number; totalScenes: number; category?: string; showCornerLogo?: boolean; onBrandColorBg?: boolean }) => (
+  <BrandChrome
+    {...p}
+    variant="corner"            // pick ONE per video: "corner" | "footer" | "strip"
+    logoSrc={LOGO_SRC}          // omit entirely when the brand has NO real logo
+    wordmark="Acme"             // the brand name text
+    ink={BRAND_LIGHT}
+    accent={BRAND_ACCENT}
+    fontDisplay={FONT_DISPLAY}
+    fontBody={FONT_BODY}
+  />
+);
 \`\`\`
 
-**Rules:**
-- The component is defined ONCE at module scope (outside Section{N}). All sections import + render it.
-- Positions are IDENTICAL across sections — never change \`top\`/\`left\`/\`bottom\` between scenes.
-- Brand logo + wordmark always upper-left. Category pill always upper-right. Pagination dots always bottom-center.
-- The chrome's upper-right **category** pill must be a STABLE context label (brand tagline, event, or section context) — NOT the scene's editorial eyebrow. The editorial eyebrow/kicker (e.g. "THE CHALLENGE") belongs ONLY above the headline, rendered once per section; never duplicate it in the chrome.
-- Only the **category** pill content + the active pagination dot vary per section. The chrome structure does not.
-- Use the script's \`scenes.length\` for \`totalScenes\` and the current scene index for \`sceneIndex\`.
-- If the brief includes an \`event_name\` / \`category\` context, pipe it into the pill. Otherwise omit just the pill (keep logo + dots).
-- ⚠️ **Adapt the chrome to the scene background.** The chrome's default ink (\`BRAND_LIGHT\`/\`BRAND_ACCENT\`) assumes a DARK scene. On a full-bleed **brand-color** scene (e.g. an orange CTA field) those tokens become invisible — orange pill text on an orange bg, an orange dot lost in the field. Pass \`onBrandColorBg\` for that scene so the chrome flips to a high-contrast ink (white on a saturated brand color). The chrome must clear 3:1 against THIS scene's actual background, every scene.
-- ⚠️ **Keep the chrome inside the safe area.** The top-right pill sits at \`right: 40\` with \`whiteSpace: nowrap\` and a \`maxWidth\` so a long \`category\` never spills off the right edge (a clipped "GET STARTE…" reads as broken). Same for the corner logo at \`left: 40\`.
-- ⚠️ **One logo per frame.** On a scene that renders its own hero logo (a logo-led opening or the CTA), pass \`showCornerLogo={false}\` so the corner mark is suppressed and the frame has exactly one logo (see the EXACTLY ONE brand logo rule above).
+**Rules (all machine-checked):**
+- **NEVER define your own \`BrandChrome\`** (\`const/function/class BrandChrome\` in your output is rejected by a static check). Import the provided one. Do not re-create its job with a differently-named component either.
+- ⚠️ **EXACTLY ONE brand logo per frame.** By default the logo lives ONLY inside BrandChrome (pass \`logoSrc={LOGO_SRC}\`). The ONLY sanctioned bigger brand moment: a logo-led opening or CTA renders its own hero \`<Img src={LOGO_SRC} …/>\` AND passes \`showCornerLogo={false}\` to that scene's Chrome — the count stays exactly one. A build-time gate counts logo sites.
+- **No real logo for this brand?** Omit \`logoSrc\` — the \`wordmark\` text IS the mark. NEVER draw a substitute mark (an svg replica, monogram, "two squares") — a static check detects logo-named drawn components and rejects the build.
+- **Pick the \`variant\` that fits THIS brand, once per video** — variety BETWEEN brands, consistency WITHIN one: \`corner\` (logo top-left, pill top-right, dots bottom-center — tech/SaaS/minimal), \`footer\` (a thin bottom band: logo · dots · context — editorial/fashion/premium; tint it with \`tint\`), \`strip\` (slim top app-bar — dashboards/developer brands).
+- **\`category\` is a STABLE context label** (brand tagline, event, section context) — NEVER the scene's editorial eyebrow/kicker ("THE CHALLENGE"); that belongs ONLY above the headline, once. Echoing it in the chrome is the #1 redundancy and is flagged.
+- ⚠️ **Pass \`onBrandColorBg\` on a full-bleed brand-color scene** so the chrome flips to white ink — the default ink (\`BRAND_LIGHT\`/\`BRAND_ACCENT\`) is invisible on a same-hue field. The chrome must clear 3:1 against every scene's actual background.
+- Use the script's \`scenes.length\` for \`totalScenes\` and the scene's index for \`sceneIndex\`. Only \`category\`, \`sceneIndex\`, \`showCornerLogo\`, and \`onBrandColorBg\` may vary per scene — everything else is fixed at the module-scope config.
 
-**Pick a chrome ARCHETYPE per video — variety BETWEEN brands, consistency WITHIN one.** The corner layout coded above is ONE option, not the only one. Choose the archetype that fits THIS brand's aesthetic, then render it IDENTICALLY across every scene (the consistency rule still holds — vary chrome between brands, never between scenes of one video). Two different brands' videos should not have pixel-identical chrome:
-- **Corner marks** (the default above): logo upper-left, context pill upper-right, pagination dots bottom-center. Clean and restrained — fits tech / SaaS / minimal brands.
-- **Footer bar**: a thin full-width strip pinned to the bottom edge — logo (left) + pagination (center) + a stable meta/context label (right), ~56-72px tall on a subtle brand-tinted band. Editorial and premium — fits fashion / lifestyle / publishing brands.
-- **Top strip**: a slim header bar on the top edge — logo left, a nav-style context label or pagination right. Product/app feel — fits dashboards / developer brands.
-Whichever you pick: positions stay constant scene-to-scene; only the pill text and the active pagination dot change.
-
-**Why this matters:** when frames flick by in the captured video, the brand chrome acts as a "frame" the eye anchors to. Identical chrome across every frame OF ONE VIDEO = the viewer's gaze is free to move to the content. Inconsistent chrome within a video = the viewer re-orients on every cut. (Varying the archetype between DIFFERENT brands is what keeps every Renderball video from looking like the same template.)
+**Why this matters:** identical chrome across every frame of one video = the viewer's gaze is free to move to the content; the provided component makes that structural instead of probabilistic. (The \`variant\` choice is what keeps different brands' videos from looking like one template.)
 
 ## ⚠️ Throughline anchor — REQUIRED connective element (HARD RULE)
 

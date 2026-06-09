@@ -787,6 +787,23 @@ export const findDrawnLogoStandIns = (code: string): string[] => {
 };
 
 /**
+ * Detect redefinitions of PROVIDED scaffold components. BrandChrome ships as a
+ * fixed file in every genDir (lib/render/build-wrapper.ts) precisely so the
+ * agent can't mis-author the brand-mark choreography — the historical #1 retry
+ * driver (duplicate logos, drawn stand-ins). An emitted `const BrandChrome =`
+ * either shadows the provided one (import absent → all the old failure modes
+ * return) or collides with the import (compile error). Both are structural.
+ * Returns the redefined names found.
+ */
+export const findProvidedComponentRedefinitions = (
+  code: string,
+  provided: string[] = ["BrandChrome"],
+): string[] =>
+  provided.filter((name) =>
+    new RegExp(`\\b(?:const|let|var|function|class)\\s+${name}\\b`).test(code),
+  );
+
+/**
  * Deterministically neutralize invalid `lucide-react` imports so a hallucinated
  * icon can't crash the render. The agent sometimes imports brand logos
  * (`Slack`, `Github`, `Figma`) that DON'T exist in lucide-react → the binding is

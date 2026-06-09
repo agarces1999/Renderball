@@ -18,6 +18,7 @@ import {
   repairInvalidLucideImports,
   findUndefinedJsxComponents,
   findDrawnLogoStandIns,
+  findProvidedComponentRedefinitions,
 } from "./quality-gates";
 
 let passed = 0;
@@ -442,6 +443,29 @@ export const Section0 = () => (<div><BrandMark /><SupabaseLogo /></div>);`;
   assert(
     r.includes("BrandMark") && r.includes("SupabaseLogo") && r.length === 2,
     `got ${JSON.stringify(r)}`,
+  );
+});
+
+// ── provided-component contract: BrandChrome must be imported, not authored ──
+check("flags a const redefinition of the provided BrandChrome", () => {
+  const r = findProvidedComponentRedefinitions(
+    `const BrandChrome: React.FC<{}> = () => <div />;`,
+  );
+  assert(r.length === 1 && r[0] === "BrandChrome", `expected flag, got ${JSON.stringify(r)}`);
+});
+check("flags function/class forms too", () => {
+  assert(findProvidedComponentRedefinitions(`function BrandChrome() { return null; }`).length === 1, "function form");
+  assert(findProvidedComponentRedefinitions(`class BrandChrome extends React.Component {}`).length === 1, "class form");
+});
+check("importing + rendering the provided component is NOT a redefinition", () => {
+  const ok = `import { BrandChrome } from "./BrandChrome";
+const Chrome = (p: { sceneIndex: number }) => <BrandChrome {...p} totalScenes={5} ink="#fff" accent="#0f0" fontDisplay="x" fontBody="y" />;`;
+  assert(findProvidedComponentRedefinitions(ok).length === 0, "wrapper config is sanctioned");
+});
+check("similarly-named components don't false-positive", () => {
+  assert(
+    findProvidedComponentRedefinitions(`const BrandChromeProps = {}; const MyBrandChrome = () => null;`).length === 0,
+    "word-boundary guard",
   );
 });
 
