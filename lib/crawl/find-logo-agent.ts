@@ -21,6 +21,7 @@
  */
 
 import { getAnthropic, MODELS } from "../anthropic";
+import { usageOf, type Usage } from "../usage";
 
 export interface LogoCandidate {
   url: string;
@@ -185,11 +186,18 @@ const scoreConfidence = (
 /**
  * Run the logo-discovery agent. Always returns within ~30s. Network/API/parse
  * failures degrade to { ok:false } → caller renders a clean wordmark.
+ * `opts.onUsage` (when given) receives the logo-agent model + token usage of
+ * EVERY completed API call — round 1, the no-tools retry, and the round-2 web
+ * search all fire it individually so multi-round runs are fully accounted.
  */
 export const findBrandLogo = async (
   brandHostname: string,
   brandTitle: string | undefined,
   candidates: LogoCandidate[],
+  opts: {
+    client?: ReturnType<typeof getAnthropic>;
+    onUsage?: (model: string, usage: Usage) => void;
+  } = {},
 ): Promise<LogoAgentResult> => {
   if (candidates.length === 0) {
     return { ok: false, reason: "no candidates to evaluate" };
@@ -197,7 +205,7 @@ export const findBrandLogo = async (
 
   let client;
   try {
-    client = getAnthropic();
+    client = opts.client ?? getAnthropic();
   } catch (err) {
     return {
       ok: false,
@@ -249,6 +257,12 @@ export const findBrandLogo = async (
     }
   }
 
+  // Report usage for one completed call. Errored calls return no usage object,
+  // so only responses that actually billed reach the collector.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const emitUsage = (response: any) =>
+    opts.onUsage?.(MODELS.logoAgent, usageOf(response?.usage));
+
   // ── Round 1: vision over candidates (web_search available) ──────────
   const runOnce = async (
     messages: { role: "user"; content: ContentBlock[] | string }[],
@@ -262,15 +276,19 @@ export const findBrandLogo = async (
         messages,
         tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 4 }],
       };
-      return await client.messages.create(params);
+      const response = await client.messages.create(params);
+      emitUsage(response);
+      return response;
     } catch {
       // web_search may be unavailable on the account — retry without tools.
-      return await client.messages.create({
+      const response = await client.messages.create({
         model: MODELS.logoAgent,
         max_tokens: 1024,
         system: SYSTEM_PROMPT,
         messages,
       });
+      emitUsage(response);
+      return response;
     }
   };
 

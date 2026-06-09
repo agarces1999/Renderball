@@ -1,5 +1,7 @@
 /**
- * Tests for the design-language crawl pass (screenshot + vision analysis).
+ * Tests for the design-language crawl pass (screenshot + vision analysis) and
+ * the crawl-phase onUsage collectors (design-language, vision-brand palette,
+ * logo agent) that feed cost accounting.
  * Run: `npm test`. No network, no API key — fetch + the Anthropic client are
  * injected.
  */
@@ -7,8 +9,13 @@ import {
   captureSiteScreenshot,
   parseDesignLanguage,
   analyzeDesignLanguage,
+  extractDesignLanguage,
   formatDesignLanguage,
 } from "./design-language";
+import { extractPaletteFromImage } from "./vision-brand";
+import { findBrandLogo } from "./find-logo-agent";
+import { MODELS } from "../anthropic";
+import type { Usage } from "../usage";
 
 let passed = 0;
 let failed = 0;
@@ -79,9 +86,17 @@ await check("coerces a non-array mood + caps long strings", () => {
 });
 
 // ── analyzeDesignLanguage (injected client) ──────────────────────────────────
+// Fake responses carry a usage object (like the real SDK) so the onUsage
+// collector tests below see plausible token counts.
+const FAKE_USAGE = {
+  input_tokens: 1200,
+  output_tokens: 80,
+  cache_creation_input_tokens: 0,
+  cache_read_input_tokens: 0,
+};
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const fakeClient = (text: string): any =>
-  ({ messages: { create: async () => ({ content: [{ type: "text", text }] }) } });
+  ({ messages: { create: async () => ({ content: [{ type: "text", text }], usage: FAKE_USAGE }) } });
 
 await check("analyzes a vision-safe image via the injected client", async () => {
   const dl = await analyzeDesignLanguage("https://x.com/shot.png", {
@@ -96,6 +111,81 @@ await check("returns null for a non-vision-safe image URL (no client call)", asy
   const c: any = { messages: { create: async () => { called = true; return { content: [] }; } } };
   const dl = await analyzeDesignLanguage("https://x.com/page.svg", { client: c });
   assert(dl === null && called === false, "svg is not vision-safe → null, no call");
+});
+
+// ── onUsage collector (crawl cost accounting) ────────────────────────────────
+// Each crawl-phase model call must surface its token usage to the caller so
+// .data/usage.jsonl stops understating build cost. The collector fires once
+// per completed API call with the resolved model — and never when the call is
+// skipped (non-vision-safe image → zero usage, the logo-cache-hit property).
+const collectUsage = (): { calls: { model: string; usage: Usage }[]; onUsage: (model: string, usage: Usage) => void } => {
+  const calls: { model: string; usage: Usage }[] = [];
+  return { calls, onUsage: (model, usage) => calls.push({ model, usage }) };
+};
+
+await check("analyzeDesignLanguage reports its model + usage to the collector", async () => {
+  const { calls, onUsage } = collectUsage();
+  const dl = await analyzeDesignLanguage("https://x.com/shot.png", {
+    client: fakeClient('{"ethos":"editorial","typography":"serif","layout":"centered"}'),
+    onUsage,
+  });
+  assert(dl !== null, "analysis should still succeed");
+  assert(calls.length === 1, `expected 1 usage call, got ${calls.length}`);
+  assert(calls[0].model === MODELS.designLanguage, `model: ${calls[0].model}`);
+  assert(calls[0].usage.input_tokens === 1200 && calls[0].usage.output_tokens === 80,
+    `usage: ${JSON.stringify(calls[0].usage)}`);
+});
+
+await check("analyzeDesignLanguage: skipped image → collector never fires", async () => {
+  const { calls, onUsage } = collectUsage();
+  await analyzeDesignLanguage("https://x.com/page.svg", { client: fakeClient("{}"), onUsage });
+  assert(calls.length === 0, `no call → no usage, got ${calls.length}`);
+});
+
+await check("extractDesignLanguage threads the collector end-to-end", async () => {
+  const { calls, onUsage } = collectUsage();
+  const f = fakeFetch({ status: "success", data: { screenshot: { url: "https://cdn.microlink.io/shot.png" } } });
+  const out = await extractDesignLanguage("https://corgi.insure", undefined, {
+    fetchImpl: f,
+    client: fakeClient('{"ethos":"playful","typography":"chunky","layout":"grid"}'),
+    onUsage,
+  });
+  assert(out.design_language?.ethos === "playful", `got ${JSON.stringify(out)}`);
+  assert(calls.length === 1 && calls[0].model === MODELS.designLanguage,
+    `expected 1 designLanguage call, got ${JSON.stringify(calls.map((c) => c.model))}`);
+});
+
+await check("extractPaletteFromImage reports its model + usage to the collector", async () => {
+  const { calls, onUsage } = collectUsage();
+  const palette = await extractPaletteFromImage("https://x.com/hero.png", {
+    client: fakeClient('["#4a0e0e","#ff6a2b","#ffffff"]'),
+    onUsage,
+  });
+  assert(palette.length === 3, `palette: ${JSON.stringify(palette)}`);
+  assert(calls.length === 1, `expected 1 usage call, got ${calls.length}`);
+  assert(calls[0].model === MODELS.qaAgent, `model: ${calls[0].model}`);
+  assert(calls[0].usage.input_tokens === 1200, `usage: ${JSON.stringify(calls[0].usage)}`);
+});
+
+await check("extractPaletteFromImage: skipped image → collector never fires", async () => {
+  const { calls, onUsage } = collectUsage();
+  const palette = await extractPaletteFromImage("not-a-url", { client: fakeClient("[]"), onUsage });
+  assert(palette.length === 0 && calls.length === 0, "no call → no usage");
+});
+
+await check("findBrandLogo reports its model + usage to the collector", async () => {
+  const { calls, onUsage } = collectUsage();
+  // data: candidate → no HEAD probe, no network; the fake agent picks it by index.
+  const result = await findBrandLogo(
+    "corgi.insure",
+    "Corgi",
+    [{ url: "data:image/svg+xml;base64,bm90LXJlYWwtc3Zn", source: "inline-svg" }],
+    { client: fakeClient('{"chosen_index":1,"rationale":"the nav wordmark"}'), onUsage },
+  );
+  assert(result.ok === true, `expected ok, got ${JSON.stringify(result)}`);
+  assert(calls.length === 1, `expected 1 usage call (single round), got ${calls.length}`);
+  assert(calls[0].model === MODELS.logoAgent, `model: ${calls[0].model}`);
+  assert(calls[0].usage.output_tokens === 80, `usage: ${JSON.stringify(calls[0].usage)}`);
 });
 
 // ── formatDesignLanguage ─────────────────────────────────────────────────────

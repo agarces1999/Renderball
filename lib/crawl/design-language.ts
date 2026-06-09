@@ -19,6 +19,7 @@
  * on this).
  */
 import { getAnthropic, MODELS } from "../anthropic";
+import { usageOf, type Usage } from "../usage";
 import type { DesignLanguage } from "../../app/new/schema";
 
 export type { DesignLanguage };
@@ -75,16 +76,24 @@ const ANALYZE_PROMPT =
  * Vision pass: read the structured DesignLanguage off a brand image (the
  * homepage screenshot, or the og:image as a fallback). Returns null on any
  * failure (no key, bad image, parse error) — advisory, never fatal.
+ * `opts.onUsage` (when given) receives the resolved model + token usage of the
+ * vision call so the crawl's cost lands in the usage log — fired per API call,
+ * never when the image is skipped or the call fails.
  */
 export const analyzeDesignLanguage = async (
   imageUrl: string | undefined,
-  opts: { client?: ReturnType<typeof getAnthropic>; model?: string } = {},
+  opts: {
+    client?: ReturnType<typeof getAnthropic>;
+    model?: string;
+    onUsage?: (model: string, usage: Usage) => void;
+  } = {},
 ): Promise<DesignLanguage | null> => {
   if (!isVisionSafe(imageUrl)) return null;
   try {
     const client = opts.client ?? getAnthropic();
+    const model = opts.model ?? MODELS.designLanguage;
     const resp = await client.messages.create({
-      model: opts.model ?? MODELS.designLanguage,
+      model,
       max_tokens: 500,
       messages: [
         {
@@ -97,6 +106,7 @@ export const analyzeDesignLanguage = async (
         },
       ],
     });
+    opts.onUsage?.(model, usageOf(resp.usage));
     const text = resp.content.find((c) => c.type === "text");
     if (!text || text.type !== "text") return null;
     return parseDesignLanguage(text.text);
@@ -161,7 +171,12 @@ export const parseDesignLanguage = (raw: string): DesignLanguage | null => {
 export const extractDesignLanguage = async (
   url: string | undefined,
   ogImage: string | undefined,
-  opts: { fetchImpl?: typeof fetch; client?: ReturnType<typeof getAnthropic>; model?: string } = {},
+  opts: {
+    fetchImpl?: typeof fetch;
+    client?: ReturnType<typeof getAnthropic>;
+    model?: string;
+    onUsage?: (model: string, usage: Usage) => void;
+  } = {},
 ): Promise<{ site_screenshot?: string; design_language?: DesignLanguage }> => {
   const shot = await captureSiteScreenshot(url, opts);
   const image = shot ?? (isVisionSafe(ogImage) ? ogImage : undefined);
