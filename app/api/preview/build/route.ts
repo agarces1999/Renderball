@@ -10,6 +10,8 @@ import {
 } from "../../../../lib/agents/pipeline";
 import { writeGeneratedFiles } from "../../../../lib/render/build-wrapper";
 import { verifyScenesRender } from "../../../../lib/render/ssr-render";
+import { MODELS } from "../../../../lib/anthropic";
+import { recordUsage } from "../../../../lib/usage";
 
 /**
  * Preview-only build endpoint. Runs the Design + Choreography agents
@@ -72,6 +74,16 @@ export async function POST(request: Request) {
       { status: 500 },
     );
   }
+
+  // Persist token usage for this build (design + choreography + retries, Opus) —
+  // cache-aware cost. Best-effort; never blocks the build.
+  await recordUsage({
+    op: "build",
+    model: MODELS.codingAgentBuild,
+    scriptId,
+    url: brief?.brand_kit_url,
+    usage: result.usage,
+  });
 
   // Write the generated artifacts under src/generated/<scriptId>/ via the
   // shared writer — IDENTICAL layout to the MP4 path, so "Render to MP4"
