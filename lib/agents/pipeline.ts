@@ -389,7 +389,7 @@ export const regenerateScene = async (
         // SDK's 10-minute non-streaming threshold. finalMessage() returns
         // the same Message shape as messages.create().
         model: MODELS.codingAgent,
-        max_tokens: 32000,
+        max_tokens: 64000,
         thinking: { type: "adaptive" },
         system: [
           {
@@ -446,7 +446,7 @@ export const regenerateScene = async (
     animationResponse = await client.messages.stream(
       {
         model: MODELS.codingAgent,
-        max_tokens: 32000,
+        max_tokens: 64000,
         thinking: { type: "adaptive" },
         system: [
           {
@@ -711,7 +711,7 @@ export const buildAnimatedSections = async (
           // Design Pass 1 AND its retry (same runDesign helper). Opus for
           // composition taste + density on the commit-to-MP4 path.
           model: MODELS.codingAgentBuild,
-          max_tokens: 32000,
+          max_tokens: 64000,
           // Adaptive thinking: the design pass juggles ~15 simultaneous
           // machine-checked constraints; letting Opus reason before emitting
           // is the cheapest first-pass-compliance lever (fewer gate retries).
@@ -1039,7 +1039,7 @@ export const buildAnimatedSections = async (
         // Choreography Pass 2 on the build path. Opus for animation
         // taste + dead-air pacing. Streaming required (Opus + 32k tokens).
         model: MODELS.codingAgentBuild,
-        max_tokens: 32000,
+        max_tokens: 64000,
         thinking: { type: "adaptive" },
         system: [
           {
@@ -1123,7 +1123,7 @@ export const buildAnimatedSections = async (
             // Streamed: Opus + 32k max_tokens can exceed the SDK's 10-minute
             // non-streaming threshold.
             model: MODELS.codingAgentBuild,
-            max_tokens: 32000,
+            max_tokens: 64000,
             thinking: { type: "adaptive" },
             system: [
               {
