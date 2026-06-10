@@ -79,15 +79,36 @@ export const costUsd = (model: string, u: Usage): number => {
 
 export type UsageRecord = {
   ts: string;
-  op: string; // "generate" | "build" | ...
+  op: string; // "generate" | "build" | "crawl" | ...
   model: string;
   scriptId?: string;
   url?: string;
   usage: Usage;
   cost_usd: number;
+  /** True when the operation FAILED after spending these tokens (e.g. a build
+   *  whose composition didn't compile). Real billed cost — counted in totals,
+   *  excluded from per-successful-build averages by the report. */
+  failed?: boolean;
 };
 
 const USAGE_LOG = path.join(process.cwd(), ".data", "usage.jsonl");
+
+/**
+ * Build the record that recordUsage persists — pure, so the shape (cost math,
+ * field passthrough, ts default) is unit-testable without touching disk.
+ */
+export const makeUsageRecord = (
+  entry: Omit<UsageRecord, "ts" | "cost_usd"> & { ts?: string },
+): UsageRecord => ({
+  ts: entry.ts ?? new Date().toISOString(),
+  op: entry.op,
+  model: entry.model,
+  ...(entry.scriptId ? { scriptId: entry.scriptId } : {}),
+  ...(entry.url ? { url: entry.url } : {}),
+  usage: entry.usage,
+  cost_usd: Number(costUsd(entry.model, entry.usage).toFixed(6)),
+  ...(entry.failed ? { failed: true } : {}),
+});
 
 /**
  * Append one usage record to `.data/usage.jsonl`. Best-effort: usage logging
@@ -99,15 +120,7 @@ export const recordUsage = async (
   entry: Omit<UsageRecord, "ts" | "cost_usd"> & { ts?: string },
 ): Promise<void> => {
   try {
-    const rec: UsageRecord = {
-      ts: entry.ts ?? new Date().toISOString(),
-      op: entry.op,
-      model: entry.model,
-      ...(entry.scriptId ? { scriptId: entry.scriptId } : {}),
-      ...(entry.url ? { url: entry.url } : {}),
-      usage: entry.usage,
-      cost_usd: Number(costUsd(entry.model, entry.usage).toFixed(6)),
-    };
+    const rec = makeUsageRecord(entry);
     await fs.mkdir(path.dirname(USAGE_LOG), { recursive: true });
     await fs.appendFile(USAGE_LOG, JSON.stringify(rec) + "\n", "utf8");
   } catch (err) {

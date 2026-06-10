@@ -69,6 +69,19 @@ export async function POST(request: Request) {
   );
 
   if (!result.ok) {
+    // A failed attempt is not a free attempt — the Opus tokens it burned are
+    // real spend. Record them (failed: true) so the ledger never understates
+    // cost; the report excludes failed rows from per-build averages.
+    if (result.usage) {
+      await recordUsage({
+        op: "build",
+        model: MODELS.codingAgentBuild,
+        scriptId,
+        url: brief?.brand_kit_url,
+        usage: result.usage,
+        failed: true,
+      });
+    }
     return NextResponse.json(
       { error: result.error, stage: result.stage },
       { status: 500 },
