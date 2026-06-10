@@ -257,7 +257,14 @@ export type BuildResult =
       asset_manifest?: AssetSearchEntry[];
       usage: Usage;
     }
-  | { ok: false; error: string; stage?: "design" | "animation" };
+  | {
+      ok: false;
+      error: string;
+      stage?: "design" | "animation";
+      /** Tokens already spent before the failure — real billed cost the
+       *  caller must still record (a failed attempt is not a free attempt). */
+      usage?: Usage;
+    };
 
 /**
  * Anthropic's SDK wraps fetch failures in `APIConnectionError` with the
@@ -769,6 +776,7 @@ export const buildAnimatedSections = async (
       ok: false,
       stage: "design",
       error: "Design Agent returned no text content.",
+      usage: usageOf(designResponse.usage),
     };
   }
   let designCode = stripCodeFence(designText.text.trim());
@@ -778,6 +786,7 @@ export const buildAnimatedSections = async (
       ok: false,
       stage: "design",
       error: `Design Agent output doesn't look like a TS file. First 300 chars: ${designCode.slice(0, 300)}`,
+      usage: usageOf(designResponse.usage),
     };
   }
 
@@ -1057,6 +1066,8 @@ export const buildAnimatedSections = async (
       ok: false,
       stage: "animation",
       error: `Animation Agent API error: ${formatAnthropicError(err)}`,
+      // The design pass already spent real tokens — surface them.
+      usage: usageOf(designResponse.usage),
     };
   }
 
@@ -1068,6 +1079,7 @@ export const buildAnimatedSections = async (
       ok: false,
       stage: "animation",
       error: "Animation Agent returned no text content.",
+      usage: addUsage(usageOf(designResponse.usage), usageOf(animationResponse.usage)),
     };
   }
   let finalCode = stripCodeFence(animationText.text.trim());
@@ -1077,6 +1089,7 @@ export const buildAnimatedSections = async (
       ok: false,
       stage: "animation",
       error: `Animation Agent output doesn't look like a TS file. First 300 chars: ${finalCode.slice(0, 300)}`,
+      usage: addUsage(usageOf(designResponse.usage), usageOf(animationResponse.usage)),
     };
   }
 
@@ -1249,6 +1262,8 @@ export const buildAnimatedSections = async (
       ok: false,
       stage: "animation",
       error: `Generated Composition.tsx does not compile: ${compileErr}`,
+      // Both passes (+ any retries folded into animationUsage) were billed.
+      usage: addUsage(usageOf(designResponse.usage), animationUsage),
     };
   }
 

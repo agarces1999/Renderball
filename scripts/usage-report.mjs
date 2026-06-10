@@ -44,13 +44,17 @@ if (rows.length === 0) {
 const usd = (n) => "$" + n.toFixed(4);
 const k = (n) => (n / 1000).toFixed(1) + "k";
 
-// Per-op aggregation.
+// Per-op aggregation. Failed rows (failed: true) are REAL spend — counted in
+// the totals and the op table (labeled) — but excluded from the per-build
+// aggregation so "avg per build" means the cost of a SUCCESSFUL video.
 const ops = {};
 const tok = { input: 0, output: 0, cache_read: 0, cache_creation: 0 };
 let total = 0;
+const failedAgg = { count: 0, cost: 0 };
 const byScript = {};
 for (const r of rows) {
-  const o = (ops[r.op] = ops[r.op] ?? { count: 0, cost: 0 });
+  const opKey = r.failed ? `${r.op} (failed)` : r.op;
+  const o = (ops[opKey] = ops[opKey] ?? { count: 0, cost: 0 });
   o.count++;
   o.cost += r.cost_usd ?? 0;
   total += r.cost_usd ?? 0;
@@ -59,6 +63,11 @@ for (const r of rows) {
   tok.output += u.output_tokens ?? 0;
   tok.cache_read += u.cache_read_input_tokens ?? 0;
   tok.cache_creation += u.cache_creation_input_tokens ?? 0;
+  if (r.failed) {
+    failedAgg.count++;
+    failedAgg.cost += r.cost_usd ?? 0;
+    continue; // never attributed to a successful build's cost
+  }
   if (r.scriptId) {
     const s = (byScript[r.scriptId] = byScript[r.scriptId] ?? { cost: 0, ops: new Set() });
     s.cost += r.cost_usd ?? 0;
@@ -91,6 +100,9 @@ if (builds.length) {
   console.log(`  avg per build:    ${usd(avg)}`);
   console.log(`  median per build: ${usd(median)}`);
   console.log(`  min / max:        ${usd(buildCosts[0])} / ${usd(buildCosts[buildCosts.length - 1])}`);
+}
+if (failedAgg.count) {
+  console.log(`  failed attempts:  n=${failedAgg.count}, total ${usd(failedAgg.cost)} (in totals, excluded from the averages above)`);
 }
 console.log("");
 const totalInputish = tok.input + tok.cache_read + tok.cache_creation;

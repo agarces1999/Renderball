@@ -5,7 +5,14 @@
  * at 10% of the input rate and cache WRITES at 125% — so these lock that math
  * down. No API key, no network.
  */
-import { usageOf, addUsage, costUsd, EMPTY_USAGE, type Usage } from "./usage";
+import {
+  usageOf,
+  addUsage,
+  costUsd,
+  makeUsageRecord,
+  EMPTY_USAGE,
+  type Usage,
+} from "./usage";
 
 let passed = 0;
 let failed = 0;
@@ -131,6 +138,37 @@ check("caching makes a cached-heavy build far cheaper than naive input pricing",
 check("unknown model falls back to Sonnet pricing (no NaN)", () => {
   const c = costUsd("some-future-model", U(1_000_000, 0));
   ok(near(c, 3));
+});
+
+// ── makeUsageRecord: failed attempts are real, recorded spend ──────────
+check("a failed build records its cost with failed: true", () => {
+  const rec = makeUsageRecord({
+    op: "build",
+    model: "claude-opus-4-8",
+    scriptId: "S1",
+    usage: U(10_000, 20_000, 5_000, 0),
+    failed: true,
+    ts: "2026-06-10T00:00:00Z",
+  });
+  assert(rec.failed === true, "failed flag preserved");
+  // (10000*5 + 20000*25 + 5000*5*1.25)/1e6 = (50000+500000+31250)/1e6
+  ok(near(rec.cost_usd, 0.58125, 1e-6));
+  assert(rec.scriptId === "S1" && rec.op === "build", "fields pass through");
+});
+
+check("successful records omit the failed key entirely", () => {
+  const rec = makeUsageRecord({
+    op: "build",
+    model: "claude-opus-4-8",
+    usage: U(1_000, 1_000),
+    ts: "2026-06-10T00:00:00Z",
+  });
+  assert(!("failed" in rec), "no failed key on success (keeps old rows' shape)");
+});
+
+check("makeUsageRecord defaults ts when not provided", () => {
+  const rec = makeUsageRecord({ op: "x", model: "claude-haiku-4-5", usage: U(1, 1) });
+  assert(typeof rec.ts === "string" && rec.ts.includes("T"), "ISO ts default");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);
