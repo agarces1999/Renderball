@@ -130,7 +130,9 @@ export const buildIndexTsx = (script: Script): string => {
           const C = pickSection(Sections, ${i});
           return C ? (
             <Sequence from={${startFrame}} durationInFrames={${duration}} layout="none">
-              <C script={script} />
+              <SectionClock>
+                <C script={script} />
+              </SectionClock>
             </Sequence>
           ) : null;
         })()}`;
@@ -141,7 +143,15 @@ export const buildIndexTsx = (script: Script): string => {
 // The agents' Composition.tsx is pure React + CSS. This file wraps each
 // per-section component in a Remotion <Sequence> for the capture layer.
 import React from "react";
-import { Composition, registerRoot, Sequence, AbsoluteFill } from "remotion";
+import {
+  Composition,
+  registerRoot,
+  Sequence,
+  AbsoluteFill,
+  useCurrentFrame,
+  useVideoConfig,
+  getRemotionEnvironment,
+} from "remotion";
 import * as Sections from "./Composition";
 import script from "./script.json";
 
@@ -158,6 +168,54 @@ function pickSection(mod: any, i: number): React.FC<any> | undefined {
   }
   return undefined;
 }
+
+// ── Deterministic CSS-animation clock (render path only) ────────────────────
+// The agents' sections animate with plain CSS (@keyframes + animation), which
+// runs on the WALL clock. The renderer captures frames on the FRAME clock —
+// Chromium's animation timeline does not advance in lockstep with captured
+// frames, so animations with longer delays (empirically >= ~2.3s) never
+// reached their active phase in the MP4 while the live preview played them:
+// approved content silently vanished from the export.
+//
+// Fix: when (and ONLY when) Remotion is rendering, pin every Web Animations
+// API animation in the section's subtree to the scene-relative Remotion time.
+// WAAPI currentTime includes the delay phase, so setting it reproduces
+// wall-clock playback exactly: delays elapse, fill-forwards holds, infinite
+// loops cycle. getAnimations() re-runs every frame, so animations created
+// after first paint (elements mounting mid-scene) are captured too; pause()
+// also keeps finished non-fill animations alive in getAnimations(). In the
+// preview / Studio (isRendering false) the effect is inert and native
+// wall-clock playback is untouched.
+const SectionClock: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  // useCurrentFrame inside a <Sequence> is scene-relative — frame 0 is the
+  // scene's first frame, matching when the section mounts and its CSS
+  // animations start in wall-clock playback.
+  const frame = useCurrentFrame();
+  const { fps } = useVideoConfig();
+  const { isRendering } = getRemotionEnvironment();
+  const ref = React.useRef<HTMLDivElement>(null);
+  React.useLayoutEffect(() => {
+    if (!isRendering) return;
+    const container = ref.current;
+    if (!container || typeof container.getAnimations !== "function") return;
+    const timeMs = (frame / fps) * 1000;
+    for (const anim of container.getAnimations({ subtree: true })) {
+      try {
+        anim.pause();
+        anim.currentTime = timeMs;
+      } catch {
+        // A detached or canceled animation can throw on seek — skip it.
+      }
+    }
+  }, [frame, fps, isRendering]);
+  // display:contents keeps the wrapper out of layout — absolutely-positioned
+  // sections still resolve against the composition's AbsoluteFill.
+  return (
+    <div ref={ref} style={{ display: "contents" }}>
+      {children}
+    </div>
+  );
+};
 
 const Composed: React.FC<{ script: typeof script }> = ({ script }) => (
   <AbsoluteFill style={{ backgroundColor: "#000" }}>

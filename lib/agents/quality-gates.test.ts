@@ -19,6 +19,9 @@ import {
   findUndefinedJsxComponents,
   findDrawnLogoStandIns,
   findProvidedComponentRedefinitions,
+  findUndersizedText,
+  findUndwelledText,
+  countAccentBorders,
 } from "./quality-gates";
 
 let passed = 0;
@@ -467,6 +470,186 @@ check("similarly-named components don't false-positive", () => {
     findProvidedComponentRedefinitions(`const BrandChromeProps = {}; const MyBrandChrome = () => null;`).length === 0,
     "word-boundary guard",
   );
+});
+
+// ── Scene review #1: text-size floors (findUndersizedText) ───────────────────
+check("flags a body <p> below the 24px floor", () => {
+  const code = `<p style={{ fontSize: 18, fontFamily: FONT_BODY, color: "#fff", lineHeight: 1.5 }}>Members waiting for modern experiences.</p>`;
+  const r = findUndersizedText(code);
+  assert(
+    r.length === 1 && r[0].tag === "p" && r[0].fontSize === 18 && r[0].floor === 24,
+    `got ${JSON.stringify(r)}`,
+  );
+});
+
+check("flags an <li> below the 18px floor", () => {
+  const r = findUndersizedText(`<li style={{ fontSize: 15, color: "#ccc" }}>One-click approvals</li>`);
+  assert(r.length === 1 && r[0].tag === "li" && r[0].floor === 18, `got ${JSON.stringify(r)}`);
+});
+
+check("at/above the floors → no flag", () => {
+  const code = `
+    <p style={{ fontSize: 24, color: "#fff" }}>Lede.</p>
+    <li style={{ fontSize: 18 }}>Point</li>
+    <p style={{ fontSize: "26px" }}>Body.</p>`;
+  assert(findUndersizedText(code).length === 0, "compliant sizes flagged");
+});
+
+check("string px form is parsed", () => {
+  const r = findUndersizedText(`<p style={{ fontSize: "16px", color: "#fff" }}>Tiny.</p>`);
+  assert(r.length === 1 && r[0].fontSize === 16, `got ${JSON.stringify(r)}`);
+});
+
+check("mono caption (wide letterSpacing) is exempt", () => {
+  const code = `<p style={{ fontSize: 13, letterSpacing: "0.14em", color: "#888" }}>RENDER 01 / 05</p>`;
+  assert(findUndersizedText(code).length === 0, "caption chrome flagged");
+});
+
+check("uppercase chrome and mono fontFamily are exempt", () => {
+  const code = `
+    <p style={{ fontSize: 14, textTransform: "uppercase", color: "#888" }}>The proof</p>
+    <p style={{ fontSize: 14, fontFamily: FONT_MONO }}>00:12 · 1080p</p>
+    <p style={{ fontSize: 14, fontFamily: '"Geist Mono", monospace' }}>v2.4.1</p>`;
+  assert(findUndersizedText(code).length === 0, "chrome/mono flagged");
+});
+
+check("no inline fontSize → skipped (favor false negatives)", () => {
+  assert(findUndersizedText(`<p style={{ color: "#fff", opacity: 0.85 }}>Inherited.</p>`).length === 0, "inherited size flagged");
+});
+
+check("narrow letterSpacing does NOT exempt", () => {
+  const r = findUndersizedText(`<p style={{ fontSize: 16, letterSpacing: "-0.01em" }}>Tight lede.</p>`);
+  assert(r.length === 1, `tracking below 0.12em must not exempt, got ${JSON.stringify(r)}`);
+});
+
+check("headlines / spans / divs are out of scope", () => {
+  const code = `<h1 style={{ fontSize: 12 }}>X</h1><span style={{ fontSize: 11 }}>y</span><div style={{ fontSize: 10 }}>z</div>`;
+  assert(findUndersizedText(code).length === 0, "non-p/li tags flagged");
+});
+
+// ── Scene review #2: late-beat dwell (findUndwelledText) ──────────────────────
+const dwellScript = { scenes: [{ start_seconds: 0, end_seconds: 8 }] };
+
+check("flags a headline that lands in the final moments of a scene", () => {
+  const code = `export const Section0 = () => (<div>
+    <h1 style={{ opacity: 0, animation: "fadeRise 0.4s cubic-bezier(.2,.8,.2,1) 7.2s forwards" }}>Approve loans instantly</h1>
+  </div>);`;
+  const r = findUndwelledText(code, dwellScript);
+  assert(
+    r.length === 1 && r[0].section === 0 && r[0].tag === "h1" && r[0].landsAt === 7.6,
+    `got ${JSON.stringify(r)}`,
+  );
+});
+
+check("an early text beat with dwell time passes", () => {
+  const code = `export const Section0 = () => (<div>
+    <h1 style={{ opacity: 0, animation: "fadeRise 0.4s ease 0.6s forwards" }}>Approve loans instantly</h1>
+  </div>);`;
+  assert(findUndwelledText(code, dwellScript).length === 0, "early beat flagged");
+});
+
+check("a long lede needs words×0.3s — flagged even mid-scene", () => {
+  // 20 words → readTime 6s; lands at 4.5s → needs 10.5s in an 8s scene.
+  const code = `export const Section0 = () => (<div>
+    <p style={{ fontSize: 26, opacity: 0, animation: "fadeRise 0.5s ease 4s forwards" }}>one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty</p>
+  </div>);`;
+  const r = findUndwelledText(code, dwellScript);
+  assert(r.length === 1 && r[0].readTime === 6, `got ${JSON.stringify(r)}`);
+});
+
+check("very short scenes are skipped", () => {
+  const code = `export const Section0 = () => (<h1 style={{ animation: "fadeRise 0.4s ease 2s forwards" }}>Quick beat lands late</h1>);`;
+  const r = findUndwelledText(code, { scenes: [{ start_seconds: 0, end_seconds: 2.5 }] });
+  assert(r.length === 0, "short scene flagged");
+});
+
+check("infinite/atmosphere animations never flag", () => {
+  const code = `export const Section0 = () => (<h1 style={{ animation: "pulse 2s ease-in-out 7s infinite" }}>Glowing headline</h1>);`;
+  assert(findUndwelledText(code, dwellScript).length === 0, "infinite loop flagged");
+});
+
+check("mono caption chrome is exempt from dwell", () => {
+  const code = `export const Section0 = () => (<p style={{ letterSpacing: "0.16em", animation: "fadeIn 0.3s ease 7.5s forwards" }}>01 / 05</p>);`;
+  assert(findUndwelledText(code, dwellScript).length === 0, "caption flagged");
+});
+
+check("unanimated text never flags (visible from t=0)", () => {
+  const code = `export const Section0 = () => (<h1 style={{ fontSize: 120 }}>Always on screen</h1>);`;
+  assert(findUndwelledText(code, dwellScript).length === 0, "static text flagged");
+});
+
+check("maps Section index to its own scene duration", () => {
+  // Same late-ish beat: fine in the 12s scene, fatal in the 4s scene.
+  const code = `
+export const Section0 = () => (<h1 style={{ animation: "fadeRise 0.4s ease 3.4s forwards" }}>Three word beat</h1>);
+export const Section1 = () => (<h1 style={{ animation: "fadeRise 0.4s ease 3.4s forwards" }}>Three word beat</h1>);`;
+  const r = findUndwelledText(code, {
+    scenes: [{ start_seconds: 0, end_seconds: 12 }, { start_seconds: 12, end_seconds: 16 }],
+  });
+  assert(r.length === 1 && r[0].section === 1, `got ${JSON.stringify(r)}`);
+});
+
+check("falls back to frame-based scene timing", () => {
+  const code = `export const Section0 = () => (<h1 style={{ animation: "fadeRise 0.4s ease 7.2s forwards" }}>Approve loans instantly</h1>);`;
+  const r = findUndwelledText(code, { scenes: [{ start_frame: 0, end_frame: 240 }] }); // 8s @30fps
+  assert(r.length === 1, `got ${JSON.stringify(r)}`);
+});
+
+// ── Scene review #3: accent-as-decoration (countAccentBorders) ────────────────
+const SIG = "#00C28A";
+const accentCard = (i: number) =>
+  `<div style={{ border: "1.5px solid #00c28a", borderRadius: 12, padding: 24 }}>card ${i}</div>`;
+
+check("flags 6 identical accent-bordered cards in one section", () => {
+  const code = `export const Section0 = () => (<div>${[1, 2, 3, 4, 5, 6].map(accentCard).join("\n")}</div>);`;
+  const r = countAccentBorders(code, SIG);
+  assert(r.length === 1 && r[0].section === 0 && r[0].count === 6, `got ${JSON.stringify(r)}`);
+});
+
+check("4 accent borders per section is allowed (the focal-element budget)", () => {
+  const code = `export const Section0 = () => (<div>${[1, 2, 3, 4].map(accentCard).join("\n")}</div>);`;
+  assert(countAccentBorders(code, SIG).length === 0, "within-cap section flagged");
+});
+
+check("accent borders spread across sections don't flag", () => {
+  const code = `
+export const Section0 = () => (<div>${[1, 2, 3].map(accentCard).join("")}</div>);
+export const Section1 = () => (<div>${[4, 5, 6].map(accentCard).join("")}</div>);`;
+  assert(countAccentBorders(code, SIG).length === 0, "spread usage flagged");
+});
+
+check("resolves const + palette-entry aliases of the signature hex", () => {
+  const code = `
+const BRAND_ACCENT = "#00C28A";
+const PALETTE = { primary: "#0a0a0a", accent: "#00C28A" };
+export const Section0 = () => (<div>
+  <div style={{ border: \`1px solid \${BRAND_ACCENT}\` }} />
+  <div style={{ border: \`1px solid \${BRAND_ACCENT}\` }} />
+  <div style={{ borderColor: PALETTE.accent, borderWidth: 1 }} />
+  <div style={{ borderTop: "2px solid #00c28a" }} />
+  <div style={{ border: "1px solid #00C28A" }} />
+</div>);`;
+  const r = countAccentBorders(code, SIG);
+  assert(r.length === 1 && r[0].count === 5, `got ${JSON.stringify(r)}`);
+});
+
+check("non-signature borders are not counted", () => {
+  const neutral = `<div style={{ border: "1px solid rgba(255,255,255,0.12)" }} />`.repeat(6);
+  const code = `export const Section0 = () => (<div>${neutral}</div>);`;
+  assert(countAccentBorders(code, SIG).length === 0, "neutral hairlines counted");
+});
+
+check("signature used as fill/text (not border) is not counted", () => {
+  const fills = `<div style={{ background: "#00c28a", color: "#fff" }}>x</div>`.repeat(6);
+  const code = `export const Section0 = () => (<div>${fills}</div>);`;
+  assert(countAccentBorders(code, SIG).length === 0, "fills counted as borders");
+});
+
+check("missing / null signature → no findings", () => {
+  const code = `export const Section0 = () => (<div>${accentCard(1).repeat(6)}</div>);`;
+  assert(countAccentBorders(code, null).length === 0, "null signature flagged");
+  assert(countAccentBorders(code, undefined).length === 0, "undefined signature flagged");
+  assert(countAccentBorders(code, "teal").length === 0, "non-hex signature flagged");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

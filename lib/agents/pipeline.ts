@@ -21,6 +21,11 @@ import {
   findRedundantCaptions,
   hasCornerLogoSuppression,
   assessVerticalFill,
+  findUndersizedText,
+  findUndwelledText,
+  countAccentBorders,
+  TEXT_FLOOR_P,
+  TEXT_FLOOR_LI,
   repairInvalidLucideImports,
   findUndefinedJsxComponents,
   findDrawnLogoStandIns,
@@ -237,6 +242,12 @@ export interface BuildWarnings {
   low_register_variety?: { distinct: number; total: number };
   /** Element widths that still cross the canvas edge after the structural retry. */
   overflow_crop?: number[];
+  /** Body text below the size floor (<p> <24px / <li> <18px) — scene review #1. */
+  undersized_text?: { tag: string; fontSize: number; floor: number }[];
+  /** Text beats that land too late to be read before the scene ends — scene review #2. */
+  undwelled_text?: { section: number; tag: string; landsAt: number; sceneDuration: number }[];
+  /** Sections where the signature color borders >4 elements — scene review #3. */
+  accent_overuse?: { section: number; count: number }[];
   /**
    * Structural gate failures (the crash / broken-looking tier) that survived
    * EVERY retry and the deterministic repairs — i.e. what actually shipped.
@@ -883,6 +894,34 @@ export const buildAnimatedSections = async (
   // top-cluster with no flex distribution / bottom anchor / tall element.
   const fillFailure = assessVerticalFill(designCode, gateAspect);
 
+  // Text-size floors (scene review #1, polish). Ledes/body <p> below 24px and
+  // <li> below 18px were repeatedly unreadable in rendered output. The
+  // detector exempts mono captions / eyebrow chrome and skips inherited
+  // sizes — favors false negatives.
+  const undersized = findUndersizedText(designCode);
+  const undersizedFailure =
+    undersized.length > 0
+      ? `Unreadable body type — ${undersized.length} text element(s) below the size floor: ${undersized
+          .slice(0, 6)
+          .map((u) => `<${u.tag}> at ${u.fontSize}px (floor ${u.floor}px)`)
+          .join("; ")}${undersized.length > 6 ? "; …" : ""}. Set every lede/body <p> to ≥${TEXT_FLOOR_P}px and every <li> to ≥${TEXT_FLOOR_LI}px. Small caption/meta text belongs in mono/uppercase chrome styling (letterSpacing ≥0.12em), never in an undersized body tag.`
+      : null;
+
+  // Accent-as-decoration (scene review #3, polish). The signature color must
+  // mark THE focal element of a scene; outlining many containers with it (6
+  // identical accent-bordered cards) reads as decoration, not emphasis. Flags
+  // a section only when >4 elements carry a signature-colored border.
+  const accentOveruse = countAccentBorders(
+    designCode,
+    input.brand_identity?.signature,
+  );
+  const accentFailure =
+    accentOveruse.length > 0
+      ? `Signature color used as decoration — ${accentOveruse
+          .map((a) => `Section${a.section} has ${a.count} elements with signature-colored borders`)
+          .join("; ")} (max 4 per section). The signature hue marks THE focal element: keep the accent border on the single element the eye should land on, give the other containers neutral hairlines, and let hierarchy (size, weight, light) do the rest.`
+      : null;
+
   // Split the gate by class. STRUCTURAL failures (a crash, a cropped
   // element, a duplicated/fabricated logo) make the output look broken to
   // anyone watching, so they MUST be fixed even on the fast preview path —
@@ -904,7 +943,9 @@ export const buildAnimatedSections = async (
       driftFailure ||
       chartFailure ||
       fontFailure ||
-      fillFailure);
+      fillFailure ||
+      undersizedFailure ||
+      accentFailure);
 
   if (structural.failures.length > 0 || polishFailure) {
     const retryMessage = [
@@ -919,6 +960,8 @@ export const buildAnimatedSections = async (
       includePolish ? chartFailure : null,
       includePolish ? fontFailure : null,
       includePolish ? fillFailure : null,
+      includePolish ? undersizedFailure : null,
+      includePolish ? accentFailure : null,
       "",
       "Re-emit the COMPLETE Composition.tsx file with these issues fixed. The full content-mapping discipline still applies — render EVERY content field present in each section's input (eyebrow, headline, lede, bullets, caption, meta, cta, illustration):",
       "  • eyebrow → an <h6> or styled <div> with uppercase tracking-wide text above the headline",
@@ -1112,19 +1155,40 @@ export const buildAnimatedSections = async (
             "; ",
           )}. Text must become legible FAST so the viewer can read it — headline entrances ≤0.4s, body ≤0.5s — then stay settled and static to be read. Speed up these text entrances. Long / slow animation belongs on DECORATIVE elements (icons, illustrations, atmosphere), which can run concurrently while the text is already readable; never on the text itself.`
       : null;
+  // Late-beat dwell gate (scene review #2): the dead-air rule pushes beats
+  // late, but a text element that LANDS late must still leave reading time —
+  // delay + duration + max(1.2s, words×0.3s) must fit inside the scene (a
+  // headline that settled in the final 15% of a scene was unreadable). The
+  // detector skips short scenes, infinite loops, and caption chrome.
+  const undwelled = findUndwelledText(finalCode, input.script);
+  const dwellFailure =
+    undwelled.length > 0
+      ? `Late-beat dwell problem — ${undwelled.length} text element(s) land too late to be read: ${undwelled
+          .slice(0, 6)
+          .map(
+            (u) =>
+              `Section${u.section} <${u.tag}> settles at ${u.landsAt}s of a ${u.sceneDuration.toFixed(1)}s scene but needs ~${u.readTime}s of reading time`,
+          )
+          .join(
+            "; ",
+          )}. Every text element must finish entering with its reading time left: animation-delay + duration + max(1.2s, words × 0.3s) must fit inside the scene. Move these text beats earlier, and let DECORATIVE elements (accent bars, glows, chart draws, background shifts) carry the late beats the dead-air rule asks for.`
+      : null;
   let animationUsage = usageOf(animationResponse.usage);
-  if ((!deadAirReport.ok || readTimeFailure) && !skipRetries) {
+  if ((!deadAirReport.ok || readTimeFailure || dwellFailure) && !skipRetries) {
     const retryMessage = [
       deadAirReport.ok
         ? null
         : `Your previous output has dead-air problems: ${deadAirReport.error}`,
       readTimeFailure,
+      dwellFailure,
       "",
-      "Re-emit the COMPLETE Composition.tsx with these fixes. Two rules:",
+      "Re-emit the COMPLETE Composition.tsx with these fixes. Three rules:",
       "",
       "1) DEAD AIR (if flagged above): for each named section, ADD 1-3 finite (forwards) animations whose `animation-delay` lands at ≥60% of the section's duration — a headline color shift, an accent bar extending, a caption fading in, a CTA pill scale-in, a logo glow pulse, a background gradient deepening. Infinite-loop atmosphere does NOT count; only finite forwards beats carry information.",
       "",
       "2) READING TIME (if flagged above): shorten the entrance animation on every flagged text element so it is legible fast (headline ≤0.4s, body ≤0.5s), then let it sit settled. Move any slow/long motion onto decorative elements that run concurrently — do not make the viewer wait through a long text animation to read the words.",
+      "",
+      "3) LATE-BEAT DWELL (if flagged above): a text element's delay + duration + max(1.2s, words × 0.3s) must fit inside its scene's duration. Pull every flagged text beat earlier in the timeline, and satisfy rule 1's late-beat requirement with DECORATIVE finite beats (accent bar extend, glow, chart draw, gradient deepen) or a ≤3-word flourish — never a paragraph landing at the end of the scene.",
       "",
       "These ENRICH the design — they don't contradict the existing entries.",
     ].join("\n");
@@ -1160,7 +1224,10 @@ export const buildAnimatedSections = async (
         if (
           retryCode.includes("import") &&
           retryCode.includes("export") &&
-          assessDeadAir(retryCode, input.script).ok
+          assessDeadAir(retryCode, input.script).ok &&
+          // Never accept a retry that made the dwell problem WORSE — the
+          // dead-air fix must not push text beats past their reading window.
+          findUndwelledText(retryCode, input.script).length <= undwelled.length
         ) {
           finalCode = retryCode;
           animationUsage = addUsage(
@@ -2349,6 +2416,21 @@ const buildBuildWarnings = (
   if (regVariety) out.low_register_variety = regVariety;
   const residualOverflow = findOverflowingElements(code, gateAspect);
   if (residualOverflow.length > 0) out.overflow_crop = residualOverflow;
+  // Scene-review taste gates (polish tier) — report whatever survived the
+  // shared retry so the user sees it rather than us shipping it silently.
+  const undersizedLeft = findUndersizedText(code);
+  if (undersizedLeft.length > 0) out.undersized_text = undersizedLeft.slice(0, 8);
+  const undwelledLeft = findUndwelledText(code, input.script);
+  if (undwelledLeft.length > 0) {
+    out.undwelled_text = undwelledLeft.slice(0, 8).map((u) => ({
+      section: u.section,
+      tag: u.tag,
+      landsAt: u.landsAt,
+      sceneDuration: u.sceneDuration,
+    }));
+  }
+  const accentLeft = countAccentBorders(code, input.brand_identity?.signature);
+  if (accentLeft.length > 0) out.accent_overuse = accentLeft;
   // A1: the structural floor, re-assessed on the SHIPPED code (this runs
   // after the deterministic repairs, so a lucide alias-fix clears its gate).
   // Whatever the retries could not fix is recorded here — a structural

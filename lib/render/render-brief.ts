@@ -32,6 +32,7 @@ import {
   writeGeneratedFiles,
   dimensionsForScript,
   totalFramesForScript,
+  buildIndexTsx,
   RENDER_FPS,
   RENDER_QUALITY,
 } from "./build-wrapper";
@@ -128,6 +129,16 @@ export const renderBriefToMp4 = async (
   const reusedWarnings = await tryReuseGenerated(genDir, script);
   if (reusedWarnings !== null) {
     warnings = reusedWarnings.warnings;
+    // The wrapper (index.tsx) is OURS, derived deterministically from the
+    // script — regenerate it even on the reuse path so older genDirs pick up
+    // wrapper fixes (e.g. the render-time animation clock) without an
+    // expensive agent rebuild. The agent-emitted Composition files are
+    // untouched; only the harness around them refreshes.
+    await fs.writeFile(
+      path.join(genDir, "index.tsx"),
+      buildIndexTsx(script),
+      "utf-8",
+    );
   } else {
     const agentResult = await buildAnimatedSections(
       buildAgentInputFromBrief(brief, script),

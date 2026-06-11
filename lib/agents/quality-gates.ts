@@ -803,6 +803,268 @@ export const findProvidedComponentRedefinitions = (
     new RegExp(`\\b(?:const|let|var|function|class)\\s+${name}\\b`).test(code),
   );
 
+// ─── Scene-review taste gates (2026-06 scene-by-scene review) ────────
+//
+// Three deterministic detectors distilled from a scene-by-scene review of 3
+// real builds (6+ instances each). All POLISH-tier: the pipeline folds them
+// into the shared design/animation retry, never a structural block. Same
+// module philosophy as everything above — favor false negatives hard; a
+// false positive burns an Opus retry on healthy output.
+
+/**
+ * Minimal scene-timing shape for mapping Section{N} → scene duration.
+ * Structural subset of the full schema Scene (start/end seconds required
+ * there, optional here) so the module stays dependency-free.
+ */
+export interface SceneTiming {
+  start_seconds?: number;
+  end_seconds?: number;
+  start_frame?: number;
+  end_frame?: number;
+}
+
+/** Scene duration in seconds — mirrors pipeline's sceneDurationSeconds. */
+const sceneSeconds = (s: SceneTiming): number => {
+  if (typeof s.start_seconds === "number" && typeof s.end_seconds === "number") {
+    return s.end_seconds - s.start_seconds;
+  }
+  if (typeof s.start_frame === "number" && typeof s.end_frame === "number") {
+    return (s.end_frame - s.start_frame) / 30;
+  }
+  return 0;
+};
+
+/**
+ * Slice Section{i}'s code: from the first `Section{i}` token to the next
+ * `Section{i+1}` token (or EOF). The same crude-but-bounded approach as the
+ * pipeline's per-section dead-air scan; `Section1\b` cannot eat `Section10`.
+ */
+const sectionSlice = (code: string, i: number): string | null => {
+  const re = new RegExp(
+    `(?:Section|Scene|Slide)${i}\\b[\\s\\S]*?(?=(?:Section|Scene|Slide)${i + 1}\\b|registerRoot|$)`,
+    "i",
+  );
+  const m = code.match(re);
+  return m ? m[0] : null;
+};
+
+/**
+ * Mono captions / eyebrow chrome are EXEMPT from the body-text rules: wide
+ * letter-spacing (≥0.12em), an uppercase transform, or a mono fontFamily all
+ * mark deliberate small caption/meta type — chrome, not body copy. Used by
+ * the size-floor and dwell detectors below; favors false negatives (any one
+ * signal exempts the element).
+ */
+const isCaptionChrome = (styleBlock: string): boolean => {
+  const ls = styleBlock.match(/letterSpacing:\s*["'`]?(-?[\d.]+)\s*em/);
+  if (ls && parseFloat(ls[1]) >= 0.12) return true;
+  if (/textTransform:\s*["'`]uppercase/i.test(styleBlock)) return true;
+  // FONT_MONO constant, or any family whose FIRST stack entry says "mono"
+  // ('"Geist Mono", monospace'). [^,}]* crosses the nested quote, stops at
+  // the stack comma / object boundary.
+  if (/fontFamily:\s*(?:FONT_MONO\b|["'`][^,}]*mono)/i.test(styleBlock)) return true;
+  return false;
+};
+
+// ── #1 Text-size floors (scene review, polish) ───────────────────────
+//
+// Ledes / body <p> were repeatedly unreadable in rendered output (6+
+// instances). Floors on a 1080p-height canvas: <p> ≥ 24px, <li> ≥ 18px.
+// Mobile canvases have HIGHER prompt floors (28/36px) so the same floors
+// stay conservative there too. Only fires on an INLINE numeric fontSize on
+// the <p>/<li> itself — inherited/clamp()/var() sizes are skipped, and
+// caption/meta chrome (see isCaptionChrome) is exempt. Favors false
+// negatives.
+
+export const TEXT_FLOOR_P = 24;
+export const TEXT_FLOOR_LI = 18;
+
+export interface UndersizedText {
+  tag: "p" | "li";
+  fontSize: number;
+  floor: number;
+}
+
+export const findUndersizedText = (code: string): UndersizedText[] => {
+  const out: UndersizedText[] = [];
+  // Opening <p|li> tags carrying an inline style object. `[^>]*?` keeps the
+  // match inside one tag; the style body allows one brace-nesting level
+  // (template-literal ${} values) like assessContrast's scanner.
+  const re =
+    /<(p|li)\b[^>]*?style=\{\{([^{}]*?(?:\{[^{}]*\}[^{}]*?)*)\}\}/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(code)) !== null) {
+    const tag = m[1].toLowerCase() as "p" | "li";
+    const block = m[2];
+    const fs = block.match(/\bfontSize:\s*["'`]?(\d+(?:\.\d+)?)(?:px)?["'`]?/);
+    if (!fs) continue; // no inline numeric size → inherited/unknown → skip
+    const size = parseFloat(fs[1]);
+    const floor = tag === "p" ? TEXT_FLOOR_P : TEXT_FLOOR_LI;
+    if (size >= floor) continue;
+    if (isCaptionChrome(block)) continue; // mono caption / chrome — exempt
+    out.push({ tag, fontSize: size, floor });
+  }
+  return out;
+};
+
+// ── #2 Late-beat dwell (scene review, polish) ────────────────────────
+//
+// The dead-air rule pushes beats LATE, but nothing guaranteed reading time
+// AFTER landing — a headline landed in the final 15% of a scene. For each
+// text element with a finite entrance (delay D, duration d), flag when
+// D + d + readTime > sceneDuration, with readTime ≈ max(1.2s, words×0.3s).
+// Sections map to scenes by Section{N} index. Coarse + conservative: short
+// scenes (<3s, matching the dead-air gate), infinite/atmosphere animations,
+// caption chrome, and unanimated text are all skipped.
+
+export interface UndwelledText {
+  section: number;
+  tag: string;
+  delay: number; // seconds
+  duration: number; // seconds
+  readTime: number; // seconds (max(1.2, words*0.3))
+  landsAt: number; // delay + duration
+  sceneDuration: number;
+}
+
+/** Literal word count of an element's children (tags + JSX exprs stripped). */
+const literalWordCount = (inner: string): number =>
+  inner
+    .replace(/<[^>]*>/g, " ")
+    .replace(/\{[^{}]*\}/g, " ")
+    .split(/\s+/)
+    .filter((w) => /\w/.test(w)).length;
+
+export const findUndwelledText = (
+  code: string,
+  script: { scenes?: SceneTiming[] },
+): UndwelledText[] => {
+  const scenes = Array.isArray(script.scenes) ? script.scenes : [];
+  const out: UndwelledText[] = [];
+  for (let i = 0; i < scenes.length; i += 1) {
+    const T = sceneSeconds(scenes[i]);
+    if (!T || T < 3) continue; // very short scenes — skip (matches dead-air)
+    const section = sectionSlice(code, i);
+    if (!section) continue;
+    // Text elements with children (need the literal text for read time).
+    const elRe = /<(h1|h2|h3|p|li)\b([^>]*)>([\s\S]*?)<\/\1>/gi;
+    let m: RegExpExecArray | null;
+    while ((m = elRe.exec(section)) !== null) {
+      const tag = m[1].toLowerCase();
+      const attrs = m[2];
+      const inner = m[3];
+      const anim = attrs.match(/animation:\s*["'`]([^"'`]+)/);
+      if (!anim) continue; // unanimated text is visible from t=0 — fine
+      // The entrance is the first comma-chained declaration. Blank paren
+      // groups first so cubic-bezier(.2,.8,.2,1) / steps(20, end) commas
+      // can't split a declaration mid-easing (they carry no `s` tokens).
+      const firstDecl = anim[1].replace(/\([^)]*\)/g, "()").split(",")[0];
+      if (!/\bforwards\b/.test(firstDecl)) continue;
+      const beforeForwards = firstDecl.split(/\bforwards\b/)[0];
+      const times = [...beforeForwards.matchAll(/(\d+(?:\.\d+)?)s\b/g)].map(
+        (t) => parseFloat(t[1]),
+      );
+      if (times.length === 0) continue;
+      // CSS shorthand: first time = duration; with ≥2 times the LAST one
+      // before `forwards` is the delay (same parse as the dead-air gate).
+      const duration = times[0];
+      const delay = times.length >= 2 ? times[times.length - 1] : 0;
+      if (isCaptionChrome(attrs)) continue; // mono caption / chrome — exempt
+      const words = literalWordCount(inner);
+      const readTime = Math.max(1.2, words * 0.3);
+      const landsAt = delay + duration;
+      if (landsAt + readTime <= T) continue;
+      out.push({
+        section: i,
+        tag,
+        delay,
+        duration,
+        readTime: Math.round(readTime * 10) / 10,
+        landsAt: Math.round(landsAt * 100) / 100,
+        sceneDuration: T,
+      });
+    }
+  }
+  return out;
+};
+
+// ── #3 Accent-as-decoration (scene review, polish) ───────────────────
+//
+// The signature color outlining MANY containers (6 identical accent-bordered
+// cards) instead of marking THE focal element. Count distinct elements (one
+// inline style block = one element) per Section{N} whose border/borderColor
+// uses the signature hex — directly, via a module-scope const bound to it, or
+// via an object entry (PALETTE.accent). Flag a section only when the count
+// EXCEEDS the cap (>4). Conservative: class-rule borders in <style> strings
+// and box-shadow rings are invisible to it (false-negative direction).
+
+export const ACCENT_BORDER_MAX_PER_SECTION = 4;
+
+export interface AccentBorderOveruse {
+  section: number;
+  count: number;
+}
+
+export const countAccentBorders = (
+  code: string,
+  signature: string | null | undefined,
+  maxPerSection = ACCENT_BORDER_MAX_PER_SECTION,
+): AccentBorderOveruse[] => {
+  const sig = (signature ?? "").trim().toLowerCase();
+  if (!/^#[0-9a-f]{3,8}$/.test(sig)) return []; // no/invalid signature → N/A
+  // Tokens that mean "the signature color" in this file: the hex itself,
+  // any module-scope const bound to it, and object entries (PALETTE.accent).
+  const tokens: string[] = [sig];
+  const constRe = new RegExp(
+    `\\bconst\\s+([A-Za-z_$][\\w$]*)\\s*=\\s*["'\`]${sig}["'\`]`,
+    "gi",
+  );
+  let cm: RegExpExecArray | null;
+  while ((cm = constRe.exec(code)) !== null) tokens.push(cm[1]);
+  const objRe = /\bconst\s+([A-Za-z_$][\w$]*)\s*=\s*\{([^{}]*)\}/g;
+  let om: RegExpExecArray | null;
+  while ((om = objRe.exec(code)) !== null) {
+    const entryRe = new RegExp(
+      `([A-Za-z_$][\\w$]*)\\s*:\\s*["'\`]${sig}["'\`]`,
+      "gi",
+    );
+    let em: RegExpExecArray | null;
+    while ((em = entryRe.exec(om[2])) !== null) {
+      tokens.push(`${om[1]}.${em[1]}`);
+    }
+  }
+  const escaped = tokens.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  // A border declaration whose value references a signature token. The value
+  // scan stops at `,`/`;`/`}` so it stays inside one declaration; `(?![\w$])`
+  // keeps BRAND_ACCENT from matching BRAND_ACCENT_SOFT.
+  const borderValRe = new RegExp(
+    `\\bborder(?:Top|Right|Bottom|Left)?(?:Color)?\\s*:\\s*[^,;}]*(?:${escaped.join("|")})(?![\\w$])`,
+    "i",
+  );
+
+  // Derive the section indices present in the code (no script needed).
+  const indices = new Set<number>();
+  const idxRe = /\bSection(\d+)\b/g;
+  let sm: RegExpExecArray | null;
+  while ((sm = idxRe.exec(code)) !== null) indices.add(parseInt(sm[1], 10));
+
+  const out: AccentBorderOveruse[] = [];
+  for (const i of [...indices].sort((a, b) => a - b)) {
+    const slice = sectionSlice(code, i);
+    if (!slice) continue;
+    let count = 0;
+    // One inline style block = one element (allows one brace-nesting level
+    // for template-literal ${TOKEN} values, like assessContrast).
+    const styleRe = /style=\{\{([^{}]*?(?:\{[^{}]*\}[^{}]*?)*)\}\}/g;
+    let sb: RegExpExecArray | null;
+    while ((sb = styleRe.exec(slice)) !== null) {
+      if (borderValRe.test(sb[1])) count += 1;
+    }
+    if (count > maxPerSection) out.push({ section: i, count });
+  }
+  return out;
+};
+
 /**
  * Deterministically neutralize invalid `lucide-react` imports so a hallucinated
  * icon can't crash the render. The agent sometimes imports brand logos

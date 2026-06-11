@@ -1,0 +1,67 @@
+{
+  "id": "01HANIMCLOCKFIXTURE0000000",
+  "customer_id": "cust_animation_clock_fixture",
+  "brand_kit_id": null,
+  "created_at": "2026-06-10T00:00:00.000Z",
+  "schema_version": "1.0",
+  "brief": {
+    "purpose": "launch",
+    "about": "Animation-clock test fixture. Two scenes; scene 1 has a 2.5s-delayed CSS animation the renderer used to drop.",
+    "cta": "Try Renderball"
+  },
+  "narrative": {
+    "logline": "A fixture proves delayed CSS animations survive the MP4 render.",
+    "arc": "Open on the control, close on the delayed payoff."
+  },
+  "config": {
+    "duration_seconds": 6,
+    "aspect_ratio": "16:9",
+    "resolution": "1080p",
+    "tone": "confident",
+    "pacing": "medium"
+  },
+  "audio": {
+    "voiceover": null,
+    "music": null,
+    "sfx": []
+  },
+  "assets": {
+    "fonts": [],
+    "images": [],
+    "audio": [],
+    "videos": []
+  },
+  "scenes": [
+    {
+      "id": "01HANIMCLOCKSCENE000000000",
+      "index": 0,
+      "label": "Scene zero",
+      "description": "Immediate text so a black frame is distinguishable from a working render.",
+      "visual_concept": "Composition: centered headline on black. Animations: headline clockFade at 0.2s duration 0.4s.",
+      "register": "centered",
+      "content": {
+        "eyebrow": "SCENE ZERO",
+        "headline": "SCENE ZERO",
+        "asset_ids": []
+      },
+      "start_seconds": 0,
+      "end_seconds": 2
+    },
+    {
+      "id": "01HANIMCLOCKSCENE000000001",
+      "index": 1,
+      "label": "Delayed payoff",
+      "description": "Control text at 0.3s delay, payoff text at 2.5s delay — the dropped case.",
+      "visual_concept": "Composition: control text top band, payoff headline centered. Animations: control clockFade at 0.3s duration 0.4s; payoff clockFade at 2.5s duration 0.5s.",
+      "register": "centered",
+      "content": {
+        "eyebrow": "CONTROL",
+        "headline": "DELAYED PAYOFF",
+        "asset_ids": []
+      },
+      "start_seconds": 2,
+      "end_seconds": 6
+    }
+  ],
+  "status": "approved"
+}

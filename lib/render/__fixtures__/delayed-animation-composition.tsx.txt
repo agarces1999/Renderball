@@ -1,0 +1,121 @@
+// Hand-written fixture mirroring the EMPIRICAL renderer bug in
+// src/generated/01KTQH4GC70VM6R4412Q729152 Section1: elements that start at
+// opacity:0 and rely on a CSS animation with a LONG delay (>= ~2.3s) +
+// fill-mode forwards never paint in the MP4, while the same pattern with a
+// short delay paints fine — and the browser preview plays both.
+//
+// Layout is deliberately measurement-friendly (animation-clock.test.ts crops
+// fixed regions of rendered frames and asserts luminance):
+//   - Scene 0 (0-2s): "SCENE ZERO" — proves the render isn't just black.
+//   - Scene 1 (2-6s):
+//       top band   → "CONTROL" text, delay 0.3s (the case that always worked)
+//       center band→ "DELAYED PAYOFF" text, delay 2.5s (the case the renderer
+//                    DROPS without the render-path animation clock)
+//
+// Scene 1's delays are SCENE-relative: the payoff must appear at composition
+// time 2s + 2.5s + 0.5s = 5s, and must NOT be visible at composition time 3s.
+// That distinguishes a correct scene-relative clock from a wrong absolute one.
+//
+// Stored as .txt so tsc skips it — compiled at test time by Remotion's
+// bundler, exactly like production output.
+import React from "react";
+
+interface Script {
+  scenes: Array<{ content: { headline?: string } }>;
+  config: Record<string, unknown>;
+}
+
+const CLOCK_CSS = `
+  @keyframes clockFade {
+    from { opacity: 0; transform: translateY(18px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+`;
+
+const FRAME: React.CSSProperties = {
+  position: "absolute",
+  inset: 0,
+  width: "100%",
+  height: "100%",
+  overflow: "hidden",
+  background: "#000000",
+  fontFamily: "Arial, Helvetica, sans-serif",
+};
+
+export const Section0: React.FC<{ script: Script }> = () => (
+  <div style={FRAME}>
+    <style dangerouslySetInnerHTML={{ __html: CLOCK_CSS }} />
+    <div
+      style={{
+        position: "absolute",
+        inset: 0,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+      }}
+    >
+      <h1
+        style={{
+          margin: 0,
+          color: "#ffffff",
+          fontSize: 120,
+          fontWeight: 800,
+          letterSpacing: "-0.02em",
+          opacity: 0,
+          animation: "clockFade 0.4s ease-out 0.2s forwards",
+        }}
+      >
+        SCENE ZERO
+      </h1>
+    </div>
+  </div>
+);
+
+export const Section1: React.FC<{ script: Script }> = () => (
+  <div style={FRAME}>
+    <style dangerouslySetInnerHTML={{ __html: CLOCK_CSS }} />
+    {/* Short delay — the renderer always painted this case. */}
+    <div
+      style={{
+        position: "absolute",
+        top: 40,
+        left: 0,
+        right: 0,
+        textAlign: "center",
+        color: "#ffffff",
+        fontSize: 64,
+        fontWeight: 700,
+        letterSpacing: "0.1em",
+        opacity: 0,
+        animation: "clockFade 0.4s ease-out 0.3s forwards",
+      }}
+    >
+      CONTROL
+    </div>
+    {/* Long delay — the case the renderer DROPS (mirrors the real Section1
+        eyebrow/h1/lede/bullets at 2.3-3.7s delays). */}
+    <div
+      style={{
+        position: "absolute",
+        inset: 0,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+      }}
+    >
+      <h1
+        style={{
+          margin: 0,
+          color: "#ffffff",
+          fontSize: 150,
+          fontWeight: 800,
+          letterSpacing: "-0.02em",
+          opacity: 0,
+          animation: "clockFade 0.5s ease-out 2.5s forwards",
+        }}
+      >
+        DELAYED PAYOFF
+      </h1>
+    </div>
+  </div>
+);

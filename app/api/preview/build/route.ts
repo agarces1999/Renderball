@@ -118,6 +118,16 @@ export async function POST(request: Request) {
   // name, and the user would see a broken preview. Verify every scene renders
   // (same path the preview uses) before reporting success — so ok:true means
   // "every scene actually renders", not just "parses".
+  // NOTE on the gate's limit — SSR proves each scene EVALUATES, not that its
+  // content ever PAINTS in the export. CSS animations the agents emit can play
+  // in the browser preview yet never fire in the MP4 render (the sentry build
+  // shipped a scene whose text — opacity:0 + long-delay `animation ... forwards`
+  // — was invisible at every exported timestamp while the preview looked fine).
+  // Pixel-truth verification needs real rendered frames, which is too slow for
+  // this build path: it lives in the stills pipeline instead. See
+  // scripts/dogfood-stills.mjs + lib/render/painted-content.ts
+  // (verifyPaintedScenes): every dogfood run scores per-scene ink from frames
+  // of an actual MP4 render and flags scenes whose content never paints.
   const renderCheck = await verifyScenesRender(genDir, script.scenes.length, script);
   if (!renderCheck.ok) {
     console.error(

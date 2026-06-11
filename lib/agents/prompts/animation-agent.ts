@@ -110,6 +110,22 @@ A viewer has to READ the text. The most common failure is spending the scene's t
 
 A build-time gate flags any text element whose entrance animation exceeds 1.0s and will force a regeneration — but aim for ≤0.4-0.5s, well under that.
 
+## ⚠️ Late-beat dwell — HARD RULE (machine-checked)
+
+The dead-air rule (below) pushes beats LATE; this rule caps how late TEXT may land. Every text element (headline / lede / bullet / caption) must finish entering with its reading time left:
+
+**animation-delay + duration + max(1.2s, words × 0.3s) must fit inside the scene's duration.**
+
+A headline that settles in the final 15% of a scene cannot be read — a build-time gate flags it and forces a regeneration.
+
+- **Long text = early beat.** A 20-word lede needs ~6s of dwell, so it belongs in the first half of the scene — never the late beat.
+- **Late beats belong on DECORATION or very short text.** Satisfy the ≥60% dead-air requirement with accent bars extending, glows, chart draws, background shifts, a CTA pill scale-in, or a ≤3-word flourish — not with paragraphs.
+- **Self-check per section:** for each text element, compute delay + duration + max(1.2, words × 0.3). If it exceeds the section's duration, move that text beat earlier.
+
+## ⚠️ Staged multi-beat ledes
+
+When the design renders a 2-3 sentence lede as separate sibling elements (sentence-per-line), schedule them as SEQUENTIAL beats: each sentence fades/rises 0.6-1.2s after the previous one settles, landing mid-frame like a thought completing — never all three at once as one static block. Sequential lede beats are also the most natural way to fill the scene's mid-timeline (they serve the dead-air rule without late text). Each sentence still obeys the dwell rule above: the LAST sentence must land with its own reading time left before the scene ends. If the design shipped the lede as a single element, give it ONE fast early entrance (≤0.5s) — do not letter-reveal or re-animate it.
+
 ## CSS animation patterns (use these — don't invent)
 
 ### Entry: fade + rise

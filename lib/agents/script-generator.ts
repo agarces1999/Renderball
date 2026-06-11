@@ -139,6 +139,60 @@ export type ScriptGenerationResult =
   | { ok: false; error: string };
 
 /**
+ * The ONLY text a numeric claim in script copy may ground against (QA S5,
+ * tightened): the user's freeform prompt / purpose, user-verified claims,
+ * and the crawl's title / description / headlines / body_excerpts. NEVER the
+ * script's own text — a fabricated stat must not be able to vouch for itself.
+ * Exported so the claims audit (`scripts/claims-audit.mjs`) checks against the
+ * exact same source set the gate uses.
+ */
+export const claimGroundingSources = (
+  brief: Pick<
+    AgentBrief,
+    "freeform_prompt" | "purpose" | "verified_claims" | "brand_extract"
+  >,
+): string => {
+  const be = brief.brand_extract;
+  return [
+    brief.freeform_prompt,
+    brief.purpose,
+    brief.verified_claims,
+    be?.title,
+    be?.description,
+    ...(be?.headlines ?? []),
+    ...(be?.body_excerpts ?? []),
+  ]
+    .filter(Boolean)
+    .join(" \n ");
+};
+
+/**
+ * The viewer-facing copy of every scene (headline / lede / caption / eyebrow /
+ * bullets / meta values) joined into one string — the text the invented-claim
+ * guard scans. Exported for the claims audit so reporting and the gate read
+ * the same fields.
+ */
+export const sceneClaimCopy = (
+  scenes: ReadonlyArray<{ content?: unknown }>,
+): string =>
+  scenes
+    .map((sc) => {
+      const c = (sc.content ?? {}) as Record<string, unknown>;
+      const bullets = Array.isArray(c.bullets)
+        ? (c.bullets as unknown[])
+            .map((b) => (typeof b === "string" ? b : (b as { text?: string })?.text || ""))
+            .join(" ")
+        : "";
+      const meta = Array.isArray(c.meta)
+        ? (c.meta as { value?: unknown }[]).map((m) => String(m?.value ?? "")).join(" ")
+        : "";
+      return [c.headline, c.lede, c.caption, c.eyebrow, bullets, meta]
+        .filter(Boolean)
+        .join(" ");
+    })
+    .join(" \n ");
+
+/**
  * Agent 1 — Script Generator.
  *
  * Takes a customer brief, returns a validated Script JSON.
@@ -283,33 +337,14 @@ export const generateScript = async (
         });
         continue;
       }
-      // Invented-claim guard (QA S5): reject stat-shaped numbers in the copy
-      // that aren't grounded in the crawl/brief. Cheaper than catching it at the
-      // design stage (E2 backstops it); the agent gets the exact tokens to fix.
-      const sourceText = [
-        brief.freeform_prompt,
-        brief.purpose,
-        brief.verified_claims,
-        ...(brief.brand_extract?.body_excerpts ?? []),
-      ]
-        .filter(Boolean)
-        .join(" \n ");
-      const scriptCopy = validation.script.scenes
-        .map((sc) => {
-          const c = (sc as { content?: Record<string, unknown> }).content ?? {};
-          const bullets = Array.isArray(c.bullets)
-            ? (c.bullets as unknown[])
-                .map((b) => (typeof b === "string" ? b : (b as { text?: string })?.text || ""))
-                .join(" ")
-            : "";
-          const meta = Array.isArray(c.meta)
-            ? (c.meta as { value?: unknown }[]).map((m) => String(m?.value ?? "")).join(" ")
-            : "";
-          return [c.headline, c.lede, c.caption, c.eyebrow, bullets, meta]
-            .filter(Boolean)
-            .join(" ");
-        })
-        .join(" \n ");
+      // Invented-claim guard (QA S5, tightened — the fabricated-38ms fix):
+      // reject stat-shaped numbers in the copy that aren't grounded in the
+      // allowed sources. Cheaper than catching it at the design stage (E2
+      // backstops it) — and critical, because the design stage trusts script
+      // content, so an invented stat that survives here is laundered into
+      // "approved content" downstream. The agent gets the exact tokens to fix.
+      const sourceText = claimGroundingSources(brief);
+      const scriptCopy = sceneClaimCopy(validation.script.scenes);
       const ungrounded = findUngroundedClaims(scriptCopy, sourceText);
       // QA G5: also catch a fabricated funding-stage label ("Series C" when the
       // brief only says "$250M funding round").
@@ -328,7 +363,7 @@ export const generateScript = async (
         const msgs: string[] = [];
         if (ungrounded.length > 0)
           msgs.push(
-            `These numeric claims aren't supported by the brief or the crawled site content: ${ungrounded.join(", ")}. Replace each with qualitative copy (e.g. "$840M processed" → "billions processed") or remove it — never invent specific stats.`,
+            `These numeric claims are NOT grounded in any allowed source (the user's brief, verified claims, or the crawled site content): ${ungrounded.join(", ")}. For EACH of those exact tokens, either (a) replace it with qualitative copy (e.g. "38ms" → "in milliseconds", "$840M processed" → "billions processed"), or (b) replace it with a fact that appears VERBATIM in the crawled site content or verified claims — never invent specific stats, and never reuse the flagged number with a different unit.`,
           );
         if (ungroundedStages.length > 0)
           msgs.push(
@@ -516,7 +551,7 @@ const buildUserMessage = (brief: AgentBrief): string => {
       lines.push(`  ✓ ${line}`);
     }
     lines.push(
-      "These are SAFE to use as specific numbers in scene.content (headline, lede, bullets, meta values). Numbers NOT in this list AND not in body_excerpts may NOT be invented — the hallucination guardrail will fail Pass 1.",
+      "These are SAFE to use as specific numbers in scene.content (headline, lede, bullets, meta values). Stat-shaped numbers (currency, %, multipliers like 10x, K/M/B counts, latency like 38ms, percentiles like p50) NOT in this list AND not in the crawled site copy may NOT be invented — the hallucination guardrail matches the FULL token (number + unit) and will fail Pass 1.",
     );
     lines.push("");
   }

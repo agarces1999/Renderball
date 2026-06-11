@@ -1530,6 +1530,24 @@ If the section's visual_concept references any of these patterns, BUILD THE LITE
 
 Pick the chrome that matches the brand's product domain. A developer-tool brand → IDE. A consumer fintech → phone mockup. An analytics SaaS → dashboard. A creative tool → its own canvas mockup.
 
+## ⚠️ Scene-review taste rules — HARD RULES (from scene-by-scene review of real builds)
+
+Each of these was a repeated, systematic failure across shipped builds (6+ instances each). The first two are machine-checked and force a regeneration; the rest are reviewed scene-by-scene — treat them all as the same contract.
+
+**1. Body-text floors on \`<p>\`/\`<li>\` (machine-checked — supersedes the smaller desktop body floors above).** Any \`<p>\` with an inline \`fontSize\` below **24px**, or any \`<li>\` below **18px**, is flagged on every canvas. Ledes and body paragraphs at the old 18-22px desktop sizes were repeatedly unreadable in the rendered video — size up. Mono/eyebrow captions are exempt ONLY when they read as chrome: \`letterSpacing\` ≥ 0.12em, uppercase, or a mono \`fontFamily\`. If a caption must be small, style it as chrome — never ship an undersized body paragraph.
+
+**2. Accent discipline (machine-checked).** The SIGNATURE brand color marks **THE focal element** of a scene — at most **4 elements per section** may carry a signature-colored border. Six identical accent-bordered cards is decoration, not emphasis: the accent stops meaning "look here" when everything wears it. Border the ONE element the eye should land on; give the other containers neutral hairlines and let size / weight / light carry the rest of the hierarchy.
+
+**3. One featured card per uniform grid.** In any grid of 3+ same-size cards, exactly **ONE must be featured** — larger (a wider/taller cell), live (a diegetic mini-UI or value where the others have labels), or visually dominant (the signature accent, a filled surface). A perfectly uniform grid of identical cards reads as a template, not a designed scene. Pick the card that carries the story's point and make it the protagonist.
+
+**4. Card interiors are canvas too.** No card may be a mostly-empty box — a border with a 3-word label floating in blank space is dead weight. Every card carries real content: an icon + label + a value / a line of copy / a mini-visual (sparkline, progress bar, status row). If you can't fill a card, you don't need that card — use fewer, fuller cards.
+
+**5. The CTA pill is not the headline.** The CTA label must NOT duplicate the headline text verbatim. The headline states the idea; the CTA names the ACTION ("Start free", "Book a demo", "See it live"). When the scene's content gives a cta.primary string, render it exactly — but never promote the headline string into the pill as well.
+
+**6. Charts earn their place.** A chart ships only with label/axis context — axis labels, a series label, or value annotations — and at a size where the data is readable (roughly a quarter of the canvas or more). A tiny, unlabeled chart is decoration pretending to be evidence; if the scene can't give the chart room and labels, omit it and let a KPI tile or a single annotated number carry the data.
+
+**7. Multi-sentence ledes are beats.** When a lede is written as 2-3 short sentences, render each sentence as its OWN sibling text element (separate \`<p>\`s, or block spans in one stack — each obeying the 24px floor) so the choreography pass can land them as sequential beats mid-frame. One small static block holding three sentences wastes the scene's strongest storytelling device.
+
 ## Length / output
 
 Each Section{N} component should be 60-150 lines of JSX (no animation code — leaner code, but dense layout). Each renders into the full canvas (dimensions specified in the user message — 1920×1080 / 1080×1920 / 1080×1080). \`Generated\` lists them as siblings.
