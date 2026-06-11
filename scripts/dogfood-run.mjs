@@ -7,10 +7,16 @@
  * 2. Generate (crawl + script) + build (design + choreography) it via the dev
  *    server — self-boots `npm run dev` (the warmed wrapper) if it's down.
  * 3. Render a settled PNG per scene (scripts/dogfood-stills.mjs, headless).
- * 4. Print a JSON manifest (scriptId, stills paths, build warnings) the dogfood
- *    AGENT reads to critique + ship fixes, and append to the rotation log.
+ * 4. Persist + print a JSON manifest (scriptId, stills paths, per-scene paint
+ *    report, build warnings) the dogfood AGENT reads to critique + ship fixes,
+ *    and append to the rotation log. The same manifest lands on disk as
+ *    .data/dogfood/<scriptId>/manifest.json so the QA step can read paint
+ *    verdicts after the run's stdout is gone.
  *
- * Pure mechanics — no judgment, no code changes. Usage: node scripts/dogfood-run.mjs
+ * Pure mechanics — no judgment, no code changes.
+ * Usage: node scripts/dogfood-run.mjs
+ *        node scripts/dogfood-run.mjs --stills-only <scriptId>   (re-run only
+ *        stills + manifest persistence against an existing build — no API spend)
  */
 import { spawn } from "node:child_process";
 import path from "node:path";
@@ -21,6 +27,60 @@ const PORT = process.env.PORT || "3000";
 const base = `http://localhost:${PORT}`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const out = (o) => console.log(JSON.stringify(o, null, 2));
+
+// Stills + manifest persistence — shared by the full run and --stills-only.
+// dogfood-stills.mjs prints its manifest (per-scene max-ink frame, candidates,
+// paint report) as the LAST JSON object on stdout; renderer progress lines may
+// precede it, so parse from the last opening brace that yields a full document
+// (a nested brace fails on trailing closers, so only the root parses).
+const stillsStep = async (scriptId, runFields = {}) => {
+  const stdoutText = await new Promise((resolve, reject) => {
+    let buf = "";
+    const c = spawn("node", ["scripts/dogfood-stills.mjs", scriptId], {
+      cwd: root,
+      stdio: ["ignore", "pipe", "inherit"],
+    });
+    c.stdout.setEncoding("utf8");
+    c.stdout.on("data", (d) => { buf += d; });
+    c.on("exit", (code) => (code === 0 ? resolve(buf) : reject(new Error(`stills exited ${code}`))));
+  });
+  let report = null;
+  for (let i = stdoutText.lastIndexOf("{"); i >= 0; i = stdoutText.lastIndexOf("{", i - 1)) {
+    try {
+      report = JSON.parse(stdoutText.slice(i));
+      break;
+    } catch { /* nested brace — keep scanning */ }
+  }
+  const stillsDir = path.join(root, ".data", "dogfood", scriptId);
+  const stills = (await fs.readdir(stillsDir))
+    .filter((f) => /^scene-\d+\.png$/.test(f))
+    .sort((a, b) => Number(a.match(/\d+/)) - Number(b.match(/\d+/)))
+    .map((f) => path.join(stillsDir, f));
+  const manifest = {
+    ok: true,
+    ...runFields,
+    scriptId,
+    stillsDir,
+    stills,
+    // Pixel truth from dogfood-stills — absent only if its stdout was unparseable.
+    ...(report ? { sceneStills: report.stills, paint: report.paint } : {}),
+  };
+  // A failed disk write degrades to stdout-only (today's behavior), never a crash.
+  try {
+    await fs.writeFile(path.join(stillsDir, "manifest.json"), JSON.stringify(manifest, null, 2));
+  } catch { /* stdout manifest still carries the report */ }
+  return manifest;
+};
+
+if (process.argv[2] === "--stills-only") {
+  const id = process.argv[3];
+  if (!id) {
+    out({ ok: false, stage: "stills", error: "usage: dogfood-run.mjs --stills-only <scriptId>" });
+    process.exit(1);
+  }
+  out(await stillsStep(id));
+  process.exit(0);
+}
 
 // 1. Brand selection — least-recently-used.
 const brandsFile = JSON.parse(
@@ -137,16 +197,16 @@ if (!build?.ok) {
   process.exit(1);
 }
 
-// 5. Per-scene stills (headless MP4 render + ffmpeg frame extraction — settled).
-await new Promise((resolve, reject) => {
-  const c = spawn("node", ["scripts/dogfood-stills.mjs", scriptId], { cwd: root, stdio: ["ignore", "ignore", "inherit"] });
-  c.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`stills exited ${code}`))));
+// 5. Per-scene stills (headless MP4 render + ffmpeg frame extraction — settled)
+//    + manifest.json with the paint report persisted next to the PNGs.
+const manifest = await stillsStep(scriptId, {
+  url: brand.url,
+  prompt: runPrompt,
+  angleIndex,
+  angle: ANGLES[angleIndex],
+  previewUrl: `${base}/preview/${scriptId}`,
+  warnings: build.warnings ?? {},
 });
-const stillsDir = path.join(root, ".data", "dogfood", scriptId);
-const stills = (await fs.readdir(stillsDir))
-  .filter((f) => /^scene-\d+\.png$/.test(f))
-  .sort((a, b) => Number(a.match(/\d+/)) - Number(b.match(/\d+/)))
-  .map((f) => path.join(stillsDir, f));
 
 // 6. Log + manifest.
 const ts = Number(process.env.DOGFOOD_TS) || Date.now();
@@ -154,15 +214,4 @@ log.runs = log.runs ?? [];
 log.runs.push({ ts, url: brand.url, scriptId, angleIndex, warnings: build.warnings ?? {} });
 await fs.writeFile(logPath, JSON.stringify(log, null, 2));
 
-out({
-  ok: true,
-  url: brand.url,
-  prompt: runPrompt,
-  angleIndex,
-  angle: ANGLES[angleIndex],
-  scriptId,
-  previewUrl: `${base}/preview/${scriptId}`,
-  stillsDir,
-  stills,
-  warnings: build.warnings ?? {},
-});
+out(manifest);
