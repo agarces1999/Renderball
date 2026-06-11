@@ -4,7 +4,10 @@ import path from "path";
 import React from "react";
 import * as esbuild from "esbuild";
 import { loadScript } from "../../../../../lib/store";
-import { dimensionsForScript } from "../../../../../lib/render/build-wrapper";
+import {
+  dimensionsForScript,
+  WIDE_LOCKUP_RATIO,
+} from "../../../../../lib/render/build-wrapper";
 
 // react-dom/server pulled in via runtime require to bypass Next.js's
 // app-router static-analysis check ("don't import react-dom/server in
@@ -200,6 +203,32 @@ export async function GET(
 </script>`
     : "";
 
+  // BrandChrome suppresses its wordmark span when the logo measures as a wide
+  // lockup (the name is already inside the asset) via a React onLoad — but
+  // this static markup carries no React handlers, so re-apply the same rule
+  // (same WIDE_LOCKUP_RATIO) over the data attributes BrandChrome emits.
+  const lockupMount = sectionHtml.includes("data-rb-brand-logo")
+    ? `<script>
+  (function () {
+    function apply(img) {
+      if (!(img.naturalHeight > 0 && img.naturalWidth / img.naturalHeight > ${WIDE_LOCKUP_RATIO})) return;
+      var mark = img.parentElement;
+      var span = mark && mark.querySelector('[data-rb-brand-wordmark]');
+      if (span) span.style.display = 'none';
+    }
+    function scan() {
+      var imgs = document.querySelectorAll('img[data-rb-brand-logo]');
+      for (var i = 0; i < imgs.length; i++) {
+        if (imgs[i].complete) apply(imgs[i]);
+        else imgs[i].addEventListener('load', function (e) { apply(e.target); });
+      }
+    }
+    document.addEventListener('DOMContentLoaded', scan);
+    window.addEventListener('load', scan);
+  })();
+</script>`
+    : "";
+
   const doc = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -240,6 +269,7 @@ export async function GET(
 <body>
 <div class="renderball-canvas">${sectionHtml}</div>
 ${lottieMount}
+${lockupMount}
 </body>
 </html>`;
 

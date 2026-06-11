@@ -342,6 +342,29 @@ export const Lottie: React.FC<LottieProps> = (props) => {
 `;
 
 /**
+ * naturalWidth/naturalHeight above this ratio means a logo asset is a
+ * horizontal LOCKUP — the brand name is already drawn inside the image
+ * (tailscale.com/static/logo.svg: dot-grid mark + "tailscale" wordmark in one
+ * file, viewBox 0 0 121 22 ≈ 5.5:1). Rendering BrandChrome's wordmark span
+ * next to such an asset prints the name twice ("tailscale tailscale").
+ * 2.5 clears square favicons and modestly-wide marks (≤2:1) while catching
+ * real lockups (≥3:1 in practice).
+ */
+export const WIDE_LOCKUP_RATIO = 2.5;
+
+/**
+ * The lockup decision. BRAND_CHROME_SOURCE interpolates WIDE_LOCKUP_RATIO into
+ * an identical helper, and the static-preview suppression script in
+ * app/api/preview/[id]/iframe/route.ts applies the same comparison — neither
+ * can drift from this constant. brand-chrome.test.ts checks the compiled
+ * template's export agrees with this one.
+ */
+export const isWideLockup = (
+  naturalWidth: number,
+  naturalHeight: number,
+): boolean => naturalHeight > 0 && naturalWidth / naturalHeight > WIDE_LOCKUP_RATIO;
+
+/**
  * The PROVIDED BrandChrome — dropped next to Composition.tsx so the agent's
  * \`import { BrandChrome } from "./BrandChrome"\` resolves locally.
  *
@@ -360,6 +383,14 @@ export const Lottie: React.FC<LottieProps> = (props) => {
 export const BRAND_CHROME_SOURCE = `import React from "react";
 import { Img } from "./Img";
 
+/** naturalWidth/naturalHeight above this ratio means the logo asset is a
+ *  horizontal LOCKUP — the brand name is already drawn inside the image, so
+ *  rendering the wordmark span next to it would print the name twice.
+ *  Mirrors isWideLockup in lib/render/build-wrapper.ts (the template
+ *  interpolates the same WIDE_LOCKUP_RATIO constant). */
+export const isWideLockup = (naturalWidth: number, naturalHeight: number): boolean =>
+  naturalHeight > 0 && naturalWidth / naturalHeight > ${WIDE_LOCKUP_RATIO};
+
 export interface BrandChromeProps {
   sceneIndex: number;
   totalScenes: number;
@@ -369,7 +400,9 @@ export interface BrandChromeProps {
   /** Pass LOGO_SRC. Omit when the brand has no real logo — the wordmark
    *  text then serves as the mark. */
   logoSrc?: string;
-  /** Brand name text rendered next to the mark (or as the mark itself). */
+  /** Brand name text rendered next to the mark (or as the mark itself).
+   *  Auto-suppressed once logoSrc loads and measures as a wide lockup
+   *  (see isWideLockup) — the asset already contains the name. */
   wordmark?: string;
   /** STABLE context pill (tagline / event / category) — never the scene's
    *  editorial eyebrow. */
@@ -409,12 +442,31 @@ export const BrandChrome: React.FC<BrandChromeProps> = ({
   const dot = onBrandColorBg ? "#ffffff" : accent;
   const idle = onBrandColorBg ? "rgba(255,255,255,0.45)" : "rgba(255,255,255,0.25)";
 
+  // Until the logo loads — and in SSR, where it never does — the wordmark
+  // renders as always; measurement can only SUPPRESS it. The MP4 renderer
+  // waits for images before capturing frames, so onLoad lands ahead of
+  // frame 0. The data-rb-brand-* attributes are load-bearing: the static-HTML
+  // preview strips React handlers, so the iframe route re-applies this same
+  // rule via an injected vanilla script that finds them.
+  const [logoIsLockup, setLogoIsLockup] = React.useState(false);
+
   const mark =
     showCornerLogo !== false ? (
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-        {logoSrc ? <Img src={logoSrc} style={{ height: 24, width: "auto" }} /> : null}
-        {wordmark ? (
+        {logoSrc ? (
+          <Img
+            src={logoSrc}
+            data-rb-brand-logo=""
+            style={{ height: 24, width: "auto" }}
+            onLoad={(e: React.SyntheticEvent<HTMLImageElement>) => {
+              const el = e.currentTarget;
+              if (isWideLockup(el.naturalWidth, el.naturalHeight)) setLogoIsLockup(true);
+            }}
+          />
+        ) : null}
+        {wordmark && !logoIsLockup ? (
           <span
+            data-rb-brand-wordmark=""
             style={{
               fontFamily: fontDisplay,
               fontWeight: 600,
