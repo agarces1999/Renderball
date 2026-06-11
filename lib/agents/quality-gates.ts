@@ -814,13 +814,17 @@ export const findProvidedComponentRedefinitions = (
 /**
  * Minimal scene-timing shape for mapping Section{N} → scene duration.
  * Structural subset of the full schema Scene (start/end seconds required
- * there, optional here) so the module stays dependency-free.
+ * there, optional here) so the module stays dependency-free. `content` is
+ * the scene's copy manifest, typed `unknown` (narrowed at use) so the full
+ * schema Scene assigns without coupling this module to its field list — the
+ * dwell gate reads it to resolve expression-bound text ({c.lede}).
  */
 export interface SceneTiming {
   start_seconds?: number;
   end_seconds?: number;
   start_frame?: number;
   end_frame?: number;
+  content?: unknown;
 }
 
 /** Scene duration in seconds — mirrors pipeline's sceneDurationSeconds. */
@@ -916,6 +920,12 @@ export const findUndersizedText = (code: string): UndersizedText[] => {
 // Sections map to scenes by Section{N} index. Coarse + conservative: short
 // scenes (<3s, matching the dead-air gate), infinite/atmosphere animations,
 // caption chrome, and unanimated text are all skipped.
+//
+// Word counts come from the element's LITERAL children plus any
+// expression-bound copy ({c.lede} / {script.scenes[N].content.lede})
+// resolved against the script's scene content — see boundWordCount. An
+// expression that doesn't resolve contributes 0 words, so readTime falls
+// back to the 1.2s floor (false-negative direction).
 
 export interface UndwelledText {
   section: number;
@@ -927,13 +937,63 @@ export interface UndwelledText {
   sceneDuration: number;
 }
 
+/** Tokens carrying a word character — "—" or "·" separators don't count. */
+const stringWordCount = (s: string): number =>
+  s.split(/\s+/).filter((w) => /\w/.test(w)).length;
+
 /** Literal word count of an element's children (tags + JSX exprs stripped). */
 const literalWordCount = (inner: string): number =>
-  inner
-    .replace(/<[^>]*>/g, " ")
-    .replace(/\{[^{}]*\}/g, " ")
-    .split(/\s+/)
-    .filter((w) => /\w/.test(w)).length;
+  stringWordCount(inner.replace(/<[^>]*>/g, " ").replace(/\{[^{}]*\}/g, " "));
+
+// Word count of expression-BOUND children — the blind spot that passed the
+// archived Opus Tailscale build: every section binds copy via
+// `const c = script.scenes[N].content` and renders `{c.lede}`, so the
+// literal count was 0, readTime collapsed to the 1.2s floor, and three
+// provably-late ledes (13-14 words landing ~4s into 5.5-6s scenes) shipped
+// unflagged. Resolve those bindings against the script the gate already
+// receives. The alias name AND scene index come from the section's own
+// source (never assume `c`, never assume the section's loop index); the
+// direct `script.scenes[N].content.X` form needs no alias. Anything that
+// doesn't resolve to a string contributes 0 (false-negative direction).
+const boundWordCount = (
+  inner: string,
+  sectionSrc: string,
+  scenes: SceneTiming[],
+): number => {
+  const contentField = (n: number, key: string): unknown => {
+    const c = scenes[n]?.content;
+    return c && typeof c === "object"
+      ? (c as Record<string, unknown>)[key]
+      : undefined;
+  };
+  let words = 0;
+  const exprRe = /\{([^{}]+)\}/g;
+  let m: RegExpExecArray | null;
+  while ((m = exprRe.exec(inner)) !== null) {
+    const expr = m[1].trim();
+    const direct = expr.match(
+      /^script\.scenes\[(\d+)\](?:\?\.|\.)content(?:\?\.|\.)([A-Za-z_$][\w$]*)$/,
+    );
+    if (direct) {
+      const v = contentField(parseInt(direct[1], 10), direct[2]);
+      if (typeof v === "string") words += stringWordCount(v);
+      continue;
+    }
+    const member = expr.match(/^([A-Za-z_$][\w$]*)(?:\?\.|\.)([A-Za-z_$][\w$]*)$/);
+    if (!member) continue;
+    // `$` is the only identifier char that's a regex metachar.
+    const alias = member[1].replace(/\$/g, "\\$");
+    const decl = sectionSrc.match(
+      new RegExp(
+        `\\b(?:const|let|var)\\s+${alias}\\s*=\\s*script\\.scenes\\[(\\d+)\\](?:\\?\\.|\\.)content\\b`,
+      ),
+    );
+    if (!decl) continue;
+    const v = contentField(parseInt(decl[1], 10), member[2]);
+    if (typeof v === "string") words += stringWordCount(v);
+  }
+  return words;
+};
 
 export const findUndwelledText = (
   code: string,
@@ -970,7 +1030,7 @@ export const findUndwelledText = (
       const duration = times[0];
       const delay = times.length >= 2 ? times[times.length - 1] : 0;
       if (isCaptionChrome(attrs)) continue; // mono caption / chrome — exempt
-      const words = literalWordCount(inner);
+      const words = literalWordCount(inner) + boundWordCount(inner, section, scenes);
       const readTime = Math.max(1.2, words * 0.3);
       const landsAt = delay + duration;
       if (landsAt + readTime <= T) continue;
