@@ -90,6 +90,14 @@ export const buildDesignConstraints = (
     "",
     `ICONS: lucide-react contains NO brand/company logos — importing one (Slack, Github, Figma, …) compiles but crashes the render and is auto-rejected. Import ONLY from this verified list: ${ALLOWED_LUCIDE_ICONS.join(", ")}.`,
     "",
+    "TEXT FLOORS: any <p> with an inline fontSize must be ≥ 24px and any <li> ≥ 18px — smaller body type is unreadable in the rendered video. Mono/eyebrow caption chrome is exempt only when it reads as chrome: letterSpacing ≥ 0.12em, uppercase, or a mono fontFamily.",
+    "",
+    "ACCENT DISCIPLINE: the SIGNATURE brand color may border AT MOST 4 elements per section. It marks THE focal element — six identical accent-bordered cards is decoration, not emphasis; give non-focal containers neutral hairlines.",
+    "",
+    "TEXT DWELL (checked on the animation pass): every text element must finish entering with reading time left — animation-delay + duration + max(1.2s, words × 0.3s) must fit inside the scene's duration. Never land a headline or lede in the final moments of a scene; late beats belong on decoration.",
+    "",
+    "TASTE CONTRACT (reviewed scene-by-scene, not yet machine-checked — treat as the same contract): in any grid of 3+ same-size cards, exactly ONE must be featured (larger, live, or visually dominant — never a uniform grid); a card interior is canvas too — no card may be a mostly-empty box, every card carries real content; the CTA pill label must NOT repeat the headline text verbatim; a chart ships only with axis/label context and at a size where the data is readable (roughly a quarter of the canvas or more) — otherwise omit it.",
+    "",
     "ALSO MACHINE-CHECKED: every rendered JSX component must be imported or locally defined (undefined components crash); text/background contrast ≥ 3:1 (hard) and ≥ 4.5:1 (target); text entrance animations ≤ 1.0s; no numeric claims absent from the provided content (invented stats are rejected); the per-scene eyebrow text must NOT repeat in the chrome category pill.",
   ].join("\n");
 };

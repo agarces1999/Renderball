@@ -68,5 +68,47 @@ check("no-logo brands get the wordmark-only contract", () => {
   assert(!s.includes("hero <Img src={LOGO_SRC}"), "no hero-logo row without a logo");
 });
 
+// ── Scene-review taste rules (2026-06) — the contract must state what the
+// new gates check, so first-pass output can simply not violate them.
+check("text-size floors are stated (and match the detector's numbers)", () => {
+  const s = buildDesignConstraints("16:9", { hasLogo: true });
+  assert(s.includes("TEXT FLOORS"), "floors block present");
+  assert(s.includes("24px") && s.includes("18px"), "p/li floor numbers");
+  assert(s.includes("0.12em"), "caption-chrome exemption stated");
+});
+
+check("accent discipline states the per-section border cap", () => {
+  const s = buildDesignConstraints("16:9", { hasLogo: true });
+  assert(s.includes("ACCENT DISCIPLINE"), "accent block present");
+  assert(/AT MOST 4 elements per section/i.test(s), "cap of 4 stated");
+  assert(/focal element/i.test(s), "focal-element framing");
+});
+
+check("text dwell states the reading-time formula", () => {
+  const s = buildDesignConstraints("16:9", { hasLogo: true });
+  assert(s.includes("TEXT DWELL"), "dwell block present");
+  assert(s.includes("max(1.2s, words × 0.3s)"), "read-time formula");
+});
+
+check("the taste contract carries all four judgment rules", () => {
+  const s = buildDesignConstraints("16:9", { hasLogo: true });
+  assert(s.includes("TASTE CONTRACT"), "taste block present");
+  assert(/ONE must be featured/i.test(s), "featured-card rule");
+  assert(/mostly-empty box/i.test(s), "empty-card rule");
+  assert(/must NOT repeat the headline/i.test(s), "CTA-duplication rule");
+  assert(/axis\/label context/i.test(s), "chart-context rule");
+});
+
+check("taste lines are aspect-independent (9:16 carries them too)", () => {
+  const s = buildDesignConstraints("9:16", { hasLogo: false });
+  assert(
+    s.includes("TEXT FLOORS") &&
+      s.includes("ACCENT DISCIPLINE") &&
+      s.includes("TEXT DWELL") &&
+      s.includes("TASTE CONTRACT"),
+    "all four blocks present on the vertical canvas",
+  );
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exitCode = 1;
