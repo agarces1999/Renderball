@@ -595,6 +595,75 @@ check("falls back to frame-based scene timing", () => {
   assert(r.length === 1, `got ${JSON.stringify(r)}`);
 });
 
+// The Opus Tailscale blind spot (.data/ab/opus-gendir/Composition.tsx): every
+// section binds copy via `const c = script.scenes[N].content` + `{c.lede}`, so
+// the literal word count was 0, readTime collapsed to the 1.2s floor, and
+// three provably-late ledes shipped unflagged. Real timings + copy, condensed.
+const opusScenes = {
+  scenes: [
+    { start_seconds: 0, end_seconds: 5.5, content: { headline: "Config hell", lede: "Traditional VPNs trap you in firewall rules, subnet conflicts, and hours of maintenance." } },
+    { start_seconds: 5.5, end_seconds: 11.5, content: { headline: "Zero-config mesh network", lede: "Connect your devices, servers, and team in minutes — no firewall changes, no subnet planning." } },
+    { start_seconds: 11.5, end_seconds: 18.5, content: { headline: "Access that just works", lede: "Identity-based security with direct access to SSH, K8s, databases, and more." } },
+    { start_seconds: 18.5, end_seconds: 24.5, content: { headline: "30,000", lede: "From startups to enterprises — Instacart, Duolingo, and thousands more." } },
+  ],
+};
+const opusSection = (i: number, ledeDelay: number) => `
+export const Section${i} = ({ script }) => {
+  const c = script.scenes[${i}].content;
+  return (<div>
+    <h1 style={{ fontSize: 132, opacity: 0, animation: "fadeRise 0.4s ease-out 0.2s forwards" }}>{c.headline}</h1>
+    <p style={{ fontSize: 26, opacity: 0, animation: "fadeRise 0.5s ease-out ${ledeDelay}s forwards" }}>{c.lede}</p>
+  </div>);
+};`;
+
+check("resolves expression-bound ledes through the section's content alias (Opus blind spot)", () => {
+  // Ledes land at 4.0 / 4.4 / 1.7 / 3.5s; resolved read times 3.9 / 4.2 /
+  // 3.3 / 2.7s → sections 0, 1, 3 overrun their scenes, section 2 fits.
+  const code = [opusSection(0, 3.5), opusSection(1, 3.9), opusSection(2, 1.2), opusSection(3, 3.0)].join("\n");
+  const r = findUndwelledText(code, opusScenes);
+  assert(
+    r.length === 3 && r.every((u) => u.tag === "p") &&
+      JSON.stringify(r.map((u) => u.section)) === "[0,1,3]",
+    `expected sections [0,1,3], got ${JSON.stringify(r)}`,
+  );
+  // 13-word lede → 3.9s, NOT the 1.2s floor (the word count actually resolved).
+  assert(r[0].readTime === 3.9, `expected readTime 3.9, got ${r[0].readTime}`);
+});
+
+check("literal lede landing with ~0.1s margin still passes (the Fable pattern)", () => {
+  // .data/ab/fable-gendir scene 0: 13 literal words → 3.9s read, lands at
+  // 1.5s of a 5.5s scene → 5.4 ≤ 5.5. The margin must not erode.
+  const code = `export const Section0 = () => (<div>
+    <p style={{ fontSize: 26, opacity: 0, animation: "fadeRise 0.5s ease-out 1.0s forwards" }}>Traditional VPNs trap you in firewall rules, subnet conflicts, and hours of maintenance.</p>
+  </div>);`;
+  assert(findUndwelledText(code, opusScenes).length === 0, "0.1s-margin literal lede flagged");
+});
+
+check("unresolvable expression falls back to the 1.2s floor (no flag)", () => {
+  // Same late beat as the Opus scene-0 lede; the binding can't be resolved,
+  // so 4.0 + 1.2 = 5.2 ≤ 5.5 — false-negative direction preserved.
+  const code = `export const Section0 = ({ script }) => (<div>
+    <p style={{ fontSize: 26, opacity: 0, animation: "fadeRise 0.5s ease-out 3.5s forwards" }}>{someUnknownVar}</p>
+  </div>);`;
+  assert(findUndwelledText(code, opusScenes).length === 0, "unresolved expression flagged");
+});
+
+check("direct script.scenes[N].content access and non-'c' aliases both resolve", () => {
+  const code = `
+export const Section0 = ({ script }) => (<div>
+  <p style={{ fontSize: 26, opacity: 0, animation: "fadeRise 0.5s ease-out 3.5s forwards" }}>{script.scenes[0].content.lede}</p>
+</div>);
+export const Section1 = ({ script }) => {
+  const copy = script.scenes[1].content;
+  return (<p style={{ fontSize: 26, opacity: 0, animation: "fadeRise 0.5s ease-out 3.9s forwards" }}>{copy.lede}</p>);
+};`;
+  const r = findUndwelledText(code, opusScenes);
+  assert(
+    r.length === 2 && r[0].section === 0 && r[1].section === 1,
+    `got ${JSON.stringify(r)}`,
+  );
+});
+
 // ── Scene review #3: accent-as-decoration (countAccentBorders) ────────────────
 const SIG = "#00C28A";
 const accentCard = (i: number) =>

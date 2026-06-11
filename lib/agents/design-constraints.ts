@@ -72,6 +72,7 @@ export const buildDesignConstraints = (
         "LOGO (a real logo IS provided — these three rows are the ONLY valid patterns):",
         "  default scene        → the logo appears ONLY inside <BrandChrome logoSrc={LOGO_SRC} …/>. Zero other logo renders.",
         "  hero opening or CTA  → ONE hero <Img src={LOGO_SRC} …/> in the section PLUS showCornerLogo={false} on that scene's BrandChrome.",
+        "  wide-lockup logo     → if LOGO_SRC is a horizontal/wide LOCKUP (the brand name is already drawn inside the asset, roughly wider than 2.5:1), OMIT the wordmark prop on BrandChrome — logo + wordmark prints the name twice. BrandChrome self-suppresses the span once the image measures as a lockup, but do not pass a prop you know is redundant.",
         "  any scene, any time  → NEVER draw the brand mark yourself (no <svg> logo replicas, no monogram components). REJECTED by a static check that detects logo-named SVG components.",
       ]
     : [

@@ -62,6 +62,15 @@ check("9:16 uses the vertical safe width", () => {
   assert(s.includes("1080x1920") && s.includes("920"), "vertical canvas + safe width");
 });
 
+check("wide-lockup logos get the omit-wordmark rule (real-logo contract only)", () => {
+  const s = buildDesignConstraints("16:9", { hasLogo: true });
+  assert(s.includes("wide-lockup logo"), "lockup row present");
+  assert(/OMIT the wordmark prop/.test(s), "omit-wordmark instruction");
+  assert(s.includes("2.5:1"), "ratio stated so the agent can judge the asset");
+  const noLogo = buildDesignConstraints("16:9", { hasLogo: false });
+  assert(!/OMIT the wordmark prop/.test(noLogo), "no lockup row without a logo");
+});
+
 check("no-logo brands get the wordmark-only contract", () => {
   const s = buildDesignConstraints("16:9", { hasLogo: false });
   assert(s.includes("WORDMARK TEXT"), "wordmark contract");
