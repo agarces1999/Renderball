@@ -43,29 +43,183 @@ export const headlineProblem = (headline: string): string | null => {
 };
 
 /**
- * QA S5: catch invented numeric claims at the SCRIPT stage (the design stage's
- * E2 gate backstops it, but this is the earlier, cheaper catch). Conservative
- * by design — only flags STAT-SHAPED numbers (currency, %, ×N, K/M/B counts),
- * never bare integers or years, so legit qualitative copy isn't rejected. A
- * claim is grounded if its digit-core appears in the source text (crawled
- * body_excerpts + user-verified claims + brief). Returns the ungrounded tokens.
+ * QA S5 (tightened — the fabricated-38ms fix): catch invented numeric claims
+ * at the SCRIPT stage. The design stage's E2 gate backstops it, but this is
+ * the earlier, cheaper catch — and the one that stops a fabricated stat from
+ * reaching the design stage, where it would otherwise launder into "approved
+ * script content" that downstream gates trust as a grounding source.
+ *
+ * Scope — conservative by design. Only STAT-SHAPED tokens are checked:
+ * currency ($840M), percentages (99.8%), multipliers (10x), K/M/B counts
+ * (2M users), precise time/latency claims (38ms, 30-second, 200 milliseconds),
+ * and percentile markers (p50/p95/p99). Obviously-safe forms — bare integers,
+ * years ("founded 2024"), scene counts, list ordinals, "3 weeks" — are never
+ * flagged.
+ *
+ * Grounding — full-token, never digit-core. The original implementation
+ * grounded a claim if its DIGITS appeared anywhere in the source, so
+ * "30-second video" grounded "3x" and "founded in 2010" grounded "10x" —
+ * exactly how a precise techy fabrication like Raycast's "38ms p50" (invented
+ * by the model; the crawl only says "Think in milliseconds") could ride an
+ * incidental digit. Now a claim grounds ONLY on a source number with the SAME
+ * numeric value AND a compatible unit/suffix:
+ *   38ms   grounds on "38 ms" / "38 milliseconds" — NOT on "38 extensions"
+ *   99.8%  grounds on "99.8%" / "99.8 percent"    — NOT on a bare "99.8"
+ *   $2.4M  grounds on "$2.4M" / "2.4 million"     — NOT on "2.4 rating"
+ *   10x    grounds on "10x" / "10 times"          — NOT on "since 2010"
+ *   p50    grounds on a literal "p50" only
+ *
+ * The source text is the brief's ALLOWED grounding set, assembled by the
+ * caller: the user's freeform prompt / purpose, verified_claims, and the
+ * crawl's title / description / headlines / body_excerpts. NEVER the script's
+ * own text. Returns the ungrounded tokens (verbatim, for the retry message).
  */
-const STAT_CLAIM_RX =
-  /\$\s?\d[\d,.]*\s?(?:k|m|b|bn|billion|million|thousand)?\+?|\d[\d,.]*\s?%|\d[\d,.]*\s?[x×]\b|\d[\d,.]*\s?(?:k|m|b|bn|billion|million|thousand)\+?\b/gi;
+const STAT_CLAIM_RX = new RegExp(
+  [
+    // currency, optional magnitude suffix: $840M, €99, $2.4 million, $10k+
+    "[$€£]\\s?\\d[\\d,.]*\\s?(?:k|m|b|bn|mm|billion|million|thousand)?\\+?",
+    // percent: 99.8%, 99.97 %
+    "\\d[\\d,.]*\\s?%",
+    // multiplier: 10x, 3×, 12 x
+    "\\d[\\d,.]*\\s?(?:x\\b|×)",
+    // precise time/latency: 38ms, 200 milliseconds, 30-second, 45 secs
+    "\\d[\\d,.]*[\\s-]?(?:milliseconds?|millis|ms|seconds?|secs?)\\b",
+    // percentile markers: p50, P95, p99.9
+    "\\bp(?:50|75|90|95|99)(?:\\.\\d+)?\\b",
+    // bare-count magnitude: 2M users, 10k, 1.5B
+    "\\d[\\d,.]*\\s?(?:k|m|b|bn|mm|billion|million|thousand)\\+?\\b",
+  ].join("|"),
+  "gi",
+);
+
+/** Unit/suffix class a stat-shaped number carries. */
+type StatUnit =
+  | { kind: "percent" }
+  | { kind: "multiplier" }
+  | { kind: "time"; unit: "ms" | "s" }
+  | { kind: "magnitude"; mag: "k" | "m" | "b" }
+  | { kind: "currency-word" };
+
+// Maps (not object literals) so prototype keys ("constructor") from wild
+// source text can never produce a bogus lookup hit.
+const MAG_UNITS = new Map<string, "k" | "m" | "b">([
+  ["k", "k"], ["thousand", "k"], ["thousands", "k"],
+  ["m", "m"], ["mm", "m"], ["million", "m"], ["millions", "m"],
+  ["b", "b"], ["bn", "b"], ["billion", "b"], ["billions", "b"],
+]);
+const TIME_UNITS = new Map<string, "ms" | "s">([
+  ["ms", "ms"], ["millis", "ms"], ["millisecond", "ms"], ["milliseconds", "ms"],
+  ["s", "s"], ["sec", "s"], ["secs", "s"], ["second", "s"], ["seconds", "s"],
+]);
+const CURRENCY_WORDS = new Set(["usd", "eur", "gbp", "dollar", "dollars"]);
+
+const classifyUnit = (raw: string | undefined): StatUnit | null => {
+  if (!raw) return null;
+  const u = raw.toLowerCase().replace(/^[\s-]+/, "").replace(/\+$/, "");
+  if (!u) return null;
+  if (u.startsWith("%") || u.startsWith("percent")) return { kind: "percent" };
+  if (u === "x" || u === "×" || u === "times") return { kind: "multiplier" };
+  const time = TIME_UNITS.get(u);
+  if (time) return { kind: "time", unit: time };
+  const mag = MAG_UNITS.get(u);
+  if (mag) return { kind: "magnitude", mag };
+  if (CURRENCY_WORDS.has(u)) return { kind: "currency-word" };
+  return null;
+};
+
+type ParsedClaim =
+  | { kind: "percentile"; key: string }
+  | { kind: "stat"; value: number; unit: StatUnit | null; currency: boolean };
+
+const parseClaim = (token: string): ParsedClaim | null => {
+  const t = token.trim();
+  if (/^p\d/i.test(t)) return { kind: "percentile", key: t.toLowerCase() };
+  const num = t.match(/\d[\d,]*(?:\.\d+)?/);
+  if (!num) return null;
+  const value = Number.parseFloat(num[0].replace(/,/g, ""));
+  if (!Number.isFinite(value)) return null;
+  return {
+    kind: "stat",
+    value,
+    unit: classifyUnit(t.slice((num.index ?? 0) + num[0].length)),
+    currency: /^[$€£]/.test(t),
+  };
+};
+
+/**
+ * Every number in the source with its money-prefix and the unit-ish word that
+ * follows it. The lookbehind keeps partial-number matches out ("2024" never
+ * yields a "20" entry), so digit-substring cross-grounding is impossible.
+ */
+type SourceNumber = { value: number; unit: StatUnit | null; currency: boolean };
+const SOURCE_NUM_RX = /([$€£])?\s?(?<![\d.,])(\d[\d,]*(?:\.\d+)?)[\s-]?([a-z%×]+)?/gi;
+const PERCENTILE_RX = /\bp(?:50|75|90|95|99)(?:\.\d+)?\b/gi;
+
+const indexSourceNumbers = (sourceText: string): SourceNumber[] => {
+  const out: SourceNumber[] = [];
+  for (const m of sourceText.matchAll(SOURCE_NUM_RX)) {
+    const value = Number.parseFloat(m[2].replace(/,/g, ""));
+    if (!Number.isFinite(value)) continue;
+    out.push({ value, unit: classifyUnit(m[3]), currency: !!m[1] });
+  }
+  return out;
+};
+
+const isGrounded = (
+  claim: ParsedClaim,
+  nums: SourceNumber[],
+  percentiles: Set<string>,
+): boolean => {
+  if (claim.kind === "percentile") return percentiles.has(claim.key);
+  for (const e of nums) {
+    if (e.value !== claim.value) continue;
+    const cu = claim.unit;
+    if (!cu) {
+      // Currency claim with no magnitude ($99): needs money context in source.
+      if (claim.currency && (e.currency || e.unit?.kind === "currency-word"))
+        return true;
+      continue;
+    }
+    const su = e.unit;
+    if (!su) continue; // full-token rule: a bare source number grounds nothing
+    if (cu.kind === "percent" && su.kind === "percent") return true;
+    if (cu.kind === "multiplier" && su.kind === "multiplier") return true;
+    if (cu.kind === "time" && su.kind === "time" && su.unit === cu.unit) return true;
+    if (cu.kind === "magnitude" && su.kind === "magnitude" && su.mag === cu.mag)
+      return true;
+  }
+  return false;
+};
+
+/**
+ * All stat-shaped numeric tokens in `text` (verbatim, deduped, in order).
+ * Exported for the claims audit (`scripts/claims-audit.mjs`) and tests, so
+ * reporting and the gate share ONE definition of "stat-shaped".
+ */
+export const extractStatClaims = (text: string): string[] => {
+  const out: string[] = [];
+  for (const m of text.matchAll(STAT_CLAIM_RX)) {
+    const token = m[0].trim().replace(/[.,]+$/, "");
+    if (!/\d/.test(token)) continue;
+    if (!out.includes(token)) out.push(token);
+  }
+  return out;
+};
 
 export const findUngroundedClaims = (
   scriptText: string,
   sourceText: string,
 ): string[] => {
-  const src = sourceText.toLowerCase().replace(/[\s,]/g, "");
+  const nums = indexSourceNumbers(sourceText);
+  const percentiles = new Set(
+    Array.from(sourceText.matchAll(PERCENTILE_RX), (m) => m[0].toLowerCase()),
+  );
   const out: string[] = [];
-  for (const m of scriptText.matchAll(STAT_CLAIM_RX)) {
-    const token = m[0].trim();
-    const digits = token.replace(/[^\d.]/g, "");
-    if (!digits) continue;
-    const tokenNorm = token.toLowerCase().replace(/[\s,]/g, "");
-    if (src.includes(tokenNorm) || src.includes(digits)) continue; // grounded
-    if (!out.includes(token)) out.push(token);
+  for (const token of extractStatClaims(scriptText)) {
+    const claim = parseClaim(token);
+    if (!claim) continue;
+    if (isGrounded(claim, nums, percentiles)) continue;
+    out.push(token);
   }
   return out;
 };

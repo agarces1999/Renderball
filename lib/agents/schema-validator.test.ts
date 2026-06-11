@@ -6,6 +6,7 @@ import {
   headlineProblem,
   findUngroundedClaims,
   findUngroundedStageLabels,
+  extractStatClaims,
 } from "./schema-validator";
 
 let passed = 0;
@@ -65,6 +66,82 @@ check("bare integers / years / qualitative copy are NOT flagged", () => {
 check("multiplier + percent are stat-shaped and checked", () => {
   const u = findUngroundedClaims("10x faster", "");
   assert(u.includes("10x"), `expected 10x flagged, got ${JSON.stringify(u)}`);
+});
+
+// ── S5 tightened (the fabricated-38ms fix): full-token grounding ─────────
+// Raycast's crawl says "Fast. Think in milliseconds." and "99.8% crash-free
+// rate" — it contains NO latency number. Sonnet invented "38ms" / "38ms p50"
+// at script time and the old digit-core matching let lookalike digits launder
+// such fabrications. These pin the full-token behavior.
+const RAYCAST_CRAWL =
+  "Fast. Think in milliseconds. Ergonomic. Keyboard First. Native. Pure performance. Reliable. 99.8% crash-free rate.";
+
+check("38ms-style fabricated latency → flagged (crawl has no latency number)", () => {
+  const u = findUngroundedClaims("38ms Raycast executes in 38ms p50", RAYCAST_CRAWL);
+  assert(u.includes("38ms"), `expected 38ms flagged, got ${JSON.stringify(u)}`);
+  assert(u.includes("p50"), `expected p50 flagged, got ${JSON.stringify(u)}`);
+});
+
+check("99.8% crawl-grounded → accepted", () => {
+  const u = findUngroundedClaims("99.8% crash-free", RAYCAST_CRAWL);
+  assert(u.length === 0, `99.8% is in the crawl → grounded, got ${JSON.stringify(u)}`);
+});
+
+check("prompt-grounded duration ('30-second') → accepted", () => {
+  const u = findUngroundedClaims(
+    "Your story in 30 seconds. A 30-second launch.",
+    "A 30-second video for Raycast — a blazing-fast launcher.",
+  );
+  assert(u.length === 0, `30s duration is in the prompt → grounded, got ${JSON.stringify(u)}`);
+});
+
+check("digit-core lookalikes do NOT cross-ground", () => {
+  // "3x" must not ground on the "3" inside "30-second".
+  const a = findUngroundedClaims("3x faster", "A 30-second video for Raycast.");
+  assert(a.includes("3x"), `expected 3x flagged, got ${JSON.stringify(a)}`);
+  // "38ms" must not ground on a unitless "38".
+  const b = findUngroundedClaims("38ms", "Browse all 38 extensions in the store.");
+  assert(b.includes("38ms"), `expected 38ms flagged, got ${JSON.stringify(b)}`);
+  // "10x" must not ground on the "10" inside "2010" (old digit-core bug).
+  const c = findUngroundedClaims("10x faster", "Trusted since 2010.");
+  assert(c.includes("10x"), `expected 10x flagged, got ${JSON.stringify(c)}`);
+  // "99.8%" must not ground on a bare "99.8" with a different unit.
+  const d = findUngroundedClaims("99.8% uptime", "scored 99.8 in the benchmark");
+  assert(d.some((t) => t.includes("99.8")), `expected 99.8% flagged, got ${JSON.stringify(d)}`);
+});
+
+check("full token grounds across unit spellings", () => {
+  assert(
+    findUngroundedClaims("38ms response", "executes in 38 ms flat").length === 0,
+    "38ms should ground on '38 ms'",
+  );
+  assert(
+    findUngroundedClaims("responds in 200 milliseconds", "200ms cold start").length === 0,
+    "'200 milliseconds' should ground on '200ms'",
+  );
+  assert(
+    findUngroundedClaims("10x faster", "10 times faster than stock").length === 0,
+    "10x should ground on '10 times'",
+  );
+  assert(
+    findUngroundedClaims("p99 latency under control", "our p99 stays flat").length === 0,
+    "p99 should ground on a literal p99",
+  );
+});
+
+check("extractStatClaims pulls full stat tokens, skips safe forms", () => {
+  const t = extractStatClaims(
+    "38ms p50, 99.8% crash-free, $2.4M raised, 10x faster, founded 2024, 3 weeks, 5 principles",
+  );
+  assert(t.includes("38ms"), `expected 38ms, got ${JSON.stringify(t)}`);
+  assert(t.includes("p50"), `expected p50, got ${JSON.stringify(t)}`);
+  assert(t.includes("99.8%"), `expected 99.8%, got ${JSON.stringify(t)}`);
+  assert(t.includes("$2.4M"), `expected $2.4M, got ${JSON.stringify(t)}`);
+  assert(t.includes("10x"), `expected 10x, got ${JSON.stringify(t)}`);
+  assert(
+    !t.some((x) => /2024|weeks|principles/.test(x)),
+    `years/durations/ordinals must be out of scope, got ${JSON.stringify(t)}`,
+  );
 });
 
 // ── G5: ungrounded funding-stage labels ──────────────────────────────────
