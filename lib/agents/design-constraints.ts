@@ -89,6 +89,8 @@ export const buildDesignConstraints = (
     "",
     "BRANDCHROME: provided at ./BrandChrome — import { BrandChrome } from \"./BrandChrome\". Defining your own BrandChrome (const/function/class) is REJECTED by a static check.",
     "",
+    "COPY BINDING: every script content field a viewer reads (eyebrow, headline, lede, bullets, caption, cta) is rendered VIA BINDING — const c = script.scenes[N].content, then {c.headline}, {c.bullets.map(...)}, {c.cta.primary}. Retyping a field's text as literal JSX is REJECTED by a static check that also catches split and re-cased fragments; styling is CSS on the wrapper (textTransform, color spans around the bound expression), never a retyped string. Invented diegetic labels inside UI mockups (text not in any content field) are fine.",
+    "",
     `ICONS: lucide-react contains NO brand/company logos — importing one (Slack, Github, Figma, …) compiles but crashes the render and is auto-rejected. Import ONLY from this verified list: ${ALLOWED_LUCIDE_ICONS.join(", ")}.`,
     "",
     "TEXT FLOORS: any <p> with an inline fontSize must be ≥ 24px and any <li> ≥ 18px — smaller body type is unreadable in the rendered video. Mono/eyebrow caption chrome is exempt only when it reads as chrome: letterSpacing ≥ 0.12em, uppercase, or a mono fontFamily.",

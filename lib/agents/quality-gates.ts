@@ -1125,6 +1125,213 @@ export const countAccentBorders = (
   return out;
 };
 
+// ─── Copy-binding contract (baked-in script copy, A/B review) ────────
+//
+// The design prompt mandates rendering the script's content fields via
+// bindings (`const c = script.scenes[N].content` → `{c.headline}`), never
+// retyped as literal JSX. Baked copy silently decouples the video from the
+// script: a per-scene regen or script edit rewrites the JSON but the pixels
+// keep the stale text (the Fable A/B build baked every field, including a
+// two-tone "30," + "000" headline split). Per scene, per content field, this
+// flags fields whose text VALUE provably appears as literal text in that
+// scene's Section{N} source.
+//
+// Matching runs against a LITERAL-TEXT VIEW of the section: comments are
+// stripped first (the compliant Opus build quotes copy in a comment — a
+// raw substring scan false-positives on it), then `{…}` expressions and
+// `<…>` tags are dropped, keeping only JSX text children and string-literal
+// attribute values. Bound expressions can therefore never match. The view is
+// then FUSED (whitespace removed, lowercased) so split treatments
+// ("30,"+"000" across spans; "Zero-config <em>mesh network</em>") and
+// re-cased literals (uppercase render of a lowercase eyebrow) still match.
+//
+// Favors false negatives (module philosophy): a field that appears NEITHER
+// bound nor literal is not flagged (dropped/transformed copy is out of
+// scope); fields shorter than 4 chars are skipped (a "Go" CTA matches
+// everywhere); between-tag runs containing code-ish characters are discarded
+// rather than risk matching identifiers derived from copy; numeric-only /
+// letterless attribute values (path data, dash arrays) are discarded too.
+// Invented diegetic mockup labels are text NOT in any content field, so they
+// can never flag — attribute labels match whole-value only (a chrome
+// category="Deployed · Live" must not flag a bound "Deployed" headline);
+// child-text runs keep substring matching, the price of catching splits.
+
+export interface UnboundCopy {
+  scene: number;
+  field: string; // "headline" | "lede" | … | "bullets[2]" | "cta.primary"
+  excerpt: string; // the retyped field text, truncated for the retry message
+}
+
+/**
+ * Blank `//` and `/* *\/` comment CONTENTS while PRESERVING string literals —
+ * the inverse emphasis of blankStringsAndComments above (which blanks both;
+ * here attribute strings are signal, not noise). Same tiny state machine,
+ * same documented coarse spots: an apostrophe in JSX text opens a pseudo
+ * string until the newline (a same-line comment after it survives — rare,
+ * and the expression-dropper still removes `{/* … *\/}` blocks wholesale).
+ */
+const stripComments = (code: string): string => {
+  const out = code.split("");
+  type Mode = "code" | "sq" | "dq" | "tpl" | "line" | "block";
+  let mode: Mode = "code";
+  for (let i = 0; i < code.length; i++) {
+    const ch = code[i];
+    const next = code[i + 1];
+    if (mode === "code") {
+      if (ch === "'") mode = "sq";
+      else if (ch === '"') mode = "dq";
+      else if (ch === "`") mode = "tpl";
+      else if (ch === "/" && next === "/") { mode = "line"; out[i] = " "; }
+      else if (ch === "/" && next === "*") { mode = "block"; out[i] = " "; }
+      continue;
+    }
+    if (mode === "line") {
+      if (ch === "\n") mode = "code";
+      else out[i] = " ";
+      continue;
+    }
+    if (mode === "block") {
+      if (ch === "*" && next === "/") { out[i] = " "; out[i + 1] = " "; mode = "code"; i++; }
+      else if (ch !== "\n") out[i] = " ";
+      continue;
+    }
+    // String modes: contents kept verbatim. Backslash escapes the next char;
+    // unterminated ' / " close at the newline (JSX-text apostrophes).
+    if (ch === "\\") { i++; continue; }
+    if (
+      (mode === "sq" && ch === "'") ||
+      (mode === "dq" && ch === '"') ||
+      (mode === "tpl" && ch === "`")
+    ) { mode = "code"; continue; }
+    if ((mode === "sq" || mode === "dq") && ch === "\n") mode = "code";
+  }
+  return out.join("");
+};
+
+/**
+ * Attributes whose string values are never viewer-readable copy — URLs,
+ * geometry, styling hooks. Excluding them keeps SVG path data / dash arrays /
+ * asset URLs out of the literal view (a `d="M30,000…"` coordinate run must
+ * not collide with a "30,000" headline). Copy smuggled into one of these
+ * would be missed — false-negative direction.
+ */
+const NON_COPY_ATTRS = new Set([
+  "src", "href", "xlinkHref", "d", "points", "viewBox", "xmlns", "transform",
+  "style", "className", "class", "id", "key", "fill", "stroke",
+  "strokeDasharray", "strokeLinecap", "strokeLinejoin", "fontFamily",
+  "filter", "mask", "clipPath", "preserveAspectRatio", "alt", "type", "rel",
+]);
+
+/** Drop balanced `{…}` groups from a between-tag run; an unmatched `}` means
+ *  the run's head was the tail of an expression opened before it — reset. */
+const dropJsxExpressions = (gap: string): string => {
+  let out = "";
+  let depth = 0;
+  for (const ch of gap) {
+    if (ch === "{") { depth += 1; continue; }
+    if (ch === "}") { if (depth > 0) depth -= 1; else out = ""; continue; }
+    if (depth === 0) out += ch;
+  }
+  return out;
+};
+
+/**
+ * The FUSED literal-text view of a section: comment-stripped, then reduced to
+ * JSX text children + copy-bearing string-attribute values, lowercased, all
+ * whitespace removed. Children runs concatenate directly (that's what catches
+ * the split-span treatment); attribute runs are isolated by \u0001 sentinels
+ * so they can never fuse with neighboring text AND so the matcher can demand
+ * a whole attribute value EQUAL a field — substring is not enough; an
+ * invented chrome label that merely contains one (category="Deployed · Live"
+ * around a bound "Deployed" headline, archived Vercel build) is its own
+ * text, not a retype. Between-tag runs that still
+ * carry code-ish characters after expression-dropping (helper components
+ * declared between JSX blocks, arrow-function residue from a coarse tag
+ * match) are discarded whole — code identifiers derived from copy
+ * ("configHellAnim") must not match a "Config hell" headline.
+ */
+const fusedLiteralText = (sectionSrc: string): string => {
+  const src = stripComments(sectionSrc);
+  const runs: string[] = [];
+  const tagRe = /<\/?[A-Za-z][^<>]*>/g;
+  let prevEnd = -1; // gaps before the first tag are component preamble — code
+  let m: RegExpExecArray | null;
+  while ((m = tagRe.exec(src)) !== null) {
+    if (prevEnd >= 0) {
+      const cleaned = dropJsxExpressions(src.slice(prevEnd, m.index));
+      if (cleaned.trim() && !/[;=(){}<>"`]/.test(cleaned)) runs.push(cleaned);
+    }
+    const attrRe = /([A-Za-z_][\w-]*)\s*=\s*(?:"([^"]*)"|'([^']*)')/g;
+    let am: RegExpExecArray | null;
+    while ((am = attrRe.exec(m[0])) !== null) {
+      const name = am[1];
+      const value = am[2] ?? am[3] ?? "";
+      if (NON_COPY_ATTRS.has(name) || name.startsWith("data-")) continue;
+      if (!/[A-Za-z]/.test(value)) continue; // letterless = geometry/numeric
+      runs.push(`\u0001${value}\u0001`);
+    }
+    prevEnd = m.index + m[0].length;
+  }
+  return runs.join("").toLowerCase().replace(/\s+/g, "");
+};
+
+/** The copy fields a viewer reads, per Scene.content (meta is out of scope —
+ *  numeric KPI values legitimately recur in charts/tiles). Values shorter
+ *  than 4 chars are skipped (a "Go" CTA would match everywhere). */
+const contentCopyFields = (
+  content: unknown,
+): { field: string; value: string }[] => {
+  if (!content || typeof content !== "object") return [];
+  const c = content as Record<string, unknown>;
+  const out: { field: string; value: string }[] = [];
+  const push = (field: string, v: unknown) => {
+    if (typeof v === "string" && v.trim().length >= 4) {
+      out.push({ field, value: v.trim() });
+    }
+  };
+  push("eyebrow", c.eyebrow);
+  push("headline", c.headline);
+  push("lede", c.lede);
+  push("caption", c.caption);
+  if (Array.isArray(c.bullets)) {
+    c.bullets.forEach((b, i) => push(`bullets[${i}]`, b));
+  }
+  if (c.cta && typeof c.cta === "object") {
+    push("cta.primary", (c.cta as Record<string, unknown>).primary);
+    push("cta.secondary", (c.cta as Record<string, unknown>).secondary);
+  }
+  return out;
+};
+
+export const findUnboundCopy = (
+  code: string,
+  scenes: SceneTiming[],
+): UnboundCopy[] => {
+  const out: UnboundCopy[] = [];
+  for (let i = 0; i < scenes.length; i += 1) {
+    const fields = contentCopyFields(scenes[i]?.content);
+    if (fields.length === 0) continue;
+    const section = sectionSlice(code, i);
+    if (!section) continue; // no Section{N} mapping → skip (false negative)
+    const view = fusedLiteralText(section);
+    // Child text matches by SUBSTRING (split spans fuse across tags);
+    // attribute values match WHOLE (sentinel-delimited) — a chrome label
+    // that merely contains a short field value is not a retype.
+    const childView = view.replace(/\u0001[^\u0001]*\u0001/g, "");
+    for (const f of fields) {
+      const needle = f.value.toLowerCase().replace(/\s+/g, "");
+      if (!childView.includes(needle) && !view.includes(`\u0001${needle}\u0001`))
+        continue;
+      out.push({
+        scene: i,
+        field: f.field,
+        excerpt: f.value.length > 40 ? `${f.value.slice(0, 37)}…` : f.value,
+      });
+    }
+  }
+  return out;
+};
+
 /**
  * Deterministically neutralize invalid `lucide-react` imports so a hallucinated
  * icon can't crash the render. The agent sometimes imports brand logos

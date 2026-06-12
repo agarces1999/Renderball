@@ -108,6 +108,15 @@ check("the taste contract carries all four judgment rules", () => {
   assert(/axis\/label context/i.test(s), "chart-context rule");
 });
 
+check("copy binding states the contract (and matches findUnboundCopy)", () => {
+  const s = buildDesignConstraints("16:9", { hasLogo: true });
+  assert(s.includes("COPY BINDING"), "binding block present");
+  assert(s.includes("script.scenes[N].content"), "binding pattern stated");
+  assert(/Retyping a field's text as literal JSX is REJECTED/.test(s), "rejection stated");
+  assert(/split and re-cased fragments/.test(s), "split/re-case coverage stated");
+  assert(/diegetic labels[\s\S]*are fine/i.test(s), "diegetic-label allowance");
+});
+
 check("taste lines are aspect-independent (9:16 carries them too)", () => {
   const s = buildDesignConstraints("9:16", { hasLogo: false });
   assert(
