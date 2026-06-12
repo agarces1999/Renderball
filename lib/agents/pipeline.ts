@@ -28,6 +28,7 @@ import {
   TEXT_FLOOR_LI,
   repairInvalidLucideImports,
   findUndefinedJsxComponents,
+  findUnboundCopy,
   findDrawnLogoStandIns,
   findProvidedComponentRedefinitions,
   type AspectRatio,
@@ -1907,6 +1908,7 @@ interface StructuralFailure {
     | "severe_contrast"
     | "invalid_lucide_imports"
     | "undefined_jsx_components"
+    | "unbound_copy"
     | "overflow_crop"
     | "duplicate_logo"
     | "fabricated_logo"
@@ -2001,6 +2003,30 @@ const assessStructuralGates = (
       key: "undefined_jsx_components",
       message: `Undefined JSX component(s) — <${undefinedTags.join(">, <")}> are rendered but never defined in this file and never imported. Each resolves to \`undefined\` at runtime → React throws "Element type is invalid" → the whole render is a white screen. For each tag: define the component in this file, import it from a real module, or replace the tag with an existing element. Every capitalized JSX tag MUST resolve to a definition or an import.`,
       summary: undefinedTags.map((t) => `<${t}>`).join(", "),
+    });
+  }
+
+  // Copy-binding contract. Every content field a viewer reads must be
+  // RENDERED from the script (const c = script.scenes[N].content →
+  // {c.headline}), never retyped as literal JSX — baked copy decouples the
+  // video from the script, so a per-scene regen or script edit rewrites the
+  // JSON while the pixels keep the stale text (the Fable A/B build baked all
+  // its fields, including a two-tone "30," + "000" headline split). The
+  // detector matches field values against a comment-stripped, tag/expression-
+  // stripped literal-text view, so bound expressions and code comments never
+  // false-positive.
+  const unbound = findUnboundCopy(code, input.script.scenes ?? []);
+  if (unbound.length > 0) {
+    failures.push({
+      key: "unbound_copy",
+      message: `Baked-in script copy — ${unbound.length} content field(s) are retyped as literal JSX instead of rendered from the script: ${unbound
+        .slice(0, 6)
+        .map((u) => `scene ${u.scene} ${u.field} ("${u.excerpt}")`)
+        .join(", ")}${unbound.length > 6 ? ", …" : ""}. The script is the single source of copy — an edited or regenerated script must flow into the video with NO code change. In each section bind the scene's content ONCE (\`const c = script.scenes[N].content\`) and render every field as an expression: {c.headline}, {c.lede}, {c.bullets.map(...)}, {c.cta.primary}. Styling (uppercase, two-tone color, emphasis) is CSS on the wrapper (textTransform, color, spans around the BOUND expression) — never retype, split, or re-case the text itself. Invented diegetic labels inside UI mockups (text not in any content field) are fine and need no binding.`,
+      summary: `${unbound.length} field(s) baked as literals: ${unbound
+        .slice(0, 4)
+        .map((u) => `scene ${u.scene} ${u.field}`)
+        .join(", ")}${unbound.length > 4 ? ", …" : ""}`,
     });
   }
 

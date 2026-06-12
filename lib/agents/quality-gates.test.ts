@@ -6,6 +6,8 @@
  * the headline kicker (Coniglio "COMIENZA EL DÍA", Stripe "THE CHALLENGE").
  * No API key, no network.
  */
+import { existsSync, readFileSync } from "fs";
+import { join } from "path";
 import {
   findDuplicatedEyebrows,
   findDecorativeFillerIcons,
@@ -22,6 +24,7 @@ import {
   findUndersizedText,
   findUndwelledText,
   countAccentBorders,
+  findUnboundCopy,
 } from "./quality-gates";
 
 let passed = 0;
@@ -720,6 +723,183 @@ check("missing / null signature → no findings", () => {
   assert(countAccentBorders(code, undefined).length === 0, "undefined signature flagged");
   assert(countAccentBorders(code, "teal").length === 0, "non-hex signature flagged");
 });
+
+// ── Copy-binding contract (findUnboundCopy) ──────────────────────────────────
+// The A/B pair this gate exists for: the Opus build binds all copy
+// ({c.headline} from const c = script.scenes[N].content); the Fable build
+// bakes every field as literal JSX, including a two-tone "30," + "000" split.
+const copyScenes = [
+  {
+    content: {
+      eyebrow: "the old way",
+      headline: "Config hell",
+      lede: "Traditional VPNs trap you in firewall rules.",
+      bullets: ["No bastions required", "Direct access to infra"],
+      cta: { primary: "Start free", secondary: "Go" },
+    },
+  },
+];
+
+check("literal headline in the scene's section flags", () => {
+  const code = `export const Section0 = () => (<div><h1>Config hell</h1></div>);`;
+  const r = findUnboundCopy(code, copyScenes);
+  assert(
+    r.some((u) => u.scene === 0 && u.field === "headline"),
+    `expected headline flag, got ${JSON.stringify(r)}`,
+  );
+});
+
+check("bound {c.headline} passes", () => {
+  const code = `export const Section0 = ({ script }) => {
+  const c = script.scenes[0].content;
+  return (<div><h1>{c.headline}</h1><p>{c.lede}</p></div>);
+};`;
+  assert(findUnboundCopy(code, copyScenes).length === 0, "bound copy flagged");
+});
+
+check("split two-tone spans flag via concatenation (the '30,'+'000' treatment)", () => {
+  const code = `export const Section0 = () => (<h1>
+    <span style={{ color: "#fff" }}>30,</span>
+    <span style={{ color: "rgba(252,252,252,0.5)" }}>000</span>
+  </h1>);`;
+  const r = findUnboundCopy(code, [{ content: { headline: "30,000" } }]);
+  assert(
+    r.length === 1 && r[0].field === "headline",
+    `expected the split headline flag, got ${JSON.stringify(r)}`,
+  );
+});
+
+check("copy text only in a comment passes (the Opus :1049 trap)", () => {
+  const code = `export const Section0 = ({ script }) => {
+  const c = script.scenes[0].content;
+  // hero pill reuses the headline: "Config hell"
+  return (<div>
+    {/* hero headline = cta.primary "Start free" */}
+    <h1>{c.headline}</h1><button>{c.cta.primary}</button>
+  </div>);
+};`;
+  assert(findUnboundCopy(code, copyScenes).length === 0, "comment quote flagged");
+});
+
+check("uppercase literal of a lowercase eyebrow flags (case-insensitive)", () => {
+  const code = `export const Section0 = () => (<div><h6>THE OLD WAY</h6></div>);`;
+  const r = findUnboundCopy(code, copyScenes);
+  assert(
+    r.some((u) => u.field === "eyebrow"),
+    `re-cased literal must flag, got ${JSON.stringify(r)}`,
+  );
+});
+
+check("eyebrow baked as a string ATTRIBUTE flags (the Fable <Eyebrow text=…> form)", () => {
+  const code = `export const Section0 = () => (<div><Eyebrow text="THE OLD WAY" centered /></div>);`;
+  const r = findUnboundCopy(code, copyScenes);
+  assert(
+    r.some((u) => u.field === "eyebrow"),
+    `attribute-baked copy must flag, got ${JSON.stringify(r)}`,
+  );
+});
+
+check("invented diegetic mockup labels never flag", () => {
+  const code = `export const Section0 = ({ script }) => {
+  const c = script.scenes[0].content;
+  return (<div>
+    <div>STATUS: DEGRADED</div>
+    <div>tailscale.com — status</div>
+    <h1>{c.headline}</h1>
+  </div>);
+};`;
+  assert(findUnboundCopy(code, copyScenes).length === 0, "diegetic label flagged");
+});
+
+check("chrome attr CONTAINING a bound field's value passes (whole-value attr match)", () => {
+  // Archived Vercel build: headline "Deployed" bound, BrandChrome carries an
+  // invented category="Deployed · Live" — a chrome label, not a retype.
+  const code = `export const Section0 = ({ script }) => {
+  const c = script.scenes[0].content;
+  return (<div>
+    <BrandChrome sceneIndex={0} category="Config hell · Live" />
+    <h1>{c.headline}</h1>
+  </div>);
+};`;
+  assert(findUnboundCopy(code, copyScenes).length === 0, "containing attr flagged");
+});
+
+check("attr EQUAL to a field's value still flags (fused, re-cased)", () => {
+  const code = `export const Section0 = ({ script }) => {
+  const c = script.scenes[0].content;
+  return (<div>
+    <BrandChrome sceneIndex={0} category="Config Hell" />
+    <h1>{c.headline}</h1>
+  </div>);
+};`;
+  const r = findUnboundCopy(code, copyScenes);
+  assert(
+    r.some((u) => u.field === "headline"),
+    `whole-value attr retype must flag, got ${JSON.stringify(r)}`,
+  );
+});
+
+check("bullets bound via {b} in a map pass; literal bullets flag", () => {
+  const bound = `export const Section0 = ({ script }) => {
+  const c = script.scenes[0].content;
+  return (<ul>{c.bullets.map((b, i) => (<li key={i}>{b}</li>))}</ul>);
+};`;
+  assert(findUnboundCopy(bound, copyScenes).length === 0, "bound bullets flagged");
+  const literal = `export const Section0 = () => (<ul>
+    <li>No bastions required</li>
+    <li>Direct access to infra</li>
+  </ul>);`;
+  const r = findUnboundCopy(literal, copyScenes);
+  assert(
+    r.some((u) => u.field === "bullets[0]") && r.some((u) => u.field === "bullets[1]"),
+    `literal bullets must flag, got ${JSON.stringify(r)}`,
+  );
+});
+
+check("fields shorter than 4 chars are skipped (cta 'Go')", () => {
+  const code = `export const Section0 = () => (<button>Go</button>);`;
+  assert(findUnboundCopy(code, copyScenes).length === 0, "short field flagged");
+});
+
+check("scene with no content fields → no findings", () => {
+  const code = `export const Section0 = () => (<h1>Anything at all</h1>);`;
+  assert(findUnboundCopy(code, [{ content: {} }]).length === 0, "empty content flagged");
+  assert(findUnboundCopy(code, [{}]).length === 0, "missing content flagged");
+});
+
+check("dropped/transformed copy is out of scope (neither bound nor literal)", () => {
+  const code = `export const Section0 = () => (<h1>A different paraphrase</h1>);`;
+  assert(
+    findUnboundCopy(code, [{ content: { headline: "Config hell" } }]).length === 0,
+    "absent field flagged",
+  );
+});
+
+// REAL-specimen smoke tests against the archived A/B builds (stable fixtures
+// under .data/ab; .data is gitignored, so skip cleanly when absent).
+const abScriptPath = join(process.cwd(), ".data/scripts/01KTVZE8P6A371SS8AR9W8C4DA.json");
+const opusCompPath = join(process.cwd(), ".data/ab/opus-gendir/Composition.tsx");
+const fableCompPath = join(process.cwd(), ".data/ab/fable-gendir/Composition.tsx");
+if ([abScriptPath, opusCompPath, fableCompPath].every((p) => existsSync(p))) {
+  const abScenes = (
+    JSON.parse(readFileSync(abScriptPath, "utf8")) as { scenes: { content?: unknown }[] }
+  ).scenes;
+  check("REAL specimen — the compliant Opus build has zero findings", () => {
+    const r = findUnboundCopy(readFileSync(opusCompPath, "utf8"), abScenes);
+    assert(r.length === 0, `false positive(s) on the compliant build: ${JSON.stringify(r)}`);
+  });
+  check("REAL specimen — the baked Fable build flags every copy field", () => {
+    const r = findUnboundCopy(readFileSync(fableCompPath, "utf8"), abScenes);
+    assert(
+      r.length >= 15,
+      `expected the baked build heavily flagged, got ${r.length}: ${JSON.stringify(
+        r.map((u) => `${u.scene}.${u.field}`),
+      )}`,
+    );
+  });
+} else {
+  console.log("  - skipped REAL-specimen smoke tests (.data/ab fixtures not present)");
+}
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exitCode = 1;
