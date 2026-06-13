@@ -598,6 +598,38 @@ check("falls back to frame-based scene timing", () => {
   assert(r.length === 1, `got ${JSON.stringify(r)}`);
 });
 
+check("a `both`-filled lede that lands late is flagged (fill-mode parity)", () => {
+  // The Ramp scene-0 specimen: ~18-word lede, fill-mode `both`, lands ~2.5s
+  // into a 5s scene — needs ~5.4s to read. Before the fix the gate matched
+  // only `forwards` and skipped every `both` entrance, so this passed blind.
+  const code = `export const Section0 = () => (<div>
+    <p style={{ fontSize: 26, opacity: 0, animation: "fadeRise 0.4s cubic-bezier(.2,.8,.2,1) 2.1s both" }}>finance teams at fast growing companies spend weeks manually processing expenses chasing receipts and reconciling cards every month</p>
+  </div>);`;
+  const r = findUndwelledText(code, { scenes: [{ start_seconds: 0, end_seconds: 5 }] });
+  assert(
+    r.length === 1 && r[0].section === 0 && r[0].landsAt === 2.5 && r[0].readTime === 5.4,
+    `got ${JSON.stringify(r)}`,
+  );
+});
+
+check("a `both`-filled early beat with dwell time still passes", () => {
+  const code = `export const Section0 = () => (<div>
+    <h1 style={{ opacity: 0, animation: "fadeRise 0.4s ease 0.6s both" }}>Approve loans instantly</h1>
+  </div>);`;
+  assert(findUndwelledText(code, dwellScript).length === 0, "`both` early beat flagged");
+});
+
+check("`forwards` and `both` produce identical dwell verdicts", () => {
+  const mk = (fill: string) =>
+    `export const Section0 = () => (<h1 style={{ animation: "fadeRise 0.4s ease 7.2s ${fill}" }}>Approve loans instantly</h1>);`;
+  const fwd = findUndwelledText(mk("forwards"), dwellScript);
+  const both = findUndwelledText(mk("both"), dwellScript);
+  assert(
+    fwd.length === 1 && both.length === 1 && fwd[0].landsAt === both[0].landsAt,
+    `fwd=${JSON.stringify(fwd)} both=${JSON.stringify(both)}`,
+  );
+});
+
 // The Opus Tailscale blind spot (.data/ab/opus-gendir/Composition.tsx): every
 // section binds copy via `const c = script.scenes[N].content` + `{c.lede}`, so
 // the literal word count was 0, readTime collapsed to the 1.2s floor, and
