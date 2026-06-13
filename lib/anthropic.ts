@@ -67,20 +67,20 @@ export const MODELS = {
   // Stage 5 — Full-build Design + Choreography pass (taste-heavy
   // composition + animation choices, plus retries when quality gates
   // fail). The commit-to-MP4 path.
-  // Fable 5 per the 2026-06-11 Tailscale A/B: same script built on Opus
-  // 4.8 vs Fable 5, both first-pass clean — Fable won 4/5 scenes with
-  // independent judges and obeyed all four prompt-tier rules Opus broke
-  // (dwell, CTA dedup, two-tone stat, staged ledes). Cost ~$4.7 vs ~$2.0
-  // per build (2x rate, ~1.18x tokens); taste + instruction-following
-  // bought the margin. Evidence: .data/ab/negative-audit.json.
-  codingAgentBuild: "claude-fable-5",
+  // Reverted from Fable 5 to Opus 4.8 on 2026-06-13: Fable access was
+  // revoked on our API key (404 "Claude Fable 5 is not available. Please
+  // use Opus 4.8" — gated behind anthropic.com/news/fable-mythos-access),
+  // which 404'd every build. The 2026-06-11 A/B still stands (Fable won
+  // 4/5 scenes on taste, .data/ab/negative-audit.json) — re-switch here
+  // if/when Fable access returns.
+  codingAgentBuild: "claude-opus-4-8",
 
   // Per-scene regenerate Design + Choreography pass (regenerateScene in
   // pipeline.ts — a single scene, not the full composition). Same weight
   // as the build path so a regenerated scene matches the rest of the
   // composition; it writes back into src/generated/<id>/, which the
   // MP4 render path then reuses.
-  codingAgent: "claude-fable-5",
+  codingAgent: "claude-opus-4-8",
 
   // Stage 7 — QA Agent. Cheap, vision-capable, structured comparison.
   qaAgent: "claude-haiku-4-5",
