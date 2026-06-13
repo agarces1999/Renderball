@@ -199,7 +199,7 @@ For EVERY section, ask: "Does this content tell the viewer the moment, or only l
 - **bullets** — parallel phrasing, same grammatical shape. Each is a discrete point, not a sentence. 3-6 words each ideally.
 - **caption** — small text. Source attribution, unit, footnote, status text inside a diegetic UI, micro-context. Different size/weight from lede.
 - **meta** — speaker name, event, date, version number, category — fact-shaped data, label-value pairs.
-- **cta.primary** — verb-led. "Request early access", "Read the docs", "Book a 15-min walkthrough". cta.secondary is the smaller line beneath (URL, "limited beta", date).
+- **cta.primary** — verb-led, and it MUST differ from that scene's headline. The headline is the invitation ("See how Ramp works"); the pill is the action the viewer takes ("Get a demo", "Start free", "Book a walkthrough"). Never set cta.primary to the same string as the headline — a button that echoes the hero line wastes the one place you tell the viewer what to DO (rejected by a static check). cta.secondary is the smaller line beneath (URL, "limited beta", date).
 
 ### Illustration intent
 

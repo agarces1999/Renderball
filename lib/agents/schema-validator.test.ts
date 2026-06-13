@@ -7,6 +7,7 @@ import {
   findUngroundedClaims,
   findUngroundedStageLabels,
   extractStatClaims,
+  validateScript,
 } from "./schema-validator";
 
 let passed = 0;
@@ -167,6 +168,55 @@ check("ordinary copy with 'series of' / 'a series' is NOT flagged", () => {
 check("flags growth/bridge round when unsupported; dedupes", () => {
   const u = findUngroundedStageLabels("Closed a growth round. The growth round scales us.", "");
   assert(u.length === 1 && /growth round/i.test(u[0]), `expected one growth round, got ${JSON.stringify(u)}`);
+});
+
+// ── CTA must not echo the headline (SCENE-QA P7) ─────────────────────────────
+// A two-scene script whose final scene carries a cta. Override its headline /
+// cta.primary per test; everything else is a minimal valid script.
+const scriptWithCta = (headline: string, ctaPrimary: string | undefined) => ({
+  config: { duration_seconds: 10, aspect_ratio: "16:9" },
+  brief: {},
+  assets: [],
+  scenes: [
+    {
+      start_seconds: 0,
+      end_seconds: 5,
+      label: "Hook",
+      visual_concept: "Opening hook on a dark field.",
+      content: { headline: "The problem, stated", asset_ids: [] },
+    },
+    {
+      start_seconds: 5,
+      end_seconds: 10,
+      label: "CTA",
+      visual_concept: "Closing call to action, brand-color pill.",
+      content: {
+        headline,
+        ...(ctaPrimary !== undefined ? { cta: { primary: ctaPrimary } } : {}),
+        asset_ids: [],
+      },
+    },
+  ],
+});
+
+check("CTA primary equal to the headline is flagged (the Ramp defect)", () => {
+  const r = validateScript(scriptWithCta("See how Ramp works", "See how Ramp works"));
+  assert(!r.ok && /duplicates the headline/.test(r.error), `got ${JSON.stringify(r)}`);
+});
+
+check("CTA duplication is caught case/space-insensitively", () => {
+  const r = validateScript(scriptWithCta("Get Started Today", "  get started today "));
+  assert(!r.ok && /duplicates the headline/.test(r.error), `got ${JSON.stringify(r)}`);
+});
+
+check("a distinct verb-led CTA passes", () => {
+  const r = validateScript(scriptWithCta("See how Ramp works", "Get a demo"));
+  assert(r.ok, `expected ok, got ${JSON.stringify(r)}`);
+});
+
+check("a scene with no cta is a no-op for the duplication check", () => {
+  const r = validateScript(scriptWithCta("See how Ramp works", undefined));
+  assert(r.ok, `expected ok, got ${JSON.stringify(r)}`);
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

@@ -251,6 +251,11 @@ export const findUngroundedStageLabels = (
   return out;
 };
 
+/** Case- and whitespace-insensitive equality for short copy strings. */
+const sameCopy = (a: string, b: string): boolean =>
+  a.trim().toLowerCase().replace(/\s+/g, " ") ===
+  b.trim().toLowerCase().replace(/\s+/g, " ");
+
 export const validateScript = (input: unknown): ValidationResult => {
   if (typeof input !== "object" || input === null) {
     return { ok: false, error: "Output is not a JSON object." };
@@ -465,6 +470,16 @@ export const validateScript = (input: unknown): ValidationResult => {
       }
       if (typeof cta.primary !== "string" || !cta.primary.trim()) {
         return { ok: false, error: `Section ${idx} content.cta.primary required when cta is set.` };
+      }
+      // The CTA pill is an ACTION surface — it must carry a verb, not echo the
+      // headline. A pill that repeats the hero line wastes the one place the
+      // viewer is told what to DO. (Shipped twice unguarded — Tailscale, then
+      // Ramp's "See how Ramp works" as BOTH the hero headline and the button.)
+      if (typeof headline === "string" && sameCopy(cta.primary, headline)) {
+        return {
+          ok: false,
+          error: `Section ${idx} content.cta.primary "${cta.primary}" duplicates the headline. The CTA must be a distinct action label — a verb the viewer acts on ("Get a demo", "Start free", "Book a walkthrough") — not an echo of the hero line.`,
+        };
       }
     }
 
