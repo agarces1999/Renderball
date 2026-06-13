@@ -1019,14 +1019,19 @@ export const findUndwelledText = (
       // groups first so cubic-bezier(.2,.8,.2,1) / steps(20, end) commas
       // can't split a declaration mid-easing (they carry no `s` tokens).
       const firstDecl = anim[1].replace(/\([^)]*\)/g, "()").split(",")[0];
-      if (!/\bforwards\b/.test(firstDecl)) continue;
-      const beforeForwards = firstDecl.split(/\bforwards\b/)[0];
-      const times = [...beforeForwards.matchAll(/(\d+(?:\.\d+)?)s\b/g)].map(
+      // animation-fill-mode `forwards` OR `both`: both RETAIN the end state
+      // after the run, so a `both` entrance dwells exactly like a `forwards`
+      // one. The model emits `both` far more often than `forwards`, so
+      // matching only `forwards` silently skipped most real text entrances.
+      const fillMode = firstDecl.match(/\b(?:forwards|both)\b/);
+      if (!fillMode) continue;
+      const beforeFill = firstDecl.slice(0, fillMode.index);
+      const times = [...beforeFill.matchAll(/(\d+(?:\.\d+)?)s\b/g)].map(
         (t) => parseFloat(t[1]),
       );
       if (times.length === 0) continue;
       // CSS shorthand: first time = duration; with ≥2 times the LAST one
-      // before `forwards` is the delay (same parse as the dead-air gate).
+      // before the fill-mode keyword is the delay (same parse as dead-air).
       const duration = times[0];
       const delay = times.length >= 2 ? times[times.length - 1] : 0;
       if (isCaptionChrome(attrs)) continue; // mono caption / chrome — exempt
