@@ -117,6 +117,20 @@ check("copy binding states the contract (and matches findUnboundCopy)", () => {
   assert(/diegetic labels[\s\S]*are fine/i.test(s), "diegetic-label allowance");
 });
 
+check("canvas background line appears as HARD when backgroundColor is given", () => {
+  const s = buildDesignConstraints("16:9", { hasLogo: true, backgroundColor: "#440b12" });
+  assert(s.includes("CANVAS BACKGROUND — HARD"), "canvas background block present");
+  assert(s.includes("#440b12"), "the sampled background hex is stated");
+  assert(/MUST be #440b12/.test(s), "background stated as a must");
+  assert(/Do NOT default to black\/near-black/.test(s), "near-black default forbidden");
+  assert(/signature accent is separate/i.test(s), "accent kept distinct from canvas");
+});
+
+check("canvas background line is absent when backgroundColor is omitted", () => {
+  const s = buildDesignConstraints("16:9", { hasLogo: true });
+  assert(!s.includes("CANVAS BACKGROUND — HARD"), "no background block without a color");
+});
+
 check("taste lines are aspect-independent (9:16 carries them too)", () => {
   const s = buildDesignConstraints("9:16", { hasLogo: false });
   assert(

@@ -157,11 +157,14 @@ await check("extractDesignLanguage threads the collector end-to-end", async () =
 
 await check("extractPaletteFromImage reports its model + usage to the collector", async () => {
   const { calls, onUsage } = collectUsage();
+  // Vision now returns a roles OBJECT; the wrapper flattens it to [background,
+  // accent, text, ...supporting] — the flat palette existing callers expect.
   const palette = await extractPaletteFromImage("https://x.com/hero.png", {
-    client: fakeClient('["#4a0e0e","#ff6a2b","#ffffff"]'),
+    client: fakeClient('{"background":"#4a0e0e","accent":"#ff6a2b","text":"#ffffff"}'),
     onUsage,
   });
   assert(palette.length === 3, `palette: ${JSON.stringify(palette)}`);
+  assert(palette[0] === "#4a0e0e", `background must lead the flat palette: ${JSON.stringify(palette)}`);
   assert(calls.length === 1, `expected 1 usage call, got ${calls.length}`);
   assert(calls[0].model === MODELS.qaAgent, `model: ${calls[0].model}`);
   assert(calls[0].usage.input_tokens === 1200, `usage: ${JSON.stringify(calls[0].usage)}`);
@@ -169,7 +172,7 @@ await check("extractPaletteFromImage reports its model + usage to the collector"
 
 await check("extractPaletteFromImage: skipped image → collector never fires", async () => {
   const { calls, onUsage } = collectUsage();
-  const palette = await extractPaletteFromImage("not-a-url", { client: fakeClient("[]"), onUsage });
+  const palette = await extractPaletteFromImage("not-a-url", { client: fakeClient("{}"), onUsage });
   assert(palette.length === 0 && calls.length === 0, "no call → no usage");
 });
 

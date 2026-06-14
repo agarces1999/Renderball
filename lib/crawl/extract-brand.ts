@@ -1,9 +1,10 @@
 import type { BrandExtract } from "../../app/new/schema";
 import type { Usage } from "../usage";
 import {
-  extractPaletteFromImage,
+  extractBrandColorRoles,
   extractPaletteFromPixels,
   refinePaletteWithPixels,
+  snapHexToPixels,
 } from "./vision-brand";
 import { readLogoCache, writeLogoCache } from "./logo-cache";
 import { dominantSvgColor } from "./brand-identity";
@@ -218,6 +219,11 @@ export const extractBrand = async (
   const fonts = mergeFonts(fontsFromCss, fontsFromGoogle, fontsFromInline);
   const font_roles = classifyFontRoles(fonts);
   let palette = extractPalette(allCss, theme_color);
+  // The page CANVAS color (Fuse burgundy #440b12) — the background the scenes
+  // sit ON. SEPARATE from the signature accent (Fuse orange, the CTA hue). Read
+  // by role from the share image so the Design Agent gets it as a hard
+  // constraint instead of inferring the canvas and defaulting to near-black.
+  let background_color: string | undefined;
   const motion_signal = classifyMotion(allCss);
 
   // CSS-frequency palette picks up site-builder DEFAULTS — Webflow's link-blue
@@ -234,11 +240,20 @@ export const extractBrand = async (
   // precise pixel cluster when close; keep vision's value for accents pixels
   // didn't capture. Degrades cleanly: vision-only, then pixel-only, then CSS.
   // All best-effort (no key, no sharp binary, timeout → keep what we have).
+  // ONE vision call (extractBrandColorRoles) feeds BOTH the flat palette and the
+  // discrete background-color role — the role carries the canvas semantic the
+  // flat palette loses.
   try {
-    const [visionPalette, pixelPalette] = await Promise.all([
-      extractPaletteFromImage(og_image, { onUsage }),
+    const [roles, pixelPalette] = await Promise.all([
+      extractBrandColorRoles(og_image, { onUsage }),
       extractPaletteFromPixels(og_image, { maxColors: 8 }),
     ]);
+    const visionPalette = [
+      roles.background,
+      roles.accent,
+      roles.text,
+      ...roles.supporting,
+    ].filter((h): h is string => !!h);
     if (visionPalette.length >= 3 && pixelPalette.length >= 2) {
       palette = refinePaletteWithPixels(visionPalette, pixelPalette);
     } else if (visionPalette.length >= 3) {
@@ -246,8 +261,17 @@ export const extractBrand = async (
     } else if (pixelPalette.length >= 3) {
       palette = pixelPalette.slice(0, 5); // pixel-only: trim noisy tail clusters
     }
+    // Pixel-snap the background role to its exact homepage value when a cluster
+    // is close (vision estimates the hex by eye); keep the vision value when the
+    // canvas color isn't a prominent cluster pixels captured.
+    if (roles.background) {
+      background_color =
+        pixelPalette.length > 0
+          ? snapHexToPixels(roles.background, pixelPalette)
+          : roles.background;
+    }
   } catch {
-    /* keep the CSS palette */
+    /* keep the CSS palette; leave background_color undefined */
   }
 
   // Design-language analysis (best-effort): screenshot the LIVE homepage and read
@@ -279,6 +303,7 @@ export const extractBrand = async (
     fonts,
     font_roles,
     palette,
+    background_color,
     motion_signal,
     site_screenshot,
     design_language,

@@ -30,6 +30,7 @@ export async function GET(request: Request) {
       theme_color: extract.theme_color,
       palette_count: extract.palette?.length ?? 0,
       palette: extract.palette,
+      background_color: extract.background_color,
       font_count: extract.fonts?.length ?? 0,
       font_families: extract.fonts?.map((f) => f.family),
       font_urls: extract.fonts?.map((f) => f.src),

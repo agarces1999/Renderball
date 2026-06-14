@@ -60,11 +60,15 @@ const CANVAS: Record<AspectRatio, { w: number; h: number; safe: number }> = {
  * Build the CONSTRAINTS block for one build. `hasLogo` switches the logo
  * decision table between the real-logo and wordmark-only contracts;
  * `signatureMissing` (deliberately-monochrome brands) is handled by the
- * palette block in buildDesignUserMessage, not here.
+ * palette block in buildDesignUserMessage, not here. `backgroundColor` (the
+ * brand's real homepage canvas color, sampled at crawl) is emitted as a HARD
+ * constraint so the agent uses the brand's actual background instead of
+ * defaulting to near-black; it is the CANVAS color, distinct from the
+ * signature accent (CTAs/emphasis).
  */
 export const buildDesignConstraints = (
   aspect: AspectRatio,
-  opts: { hasLogo: boolean },
+  opts: { hasLogo: boolean; backgroundColor?: string },
 ): string => {
   const c = CANVAS[aspect];
   const logoTable = opts.hasLogo
@@ -80,11 +84,23 @@ export const buildDesignConstraints = (
         "  every scene          → the brand mark is the WORDMARK TEXT rendered by BrandChrome (omit logoSrc). NEVER invent/draw a mark — geometric stand-ins are REJECTED.",
       ];
 
+  // The brand's real homepage canvas color, sampled at crawl — emitted only when
+  // confidently read. HARD so the agent paints the brand's actual background
+  // rather than defaulting to black/near-black and demoting the brand color to a
+  // faint glow. The canvas color is SEPARATE from the signature accent.
+  const canvasBgLine = opts.backgroundColor
+    ? [
+        `CANVAS BACKGROUND — HARD: the scene background MUST be ${opts.backgroundColor} (the brand's real homepage background, sampled at crawl). Do NOT default to black/near-black/navy/charcoal. The signature accent is separate and is for CTAs/emphasis only.`,
+        "",
+      ]
+    : [];
+
   return [
     "## CONSTRAINTS — machine-checked; violations trigger a rejected build (verbatim contract, not guidance)",
     "",
     `CANVAS: ${c.w}x${c.h} (${aspect}). Primary content elements ≤ ${c.safe}px wide; a left-anchored element must satisfy left+width ≤ ${c.w}. Anchor real content (CTA row, meta footer, chart base) into the lower third (top ≥ ${Math.round(c.h * 0.62)}px) — an empty lower band is flagged.`,
     "",
+    ...canvasBgLine,
     ...logoTable,
     "",
     "BRANDCHROME: provided at ./BrandChrome — import { BrandChrome } from \"./BrandChrome\". Defining your own BrandChrome (const/function/class) is REJECTED by a static check.",

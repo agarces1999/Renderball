@@ -23,21 +23,67 @@ const isVisionSafe = (u?: string): u is string =>
   /\.(jpe?g|png|gif|webp)(\?|#|$)/i.test(u);
 
 /**
- * Read a brand's real color palette (hex) off its hero/share image.
- * Returns 0 colors on any failure (caller falls back to the CSS palette).
- * `opts.onUsage` (when given) receives the resolved model + token usage of the
- * vision call so the crawl's cost lands in the usage log — fired per API call,
- * never when the image is skipped or the call fails.
+ * The brand's color palette by SEMANTIC ROLE, read off its hero/share image.
+ * `background` is the page CANVAS color (Fuse = burgundy #440b12) — distinct
+ * from `accent`, the signature hue for CTAs/emphasis (Fuse = orange #ec6839).
+ * `supporting` holds any extra brand colors. Any role may be absent.
  */
-export const extractPaletteFromImage = async (
+export interface BrandColorRoles {
+  background?: string;
+  text?: string;
+  accent?: string;
+  supporting: string[];
+}
+
+/**
+ * Pull the first balanced JSON object out of an assistant text response,
+ * tolerating prose/markdown fences around it. Returns null when none parses.
+ */
+const parseFirstJsonObject = (text: string): Record<string, unknown> | null => {
+  const start = text.indexOf("{");
+  if (start === -1) return null;
+  let depth = 0;
+  for (let i = start; i < text.length; i++) {
+    if (text[i] === "{") depth++;
+    else if (text[i] === "}") {
+      depth--;
+      if (depth === 0) {
+        try {
+          const v = JSON.parse(text.slice(start, i + 1));
+          return v && typeof v === "object" ? (v as Record<string, unknown>) : null;
+        } catch {
+          return null;
+        }
+      }
+    }
+  }
+  return null;
+};
+
+const asHex = (v: unknown): string | undefined => {
+  if (typeof v !== "string") return undefined;
+  const m = v.trim().match(/#[0-9a-fA-F]{6}\b/);
+  return m ? m[0].toLowerCase() : undefined;
+};
+
+/**
+ * Read a brand's color palette BY ROLE off its hero/share image, so the canvas
+ * background can be treated as an authoritative field downstream rather than
+ * inferred from a flat palette. One vision call (cheap Haiku). `opts.onUsage`
+ * (when given) receives the resolved model + token usage so the crawl's cost
+ * lands in the usage log — fired per API call, never when skipped or on failure.
+ * Best-effort: returns {supporting:[]} on any failure (image skipped, no key,
+ * timeout, unparseable response) so callers degrade to the CSS palette.
+ */
+export const extractBrandColorRoles = async (
   imageUrl: string | undefined,
   opts: {
     client?: ReturnType<typeof getAnthropic>;
     model?: string;
     onUsage?: (model: string, usage: Usage) => void;
   } = {},
-): Promise<string[]> => {
-  if (!isVisionSafe(imageUrl)) return [];
+): Promise<BrandColorRoles> => {
+  if (!isVisionSafe(imageUrl)) return { supporting: [] };
   try {
     const client = opts.client ?? getAnthropic();
     const model = opts.model ?? MODELS.qaAgent; // Haiku — vision-capable, cheap
@@ -53,7 +99,7 @@ export const extractPaletteFromImage = async (
             {
               type: "text",
               text:
-                "This is a brand's website hero / share image. Extract the brand's ACTUAL color palette as hex codes: the dominant background, the main text color, the signature accent, and 1-2 supporting colors. Order by importance (the dominant brand/background color first, the accent second). Ignore photographic colors (skin, sky) — focus on the brand's deliberate UI colors. Return ONLY a JSON array of 4-6 lowercase hex strings, e.g. [\"#4a0e0e\",\"#ff6a2b\",\"#ffffff\"]. No prose.",
+                'This is a brand\'s website hero / share image. Identify the brand\'s ACTUAL colors BY ROLE. "background" = the dominant page/canvas color the content sits ON (often a deep brand color, NOT necessarily black). "text" = the main reading-text color. "accent" = the signature highlight used for CTAs/emphasis (distinct from the background). "supporting" = 1-2 other deliberate brand colors. Ignore photographic colors (skin, sky); focus on deliberate UI colors. Return ONLY a JSON object with lowercase hex values, e.g. {"background":"#440b12","text":"#ffffff","accent":"#ec6839","supporting":["#f4e9df"]}. Omit any role you can\'t identify. No prose.',
             },
           ],
         },
@@ -61,13 +107,50 @@ export const extractPaletteFromImage = async (
     });
     opts.onUsage?.(model, usageOf(resp.usage));
     const text = resp.content.find((c) => c.type === "text");
-    if (!text || text.type !== "text") return [];
-    const hexes = (text.text.match(HEX_RX) || []).map((h) => h.toLowerCase());
-    // dedupe, preserve order, cap
-    return [...new Set(hexes)].slice(0, 6);
+    if (!text || text.type !== "text") return { supporting: [] };
+    const obj = parseFirstJsonObject(text.text);
+    if (!obj) return { supporting: [] };
+    const supporting = Array.isArray(obj.supporting)
+      ? obj.supporting.map(asHex).filter((h): h is string => !!h)
+      : [];
+    return {
+      background: asHex(obj.background),
+      text: asHex(obj.text),
+      accent: asHex(obj.accent),
+      supporting,
+    };
   } catch {
-    return []; // best-effort — keep the CSS palette on any failure
+    return { supporting: [] }; // best-effort — keep the CSS palette on any failure
   }
+};
+
+/**
+ * Read a brand's real color palette (hex) off its hero/share image.
+ * Returns 0 colors on any failure (caller falls back to the CSS palette).
+ * `opts.onUsage` (when given) receives the resolved model + token usage of the
+ * vision call so the crawl's cost lands in the usage log — fired per API call,
+ * never when the image is skipped or the call fails.
+ *
+ * Thin wrapper over extractBrandColorRoles (ONE vision call) that flattens the
+ * roles back to the flat, importance-ordered string[] existing callers expect:
+ * [background, accent, text, ...supporting], deduped, capped at 6.
+ */
+export const extractPaletteFromImage = async (
+  imageUrl: string | undefined,
+  opts: {
+    client?: ReturnType<typeof getAnthropic>;
+    model?: string;
+    onUsage?: (model: string, usage: Usage) => void;
+  } = {},
+): Promise<string[]> => {
+  const roles = await extractBrandColorRoles(imageUrl, opts);
+  const ordered = [
+    roles.background,
+    roles.accent,
+    roles.text,
+    ...roles.supporting,
+  ].filter((h): h is string => !!h);
+  return [...new Set(ordered)].slice(0, 6);
 };
 
 // ─── Pixel-exact palette extraction ──────────────────────────────────
@@ -218,6 +301,16 @@ export const extractPaletteFromPixels = async (
 // real value (maroon: vision↔pixel ≈ 23), tight enough not to collapse two
 // genuinely-different brand colors into one.
 const SNAP_DIST2 = 34 * 34;
+
+/**
+ * Snap ONE hex onto the nearest precise pixel cluster when one is close enough
+ * (within SNAP_DIST2). The single-color analogue of refinePaletteWithPixels:
+ * vision SELECTS the role color, pixels CORRECT its hand-estimated hex. Returns
+ * the input unchanged when no cluster is close (or no pixel palette exists), so
+ * a small role color pixels never captured keeps its vision value.
+ */
+export const snapHexToPixels = (hex: string, pixel: string[]): string =>
+  refinePaletteWithPixels([hex], pixel)[0] ?? hex;
 
 export const refinePaletteWithPixels = (
   semantic: string[],

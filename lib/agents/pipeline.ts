@@ -173,6 +173,10 @@ export const buildAgentInputFromBrief = (
         fonts: brief.brand_extract.fonts,
         font_roles: brief.brand_extract.font_roles,
         palette: brief.brand_extract.palette,
+        // The brand's real canvas background (Fuse burgundy) — a hard constraint
+        // for the Design Agent so it doesn't infer the canvas and default to
+        // near-black. Distinct from the signature accent.
+        background_color: brief.brand_extract.background_color,
         motion_signal: brief.brand_extract.motion_signal,
         site_screenshot: brief.brand_extract.site_screenshot,
         design_language: brief.brand_extract.design_language,
@@ -1611,7 +1615,14 @@ const buildDesignUserMessage = (input: BuildInput): string => {
   // Models comply far better with local, checkable constraints than with the
   // same rules as prose mid-system-prompt (measured ~50% retry rate without).
   lines.push("");
-  lines.push(buildDesignConstraints(aspect, { hasLogo: !!input.brand_identity?.logo }));
+  lines.push(
+    buildDesignConstraints(aspect, {
+      hasLogo: !!input.brand_identity?.logo,
+      // The brand's real canvas background, sampled at crawl — emitted as a HARD
+      // constraint so the scene background is the brand color, not near-black.
+      backgroundColor: input.brand_extract?.background_color,
+    }),
+  );
   lines.push("");
   lines.push(
     "Output the complete static Composition.tsx file. Export one `Section{N}` named component per section above (numbering matches the input). Each Section is self-contained with its own `<style>` block for brand fonts. Top-level `export const Generated` lists them as siblings — used for preview only. Every element at its settled position. Density: 6-10 distinct visual elements per section minimum.",

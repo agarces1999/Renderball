@@ -69,6 +69,8 @@ export interface AgentBrandExtract {
     mono?: string;
   };
   palette?: string[];
+  /** The brand's actual page/canvas background color, sampled from its homepage — the canvas the scenes should sit on, distinct from the signature accent. */
+  background_color?: string;
   motion_signal?: AgentMotionSignal;
   /** Live homepage screenshot URL (microlink) — representative page snapshot. */
   site_screenshot?: string;
