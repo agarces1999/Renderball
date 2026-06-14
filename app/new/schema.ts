@@ -288,6 +288,8 @@ export interface BrandExtract {
   };
   /** Top brand colors (hex), ranked by frequency, near-grays filtered out. theme_color (if present) is prepended. */
   palette?: string[];
+  /** The brand's actual page/canvas background color, sampled by role from its homepage share image (Fuse burgundy #440b12) — the canvas scenes sit on, distinct from the signature accent (the CTA hue). Undefined when not confidently read. */
+  background_color?: string;
   /** Heuristic: how motion-heavy the site's CSS is. Drives Agent 2's choreography density. */
   motion_signal?: BrandMotionSignal;
   /** Live homepage screenshot URL (microlink) — a representative page snapshot for vision/reference. */
