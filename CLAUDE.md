@@ -20,6 +20,7 @@ Core rules to internalize:
   Geist Mono for timings and technical text.
 
 ## Model routing
-Model choice per stage lives in `lib/anthropic.ts` (`MODELS`). Script generation
-is Sonnet; the build/regen coding agents are Opus; QA is Haiku. Change there, not
-inline.
+Model choice per stage lives in `lib/anthropic.ts` (`MODELS`). Every stage runs
+on Opus 4.8 (`claude-opus-4-8`) per the 2026-06-14 directive — script generation,
+build/regen coding agents, QA, logo discovery, design-language, and tweak. Change
+there, not inline.

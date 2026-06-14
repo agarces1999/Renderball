@@ -58,39 +58,35 @@ export const getAnthropic = (): Anthropic => {
  * Model registry per stage, per PRODUCT.md §1038.
  * Swap-friendly: model choice is one constant per role.
  */
+// ALL STAGES ON OPUS 4.8 per the 2026-06-14 directive ("every step should be
+// done with opus 4.8"). Previously script-gen/tweak ran Sonnet and QA/logo/
+// design-language ran Haiku for cost; the user opted to trade that spend for
+// uniform top-tier quality across the whole pipeline. Opus 4.8 is vision-
+// capable, so the screenshot-reading stages (qaAgent, logoAgent, designLanguage)
+// work unchanged. Build was briefly Fable 5 (won the 2026-06-11 A/B on taste,
+// .data/ab/negative-audit.json) but Fable access was revoked on our key
+// (404, anthropic.com/news/fable-mythos-access) — revisit Fable if it returns.
 export const MODELS = {
-  // Stage 1 — Script Generator. Taste-heavy, worth premium.
-  // PRODUCT.md calls for Opus 4.7; default to Sonnet 4.5 until the
-  // Week-1 bake-off picks a winner empirically.
-  scriptGenerator: "claude-sonnet-4-5",
+  // Stage 1 — Script Generator (the storyline agent). Taste-heavy.
+  scriptGenerator: "claude-opus-4-8",
 
   // Stage 5 — Full-build Design + Choreography pass (taste-heavy
   // composition + animation choices, plus retries when quality gates
   // fail). The commit-to-MP4 path.
-  // Reverted from Fable 5 to Opus 4.8 on 2026-06-13: Fable access was
-  // revoked on our API key (404 "Claude Fable 5 is not available. Please
-  // use Opus 4.8" — gated behind anthropic.com/news/fable-mythos-access),
-  // which 404'd every build. The 2026-06-11 A/B still stands (Fable won
-  // 4/5 scenes on taste, .data/ab/negative-audit.json) — re-switch here
-  // if/when Fable access returns.
   codingAgentBuild: "claude-opus-4-8",
 
   // Per-scene regenerate Design + Choreography pass (regenerateScene in
-  // pipeline.ts — a single scene, not the full composition). Same weight
-  // as the build path so a regenerated scene matches the rest of the
-  // composition; it writes back into src/generated/<id>/, which the
-  // MP4 render path then reuses.
+  // pipeline.ts — a single scene, not the full composition). Matches the
+  // build path so a regenerated scene fits the rest of the composition.
   codingAgent: "claude-opus-4-8",
 
-  // Stage 7 — QA Agent. Cheap, vision-capable, structured comparison.
-  qaAgent: "claude-haiku-4-5",
+  // Stage 7 — QA Agent. Vision-capable, structured comparison.
+  qaAgent: "claude-opus-4-8",
   // Logo-discovery agent — vision evaluation of brand-logo candidates.
-  // Uses Sonnet for taste/judgment; falls back to Haiku if cost matters.
-  logoAgent: "claude-sonnet-4-5",
+  logoAgent: "claude-opus-4-8",
   // Design-language analysis — reads the brand's compositional design language
-  // off a homepage screenshot (crawl-time, advisory). Haiku is vision-capable +
-  // cheap and runs every crawl; bump to Sonnet if the brief reads too generic.
-  designLanguage: "claude-haiku-4-5",
-  // Stage 8 — Tweak Agent. Fast iteration on small edits.
-  tweakAgent: "claude-sonnet-4-5",
+  // off a homepage screenshot (crawl-time, advisory).
+  designLanguage: "claude-opus-4-8",
+  // Stage 8 — Tweak Agent. Small-edit iteration.
+  tweakAgent: "claude-opus-4-8",
 } as const;
