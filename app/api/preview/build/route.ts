@@ -10,6 +10,11 @@ import {
 } from "../../../../lib/agents/pipeline";
 import { writeGeneratedFiles } from "../../../../lib/render/build-wrapper";
 import { verifyScenesRender } from "../../../../lib/render/ssr-render";
+import { measureScenes } from "../../../../lib/render/measure-scene";
+import {
+  findRenderTruthFailures,
+  measureOutDir,
+} from "../../../../lib/render/render-truth-gates";
 import { MODELS } from "../../../../lib/anthropic";
 import { recordUsage } from "../../../../lib/usage";
 
@@ -144,10 +149,35 @@ export async function POST(request: Request) {
     );
   }
 
+  // RENDER-TRUTH PASS (Phase 1: ADVISORY / log-only). The SSR gate above proves
+  // each scene EVALUATES; it cannot see the rendered layout, so clipped text,
+  // off-canvas content, and unreadable logos sail through (every static gate
+  // approximates these from declared geometry and keeps missing them). This
+  // measures the REAL browser render — every element's box + computed colors +
+  // a screenshot — and reports correctness failures (overflow blocks in Phase 2;
+  // contrast/dead-region advisory; vision gate in Phase 3). For now it only
+  // reports, so we can validate it on real builds before it gates anything.
+  let renderTruth: { findings: unknown[]; blocking: unknown[] } | undefined;
+  try {
+    const measurements = await measureScenes(genDir, script, measureOutDir(genDir));
+    const { findings, blocking } = await findRenderTruthFailures(measurements);
+    renderTruth = { findings, blocking };
+    if (findings.length > 0) {
+      console.warn(
+        `[preview/build] render-truth (advisory): ${blocking.length} would-block, ${findings.length} total\n` +
+          findings.map((f) => `  · ${JSON.stringify(f)}`).join("\n"),
+      );
+    }
+  } catch (err) {
+    // Advisory must never break a build — Phase 2 will decide fail-closed policy.
+    console.warn("[preview/build] render-truth pass errored (advisory):", err);
+  }
+
   return NextResponse.json({
     ok: true,
     scriptId,
     usage: result.usage,
     warnings: result.warnings,
+    render_truth: renderTruth,
   });
 }

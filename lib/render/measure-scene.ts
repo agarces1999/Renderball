@@ -1,0 +1,279 @@
+/**
+ * Render-truth measurement primitive.
+ *
+ * The whole quality system pivots on this: instead of static-analyzing the
+ * generated CODE (which can't see flex/content overflow, computed contrast, or
+ * transforms), we render each scene in a REAL browser and measure what actually
+ * paints. Every defect that ships (clipped text, light-on-light logos, dead
+ * regions) is a property of the rendered output, not the source — so we measure
+ * the output.
+ *
+ * How:
+ *   1. Bundle + eval the genDir's Composition.tsx and grab Section{N} — the
+ *      EXACT path ssr-render.ts's gate uses, so "renders here" == "renders in
+ *      the preview/MP4".
+ *   2. renderToStaticMarkup(Section, { script }) → the scene's real DOM.
+ *   3. Load it in headless Chromium (Playwright) at 1920×1080, with every CSS
+ *      animation jumped to its settled END state via a `animation-delay:
+ *      -100000s !important` override (fill-mode forwards/both → final frame).
+ *      This matches what the SectionClock pins for the MP4's late frames,
+ *      without needing the Remotion clock.
+ *   4. page.evaluate → every element's getBoundingClientRect + computed colors.
+ *   5. screenshot the frame (for the deterministic contrast/dead-region checks
+ *      and the vision gate).
+ *
+ * Deliberately uses Playwright (stable, documented page API) over Remotion's
+ * internal puppeteer fork (newPage needs internal types; screenshot lives behind
+ * a deep dist import the package `exports` map can block). Boring-by-default for
+ * a load-bearing primitive.
+ *
+ * Best-effort + fail-closed: a browser/load error returns { error } for that
+ * scene (the gate treats a measurement error as a gate failure, never silent).
+ */
+import { promises as fs } from "fs";
+import path from "path";
+import { createRequire } from "module";
+import React from "react";
+import * as esbuild from "esbuild";
+
+// Same externals the SSR gate uses — peer deps resolve at runtime; only the
+// local TS (Composition + ./Img/./BrandChrome shims) bundles.
+const EXTERNALS = [
+  "react",
+  "react-dom",
+  "react-dom/server",
+  "recharts",
+  "lucide-react",
+  "shiki",
+  "simple-icons",
+  "simple-icons/icons",
+  "remotion",
+  "@remotion/lottie",
+];
+
+const nodeRequire: NodeRequire = (() => {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    return eval("require") as NodeRequire;
+  } catch {
+    return createRequire(path.join(process.cwd(), "package.json"));
+  }
+})();
+
+const { renderToStaticMarkup } = nodeRequire("react-dom/server") as {
+  renderToStaticMarkup: (node: React.ReactNode) => string;
+};
+
+export interface MeasuredElement {
+  tag: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  /** Computed text color, rgb() string. */
+  color: string;
+  /** Computed own background-color, rgb()/rgba() string. */
+  bg: string;
+  /** Trimmed direct text (first ~60 chars), empty if the element has no own text. */
+  text: string;
+  isImg: boolean;
+  src?: string;
+  fontSize: number;
+  opacity: number;
+}
+
+export interface SceneMeasurement {
+  scene: number;
+  width: number;
+  height: number;
+  elements: MeasuredElement[];
+  /** Absolute path to the rendered PNG, or undefined if screenshot failed. */
+  screenshotPath?: string;
+  /** Set when the scene could not be measured at all (treat as a gate failure). */
+  error?: string;
+}
+
+export const CANVAS_DIMS: Record<string, { w: number; h: number }> = {
+  "16:9": { w: 1920, h: 1080 },
+  "9:16": { w: 1080, h: 1920 },
+  "1:1": { w: 1080, h: 1080 },
+};
+
+// The DOM-walk runs INSIDE the browser page (serialized by Playwright). Keep it
+// dependency-free and self-contained.
+const PAGE_WALK = `(() => {
+  const out = [];
+  const els = document.querySelectorAll("*");
+  for (const el of els) {
+    const r = el.getBoundingClientRect();
+    if (r.width === 0 && r.height === 0) continue;
+    const cs = getComputedStyle(el);
+    if (cs.display === "none" || cs.visibility === "hidden") continue;
+    // direct text only (not descendants') so a wrapper isn't credited with child copy
+    let text = "";
+    for (const n of el.childNodes) if (n.nodeType === 3) text += n.textContent;
+    text = text.replace(/\\s+/g, " ").trim().slice(0, 60);
+    out.push({
+      tag: el.tagName.toLowerCase(),
+      x: Math.round(r.x), y: Math.round(r.y),
+      w: Math.round(r.width), h: Math.round(r.height),
+      color: cs.color,
+      bg: cs.backgroundColor,
+      text,
+      isImg: el.tagName === "IMG",
+      src: el.tagName === "IMG" ? el.getAttribute("src") || undefined : undefined,
+      fontSize: parseFloat(cs.fontSize) || 0,
+      opacity: parseFloat(cs.opacity),
+    });
+  }
+  return out;
+})()`;
+
+const buildSceneHtml = (
+  bodyHtml: string,
+  fonts: { family?: string; src?: string }[],
+  dims: { w: number; h: number },
+): string => {
+  // @font-face for any captured brand font so text measures at real metrics.
+  const faces = fonts
+    .filter((f) => f.family && f.src)
+    .map(
+      (f) =>
+        `@font-face{font-family:"${f.family}";src:url("${f.src}");font-display:block;}`,
+    )
+    .join("\n");
+  return `<!doctype html><html><head><meta charset="utf-8"><style>
+    html,body{margin:0;padding:0;}
+    ${faces}
+    /* Jump every animation to its settled END state (fill-mode forwards/both
+       → final frame). !important longhand beats the inline shorthand's delay. */
+    *,*::before,*::after{animation-delay:-100000s !important;}
+    #rb-stage{position:relative;width:${dims.w}px;height:${dims.h}px;overflow:hidden;}
+  </style></head><body>
+    <div id="rb-stage">${bodyHtml}</div>
+  </body></html>`;
+};
+
+/**
+ * Measure every scene of a written genDir in a real browser. Returns one entry
+ * per scene with measured element rects/colors + a screenshot path. Screenshots
+ * are written to `${outDir}/measure-scene-${i}.png`.
+ */
+export const measureScenes = async (
+  genDir: string,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  script: any,
+  outDir: string,
+): Promise<SceneMeasurement[]> => {
+  const sceneCount: number = Array.isArray(script?.scenes) ? script.scenes.length : 0;
+  const aspect: string = script?.config?.aspect_ratio || "16:9";
+  const dims = CANVAS_DIMS[aspect] || CANVAS_DIMS["16:9"];
+  const fonts: { family?: string; src?: string }[] = Array.isArray(script?.assets?.fonts)
+    ? script.assets.fonts
+    : [];
+
+  // ── bundle + eval the composition (same pattern as ssr-render.ts) ──────────
+  const compPath = path.join(genDir, "Composition.tsx");
+  let mod: Record<string, unknown>;
+  try {
+    const result = await esbuild.build({
+      entryPoints: [compPath],
+      bundle: true,
+      format: "cjs",
+      platform: "node",
+      target: "node18",
+      jsx: "automatic",
+      write: false,
+      external: EXTERNALS,
+      logLevel: "silent",
+    });
+    const bundle = result.outputFiles[0].text;
+    const moduleObj: { exports: Record<string, unknown> } = { exports: {} };
+    // eslint-disable-next-line @typescript-eslint/no-implied-eval
+    new Function("module", "exports", "require", bundle)(
+      moduleObj,
+      moduleObj.exports,
+      nodeRequire,
+    );
+    mod = moduleObj.exports;
+  } catch (err) {
+    const error = `compile/eval: ${err instanceof Error ? err.message.split("\n")[0] : String(err)}`;
+    return Array.from({ length: sceneCount }, (_, i) => ({
+      scene: i,
+      width: dims.w,
+      height: dims.h,
+      elements: [],
+      error,
+    }));
+  }
+
+  // ── render each Section to HTML up front (Node side) ───────────────────────
+  const htmls: (string | null)[] = [];
+  for (let i = 0; i < sceneCount; i++) {
+    const Section = [`Section${i}`, `Scene${i}Slide`, `Scene${i}`, `Slide${i}`]
+      .map((n) => mod[n])
+      .find((f) => typeof f === "function") as
+      | React.ComponentType<{ script: unknown }>
+      | undefined;
+    if (!Section) {
+      htmls.push(null);
+      continue;
+    }
+    try {
+      htmls.push(renderToStaticMarkup(React.createElement(Section, { script })));
+    } catch {
+      htmls.push(null);
+    }
+  }
+
+  await fs.mkdir(outDir, { recursive: true });
+
+  // ── load each in a real browser, measure + screenshot ─────────────────────
+  // Playwright is a dev/runtime dep; dynamic-import so a missing browser fails
+  // closed per-scene rather than crashing module load.
+  let chromium: typeof import("playwright").chromium;
+  try {
+    ({ chromium } = await import("playwright"));
+  } catch (err) {
+    const error = `playwright unavailable: ${err instanceof Error ? err.message : String(err)}`;
+    return Array.from({ length: sceneCount }, (_, i) => ({
+      scene: i, width: dims.w, height: dims.h, elements: [], error,
+    }));
+  }
+
+  const browser = await chromium.launch({ args: ["--no-sandbox"] });
+  const results: SceneMeasurement[] = [];
+  try {
+    const page = await browser.newPage({
+      viewport: { width: dims.w, height: dims.h },
+      deviceScaleFactor: 1,
+    });
+    for (let i = 0; i < sceneCount; i++) {
+      const bodyHtml = htmls[i];
+      if (bodyHtml == null) {
+        results.push({ scene: i, width: dims.w, height: dims.h, elements: [], error: `no Section${i} / render failed` });
+        continue;
+      }
+      try {
+        await page.setContent(buildSceneHtml(bodyHtml, fonts, dims), {
+          waitUntil: "networkidle",
+          timeout: 30000,
+        });
+        // fonts loaded + a beat for layout to settle
+        await page.evaluate("document.fonts && document.fonts.ready").catch(() => {});
+        const elements = (await page.evaluate(PAGE_WALK)) as MeasuredElement[];
+        const screenshotPath = path.join(outDir, `measure-scene-${i}.png`);
+        await page.screenshot({ path: screenshotPath, clip: { x: 0, y: 0, width: dims.w, height: dims.h } });
+        results.push({ scene: i, width: dims.w, height: dims.h, elements, screenshotPath });
+      } catch (err) {
+        results.push({
+          scene: i, width: dims.w, height: dims.h, elements: [],
+          error: `measure: ${err instanceof Error ? err.message.split("\n")[0] : String(err)}`,
+        });
+      }
+    }
+  } finally {
+    await browser.close();
+  }
+  return results;
+};
