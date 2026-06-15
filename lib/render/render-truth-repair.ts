@@ -19,6 +19,7 @@
  */
 import { costUsd, type Usage } from "../usage";
 import type { RenderTruthFinding } from "./render-truth-gates";
+import type { SceneMeasurement } from "./measure-scene";
 
 export const COST_CEILING_USD = 10;
 export const MAX_DESIGN_RETRIES = 2; // L1 + L2
@@ -26,6 +27,10 @@ export const MAX_DESIGN_RETRIES = 2; // L1 + L2
 export interface GateResult {
   findings: RenderTruthFinding[];
   blocking: RenderTruthFinding[];
+  /** The raw measurements this gate ran on (carries each scene's screenshotPath).
+   *  Optional so test/mocks needn't supply them; the caller threads them out for
+   *  the vision gate so it reuses these screenshots instead of re-rendering. */
+  measurements?: SceneMeasurement[];
 }
 
 /** What a repair step produced. usage is the tokens it spent (for the ceiling). */
@@ -50,11 +55,20 @@ export interface RepairCallbacks {
 
 export interface RepairResult {
   ok: boolean;
-  reason: "passed" | "repaired" | "cost-ceiling" | "ladder-exhausted" | "error";
+  reason:
+    | "passed"
+    | "repaired"
+    | "cost-ceiling"
+    | "ladder-exhausted"
+    | "measure-error"
+    | "error";
   steps: string[];
   spentUsd: number;
   findings: RenderTruthFinding[];
   blocking: RenderTruthFinding[];
+  /** Measurements from the LAST measure pass (final composition). The caller
+   *  feeds these to the advisory vision gate instead of measuring a second time. */
+  measurements?: SceneMeasurement[];
 }
 
 const scenesOf = (findings: RenderTruthFinding[]): number[] =>
@@ -89,7 +103,23 @@ export const repairRenderTruth = async (
 
   let gate = await cb.measure();
   if (gate.blocking.length === 0) {
-    return { ok: true, reason: "passed", steps, spentUsd: spent, findings: gate.findings, blocking: [] };
+    return { ok: true, reason: "passed", steps, spentUsd: spent, findings: gate.findings, blocking: [], measurements: gate.measurements };
+  }
+
+  // A measure-error means the scene couldn't be measured at all (missing
+  // browser, compile/eval failure, no Section export). regenScene/rewriteScript
+  // are LAYOUT fixes — they cannot repair an infra/compile failure, and running
+  // them would burn real Opus dollars (up to 2N regen + 1 rebuild) on a doomed
+  // condition before hard-failing anyway. If EVERY blocking finding is a
+  // measure-error, stop immediately with the real cause and zero extra spend.
+  const allMeasureErrors = gate.blocking.every((f) => f.kind === "measure-error");
+  if (allMeasureErrors) {
+    log(
+      `measure-error(s) cannot be repaired by design retry/rewrite — hard-failing without spend: ${gate.blocking
+        .map((f) => f.detail)
+        .join("; ")}`,
+    );
+    return { ok: false, reason: "measure-error", steps, spentUsd: spent, findings: gate.findings, blocking: gate.blocking, measurements: gate.measurements };
   }
   log(`measured ${gate.blocking.length} blocking finding(s) on scene(s) ${scenesOf(gate.blocking).join(", ")}`);
 
@@ -102,7 +132,7 @@ export const repairRenderTruth = async (
   for (let attempt = 1; attempt <= MAX_DESIGN_RETRIES; attempt++) {
     if (overBudget()) {
       log(`cost ceiling $${ceiling} reached ($${spent.toFixed(2)} spent) — stopping before L${attempt} design retry`);
-      return { ok: false, reason: "cost-ceiling", steps, spentUsd: spent, findings: gate.findings, blocking: gate.blocking };
+      return { ok: false, reason: "cost-ceiling", steps, spentUsd: spent, findings: gate.findings, blocking: gate.blocking, measurements: gate.measurements };
     }
     const failing = scenesOf(gate.blocking);
     log(`L${attempt}: regenerating design for scene(s) ${failing.join(", ")}`);
@@ -114,14 +144,14 @@ export const repairRenderTruth = async (
     }
     gate = await cb.measure();
     if (gate.blocking.length === 0) {
-      return { ok: true, reason: "repaired", steps: [...steps, `passed after L${attempt}`], spentUsd: spent, findings: gate.findings, blocking: [] };
+      return { ok: true, reason: "repaired", steps: [...steps, `passed after L${attempt}`], spentUsd: spent, findings: gate.findings, blocking: [], measurements: gate.measurements };
     }
   }
 
   // ── L3: rewrite the failing scenes' script (lighter concept) + rebuild ────
   if (overBudget()) {
     log(`cost ceiling $${ceiling} reached ($${spent.toFixed(2)} spent) — stopping before L3 script rewrite`);
-    return { ok: false, reason: "cost-ceiling", steps, spentUsd: spent, findings: gate.findings, blocking: gate.blocking };
+    return { ok: false, reason: "cost-ceiling", steps, spentUsd: spent, findings: gate.findings, blocking: gate.blocking, measurements: gate.measurements };
   }
   const failing = scenesOf(gate.blocking);
   log(`L3: rewriting script for scene(s) ${failing.join(", ")} (concept too dense to fit) + rebuild`);
@@ -132,14 +162,14 @@ export const repairRenderTruth = async (
   if (rw.usage) spent += costOf(rw.usage);
   if (!rw.ok) {
     log(`L3 rewrite/rebuild error: ${rw.error ?? "unknown"}`);
-    return { ok: false, reason: "error", steps, spentUsd: spent, findings: gate.findings, blocking: gate.blocking };
+    return { ok: false, reason: "error", steps, spentUsd: spent, findings: gate.findings, blocking: gate.blocking, measurements: gate.measurements };
   }
   gate = await cb.measure();
   if (gate.blocking.length === 0) {
-    return { ok: true, reason: "repaired", steps: [...steps, "passed after L3"], spentUsd: spent, findings: gate.findings, blocking: [] };
+    return { ok: true, reason: "repaired", steps: [...steps, "passed after L3"], spentUsd: spent, findings: gate.findings, blocking: [], measurements: gate.measurements };
   }
 
   // ── L4: ladder exhausted — caller hard-fails ─────────────────────────────
   log(`ladder exhausted — ${gate.blocking.length} blocking finding(s) remain on scene(s) ${scenesOf(gate.blocking).join(", ")}`);
-  return { ok: false, reason: "ladder-exhausted", steps, spentUsd: spent, findings: gate.findings, blocking: gate.blocking };
+  return { ok: false, reason: "ladder-exhausted", steps, spentUsd: spent, findings: gate.findings, blocking: gate.blocking, measurements: gate.measurements };
 };
