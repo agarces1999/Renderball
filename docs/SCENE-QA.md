@@ -18,6 +18,31 @@ Two ground rules before anything else:
 - **Judge each scene at maximum ink** (see P10). A scene mid-entrance or
   mid-exit is not evidence of a design failure.
 
+### Render-truth is measured now — don't re-derive it by eye
+
+Correctness that can be measured from the **real browser render** is no longer
+your job to eyeball — the build path measures it deterministically and acts on
+it before you ever see the frames (`lib/render/measure-scene.ts` +
+`render-truth-gates.ts`, wired in `app/api/preview/build/route.ts`):
+
+- **Overflow / clipping is BLOCKING and self-repaired.** Any element whose
+  measured box crosses the 1920×1080 edge fails the build, which then retries
+  the scene's design, then rewrites its concept, then hard-fails (under a $10
+  ceiling). So a video that reached you already PASSED the overflow floor — its
+  measured `render_truth.findings` are the ground truth. Do **not** report
+  clipping from a frame you think looks cut off; trust the measurement and, if
+  it disagrees with what you see, treat that as a parity finding (P11), not a
+  fresh design finding.
+- **Readability / brand-fit is auto-judged (advisory).** The vision gate runs
+  the rubric below against the final screenshot of every scene and returns
+  `render_truth.vision` (washed-out logo, off-brand canvas color, wall-of-type,
+  off-brand fonts). These are machine-produced findings for you to **confirm
+  against the frame and consolidate**, not a rubric to re-run by hand.
+
+Your remaining job is the taste/judgment layer the measurement can't own:
+hierarchy, copy economy, claims grounding, diegetic specificity, dwell — P1–P10
+below. Read `render_truth` from the run manifest first, then judge the rest.
+
 ---
 
 ## Principles
@@ -141,6 +166,13 @@ Run this scene by scene, in order, then consolidate. Do not skip scenes and
 do not batch the judgment.
 
 ### Inputs
+- The `render_truth` block in the run manifest (machine-measured — read it
+  FIRST): `render_truth.findings` are the deterministic gate results from the
+  real-browser measurement (overflow is blocking and was already
+  repaired-or-passed); `render_truth.vision` are the advisory vision-gate
+  findings (readability / brand-color / wall-of-type / fonts). See the
+  "Render-truth is measured now" section above — consolidate these, don't
+  re-derive overflow by eye. Absent on builds that predate Phase 3/4.
 - The max-ink frame samples and paint report produced by
   `scripts/dogfood-stills.mjs` (multiple sampled frames per scene with the
   max-ink frame identified, plus a per-scene paint report of elements that

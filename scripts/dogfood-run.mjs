@@ -206,6 +206,12 @@ const manifest = await stillsStep(scriptId, {
   angle: ANGLES[angleIndex],
   previewUrl: `${base}/preview/${scriptId}`,
   warnings: build.warnings ?? {},
+  // Render-truth verdict from the build route's real-browser measurement: the
+  // deterministic gates (overflow — blocking, already repaired-or-passed by the
+  // self-repair ladder) plus the advisory vision findings (washed-out logos,
+  // off-brand canvas, wall-of-type). The QA step consolidates these MACHINE-
+  // measured findings instead of re-deriving overflow by eye (Phase 4 unify).
+  renderTruth: build.render_truth ?? null,
 });
 
 // 6. Log + manifest.
