@@ -85,17 +85,25 @@ measure scene ── pass ──► ship
 
 ## Phases (incremental, strangler-fig — not big bang)
 
-- **Phase 1 — primitive, advisory.** Build the render-and-measure pass; wire into the build
-  path as LOG-ONLY. Validate it flags the known defects on the current Fuse build
-  (01KV4J28RYSNFXH4TTQXSTBXBQ): scene 2 + 4 right-edge clip, scene 3 light-on-light logos.
-  No behavior change yet. Ship.
-- **Phase 2 — deterministic gates blocking + escalation + budget.** Turn 4a blocking with the
-  L1→L4 ladder and the $10 ceiling. Delete the subsumed static gates. This is the phase that
-  stops broken scenes shipping.
-- **Phase 3 — vision gate.** Add 4b (Opus vision on the screenshot) as advisory; calibrate
-  false-positive rate; promote to blocking for the taste/readability class.
-- **Phase 4 — unify the loop.** Point the dogfood loop QA at the same primitive; retire the
-  manual SCENE-QA invocation.
+- **Phase 1 — primitive, advisory. ✅ SHIPPED (PR #49).** `lib/render/measure-scene.ts`
+  (Playwright render-and-measure) + `render-truth-gates.ts` (overflow / contrast / dead-region)
+  + tests. Validated against the Fuse build (01KV4J28RYSNFXH4TTQXSTBXBQ): catches the scene 1/2/4
+  right-edge clips static gates missed. Contrast/dead-region kept ADVISORY (the contrast proxy
+  false-positives on monochrome corner logos — logo readability moved to the Phase-3 vision gate).
+- **Phase 2 — deterministic gates blocking + escalation + budget. ✅ SHIPPED (PR #50).**
+  `render-truth-repair.ts` — the L1/L2 design-retry → L3 script-rewrite → L4 hard-fail ladder
+  with the $10 cumulative ceiling, wired into `app/api/preview/build/route.ts` (blocking on
+  overflow + measure-error; 422 on exhaustion). Subsumed static gates NOT yet deleted (kept for
+  safety; see Gate migration — deferred until 4a is proven on more real builds).
+- **Phase 3 — vision gate. ✅ SHIPPED (PR #51).** `lib/render/vision-gate.ts` — Opus vision on
+  the final screenshot, brand-truth rubric, tolerant verdict parsing, injected judge + tests.
+  Wired ADVISORY into the build route (`render_truth.vision`, never blocks; usage recorded as
+  `op:"vision-qa"`). Promote specific finding kinds to blocking once the FP rate is calibrated.
+- **Phase 4 — unify the loop. ✅ SHIPPED.** `scripts/dogfood-run.mjs` threads the build's
+  `render_truth` (deterministic + vision) into the run manifest; `docs/SCENE-QA.md` + the
+  `renderball-dogfood-loop` scheduled-task SKILL now read `render_truth` FIRST and consolidate
+  the machine-measured findings instead of re-deriving overflow by eye — the manual SCENE-QA
+  pass is retired (the build measures correctness before the QA agent ever sees the frames).
 
 ## Gate migration (stop the sprawl)
 
