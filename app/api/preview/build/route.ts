@@ -3,10 +3,12 @@ import path from "path";
 import {
   loadScript,
   loadBriefByScriptId,
+  saveScript,
 } from "../../../../lib/store";
 import {
   buildAnimatedSections,
   buildAgentInputFromBrief,
+  regenerateScene,
 } from "../../../../lib/agents/pipeline";
 import { writeGeneratedFiles } from "../../../../lib/render/build-wrapper";
 import { verifyScenesRender } from "../../../../lib/render/ssr-render";
@@ -15,8 +17,9 @@ import {
   findRenderTruthFailures,
   measureOutDir,
 } from "../../../../lib/render/render-truth-gates";
+import { repairRenderTruth } from "../../../../lib/render/render-truth-repair";
 import { MODELS } from "../../../../lib/anthropic";
-import { recordUsage } from "../../../../lib/usage";
+import { recordUsage, costUsd } from "../../../../lib/usage";
 
 /**
  * Preview-only build endpoint. Runs the Design + Choreography agents
@@ -149,28 +152,99 @@ export async function POST(request: Request) {
     );
   }
 
-  // RENDER-TRUTH PASS (Phase 1: ADVISORY / log-only). The SSR gate above proves
-  // each scene EVALUATES; it cannot see the rendered layout, so clipped text,
-  // off-canvas content, and unreadable logos sail through (every static gate
-  // approximates these from declared geometry and keeps missing them). This
-  // measures the REAL browser render — every element's box + computed colors +
-  // a screenshot — and reports correctness failures (overflow blocks in Phase 2;
-  // contrast/dead-region advisory; vision gate in Phase 3). For now it only
-  // reports, so we can validate it on real builds before it gates anything.
-  let renderTruth: { findings: unknown[]; blocking: unknown[] } | undefined;
-  try {
-    const measurements = await measureScenes(genDir, script, measureOutDir(genDir));
-    const { findings, blocking } = await findRenderTruthFailures(measurements);
-    renderTruth = { findings, blocking };
-    if (findings.length > 0) {
-      console.warn(
-        `[preview/build] render-truth (advisory): ${blocking.length} would-block, ${findings.length} total\n` +
-          findings.map((f) => `  · ${JSON.stringify(f)}`).join("\n"),
-      );
-    }
-  } catch (err) {
-    // Advisory must never break a build — Phase 2 will decide fail-closed policy.
-    console.warn("[preview/build] render-truth pass errored (advisory):", err);
+  // RENDER-TRUTH GATE (Phase 2: BLOCKING + self-repair ladder + $10 ceiling).
+  // The SSR gate proves each scene EVALUATES; it cannot see the rendered LAYOUT,
+  // so clipped/off-canvas content sails through (every static gate approximates
+  // this from declared geometry and keeps missing it). We measure the REAL
+  // browser render and BLOCK on correctness failures, escalating to fix them:
+  //   L1/L2 regenerate the failing scene's design → L3 lighten its visual_concept
+  //   + rebuild → L4 give up (hard-fail, do not ship). A $10 cumulative ceiling
+  //   caps the loop. The agent-emitted Composition files mutate in place as the
+  //   ladder runs; `script.json` is re-saved if L3 lightens a concept so the
+  //   preview/MP4 reuse stays consistent.
+  let currentCode = result.code;
+  let currentDesign = result.designCode;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let currentScript: any = script;
+  const model = MODELS.codingAgentBuild;
+
+  const writeCurrent = async (warnings?: typeof result.warnings, assetManifest?: typeof result.asset_manifest) =>
+    writeGeneratedFiles(genDir, {
+      designCode: currentDesign,
+      code: currentCode,
+      script: currentScript,
+      warnings,
+      assetManifest,
+    });
+
+  const repair = await repairRenderTruth(
+    {
+      measure: async () => {
+        const measurements = await measureScenes(genDir, currentScript, measureOutDir(genDir));
+        return findRenderTruthFailures(measurements);
+      },
+      regenScene: async (sceneIndex, instruction) => {
+        const r = await regenerateScene(
+          buildAgentInputFromBrief(brief, currentScript),
+          currentCode,
+          sceneIndex,
+          instruction,
+        );
+        if (!r.ok) return { ok: false, usage: r.usage, error: r.error };
+        currentCode = r.code;
+        currentDesign = r.designCode;
+        await writeCurrent(r.warnings, r.asset_manifest);
+        await recordUsage({ op: "build", model, scriptId, url: brief?.brand_kit_url, usage: r.usage });
+        return { ok: true, usage: r.usage };
+      },
+      rewriteScript: async (sceneIndexes, reason) => {
+        // L3: surgically lighten ONLY the failing scenes' visual_concept (their
+        // render brief) and rebuild — keeps the narrative + other scenes intact.
+        const lighter = {
+          ...currentScript,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          scenes: currentScript.scenes.map((sc: any, i: number) =>
+            sceneIndexes.includes(i)
+              ? {
+                  ...sc,
+                  visual_concept: `${sc.visual_concept}\n\nSIMPLIFY (must fit 1920×1080 — ${reason}): reduce to fewer, smaller elements; narrow or stack wide rows; NO element may extend off-canvas.`,
+                }
+              : sc,
+          ),
+        };
+        const rb = await buildAnimatedSections(buildAgentInputFromBrief(brief, lighter));
+        if (!rb.ok) return { ok: false, usage: rb.usage, error: rb.error };
+        currentScript = lighter;
+        currentCode = rb.code;
+        currentDesign = rb.designCode;
+        await writeCurrent(rb.warnings, rb.asset_manifest);
+        await saveScript(currentScript);
+        await recordUsage({ op: "build", model, scriptId, url: brief?.brand_kit_url, usage: rb.usage });
+        return { ok: true, usage: rb.usage };
+      },
+      onStep: (m) => console.warn(`[preview/build] render-truth: ${m}`),
+    },
+    { spentSoFarUsd: costUsd(model, result.usage), model },
+  );
+
+  if (!repair.ok) {
+    console.error(
+      `[preview/build] render-truth gate FAILED (${repair.reason}) after $${repair.spentUsd.toFixed(2)}:`,
+      JSON.stringify(repair.blocking),
+    );
+    return NextResponse.json(
+      {
+        error: `render-truth gate: ${repair.reason}`,
+        stage: "render-truth",
+        render_truth: {
+          reason: repair.reason,
+          blocking: repair.blocking,
+          steps: repair.steps,
+          spentUsd: repair.spentUsd,
+        },
+      },
+      { status: 422 },
+    );
   }
 
   return NextResponse.json({
@@ -178,6 +252,10 @@ export async function POST(request: Request) {
     scriptId,
     usage: result.usage,
     warnings: result.warnings,
-    render_truth: renderTruth,
+    render_truth: {
+      findings: repair.findings,
+      steps: repair.steps,
+      spentUsd: repair.spentUsd,
+    },
   });
 }

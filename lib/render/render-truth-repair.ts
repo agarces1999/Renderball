@@ -1,0 +1,145 @@
+/**
+ * Render-truth self-repair ladder (Phase 2).
+ *
+ * After a build is written, we MEASURE the real render (measure-scene) and gate
+ * it (render-truth-gates). If there are blocking findings (clipped/off-canvas
+ * content), we don't ship — we try to fix, escalating:
+ *
+ *   L1  regenerate the failing scene(s)' design (fix the layout)        → re-measure
+ *   L2  regenerate again                                                 → re-measure
+ *   L3  rewrite the failing scene(s)' SCRIPT (lighter concept) + rebuild → re-measure
+ *   L4  give up → caller hard-fails the build (do not ship)
+ *
+ * A hard COST CEILING ($10/build by default) caps the loop: before any paid
+ * step, if cumulative spend would reach the ceiling we stop (reason
+ * "cost-ceiling") rather than run away (cf. the 2h45m / untracked-cost incident).
+ *
+ * All I/O is injected via callbacks, so the ladder logic is unit-tested with
+ * mocks — no real build/render spend needed to verify the escalation decisions.
+ */
+import { costUsd, type Usage } from "../usage";
+import type { RenderTruthFinding } from "./render-truth-gates";
+
+export const COST_CEILING_USD = 10;
+export const MAX_DESIGN_RETRIES = 2; // L1 + L2
+
+export interface GateResult {
+  findings: RenderTruthFinding[];
+  blocking: RenderTruthFinding[];
+}
+
+/** What a repair step produced. usage is the tokens it spent (for the ceiling). */
+export interface RepairStepResult {
+  ok: boolean;
+  usage?: Usage;
+  error?: string;
+}
+
+export interface RepairCallbacks {
+  /** Measure + gate the CURRENT genDir (already written). */
+  measure: () => Promise<GateResult>;
+  /** Regenerate one scene's design with a fix instruction, then write it. */
+  regenScene: (sceneIndex: number, instruction: string) => Promise<RepairStepResult>;
+  /** Rewrite the given scenes' script (lighter concept) + full rebuild, then write. */
+  rewriteScript: (sceneIndexes: number[], reason: string) => Promise<RepairStepResult>;
+  /** Cost of a usage bundle (model-aware). Defaults to costUsd(model, ·). */
+  costOf?: (u: Usage) => number;
+  /** Optional progress log. */
+  onStep?: (msg: string) => void;
+}
+
+export interface RepairResult {
+  ok: boolean;
+  reason: "passed" | "repaired" | "cost-ceiling" | "ladder-exhausted" | "error";
+  steps: string[];
+  spentUsd: number;
+  findings: RenderTruthFinding[];
+  blocking: RenderTruthFinding[];
+}
+
+const scenesOf = (findings: RenderTruthFinding[]): number[] =>
+  [...new Set(findings.map((f) => f.scene))].sort((a, b) => a - b);
+
+const overflowInstruction = (sceneFindings: RenderTruthFinding[]): string => {
+  const detail = sceneFindings.map((f) => f.detail).join("; ");
+  return (
+    `This scene has content rendered OUTSIDE the 1920×1080 canvas (it gets clipped): ${detail}. ` +
+    `Fix the LAYOUT so every element fits within the canvas with a safe margin: narrow or wrap wide rows, ` +
+    `reduce fixed widths, re-anchor off-canvas elements, shrink horizontal flows. Keep the copy and the brand; just make it fit.`
+  );
+};
+
+/**
+ * Run the self-repair ladder against an already-built+written genDir.
+ * `spentSoFarUsd` is the cost of the initial build (counts toward the ceiling).
+ */
+export const repairRenderTruth = async (
+  cb: RepairCallbacks,
+  opts: { spentSoFarUsd?: number; ceilingUsd?: number; model?: string } = {},
+): Promise<RepairResult> => {
+  const ceiling = opts.ceilingUsd ?? COST_CEILING_USD;
+  const model = opts.model ?? "claude-opus-4-8";
+  const costOf = cb.costOf ?? ((u: Usage) => costUsd(model, u));
+  const steps: string[] = [];
+  let spent = opts.spentSoFarUsd ?? 0;
+  const log = (m: string) => {
+    steps.push(m);
+    cb.onStep?.(m);
+  };
+
+  let gate = await cb.measure();
+  if (gate.blocking.length === 0) {
+    return { ok: true, reason: "passed", steps, spentUsd: spent, findings: gate.findings, blocking: [] };
+  }
+  log(`measured ${gate.blocking.length} blocking finding(s) on scene(s) ${scenesOf(gate.blocking).join(", ")}`);
+
+  // Budget guard run before each PAID step: stop if we're already at/over the
+  // ceiling (a paid step would breach it). Conservative — stops at the ceiling,
+  // never past it.
+  const overBudget = () => spent >= ceiling;
+
+  // ── L1 + L2: design retries on the failing scenes ────────────────────────
+  for (let attempt = 1; attempt <= MAX_DESIGN_RETRIES; attempt++) {
+    if (overBudget()) {
+      log(`cost ceiling $${ceiling} reached ($${spent.toFixed(2)} spent) — stopping before L${attempt} design retry`);
+      return { ok: false, reason: "cost-ceiling", steps, spentUsd: spent, findings: gate.findings, blocking: gate.blocking };
+    }
+    const failing = scenesOf(gate.blocking);
+    log(`L${attempt}: regenerating design for scene(s) ${failing.join(", ")}`);
+    for (const s of failing) {
+      const sceneFindings = gate.blocking.filter((f) => f.scene === s);
+      const r = await cb.regenScene(s, overflowInstruction(sceneFindings));
+      if (r.usage) spent += costOf(r.usage);
+      if (!r.ok) log(`  scene ${s} regen error: ${r.error ?? "unknown"}`);
+    }
+    gate = await cb.measure();
+    if (gate.blocking.length === 0) {
+      return { ok: true, reason: "repaired", steps: [...steps, `passed after L${attempt}`], spentUsd: spent, findings: gate.findings, blocking: [] };
+    }
+  }
+
+  // ── L3: rewrite the failing scenes' script (lighter concept) + rebuild ────
+  if (overBudget()) {
+    log(`cost ceiling $${ceiling} reached ($${spent.toFixed(2)} spent) — stopping before L3 script rewrite`);
+    return { ok: false, reason: "cost-ceiling", steps, spentUsd: spent, findings: gate.findings, blocking: gate.blocking };
+  }
+  const failing = scenesOf(gate.blocking);
+  log(`L3: rewriting script for scene(s) ${failing.join(", ")} (concept too dense to fit) + rebuild`);
+  const rw = await cb.rewriteScript(
+    failing,
+    `These scenes render content off-canvas even after layout retries — the visual_concept is too dense to fit 1920×1080. Simplify them to fewer, smaller elements that fit.`,
+  );
+  if (rw.usage) spent += costOf(rw.usage);
+  if (!rw.ok) {
+    log(`L3 rewrite/rebuild error: ${rw.error ?? "unknown"}`);
+    return { ok: false, reason: "error", steps, spentUsd: spent, findings: gate.findings, blocking: gate.blocking };
+  }
+  gate = await cb.measure();
+  if (gate.blocking.length === 0) {
+    return { ok: true, reason: "repaired", steps: [...steps, "passed after L3"], spentUsd: spent, findings: gate.findings, blocking: [] };
+  }
+
+  // ── L4: ladder exhausted — caller hard-fails ─────────────────────────────
+  log(`ladder exhausted — ${gate.blocking.length} blocking finding(s) remain on scene(s) ${scenesOf(gate.blocking).join(", ")}`);
+  return { ok: false, reason: "ladder-exhausted", steps, spentUsd: spent, findings: gate.findings, blocking: gate.blocking };
+};
