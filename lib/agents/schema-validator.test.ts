@@ -8,6 +8,7 @@ import {
   findUngroundedStageLabels,
   extractStatClaims,
   validateScript,
+  findTypeOnlyScenes,
 } from "./schema-validator";
 
 let passed = 0;
@@ -217,6 +218,63 @@ check("a distinct verb-led CTA passes", () => {
 check("a scene with no cta is a no-op for the duplication check", () => {
   const r = validateScript(scriptWithCta("See how Ramp works", undefined));
   assert(r.ok, `expected ok, got ${JSON.stringify(r)}`);
+});
+
+// ── Visual richness: every scene needs a diegetic element (findTypeOnlyScenes) ──
+// Fixtures mirror the real specimens: Fuse ② manifesto (01KV37AP…) scenes 0/2
+// are type-only and MUST flag; its scenes 1/3/4 and all Tailscale (01KTVZE8…)
+// scenes name a diegetic element and MUST pass.
+const vc = (visual_concept: string) => ({ visual_concept });
+
+check("type-only headline + ember/glow/hairline is flagged (Fuse scene 0)", () => {
+  const s = [vc("A near-black field with a small ember-spark lower-left. A massive display headline 'Built to last. Not to wait.' sits upper-two-thirds. A thin hairline anchors beneath. Animations: headline fadeRise; ember flickers; radial glow loops.")];
+  assert(JSON.stringify(findTypeOnlyScenes(s)) === "[0]", `got ${JSON.stringify(findTypeOnlyScenes(s))}`);
+});
+
+check("'single enormous manifesto line on a dark field' is flagged (Fuse scene 2)", () => {
+  const s = [vc("Edge-to-edge dark field. A single enormous manifesto line fills the frame: 'Move like a Fintech.' The ember glows large behind 'Fintech'. Light rays drift.")];
+  assert(JSON.stringify(findTypeOnlyScenes(s)) === "[0]", `got ${JSON.stringify(findTypeOnlyScenes(s))}`);
+});
+
+check("a scene with a diegetic panel passes (Fuse scene 1)", () => {
+  const s = [vc("Left half holds a beveled legacy origination panel titled 'LOAN ORIGINATION' with pending rows. Right half holds an editorial headline.")];
+  assert(findTypeOnlyScenes(s).length === 0, `got ${JSON.stringify(findTypeOnlyScenes(s))}`);
+});
+
+check("a logo trust-bar passes; a CTA logo passes", () => {
+  const s = [
+    vc("Centered headline 'Over 100 already are.' Below it a horizontal trust-bar of partner logos in rounded frames."),
+    vc("Center-frame the Fuse logo with a glow, a CTA line beneath, then an accent bar and a URL."),
+  ];
+  assert(findTypeOnlyScenes(s).length === 0, `got ${JSON.stringify(findTypeOnlyScenes(s))}`);
+});
+
+check("diagram / mesh / mockup all pass (Tailscale-style)", () => {
+  const s = [
+    vc("A chaotic network diagram fills the canvas — six device nodes with tangled red connection lines."),
+    vc("A clean hexagonal mesh of nodes with a center checkmark."),
+    vc("Split layout: a laptop mockup showing the status popup with a device list; three text blocks right."),
+  ];
+  assert(findTypeOnlyScenes(s).length === 0, `got ${JSON.stringify(findTypeOnlyScenes(s))}`);
+});
+
+check("a lone accent hairline does NOT count as diegetic", () => {
+  const s = [vc("A bold headline with a thin accent hairline underneath and a soft gradient wash.")];
+  assert(JSON.stringify(findTypeOnlyScenes(s)) === "[0]", `got ${JSON.stringify(findTypeOnlyScenes(s))}`);
+});
+
+check("empty visual_concept is not flagged (false-negative direction)", () => {
+  assert(findTypeOnlyScenes([vc(""), vc("   ")]).length === 0, "empty should not flag");
+});
+
+check("returns the correct mixed indices across a sequence", () => {
+  const s = [
+    vc("A dashboard panel with rows."),               // 0 pass
+    vc("A giant headline over an ember glow field."),  // 1 flag
+    vc("A bar chart of revenue over time."),           // 2 pass
+    vc("One enormous manifesto line on a dark frame."),// 3 flag
+  ];
+  assert(JSON.stringify(findTypeOnlyScenes(s)) === "[1,3]", `got ${JSON.stringify(findTypeOnlyScenes(s))}`);
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

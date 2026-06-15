@@ -251,6 +251,39 @@ export const findUngroundedStageLabels = (
   return out;
 };
 
+// Diegetic vocabulary — concrete non-text visual elements a scene can build,
+// aligned with the design-agent's diegetic-primitive vocabulary. A scene whose
+// visual_concept names NONE of these is "type-only": a headline/line plus
+// ambient decoration (ember, glow, hairline, gradient, grain, light ray) and
+// nothing to look at. That's the wall-of-type failure — written into the
+// visual_concept at script time and faithfully rendered by the build, so the
+// cheapest place to stop it is here. Decoration-only nouns are deliberately
+// absent. Word-boundary, case-insensitive; generous on purpose (false-negative
+// direction — when unsure, a scene PASSES).
+const DIEGETIC_ELEMENT_RX =
+  /\b(panels?|cards?|dashboards?|mock(?:up)?s?|diagrams?|charts?|graphs?|mesh|nodes?|grids?|tables?|browser|windows?|devices?|phones?|laptops?|screens?|interface|map|timeline|counter|trust[\s-]?bar|logos?|illustration|screenshots?|spinner|badges?|gauge|meter|tiles?|avatars?|photos?|images?|flow(?:chart)?|connectors?|sparkline|histogram|kpi|widgets?|popup|terminal|console|editor|rows?|product|constellation|waveform|dial|ledger|receipts?|invoices?|documents?)\b/i;
+const DIEGETIC_UI_RX = /\bUI\b/; // the acronym specifically, not "build"/"guide"
+
+/**
+ * Scenes whose visual_concept is type-only — a headline plus ambient decoration
+ * with no concrete non-text/diegetic element. Returns the flagged scene indices
+ * so the script-gen retry can demand a real visual per scene (manifestos
+ * included). Empty visual_concept is NOT flagged (false-negative direction).
+ */
+export const findTypeOnlyScenes = (
+  scenes: { visual_concept?: unknown }[],
+): number[] => {
+  const out: number[] = [];
+  scenes.forEach((sc, i) => {
+    const vc =
+      sc && typeof sc.visual_concept === "string" ? sc.visual_concept : "";
+    if (!vc.trim()) return;
+    if (DIEGETIC_ELEMENT_RX.test(vc) || DIEGETIC_UI_RX.test(vc)) return;
+    out.push(i);
+  });
+  return out;
+};
+
 /** Case- and whitespace-insensitive equality for short copy strings. */
 const sameCopy = (a: string, b: string): boolean =>
   a.trim().toLowerCase().replace(/\s+/g, " ") ===
