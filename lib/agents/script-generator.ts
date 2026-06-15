@@ -4,6 +4,7 @@ import {
   validateScript,
   findUngroundedClaims,
   findUngroundedStageLabels,
+  findTypeOnlyScenes,
 } from "./schema-validator";
 import { signatureWithLogoFallback } from "../crawl/brand-identity";
 import { formatDesignLanguage } from "../crawl/design-language";
@@ -374,6 +375,21 @@ export const generateScript = async (
         history.push({ role: "user", content: msgs.join("\n\n") });
         continue;
       }
+      // Visual-richness guard: every scene's visual_concept must specify a
+      // concrete non-text/diegetic element — not a headline + ambient glow.
+      // The "wall of type" failure (manifesto angle) originates HERE, in the
+      // visual_concept, and the build faithfully renders it; this is the
+      // cheapest stage to force a real visual per scene.
+      const typeOnly = findTypeOnlyScenes(validation.script.scenes);
+      if (typeOnly.length > 0 && attempt < MAX_ATTEMPTS) {
+        lastError = `Type-only scenes (no diegetic visual): ${typeOnly.join(", ")}`;
+        history.push({ role: "assistant", content: raw });
+        history.push({
+          role: "user",
+          content: buildVisualRichnessRetryMessage(typeOnly),
+        });
+        continue;
+      }
       return {
         ok: true,
         script: validation.script,
@@ -394,6 +410,17 @@ export const generateScript = async (
     ok: false,
     error: `Schema validation failed after ${MAX_ATTEMPTS} attempts. Last error: ${lastError}`,
   };
+};
+
+const buildVisualRichnessRetryMessage = (sceneIndexes: number[]): string => {
+  const list = sceneIndexes.map((i) => `scene ${i}`).join(", ");
+  return [
+    `${list} ${sceneIndexes.length === 1 ? "is" : "are"} type-only — the visual_concept is just a headline plus ambient decoration (ember / glow / hairline / gradient), with nothing to look at. A static check rejects this.`,
+    "",
+    "EVERY scene must build a substantial NON-TEXT / diegetic element, manifestos included. Rewrite the flagged scenes' visual_concept to specify a concrete visual: a product mock or the brand's real UI (use the crawled page_images), a dashboard / panel / browser window, a diagram or node graph, a chart or data-viz, a logo / trust-bar, a stat counter, an annotated illustration. 'Big headline + ember glow' is not a visual.",
+    "",
+    "Look at how a strong scene reads: not \"a single enormous manifesto line on a dark field\" but \"a beveled origination panel with PENDING/MANUAL/QUEUED rows beside the headline.\" Keep the copy; give each scene something to render.",
+  ].join("\n");
 };
 
 const buildDurationRetryMessage = (
