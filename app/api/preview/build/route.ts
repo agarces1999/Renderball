@@ -18,8 +18,19 @@ import {
   measureOutDir,
 } from "../../../../lib/render/render-truth-gates";
 import { repairRenderTruth } from "../../../../lib/render/render-truth-repair";
-import { MODELS } from "../../../../lib/anthropic";
-import { recordUsage, costUsd } from "../../../../lib/usage";
+import {
+  runVisionGate,
+  makeVisionJudge,
+  type VisionFinding,
+} from "../../../../lib/render/vision-gate";
+import { MODELS, getAnthropic } from "../../../../lib/anthropic";
+import {
+  recordUsage,
+  costUsd,
+  addUsage,
+  usageOf,
+  EMPTY_USAGE,
+} from "../../../../lib/usage";
 
 /**
  * Preview-only build endpoint. Runs the Design + Choreography agents
@@ -247,6 +258,86 @@ export async function POST(request: Request) {
     );
   }
 
+  // VISION GATE (Phase 3: ADVISORY). The deterministic gates above own
+  // unambiguous correctness (clipped/off-canvas content). They CAN'T judge the
+  // taste/readability failures that keep shipping — washed-out logos, a canvas
+  // that isn't the brand color, a wall-of-type scene with no diegetic element —
+  // because a pixel heuristic false-positives on them (Phase 1 proved this: the
+  // monochrome corner-logo tripped the contrast proxy on every scene). So those
+  // go to an Opus vision pass on the FINAL rendered screenshot, judged against
+  // the brand truth. ADVISORY: findings are surfaced as warnings, never block a
+  // build — the false-positive rate isn't calibrated on real builds yet, and a
+  // build that already passed the deterministic floor must ship. Best-effort:
+  // any error (no API key, vision hiccup) is swallowed so it can't break a build
+  // that already passed. Cheap (~$0.02/scene vision input) and runs once, after
+  // the build is final.
+  let visionFindings: VisionFinding[] = [];
+  try {
+    const measurements = await measureScenes(
+      genDir,
+      currentScript,
+      measureOutDir(genDir),
+    );
+    const be = brief?.brand_extract;
+    const brandTruth = {
+      name: be?.title,
+      backgroundColor: be?.background_color,
+      accent: be?.logo_color ?? be?.palette?.[0],
+      fonts: [be?.font_roles?.display, be?.font_roles?.body].filter(
+        (f): f is string => !!f,
+      ),
+    };
+    let visionUsage = { ...EMPTY_USAGE };
+    const judge = makeVisionJudge(async (imageBase64, rubric) => {
+      const resp = await getAnthropic().messages.create({
+        model: MODELS.qaAgent,
+        max_tokens: 700,
+        messages: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "image",
+                source: {
+                  type: "base64",
+                  media_type: "image/png",
+                  data: imageBase64,
+                },
+              },
+              { type: "text", text: rubric },
+            ],
+          },
+        ],
+      });
+      visionUsage = addUsage(visionUsage, usageOf(resp.usage));
+      return resp.content
+        .map((b) => (b.type === "text" ? b.text : ""))
+        .join("\n");
+    });
+    visionFindings = await runVisionGate(
+      measurements.map((m) => ({ scene: m.scene, screenshotPath: m.screenshotPath })),
+      brandTruth,
+      judge,
+    );
+    if (visionUsage.input_tokens || visionUsage.output_tokens) {
+      await recordUsage({
+        op: "vision-qa",
+        model: MODELS.qaAgent,
+        scriptId,
+        url: brief?.brand_kit_url,
+        usage: visionUsage,
+      });
+    }
+    if (visionFindings.length) {
+      console.warn(
+        `[preview/build] vision gate (advisory) flagged ${visionFindings.length} issue(s):`,
+        JSON.stringify(visionFindings),
+      );
+    }
+  } catch (err) {
+    console.warn("[preview/build] vision gate (advisory) skipped:", err);
+  }
+
   return NextResponse.json({
     ok: true,
     scriptId,
@@ -256,6 +347,7 @@ export async function POST(request: Request) {
       findings: repair.findings,
       steps: repair.steps,
       spentUsd: repair.spentUsd,
+      vision: visionFindings,
     },
   });
 }
