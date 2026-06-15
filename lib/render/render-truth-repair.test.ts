@@ -70,6 +70,24 @@ await check("nothing fixes it → ladder-exhausted, ok:false", async () => {
   assert(r.blocking.length === 1 && r.blocking[0].scene === 3, "final blocking carried");
 });
 
+await check("a pure measure-error short-circuits — no paid repair, reason measure-error", async () => {
+  const me: RenderTruthFinding = { scene: 0, kind: "measure-error", detail: "playwright chromium not installed" };
+  const { cb, calls } = mk([{ findings: [me], blocking: [me] }]);
+  const r = await repairRenderTruth(cb);
+  assert(!r.ok && r.reason === "measure-error", `got ${r.reason}`);
+  assert(calls.regen.length === 0 && calls.rewrite.length === 0, "must not spend Opus on an unfixable measure-error");
+  assert(calls.measures === 1, `should measure once and stop, got ${calls.measures}`);
+});
+
+await check("a mix of measure-error + overflow still runs the ladder (overflow may be fixable)", async () => {
+  const me: RenderTruthFinding = { scene: 0, kind: "measure-error", detail: "x" };
+  const ov: RenderTruthFinding = { scene: 1, kind: "overflow", detail: "clipped" };
+  const { cb, calls } = mk([{ findings: [me, ov], blocking: [me, ov] }, gate([])], { ok: true, usage: U(1) });
+  const r = await repairRenderTruth(cb);
+  assert(r.ok && r.reason === "repaired", `got ${r.reason}`);
+  assert(calls.regen.length === 2, `both failing scenes regenerated, got ${calls.regen.length}`);
+});
+
 await check("cost ceiling stops before the first paid retry", async () => {
   const { cb, calls } = mk([gate([0])], { ok: true, usage: U(1) });
   const r = await repairRenderTruth(cb, { spentSoFarUsd: 10, ceilingUsd: 10 });

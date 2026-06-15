@@ -241,7 +241,23 @@ export const measureScenes = async (
     }));
   }
 
-  const browser = await chromium.launch({ args: ["--no-sandbox"] });
+  // The PACKAGE import above succeeds whenever node_modules is present; what is
+  // typically missing is the chromium BINARY (no `playwright install`). That
+  // surfaces HERE, at launch — so it must be inside its own try, or it throws
+  // uncaught out of measureScenes and the build route 500s instead of returning
+  // the documented per-scene measure-error that fail-closes to a 422.
+  let browser: Awaited<ReturnType<typeof chromium.launch>>;
+  try {
+    browser = await chromium.launch({ args: ["--no-sandbox"] });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message.split("\n")[0] : String(err);
+    const error = /executable doesn'?t exist|please run|install/i.test(msg)
+      ? `playwright chromium not installed — run: npx playwright install chromium (${msg})`
+      : `browser launch failed: ${msg}`;
+    return Array.from({ length: sceneCount }, (_, i) => ({
+      scene: i, width: dims.w, height: dims.h, elements: [], error,
+    }));
+  }
   const results: SceneMeasurement[] = [];
   try {
     const page = await browser.newPage({
@@ -255,10 +271,16 @@ export const measureScenes = async (
         continue;
       }
       try {
-        await page.setContent(buildSceneHtml(bodyHtml, fonts, dims), {
-          waitUntil: "networkidle",
-          timeout: 30000,
-        });
+        const html = buildSceneHtml(bodyHtml, fonts, dims);
+        // `networkidle` waits on the brand's REMOTE fonts/images, an unbounded
+        // flakiness source for what is now a BLOCKING gate. Retry once on the
+        // more lenient `load` so a transient remote stall doesn't hard-fail a
+        // build; a genuinely-broken scene still errors on both attempts.
+        try {
+          await page.setContent(html, { waitUntil: "networkidle", timeout: 30000 });
+        } catch {
+          await page.setContent(html, { waitUntil: "load", timeout: 30000 });
+        }
         // fonts loaded + a beat for layout to settle
         await page.evaluate("document.fonts && document.fonts.ready").catch(() => {});
         const elements = (await page.evaluate(PAGE_WALK)) as MeasuredElement[];

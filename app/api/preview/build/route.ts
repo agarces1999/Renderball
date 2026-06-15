@@ -3,7 +3,6 @@ import path from "path";
 import {
   loadScript,
   loadBriefByScriptId,
-  saveScript,
 } from "../../../../lib/store";
 import {
   buildAnimatedSections,
@@ -107,15 +106,17 @@ export async function POST(request: Request) {
     );
   }
 
-  // Persist token usage for this build (design + choreography + retries, Opus) —
-  // cache-aware cost. Best-effort; never blocks the build.
-  await recordUsage({
-    op: "build",
-    model: MODELS.codingAgentBuild,
-    scriptId,
-    url: brief?.brand_kit_url,
-    usage: result.usage,
-  });
+  // Accumulate ALL build-model spend (initial build + every repair regen/rewrite)
+  // into ONE bundle, recorded ONCE after the gates resolve — as a success if the
+  // build ships, or failed:true if a gate hard-fails. Recording the initial
+  // build as a success up-front (the old behavior) mislabeled a build that later
+  // hard-failed at the SSR or render-truth gate as a SUCCESSFUL build in the
+  // per-build cost report. The vision gate records its own separate "vision-qa"
+  // row. currentWarnings tracks the latest warnings so the response + dogfood
+  // manifest reflect what actually shipped after any repair (not the pre-repair set).
+  const model = MODELS.codingAgentBuild;
+  let currentUsage = result.usage ?? EMPTY_USAGE;
+  let currentWarnings = result.warnings;
 
   // Write the generated artifacts under src/generated/<scriptId>/ via the
   // shared writer — IDENTICAL layout to the MP4 path, so "Render to MP4"
@@ -153,6 +154,10 @@ export async function POST(request: Request) {
       "[preview/build] SSR render gate failed:",
       JSON.stringify(renderCheck.errors),
     );
+    // The build burned real tokens but won't ship — record failed:true so the
+    // ledger never understates cost and the report excludes it from per-build
+    // averages (it is not a successful build).
+    await recordUsage({ op: "build", model, scriptId, url: brief?.brand_kit_url, usage: currentUsage, failed: true });
     return NextResponse.json(
       {
         error: "one or more scenes failed to render",
@@ -171,13 +176,16 @@ export async function POST(request: Request) {
   //   L1/L2 regenerate the failing scene's design → L3 lighten its visual_concept
   //   + rebuild → L4 give up (hard-fail, do not ship). A $10 cumulative ceiling
   //   caps the loop. The agent-emitted Composition files mutate in place as the
-  //   ladder runs; `script.json` is re-saved if L3 lightens a concept so the
-  //   preview/MP4 reuse stays consistent.
+  //   ladder runs (writeCurrent → genDir, which the MP4 path reuses). We do NOT
+  //   persist the L3-lightened concept back to the CANONICAL script: visual_concept
+  //   is a build-time agent input, never rendered at runtime, so saving the QA
+  //   "SIMPLIFY …" directive into it only polluted the user-editable brief shown
+  //   in /review (and stacked across builds). The MP4 reuse reads genDir/script.json,
+  //   not the canonical store, so it stays consistent without the canonical save.
   let currentCode = result.code;
   let currentDesign = result.designCode;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let currentScript: any = script;
-  const model = MODELS.codingAgentBuild;
 
   const writeCurrent = async (warnings?: typeof result.warnings, assetManifest?: typeof result.asset_manifest) =>
     writeGeneratedFiles(genDir, {
@@ -192,7 +200,10 @@ export async function POST(request: Request) {
     {
       measure: async () => {
         const measurements = await measureScenes(genDir, currentScript, measureOutDir(genDir));
-        return findRenderTruthFailures(measurements);
+        // Thread the raw measurements (with each scene's screenshotPath) out via
+        // the GateResult so the advisory vision gate can reuse the final
+        // screenshots instead of launching Chromium a second time.
+        return { ...findRenderTruthFailures(measurements), measurements };
       },
       regenScene: async (sceneIndex, instruction) => {
         const r = await regenerateScene(
@@ -204,13 +215,16 @@ export async function POST(request: Request) {
         if (!r.ok) return { ok: false, usage: r.usage, error: r.error };
         currentCode = r.code;
         currentDesign = r.designCode;
+        currentWarnings = r.warnings;
+        if (r.usage) currentUsage = addUsage(currentUsage, r.usage);
         await writeCurrent(r.warnings, r.asset_manifest);
-        await recordUsage({ op: "build", model, scriptId, url: brief?.brand_kit_url, usage: r.usage });
         return { ok: true, usage: r.usage };
       },
       rewriteScript: async (sceneIndexes, reason) => {
         // L3: surgically lighten ONLY the failing scenes' visual_concept (their
         // render brief) and rebuild — keeps the narrative + other scenes intact.
+        // The lightened concept lives only in-memory + in genDir (for this MP4),
+        // NEVER persisted to the canonical script (see the block comment above).
         const lighter = {
           ...currentScript,
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -228,9 +242,9 @@ export async function POST(request: Request) {
         currentScript = lighter;
         currentCode = rb.code;
         currentDesign = rb.designCode;
+        currentWarnings = rb.warnings;
+        if (rb.usage) currentUsage = addUsage(currentUsage, rb.usage);
         await writeCurrent(rb.warnings, rb.asset_manifest);
-        await saveScript(currentScript);
-        await recordUsage({ op: "build", model, scriptId, url: brief?.brand_kit_url, usage: rb.usage });
         return { ok: true, usage: rb.usage };
       },
       onStep: (m) => console.warn(`[preview/build] render-truth: ${m}`),
@@ -243,6 +257,10 @@ export async function POST(request: Request) {
       `[preview/build] render-truth gate FAILED (${repair.reason}) after $${repair.spentUsd.toFixed(2)}:`,
       JSON.stringify(repair.blocking),
     );
+    // Doomed build — record the accumulated build+repair spend as failed:true so
+    // the ledger keeps every token but the report does NOT count this scriptId as
+    // a successful build (cf. the early-fail path above).
+    await recordUsage({ op: "build", model, scriptId, url: brief?.brand_kit_url, usage: currentUsage, failed: true });
     return NextResponse.json(
       {
         error: `render-truth gate: ${repair.reason}`,
@@ -270,14 +288,29 @@ export async function POST(request: Request) {
   // build that already passed the deterministic floor must ship. Best-effort:
   // any error (no API key, vision hiccup) is swallowed so it can't break a build
   // that already passed. Cheap (~$0.02/scene vision input) and runs once, after
-  // the build is final.
+  // the build is final. NOTE: it runs AFTER and OUTSIDE the $10 repair ceiling —
+  // that ceiling caps the REPAIR loop, not this advisory pass, which is bounded
+  // by scene count (small) and recorded separately as op "vision-qa".
   let visionFindings: VisionFinding[] = [];
+  let visionCostUsd = 0;
   try {
-    const measurements = await measureScenes(
-      genDir,
-      currentScript,
-      measureOutDir(genDir),
-    );
+    // Reuse the screenshots from repair's FINAL measure (a measure always runs
+    // last) instead of launching Chromium a second time — repair threads them out
+    // on RepairResult.measurements. Fall back to a fresh measure only if absent.
+    const measurements =
+      repair.measurements ??
+      (await measureScenes(genDir, currentScript, measureOutDir(genDir)));
+    const measured = measurements.filter((m) => m.screenshotPath);
+    if (measured.length === 0 && measurements.length > 0) {
+      // Distinguish "vision ran clean" from "vision could not run" (e.g. the
+      // chromium binary is missing) — otherwise 0 findings silently passes.
+      console.warn(
+        `[preview/build] vision gate (advisory) could not run: 0/${measurements.length} scenes produced a screenshot`,
+        JSON.stringify(
+          measurements.filter((m) => m.error).map((m) => ({ scene: m.scene, error: m.error })),
+        ),
+      );
+    }
     const be = brief?.brand_extract;
     const brandTruth = {
       name: be?.title,
@@ -315,11 +348,12 @@ export async function POST(request: Request) {
         .join("\n");
     });
     visionFindings = await runVisionGate(
-      measurements.map((m) => ({ scene: m.scene, screenshotPath: m.screenshotPath })),
+      measured.map((m) => ({ scene: m.scene, screenshotPath: m.screenshotPath })),
       brandTruth,
       judge,
     );
     if (visionUsage.input_tokens || visionUsage.output_tokens) {
+      visionCostUsd = costUsd(MODELS.qaAgent, visionUsage);
       await recordUsage({
         op: "vision-qa",
         model: MODELS.qaAgent,
@@ -338,11 +372,19 @@ export async function POST(request: Request) {
     console.warn("[preview/build] vision gate (advisory) skipped:", err);
   }
 
+  // The build shipped — record the full build-model spend (initial + every
+  // repair regen/rewrite) as ONE successful row. usage/warnings returned below
+  // reflect the FINAL shipped composition, not the pre-repair one.
+  await recordUsage({ op: "build", model, scriptId, url: brief?.brand_kit_url, usage: currentUsage });
+
   return NextResponse.json({
     ok: true,
     scriptId,
-    usage: result.usage,
-    warnings: result.warnings,
+    usage: currentUsage,
+    warnings: currentWarnings,
+    // True end-to-end cost: build + repair (repair.spentUsd already includes the
+    // initial build) + the advisory vision pass (separate model, outside the ceiling).
+    totalCostUsd: Number((repair.spentUsd + visionCostUsd).toFixed(6)),
     render_truth: {
       findings: repair.findings,
       steps: repair.steps,
