@@ -457,7 +457,7 @@ export const BrandChrome: React.FC<BrandChromeProps> = ({
           <Img
             src={logoSrc}
             data-rb-brand-logo=""
-            style={{ height: 24, width: "auto" }}
+            style={{ height: 24, width: "auto", filter: "brightness(0) invert(1)" }}
             onLoad={(e: React.SyntheticEvent<HTMLImageElement>) => {
               const el = e.currentTarget;
               if (isWideLockup(el.naturalWidth, el.naturalHeight)) setLogoIsLockup(true);
