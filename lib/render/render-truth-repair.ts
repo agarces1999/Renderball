@@ -102,6 +102,15 @@ export const repairRenderTruth = async (
   };
 
   let gate = await cb.measure();
+  // Fail loudly on a malformed GateResult (e.g. a measure callback that forgot
+  // to await findRenderTruthFailures and spread an unresolved Promise → no
+  // findings/blocking). Otherwise the next line crashes with a cryptic
+  // "Cannot read properties of undefined (reading 'length')".
+  if (!gate || !Array.isArray(gate.blocking) || !Array.isArray(gate.findings)) {
+    throw new Error(
+      "repairRenderTruth: measure() returned a malformed GateResult (expected { findings: [], blocking: [] })",
+    );
+  }
   if (gate.blocking.length === 0) {
     return { ok: true, reason: "passed", steps, spentUsd: spent, findings: gate.findings, blocking: [], measurements: gate.measurements };
   }

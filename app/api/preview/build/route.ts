@@ -203,7 +203,7 @@ export async function POST(request: Request) {
         // Thread the raw measurements (with each scene's screenshotPath) out via
         // the GateResult so the advisory vision gate can reuse the final
         // screenshots instead of launching Chromium a second time.
-        return { ...findRenderTruthFailures(measurements), measurements };
+        return { ...(await findRenderTruthFailures(measurements)), measurements };
       },
       regenScene: async (sceneIndex, instruction) => {
         const r = await regenerateScene(
