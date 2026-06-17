@@ -40,6 +40,17 @@ const mk = (measureQueue: GateResult[], stepResult: RepairStepResult = { ok: tru
 
 console.log("render-truth-repair");
 
+await check("malformed GateResult (unawaited Promise spread) throws a clear error", async () => {
+  // Regression: the route's measure callback spread an un-awaited
+  // findRenderTruthFailures() Promise, so findings/blocking were undefined and
+  // repairRenderTruth crashed on `.length`. The guard must fail loudly instead.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const cb: any = { measure: async () => ({ measurements: [] }), regenScene: async () => ({ ok: true }), rewriteScript: async () => ({ ok: true }) };
+  let threw = "";
+  try { await repairRenderTruth(cb); } catch (e) { threw = e instanceof Error ? e.message : String(e); }
+  assert(/malformed GateResult/.test(threw), `expected clear guard error, got: ${threw || "(no throw)"}`);
+});
+
 await check("clean build passes immediately, no repairs", async () => {
   const { cb, calls } = mk([gate([])]);
   const r = await repairRenderTruth(cb);
