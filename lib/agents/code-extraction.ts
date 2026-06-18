@@ -88,3 +88,35 @@ export const verifyCompilable = async (
     return err instanceof Error ? err.message : String(err);
   }
 };
+
+/**
+ * Surgical compile-repair loop. A compile error (a stray char, a truncated
+ * tag, leaked prose) is a MECHANICAL defect, not a design problem — so instead
+ * of failing the build (or paying a full creative regeneration), feed the exact
+ * compiler error to a targeted `fix` and re-`verify`, up to `maxAttempts` times.
+ *
+ * Pure + fully injected (`verify` + `fix` are passed in), so the loop logic is
+ * unit-tested with mocks — no model spend. The pipeline wires `verify =
+ * verifyCompilable` and `fix = a thinking-off "fix only this syntax error" call`.
+ * Returns the best code reached, the residual error (null = compiles), and the
+ * attempt count for logging/cost. `fix` returning null (call failed / no text)
+ * stops the loop immediately rather than spinning.
+ */
+export const repairCompile = async (
+  code: string,
+  verify: (c: string) => Promise<string | null>,
+  fix: (code: string, error: string) => Promise<string | null>,
+  maxAttempts = 2,
+): Promise<{ code: string; error: string | null; attempts: number }> => {
+  let current = code;
+  let error = await verify(current);
+  let attempts = 0;
+  while (error && attempts < maxAttempts) {
+    attempts++;
+    const fixed = await fix(current, error);
+    if (!fixed) break; // fixer gave up — don't loop on the same input
+    current = fixed;
+    error = await verify(current);
+  }
+  return { code: current, error, attempts };
+};

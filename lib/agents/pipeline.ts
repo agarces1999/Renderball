@@ -1,7 +1,7 @@
 import { getAnthropic, MODELS } from "../anthropic";
 import { DESIGN_AGENT_SYSTEM_PROMPT } from "./prompts/design-agent";
 import { ANIMATION_AGENT_SYSTEM_PROMPT } from "./prompts/animation-agent";
-import { stripCodeFence, verifyCompilable } from "./code-extraction";
+import { stripCodeFence, verifyCompilable, repairCompile } from "./code-extraction";
 import {
   contrastRatio,
   MIN_CONTRAST_RATIO,
@@ -40,7 +40,7 @@ import { makeFontFetcher, inlineFontFaces } from "../render/font-inline";
 import { makeImageProbe, repairBrokenImages } from "../render/image-integrity";
 import { searchPexelsPhotos, searchPexelsVideos } from "../assets/sources/pexels";
 import type { AssetSearchEntry } from "../assets/types";
-import { type Usage, usageOf, addUsage } from "../usage";
+import { type Usage, usageOf, addUsage, EMPTY_USAGE } from "../usage";
 import type { Script } from "../../src/schema";
 import type {
   AgentBrandExtract,
@@ -323,6 +323,75 @@ const formatAnthropicError = (err: unknown): string => {
 const COMPOSITION_REQUEST_TIMEOUT_MS = 30 * 60 * 1000;
 
 /**
+ * One surgical compile-fix round-trip. A compile error in generated code (a
+ * stray `>`, an unclosed tag, a truncated expression) is a MECHANICAL defect,
+ * not a design problem — so instead of failing the build or paying a full
+ * creative regeneration (~17 min on the slow build models), hand the model the
+ * broken file + the EXACT esbuild error and ask for the corrected file back.
+ *
+ * Deliberately thinking-OFF: this is transcribe-and-patch, not composition.
+ * There's nothing to reason about — find the one broken token, fix it, re-emit
+ * verbatim. Omitting `thinking` keeps it fast (~10-30s) and cheap, and works on
+ * both Opus 4.8 and the GLM interim model (an explicit {type:"disabled"} 400s
+ * on some models, so we omit the param entirely). Streamed for parity with the
+ * other Composition calls (a full file can exceed the SDK's 10-min sync ceiling).
+ *
+ * Returns the stripped corrected code (null if the call failed or produced no
+ * usable file) and the call's usage — billed by the caller regardless of
+ * outcome, since the tokens were spent either way. Paired with `repairCompile`
+ * (code-extraction.ts), which owns the verify→fix→re-verify loop + attempt cap.
+ */
+const surgicalCompileFix = async (
+  client: ReturnType<typeof getAnthropic>,
+  model: string,
+  code: string,
+  error: string,
+): Promise<{ code: string | null; usage: Usage }> => {
+  const userMessage = [
+    `The TSX file below fails to compile. Fix ONLY the syntax error and re-emit the COMPLETE file.`,
+    ``,
+    `## Compiler error`,
+    error,
+    ``,
+    `## File`,
+    "```tsx",
+    code,
+    "```",
+    ``,
+    `Output the complete corrected file — same imports, same components, same copy, same styling, same layout. Every line MUST be identical EXCEPT the minimal change that fixes the compile error. Do NOT redesign, reformat, rename, or add/remove features. Output only the file, no commentary.`,
+  ].join("\n");
+
+  try {
+    const resp = await client.messages
+      .stream(
+        {
+          model,
+          max_tokens: 64000,
+          // thinking omitted on purpose — see the doc comment.
+          messages: [{ role: "user", content: userMessage }],
+        },
+        { timeout: COMPOSITION_REQUEST_TIMEOUT_MS },
+      )
+      .finalMessage();
+    const text = resp.content.find((c) => c.type === "text");
+    const fixed =
+      text && text.type === "text" ? stripCodeFence(text.text.trim()) : null;
+    // Guard against a non-file response (refusal / prose) slipping through.
+    const usable =
+      fixed && fixed.includes("import") && fixed.includes("export")
+        ? fixed
+        : null;
+    return { code: usable, usage: usageOf(resp.usage) };
+  } catch (err) {
+    console.warn(
+      "[pipeline] surgicalCompileFix call failed:",
+      err instanceof Error ? err.message : err,
+    );
+    return { code: null, usage: EMPTY_USAGE };
+  }
+};
+
+/**
  * Re-run the Design + Choreography passes for a SINGLE scene without
  * touching the others. Used by the preview-page "Regenerate scene N"
  * button — the user iterates on one moment at a time at ~1/Nth the
@@ -500,7 +569,7 @@ export const regenerateScene = async (
       error: "Animation Agent returned no text content.",
     };
   }
-  const finalCode = stripCodeFence(animationText.text.trim());
+  let finalCode = stripCodeFence(animationText.text.trim());
 
   if (!finalCode.includes("import") || !finalCode.includes("export")) {
     return {
@@ -508,6 +577,33 @@ export const regenerateScene = async (
       stage: "animation",
       error: `Animation Agent output doesn't look like a TS file. First 300 chars: ${finalCode.slice(0, 300)}`,
     };
+  }
+
+  // Surgical compile-repair (#2) — same as the full build path. A mechanical
+  // syntax defect gets a fast, thinking-off "fix only this" patch + re-verify
+  // (≤2 attempts) before the hard gate below fails the regen. Run on the raw
+  // composition, before logo/image/font finalize, so the fixer never reproduces
+  // the inlined font data: URLs.
+  let regenUsage = addUsage(
+    usageOf(designResponse.usage),
+    usageOf(animationResponse.usage),
+  );
+  const regenCompileRepair = await repairCompile(
+    finalCode,
+    verifyCompilable,
+    async (c, e) => {
+      const r = await surgicalCompileFix(client, MODELS.codingAgent, c, e);
+      regenUsage = addUsage(regenUsage, r.usage); // billed either way
+      return r.code;
+    },
+  );
+  finalCode = regenCompileRepair.code;
+  if (regenCompileRepair.attempts > 0) {
+    console.warn(
+      `[pipeline] regen surgical compile-repair: ${regenCompileRepair.attempts} attempt(s), ${
+        regenCompileRepair.error ? "still failing" : "fixed"
+      }`,
+    );
   }
 
   // Substitute the brand-logo sentinel with the real logo URL. When the logo is
@@ -566,7 +662,7 @@ export const regenerateScene = async (
     code: finalCodeOut,
     designCode: designCodeOut,
     warnings,
-    usage: addUsage(usageOf(designResponse.usage), usageOf(animationResponse.usage)),
+    usage: regenUsage,
   };
 };
 
@@ -1251,6 +1347,32 @@ export const buildAnimatedSections = async (
         err instanceof Error ? err.message : err,
       );
     }
+  }
+
+  // Surgical compile-repair (#2). A compile error here is MECHANICAL — a stray
+  // char, an unclosed tag, a truncated expression — not a design defect. Rather
+  // than fail the build (the old behavior at the hard gate below), feed the
+  // exact esbuild error to a fast, thinking-off "fix only this" call and
+  // re-verify, up to 2 attempts. Done HERE, on the raw composition, BEFORE
+  // logo-inject / image-repair / font-inline run — so the fixer never has to
+  // reproduce the multi-KB inlined font data: URLs (truncation risk) and the
+  // corrected file flows through the same finalize passes as a clean one.
+  const compileRepair = await repairCompile(
+    finalCode,
+    verifyCompilable,
+    async (c, e) => {
+      const r = await surgicalCompileFix(client, MODELS.codingAgentBuild, c, e);
+      animationUsage = addUsage(animationUsage, r.usage); // billed either way
+      return r.code;
+    },
+  );
+  finalCode = compileRepair.code;
+  if (compileRepair.attempts > 0) {
+    console.warn(
+      `[pipeline] surgical compile-repair: ${compileRepair.attempts} attempt(s), ${
+        compileRepair.error ? "still failing" : "fixed"
+      }`,
+    );
   }
 
   // Finalize the composition (applies to BOTH the animated + design comps, so
