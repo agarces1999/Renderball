@@ -24,12 +24,21 @@
 // `Section3` mentioned inside JSX/strings never registers as a declaration.
 const SECTION_DECL_RX = /^export\s+(?:const|function)\s+Section(\d+)\b/gm;
 
-// Any top-level `export`. A section's block ends at the NEXT top-level export —
-// whether that's the next Section OR a trailing export (the agents end the file
-// with `export const Generated`, a preview-only alias). Ending at EOF instead
-// would make replaceSection on the LAST section silently drop that trailing
-// export; keying off the next export keeps every splice content-preserving.
-const TOP_EXPORT_RX = /^export\b/gm;
+// A section's block ends at the next BLOCK BOUNDARY: the following Section
+// declaration, OR the file's trailing `export const Generated` preview alias
+// (the agents always end the file with it). Ending the LAST section at EOF
+// instead would make replaceSection silently drop that trailing export; keying
+// off the next boundary keeps every splice content-preserving.
+//
+// Deliberately NARROW — only `Section{N}` / `Generated`, never any `^export`.
+// A blanket `^export` boundary would truncate a section whose BODY contains a
+// column-0 `export` (e.g. a code sample inside a <pre>/template literal — real
+// for a dev-tool brand), breaking the "robust to arbitrary content inside a
+// section" invariant. This matches exactly the same token class the section
+// enumerator trusts, so it adds no new in-body-collision risk beyond
+// SECTION_DECL_RX's existing (vanishingly small) one.
+const BLOCK_BOUNDARY_RX =
+  /^export\s+(?:const|function)\s+(?:Section\d+|Generated)\b/gm;
 
 export interface SectionRange {
   index: number;
@@ -49,18 +58,18 @@ export const sectionRanges = (code: string): SectionRange[] => {
   for (let m = SECTION_DECL_RX.exec(code); m; m = SECTION_DECL_RX.exec(code)) {
     starts.push({ index: parseInt(m[1], 10), start: m.index });
   }
-  // Offsets of every top-level export, in order. A section ends at the first
-  // top-level export AFTER its own start (the next Section, or a trailing
-  // `export const Generated`), or EOF when it's the last export in the file.
-  const exportOffsets: number[] = [];
-  TOP_EXPORT_RX.lastIndex = 0;
-  for (let m = TOP_EXPORT_RX.exec(code); m; m = TOP_EXPORT_RX.exec(code)) {
-    exportOffsets.push(m.index);
+  // Boundary offsets (Section decls + the trailing `Generated` alias), in
+  // order. A section ends at the first boundary AFTER its own start, or EOF
+  // when none follows.
+  const boundaries: number[] = [];
+  BLOCK_BOUNDARY_RX.lastIndex = 0;
+  for (let m = BLOCK_BOUNDARY_RX.exec(code); m; m = BLOCK_BOUNDARY_RX.exec(code)) {
+    boundaries.push(m.index);
   }
   return starts.map((s) => ({
     index: s.index,
     start: s.start,
-    end: exportOffsets.find((o) => o > s.start) ?? code.length,
+    end: boundaries.find((o) => o > s.start) ?? code.length,
   }));
 };
 

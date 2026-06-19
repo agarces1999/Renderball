@@ -195,6 +195,37 @@ check("replacing a MIDDLE section still preserves the trailing export", async ()
   assert((await verifyCompilable(out!)) === null, "compiles");
 });
 
+// ── a column-0 `export` INSIDE a section body must NOT split the section ───
+// A dev-tool brand may render a code sample (`export const config = …`) inside
+// a <pre>/template literal. The block boundary is narrow (Section{N}/Generated
+// only), so such a line never truncates the section — the documented "robust
+// to arbitrary content inside a section" invariant.
+check("a code-sample `export` in a section body does not truncate it", async () => {
+  const codeSampleScene = `export const Section1: React.FC = () => (
+  <AbsoluteFill>
+    <pre>{\`
+export const config = { mode: "fast" };
+export default config;
+\`}</pre>
+    <h2>Body has a column-0 export, but it's a string</h2>
+  </AbsoluteFill>
+);`;
+  const file = `${PREAMBLE}\n${S0}\n\n${codeSampleScene}\n\n${S2}\n`;
+  // The whole code-sample body must stay inside Section1's block.
+  const block = extractSection(file, 1);
+  assert(block !== null, "Section1 found");
+  assert(block!.includes("export const config"), "code sample stays in the block");
+  assert(block!.includes("export default config"), "all of the sample stays");
+  assert(block!.includes("but it's a string"), "trailing JSX stays — section not truncated");
+  assert(!block!.includes("Third"), "but does NOT bleed into Section2");
+  // Indices unaffected: still exactly [0,1,2], not phantom-split by the sample.
+  assert(JSON.stringify(listSectionIndices(file)) === "[0,1,2]", "no phantom section");
+  // And a splice round-trips cleanly.
+  const out = replaceSection(file, 0, S0);
+  assert(out !== null && (await verifyCompilable(out!)) === null, "splice compiles");
+  assert(out!.includes("export const config"), "Section1's sample survives a Section0 splice");
+});
+
 // ── offset attribution ───────────────────────────────────────────────────
 check("sceneIndexAt maps an in-section offset to its scene", () => {
   const off = FILE.indexOf("Third");
