@@ -2,6 +2,14 @@ import { getAnthropic, MODELS } from "../anthropic";
 import { DESIGN_AGENT_SYSTEM_PROMPT } from "./prompts/design-agent";
 import { ANIMATION_AGENT_SYSTEM_PROMPT } from "./prompts/animation-agent";
 import { stripCodeFence, verifyCompilable, repairCompile } from "./code-extraction";
+import { extractSection, replaceSection } from "./section-splice";
+import {
+  densityFailuresByScene,
+  overflowFailuresByScene,
+  unboundFailuresByScene,
+  groupByScene,
+  sectionsAreSpliceable,
+} from "./scene-scope";
 import {
   contrastRatio,
   MIN_CONTRAST_RATIO,
@@ -388,6 +396,122 @@ const surgicalCompileFix = async (
       err instanceof Error ? err.message : err,
     );
     return { code: null, usage: EMPTY_USAGE };
+  }
+};
+
+/**
+ * Scoped per-scene design regen (#1). Regenerate ONLY the `Section{index}`
+ * component of an existing (static) composition, fixing the localized quality-
+ * gate failures handed in via `fixMessages`, and return just that section's
+ * block for the caller to splice back in.
+ *
+ * This is the cost lever behind per-scene retries: a whole-composition retry
+ * re-emits every scene (output tokens — the dominant build cost — scale with
+ * the whole file), whereas this asks the model to emit ONE section. Several of
+ * these run in parallel, so wall-clock is one section's generation, not N.
+ * The model gets the full file as READ-ONLY context (so the regenerated scene
+ * stays consistent with the shared fonts/palette/chrome) but is told to output
+ * only the one export; `extractSection` then isolates that block even if the
+ * model over-emits. Returns null when the call fails or the section can't be
+ * recovered — the caller falls back to a whole-composition retry.
+ */
+const regenerateSectionBlock = async (
+  client: ReturnType<typeof getAnthropic>,
+  model: string,
+  input: BuildInput,
+  baseCode: string,
+  sceneIndex: number,
+  fixMessages: string[],
+  mode: "design" | "animation" = "design",
+): Promise<{ block: string | null; usage: Usage }> => {
+  const scene = input.script.scenes[sceneIndex];
+  if (!scene) return { block: null, usage: EMPTY_USAGE };
+  const sectionName = `Section${sceneIndex}`;
+  const dims = dimensionsForScript(input.script);
+  const aspect = input.script.config?.aspect_ratio ?? "16:9";
+  const viewingContext: "mobile" | "desktop" =
+    aspect === "16:9" ? "desktop" : "mobile";
+
+  const userMessage =
+    mode === "animation"
+      ? [
+          `You are fixing the MOTION of ONE section in an existing animated Composition.tsx. Re-emit ONLY the \`export const ${sectionName}\` component with the animation issues below fixed — keep its design, copy, and layout exactly as-is; change only CSS @keyframes / animation / animation-delay / transition.`,
+          ``,
+          `## Animation issues to fix in ${sectionName}`,
+          ...fixMessages.map((m) => `- ${m}`),
+          ``,
+          `## Scene brief`,
+          `${sectionName} runs for ${roundTo(sceneDurationSeconds(scene), 2)}s. Distribute finite (forwards) beats across the timeline — the latest must land at ≥60% of the duration. Text entrances stay fast (headline ≤0.4s, body ≤0.5s); late beats are decorative.`,
+          scene.visual_concept ? `Animations list (from visual_concept):\n${scene.visual_concept}` : "",
+          ``,
+          `## Full Composition.tsx (READ-ONLY context — do not re-emit any of it except ${sectionName})`,
+          "```tsx",
+          baseCode,
+          "```",
+          ``,
+          `Output ONLY the corrected \`export const ${sectionName} = …\` component (with its local <style>/@keyframes if it has them). No imports, no module consts, no other sections, no prose.`,
+        ]
+      : [
+          `You are fixing ONE section of an existing static Composition.tsx. Re-emit ONLY the \`export const ${sectionName}\` component with the issues below fixed — nothing else.`,
+          ``,
+          `## Issues to fix in ${sectionName}`,
+          ...fixMessages.map((m) => `- ${m}`),
+          ``,
+          `## Scene brief`,
+          `Label: "${scene.label}"`,
+          scene.description ? `Story role: ${scene.description}` : "",
+          scene.visual_concept ? `Visual concept:\n> ${scene.visual_concept}` : "",
+          ``,
+          `## Canvas`,
+          `- Aspect ratio: ${aspect} (${viewingContext}), surface ${dims.width}×${dims.height}`,
+          `- Keep text sizes + fontFamily consistent with the rest of the file; reuse the file's existing module consts (PALETTE, FONT_*, keyframes) and components — do NOT redefine them.`,
+          ``,
+          `## Full Composition.tsx (READ-ONLY context — do not re-emit any of it except ${sectionName})`,
+          "```tsx",
+          baseCode,
+          "```",
+          ``,
+          `Output ONLY the corrected \`export const ${sectionName} = …\` component. No imports, no module consts, no other sections, no prose.`,
+        ];
+  const content = userMessage.filter((l) => l.length > 0).join("\n");
+
+  try {
+    const resp = await client.messages
+      .stream(
+        {
+          model,
+          max_tokens: 64000,
+          // Adaptive thinking: a scoped fix is still a real design/motion
+          // decision (re-laying-out or re-pacing one scene), worth reasoning
+          // about. The win is the small OUTPUT (one section) + scene isolation,
+          // not skipped thinking.
+          thinking: { type: "adaptive" },
+          system: [
+            {
+              type: "text",
+              text:
+                mode === "animation"
+                  ? ANIMATION_AGENT_SYSTEM_PROMPT
+                  : DESIGN_AGENT_SYSTEM_PROMPT,
+              cache_control: { type: "ephemeral" },
+            },
+          ],
+          messages: [{ role: "user", content }],
+        },
+        { timeout: COMPOSITION_REQUEST_TIMEOUT_MS },
+      )
+      .finalMessage();
+    const text = resp.content.find((c) => c.type === "text");
+    const raw = text && text.type === "text" ? stripCodeFence(text.text.trim()) : "";
+    // Isolate the one section even if the model emitted extra context.
+    const block = raw ? extractSection(raw, sceneIndex) : null;
+    return { block, usage: usageOf(resp.usage) };
+  } catch (err) {
+    console.warn(
+      `[pipeline] regenerateSectionBlock(${sectionName}, ${mode}) failed:`,
+      err instanceof Error ? err.message : err,
+    );
+    return { block: null, usage: EMPTY_USAGE };
   }
 };
 
@@ -902,6 +1026,11 @@ export const buildAnimatedSections = async (
     };
   }
 
+  // Tokens spent by retries that DON'T replace `designResponse` (the scoped
+  // per-scene regens splice into designCode rather than swapping the response),
+  // accumulated here and folded into the build's billed usage at return.
+  let extraDesignUsage: Usage = EMPTY_USAGE;
+
   // Quality gate: count headlines / paragraphs / SVGs per section. If
   // the output is sparse, retry once with a specific failure message.
   // STRUCTURAL failures (crash / broken-looking — invented claims, severe
@@ -910,7 +1039,7 @@ export const buildAnimatedSections = async (
   // retry's output and on the final shipped code. They used to be one-shot
   // inline checks against attempt 0 only — which is how the Supabase build
   // shipped a hand-drawn logo replica with an empty warnings.json.
-  const gateReport = assessDesignDensity(designCode, input.script);
+  let gateReport = assessDesignDensity(designCode, input.script);
   let structural = assessStructuralGates(designCode, input);
   // Contrast scan, MINOR tier (QA B1): pairs below the 4.5:1 body floor but
   // readable for large text stay a polish-level nudge (the agent may keep a
@@ -1036,7 +1165,7 @@ export const buildAnimatedSections = async (
   // Whatever still fails after that ships best-of-attempts and is recorded
   // in warnings.structural_unresolved — never silently.
   const includePolish = !skipRetries;
-  const polishFailure =
+  let polishFailure =
     includePolish &&
     (!gateReport.ok ||
       contrastFailure ||
@@ -1047,6 +1176,132 @@ export const buildAnimatedSections = async (
       fillFailure ||
       undersizedFailure ||
       accentFailure);
+
+  // ─── SCOPED per-scene retry fast-path (#1) ─────────────────────────────
+  // When the ONLY failures are scene-localizable (sparse density, off-canvas
+  // crop, baked-in copy), regenerate just the offending Section{N} blocks in
+  // parallel and splice them back — instead of re-emitting the whole
+  // composition (output tokens, the dominant build cost, scale with the file).
+  // A non-localizable failure (contrast, throughline, invented claims, logo
+  // defects, fonts, …) present anywhere disqualifies the fast-path, so we fall
+  // straight through to the whole-comp retry below. The spliced result is
+  // re-compiled + re-gated and only adopted if it doesn't regress, so a bad
+  // splice or an unhelpful regen costs nothing but the (cheap) scoped calls.
+  {
+    const scopeScenes = input.script.scenes ?? [];
+    const scopeAspect = (input.script.config?.aspect_ratio ?? "16:9") as AspectRatio;
+    const LOCALIZABLE_KEYS = new Set(["unbound_copy", "overflow_crop"]);
+    const nonLocalizablePolish =
+      includePolish &&
+      !!(
+        contrastFailure ||
+        throughlineFailure ||
+        driftFailure ||
+        chartFailure ||
+        fontFailure ||
+        fillFailure ||
+        undersizedFailure ||
+        accentFailure
+      );
+    const nonLocalizableStructural = structural.failures.some(
+      (f) => !LOCALIZABLE_KEYS.has(f.key),
+    );
+    const densityFails = includePolish && !gateReport.ok;
+    const overflowFails = structural.failures.some((f) => f.key === "overflow_crop");
+    const unboundFails = structural.failures.some((f) => f.key === "unbound_copy");
+
+    const densityScoped = densityFails
+      ? densityFailuresByScene(designCode, scopeScenes)
+      : [];
+    const overflowScoped = overflowFails
+      ? overflowFailuresByScene(designCode, scopeAspect)
+      : [];
+    const unboundScoped = unboundFails
+      ? unboundFailuresByScene(designCode, scopeScenes)
+      : [];
+
+    // Every failing localizable gate must attribute to at least one scene; if a
+    // crop/literal lives outside any Section block we can't scope it → fall back.
+    const localizationComplete =
+      (!densityFails || densityScoped.length > 0) &&
+      (!overflowFails || overflowScoped.length > 0) &&
+      (!unboundFails || unboundScoped.length > 0);
+
+    const grouped = groupByScene(densityScoped, overflowScoped, unboundScoped);
+    const canScope =
+      grouped.length > 0 &&
+      !nonLocalizablePolish &&
+      !nonLocalizableStructural &&
+      localizationComplete &&
+      sectionsAreSpliceable(designCode, scopeScenes.length);
+
+    if (canScope) {
+      console.warn(
+        `[pipeline] scoped retry: regenerating ${grouped.length} scene(s) [${grouped
+          .map((g) => g.scene)
+          .join(", ")}] instead of the whole composition`,
+      );
+      const results = await Promise.all(
+        grouped.map(({ scene, messages }) =>
+          regenerateSectionBlock(
+            client,
+            MODELS.codingAgentBuild,
+            input,
+            designCode,
+            scene,
+            messages,
+          ).then((r) => ({ scene, ...r })),
+        ),
+      );
+      let spliced = designCode;
+      let anySpliced = false;
+      for (const r of results) {
+        extraDesignUsage = addUsage(extraDesignUsage, r.usage); // billed either way
+        if (!r.block) continue;
+        const next = replaceSection(spliced, r.scene, r.block);
+        if (next) {
+          spliced = next;
+          anySpliced = true;
+        }
+      }
+      // Adopt only if the spliced file COMPILES and doesn't regress the gates.
+      if (anySpliced && (await verifyCompilable(spliced)) === null) {
+        const reStructural = assessStructuralGates(spliced, input);
+        const reDensity = assessDesignDensity(spliced, input.script);
+        const notWorse =
+          reStructural.failures.length <= structural.failures.length &&
+          reStructural.severeContrastCount <= structural.severeContrastCount &&
+          reStructural.inventedClaimCount <= structural.inventedClaimCount;
+        if (notWorse) {
+          designCode = spliced;
+          structural = reStructural;
+          gateReport = reDensity;
+          // Recompute the whole-comp guard: the non-localizable polish flags
+          // were already clean (canScope required it), so only density moves.
+          polishFailure =
+            includePolish &&
+            (!gateReport.ok ||
+              contrastFailure ||
+              throughlineFailure ||
+              driftFailure ||
+              chartFailure ||
+              fontFailure ||
+              fillFailure ||
+              undersizedFailure ||
+              accentFailure);
+          if (structural.failures.length === 0 && (!includePolish || gateReport.ok)) {
+            console.warn("[pipeline] scoped retry cleared all gates — skipping whole-comp retry");
+          } else {
+            console.warn("[pipeline] scoped retry improved but gaps remain — whole-comp retry follows");
+          }
+        } else {
+          console.warn("[pipeline] scoped retry regressed a gate; discarding, falling back to whole-comp");
+        }
+      } else if (anySpliced) {
+        console.warn("[pipeline] scoped retry produced non-compiling splice; falling back to whole-comp");
+      }
+    }
+  }
 
   if (structural.failures.length > 0 || polishFailure) {
     const retryMessage = [
@@ -1275,7 +1530,89 @@ export const buildAnimatedSections = async (
           )}. Every text element must finish entering with its reading time left: animation-delay + duration + max(1.2s, words × 0.3s) must fit inside the scene. Move these text beats earlier, and let DECORATIVE elements (accent bars, glows, chart draws, background shifts) carry the late beats the dead-air rule asks for.`
       : null;
   let animationUsage = usageOf(animationResponse.usage);
-  if ((!deadAirReport.ok || readTimeFailure || dwellFailure) && !skipRetries) {
+
+  // ─── SCOPED animation retry fast-path (#1) ─────────────────────────────
+  // Dead-air and late-beat dwell are per-scene problems. When those are the
+  // only animation failures (reading-time / slow-text is NOT scene-attributable
+  // → it disqualifies the fast-path), re-pace just the offending Section{N}
+  // blocks in parallel and splice them back, instead of re-emitting the whole
+  // composition. Re-compiled + re-gated before adoption, with the whole-comp
+  // retry below as the fallback — identical safety model to the design pass.
+  let scopedAnimationCleared = false;
+  if (!skipRetries && !readTimeFailure && (!deadAirReport.ok || dwellFailure)) {
+    const deadAirScenes = deadAirReport.ok ? [] : deadAirReport.failures;
+    const dwellScenes = undwelled.map((u) => ({
+      scene: u.section,
+      message: `Late-beat dwell — <${u.tag}> lands at ${u.landsAt}s of a ${u.sceneDuration.toFixed(
+        1,
+      )}s scene but needs ~${u.readTime}s of reading time. Pull this text beat earlier so animation-delay + duration + reading-time fits inside the scene; carry any required late beats with DECORATIVE finite motion (accent bar, glow, chart draw, gradient deepen), never a paragraph landing at the end.`,
+    }));
+    const grouped = groupByScene(deadAirScenes, dwellScenes);
+    if (
+      grouped.length > 0 &&
+      sectionsAreSpliceable(finalCode, input.script.scenes.length)
+    ) {
+      console.warn(
+        `[pipeline] scoped animation retry: re-pacing ${grouped.length} scene(s) [${grouped
+          .map((g) => g.scene)
+          .join(", ")}] instead of the whole composition`,
+      );
+      const results = await Promise.all(
+        grouped.map(({ scene, messages }) =>
+          regenerateSectionBlock(
+            client,
+            MODELS.codingAgentBuild,
+            input,
+            finalCode,
+            scene,
+            messages,
+            "animation",
+          ).then((r) => ({ scene, ...r })),
+        ),
+      );
+      let spliced = finalCode;
+      let anySpliced = false;
+      for (const r of results) {
+        animationUsage = addUsage(animationUsage, r.usage);
+        if (!r.block) continue;
+        const next = replaceSection(spliced, r.scene, r.block);
+        if (next) {
+          spliced = next;
+          anySpliced = true;
+        }
+      }
+      if (anySpliced && (await verifyCompilable(spliced)) === null) {
+        const reDead = assessDeadAir(spliced, input.script);
+        const reDwell = findUndwelledText(spliced, input.script);
+        const deadNotWorse =
+          reDead.ok ||
+          (!deadAirReport.ok && reDead.failures.length <= deadAirReport.failures.length);
+        if (deadNotWorse && reDwell.length <= undwelled.length) {
+          finalCode = spliced;
+          scopedAnimationCleared = reDead.ok && reDwell.length === 0;
+          console.warn(
+            scopedAnimationCleared
+              ? "[pipeline] scoped animation retry cleared dead-air/dwell — skipping whole-comp retry"
+              : "[pipeline] scoped animation retry improved but gaps remain — whole-comp retry follows",
+          );
+        } else {
+          console.warn(
+            "[pipeline] scoped animation retry regressed a gate; discarding, falling back to whole-comp",
+          );
+        }
+      } else if (anySpliced) {
+        console.warn(
+          "[pipeline] scoped animation retry produced non-compiling splice; falling back to whole-comp",
+        );
+      }
+    }
+  }
+
+  if (
+    !scopedAnimationCleared &&
+    (!deadAirReport.ok || readTimeFailure || dwellFailure) &&
+    !skipRetries
+  ) {
     const retryMessage = [
       deadAirReport.ok
         ? null
@@ -1456,8 +1793,11 @@ export const buildAnimatedSections = async (
       ok: false,
       stage: "animation",
       error: `Generated Composition.tsx does not compile: ${compileErr}`,
-      // Both passes (+ any retries folded into animationUsage) were billed.
-      usage: addUsage(usageOf(designResponse.usage), animationUsage),
+      // Both passes + scoped per-scene regens + retries (animationUsage) billed.
+      usage: addUsage(
+        addUsage(usageOf(designResponse.usage), extraDesignUsage),
+        animationUsage,
+      ),
     };
   }
 
@@ -1467,7 +1807,10 @@ export const buildAnimatedSections = async (
     designCode: designCodeOut,
     warnings,
     asset_manifest: assetSearchLog.length > 0 ? assetSearchLog : undefined,
-    usage: addUsage(usageOf(designResponse.usage), animationUsage),
+    usage: addUsage(
+      addUsage(usageOf(designResponse.usage), extraDesignUsage),
+      animationUsage,
+    ),
   };
 };
 
@@ -2389,8 +2732,10 @@ const assessDesignDensity = (
 const assessDeadAir = (
   code: string,
   script: Script,
-): { ok: true } | { ok: false; error: string } => {
-  const failures: string[] = [];
+):
+  | { ok: true }
+  | { ok: false; error: string; failures: { scene: number; message: string }[] } => {
+  const failures: { scene: number; message: string }[] = [];
 
   for (let i = 0; i < script.scenes.length; i += 1) {
     const scene = script.scenes[i];
@@ -2442,14 +2787,15 @@ const assessDeadAir = (
 
     const requiredDelay = duration * 0.6;
     if (maxFiniteDelay < requiredDelay) {
-      failures.push(
-        `Section${i} ("${scene.label}", ${duration.toFixed(1)}s): latest finite animation-delay is ${maxFiniteDelay.toFixed(2)}s — need ≥${requiredDelay.toFixed(2)}s (60% of duration). Add ${Math.max(2, Math.round(duration / 3))} more finite beats distributed across the back half of the section.`,
-      );
+      failures.push({
+        scene: i,
+        message: `Section${i} ("${scene.label}", ${duration.toFixed(1)}s): latest finite animation-delay is ${maxFiniteDelay.toFixed(2)}s — need ≥${requiredDelay.toFixed(2)}s (60% of duration). Add ${Math.max(2, Math.round(duration / 3))} more finite beats distributed across the back half of the section.`,
+      });
     }
   }
 
   if (failures.length === 0) return { ok: true };
-  return { ok: false, error: failures.join(" | ") };
+  return { ok: false, error: failures.map((f) => f.message).join(" | "), failures };
 };
 
 /**
