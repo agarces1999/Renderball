@@ -1668,10 +1668,11 @@ export const buildAnimatedSections = async (
           findUndwelledText(retryCode, input.script).length <= undwelled.length
         ) {
           finalCode = retryCode;
-          animationUsage = addUsage(
-            usageOf(animationResponse.usage),
-            usageOf(retryResponse.usage),
-          );
+          // ACCUMULATE — don't overwrite. animationUsage already holds the
+          // initial animation pass (line ~1532) plus any scoped per-scene
+          // regen tokens spent above; clobbering it here would silently drop
+          // the scoped tokens from the billed usage (adversarial-review find).
+          animationUsage = addUsage(animationUsage, usageOf(retryResponse.usage));
         } else {
           console.warn(
             "[pipeline] Dead-air retry didn't pass either; keeping best available.",

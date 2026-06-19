@@ -24,6 +24,13 @@
 // `Section3` mentioned inside JSX/strings never registers as a declaration.
 const SECTION_DECL_RX = /^export\s+(?:const|function)\s+Section(\d+)\b/gm;
 
+// Any top-level `export`. A section's block ends at the NEXT top-level export —
+// whether that's the next Section OR a trailing export (the agents end the file
+// with `export const Generated`, a preview-only alias). Ending at EOF instead
+// would make replaceSection on the LAST section silently drop that trailing
+// export; keying off the next export keeps every splice content-preserving.
+const TOP_EXPORT_RX = /^export\b/gm;
+
 export interface SectionRange {
   index: number;
   /** Char offset of the `export` keyword that begins the declaration. */
@@ -42,10 +49,18 @@ export const sectionRanges = (code: string): SectionRange[] => {
   for (let m = SECTION_DECL_RX.exec(code); m; m = SECTION_DECL_RX.exec(code)) {
     starts.push({ index: parseInt(m[1], 10), start: m.index });
   }
-  return starts.map((s, i) => ({
+  // Offsets of every top-level export, in order. A section ends at the first
+  // top-level export AFTER its own start (the next Section, or a trailing
+  // `export const Generated`), or EOF when it's the last export in the file.
+  const exportOffsets: number[] = [];
+  TOP_EXPORT_RX.lastIndex = 0;
+  for (let m = TOP_EXPORT_RX.exec(code); m; m = TOP_EXPORT_RX.exec(code)) {
+    exportOffsets.push(m.index);
+  }
+  return starts.map((s) => ({
     index: s.index,
     start: s.start,
-    end: i + 1 < starts.length ? starts[i + 1].start : code.length,
+    end: exportOffsets.find((o) => o > s.start) ?? code.length,
   }));
 };
 

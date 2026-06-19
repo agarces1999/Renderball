@@ -160,6 +160,41 @@ check("replaceSection of a missing section is null (caller falls back)", () => {
   assert(replaceSection(FILE, 9, NEW_S1) === null, "absent → null");
 });
 
+// ── trailing top-level export (the `export const Generated` alias) ─────────
+// The agents end Composition.tsx with a preview-only `export const Generated`.
+// A naive last-section-runs-to-EOF range would swallow it; replacing the last
+// section would then silently delete it. Section ranges must stop at the next
+// top-level export so it's always preserved.
+const FILE_WITH_TRAILER = `${FILE}
+export const Generated: React.FC = () => (
+  <><Section0 /><Section1 /><Section2 /></>
+);
+`;
+
+check("the LAST section's range stops before a trailing export const", () => {
+  const block = extractSection(FILE_WITH_TRAILER, 2);
+  assert(block !== null, "Section2 found");
+  assert(block!.includes("Third"), "has Section2 body");
+  assert(!block!.includes("export const Generated"), "does NOT bleed into the trailer");
+});
+
+check("replacing the LAST section preserves the trailing export", async () => {
+  const NEW_S2 = `export const Section2: React.FC = () => <AbsoluteFill><p>Third v2</p></AbsoluteFill>;`;
+  const out = replaceSection(FILE_WITH_TRAILER, 2, NEW_S2);
+  assert(out !== null, "splice ok");
+  assert(out!.includes("Third v2"), "section swapped");
+  assert(out!.includes("export const Generated"), "trailing export preserved");
+  assert((await verifyCompilable(out!)) === null, "compiles");
+});
+
+check("replacing a MIDDLE section still preserves the trailing export", async () => {
+  const out = replaceSection(FILE_WITH_TRAILER, 1, NEW_S1);
+  assert(out !== null && out!.includes("Second, regenerated"), "middle swapped");
+  assert(out!.includes("export const Generated"), "trailer untouched");
+  assert(out!.includes("Third"), "Section2 untouched");
+  assert((await verifyCompilable(out!)) === null, "compiles");
+});
+
 // ── offset attribution ───────────────────────────────────────────────────
 check("sceneIndexAt maps an in-section offset to its scene", () => {
   const off = FILE.indexOf("Third");
