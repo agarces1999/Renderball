@@ -400,6 +400,106 @@ const surgicalCompileFix = async (
 };
 
 /**
+ * Surgical RENDER-error fix for ONE section. The composition PARSES (it passed
+ * the compile gate) but a scene THROWS at render — almost always an unguarded
+ * access to an OPTIONAL content field (content fields are per-scene, so a scene
+ * without a `cta` crashes on `c.cta.primary`). Hand the model just that section
+ * + the runtime error and ask for the crash-safe version of the SAME section,
+ * re-emitting only it. thinking-off (this is a mechanical guard fix). Returns
+ * the corrected section block (or null) + usage. Paired with section-splice so
+ * the rest of the composition is byte-preserved.
+ */
+const surgicalRenderFix = async (
+  client: ReturnType<typeof getAnthropic>,
+  model: string,
+  sectionCode: string,
+  sceneIndex: number,
+  errorMsg: string,
+): Promise<{ block: string | null; usage: Usage }> => {
+  const sectionName = `Section${sceneIndex}`;
+  const userMessage = [
+    `The React component below (\`${sectionName}\` from a Remotion composition) THROWS at render with:`,
+    ``,
+    errorMsg,
+    ``,
+    `This is a runtime crash, not a syntax error — almost always an UNGUARDED access to an OPTIONAL field. A scene's \`content\` may omit any field, so \`c.cta.primary\`, \`c.bullets.map(...)\`, \`c.meta[0].value\` etc. throw when that field is absent. Make every optional access crash-safe: optional-chain it (\`c.cta?.primary\`) and/or wrap the element in a guard (\`{c.cta?.primary && ( … )}\`). Do NOT remove content that IS present; only make access safe.`,
+    ``,
+    `## ${sectionName}`,
+    "```tsx",
+    sectionCode,
+    "```",
+    ``,
+    `Re-emit ONLY the corrected \`export const ${sectionName} = …\` component — same design, copy, layout, and animations, just crash-safe. No other sections, no imports, no prose.`,
+  ].join("\n");
+
+  try {
+    const resp = await client.messages
+      .stream(
+        {
+          model,
+          max_tokens: BUILD_MAX_TOKENS,
+          // thinking-off: a guard fix is mechanical, not a design decision.
+          messages: [{ role: "user", content: userMessage }],
+        },
+        { timeout: COMPOSITION_REQUEST_TIMEOUT_MS },
+      )
+      .finalMessage();
+    const text = resp.content.find((c) => c.type === "text");
+    const raw = text && text.type === "text" ? stripCodeFence(text.text.trim()) : "";
+    // Isolate the one section even if the model wraps prose/extra around it.
+    const block = raw ? extractSection(raw, sceneIndex) : null;
+    return { block, usage: usageOf(resp.usage) };
+  } catch (err) {
+    console.warn(
+      `[pipeline] surgicalRenderFix(${sectionName}) failed:`,
+      err instanceof Error ? err.message : err,
+    );
+    return { block: null, usage: EMPTY_USAGE };
+  }
+};
+
+/**
+ * Render-error auto-repair (the SSR-gate analogue of #2's compile repair).
+ * Given the full composition + the per-scene render errors the SSR gate found,
+ * surgically fix each throwing section (guard the undefined access) and splice
+ * it back. Only per-scene errors (scene ≥ 0) are section-localizable; file-level
+ * errors (scene -1: missing/compile/eval) are left for the caller to hard-fail.
+ * Returns the (possibly) repaired code, the scenes it touched, and usage. The
+ * caller re-runs the SSR gate to confirm — a fix that didn't take just fails
+ * the gate again, exactly as today, so this can only help.
+ */
+export const repairSceneRenderErrors = async (
+  fullCode: string,
+  errors: { scene: number; error: string }[],
+): Promise<{ code: string; repaired: number[]; usage: Usage }> => {
+  let client: ReturnType<typeof getAnthropic>;
+  try {
+    client = getAnthropic();
+  } catch {
+    return { code: fullCode, repaired: [], usage: EMPTY_USAGE };
+  }
+  let code = fullCode;
+  let usage = EMPTY_USAGE;
+  const repaired: number[] = [];
+  // One fix attempt per distinct failing scene (deduped). Bounded by scene count.
+  const scenes = [...new Set(errors.filter((e) => e.scene >= 0).map((e) => e.scene))];
+  for (const scene of scenes) {
+    const block = extractSection(code, scene);
+    if (!block) continue;
+    const err = errors.find((e) => e.scene === scene)?.error ?? "render error";
+    const fix = await surgicalRenderFix(client, MODELS.codingAgentBuild, block, scene, err);
+    usage = addUsage(usage, fix.usage); // billed either way
+    if (!fix.block) continue;
+    const spliced = replaceSection(code, scene, fix.block);
+    if (spliced) {
+      code = spliced;
+      repaired.push(scene);
+    }
+  }
+  return { code, repaired, usage };
+};
+
+/**
  * Scoped per-scene design regen (#1). Regenerate ONLY the `Section{index}`
  * component of an existing (static) composition, fixing the localized quality-
  * gate failures handed in via `fixMessages`, and return just that section's

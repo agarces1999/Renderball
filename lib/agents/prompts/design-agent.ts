@@ -582,6 +582,8 @@ The input lists each section's \`content\` with explicit fields. Map each to a v
 
 **The mapping is mechanical** — when a field is present, you render it as its named slot. The visual_concept tells you the COMPOSITION (where, how, alongside what motion); the content fields tell you WHAT COPY to put in each slot. Both inputs together; neither alone is enough.
 
+**⚠️ Optional fields — GUARD every access — HARD RULE (catches a real render crash).** Content fields are OPTIONAL and vary per scene: a scene may have NO \`cta\`, NO \`bullets\`, NO \`meta\`, NO \`caption\`. Accessing a sub-field of an absent object THROWS at render and crashes the whole video ("Cannot read properties of undefined") — and it COMPILES fine, so you won't see it until the render gate. So **never access a nested/optional field unguarded**: write \`c.cta?.primary\` (not \`c.cta.primary\`), \`c.bullets?.map(...)\`, \`c.meta?.[0]\`, and wrap any element that depends on an optional field in a presence check — \`{c.cta?.primary && ( <CTA…/> )}\`, \`{c.bullets?.length ? ( <ul>… ) : null}\`. Only render the CTA button / bullet list / meta row when its field actually exists. A field that's present renders as normal; a field that's absent renders nothing — never a crash.
+
 ### Bullets template (use literally — validator rejects \`<div>\` rows)
 
 When \`content.bullets\` is present, render this pattern. ONE \`<li>\` per bullet, semantic \`<ul>\`, brand-accent leading marker:
