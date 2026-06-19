@@ -1,4 +1,4 @@
-import { getAnthropic, MODELS } from "../anthropic";
+import { getAnthropic, MODELS, BUILD_REASONING, BUILD_MAX_TOKENS } from "../anthropic";
 import { DESIGN_AGENT_SYSTEM_PROMPT } from "./prompts/design-agent";
 import { ANIMATION_AGENT_SYSTEM_PROMPT } from "./prompts/animation-agent";
 import { stripCodeFence, verifyCompilable, repairCompile } from "./code-extraction";
@@ -374,7 +374,7 @@ const surgicalCompileFix = async (
       .stream(
         {
           model,
-          max_tokens: 64000,
+          max_tokens: BUILD_MAX_TOKENS,
           // thinking omitted on purpose — see the doc comment.
           messages: [{ role: "user", content: userMessage }],
         },
@@ -480,12 +480,10 @@ const regenerateSectionBlock = async (
       .stream(
         {
           model,
-          max_tokens: 64000,
-          // Adaptive thinking: a scoped fix is still a real design/motion
-          // decision (re-laying-out or re-pacing one scene), worth reasoning
-          // about. The win is the small OUTPUT (one section) + scene isolation,
-          // not skipped thinking.
-          thinking: { type: "adaptive" },
+          max_tokens: BUILD_MAX_TOKENS,
+          // Reasoning is a real design/motion decision even for a scoped fix —
+          // the win is the small OUTPUT (one section) + scene isolation.
+          ...BUILD_REASONING, // GLM thinking:enabled + reasoning_effort (lib/anthropic)
           system: [
             {
               type: "text",
@@ -605,8 +603,11 @@ export const regenerateScene = async (
         // SDK's 10-minute non-streaming threshold. finalMessage() returns
         // the same Message shape as messages.create().
         model: MODELS.codingAgent,
-        max_tokens: 64000,
-        thinking: { type: "adaptive" },
+        max_tokens: BUILD_MAX_TOKENS,
+        // GLM (z.ai) reasoning control — NOT Anthropic's adaptive (which z.ai
+        // ignores → empty/truncated output). thinking.type ∈ enabled|disabled;
+        // depth via reasoning_effort. "max" per z.ai's coding recommendation.
+        ...BUILD_REASONING, // GLM thinking:enabled + reasoning_effort (lib/anthropic)
         system: [
           {
             type: "text",
@@ -662,8 +663,11 @@ export const regenerateScene = async (
     animationResponse = await client.messages.stream(
       {
         model: MODELS.codingAgent,
-        max_tokens: 64000,
-        thinking: { type: "adaptive" },
+        max_tokens: BUILD_MAX_TOKENS,
+        // GLM (z.ai) reasoning control — NOT Anthropic's adaptive (which z.ai
+        // ignores → empty/truncated output). thinking.type ∈ enabled|disabled;
+        // depth via reasoning_effort. "max" per z.ai's coding recommendation.
+        ...BUILD_REASONING, // GLM thinking:enabled + reasoning_effort (lib/anthropic)
         system: [
           {
             type: "text",
@@ -947,6 +951,8 @@ export const buildAnimatedSections = async (
     // results back, and continue until it emits the final composition text.
     const convo = [...messages];
     const MAX_TOOL_ROUNDS = 8;
+    let nudges = 0;
+    const MAX_NUDGES = 2;
     for (let round = 0; round <= MAX_TOOL_ROUNDS; round++) {
       const withTools = round < MAX_TOOL_ROUNDS; // last round drops tools to force text
       const resp = await client.messages.stream(
@@ -954,11 +960,11 @@ export const buildAnimatedSections = async (
           // Design Pass 1 AND its retry (same runDesign helper). Opus for
           // composition taste + density on the commit-to-MP4 path.
           model: MODELS.codingAgentBuild,
-          max_tokens: 64000,
-          // Adaptive thinking: the design pass juggles ~15 simultaneous
-          // machine-checked constraints; letting Opus reason before emitting
-          // is the cheapest first-pass-compliance lever (fewer gate retries).
-          thinking: { type: "adaptive" },
+          max_tokens: BUILD_MAX_TOKENS,
+          // Reasoning ON: the design pass juggles ~15 machine-checked
+          // constraints; letting the model reason before emitting is the
+          // cheapest first-pass-compliance lever (fewer gate retries).
+          ...BUILD_REASONING, // GLM thinking:enabled + reasoning_effort (lib/anthropic)
           system: [
             {
               type: "text",
@@ -974,7 +980,28 @@ export const buildAnimatedSections = async (
         { timeout: COMPOSITION_REQUEST_TIMEOUT_MS },
       ).finalMessage();
 
-      if (resp.stop_reason !== "tool_use") return resp; // composition text ready
+      if (resp.stop_reason !== "tool_use") {
+        // GLM (z.ai) sometimes ENDS THE TURN with a short "…now writing the
+        // Composition.tsx" preamble instead of emitting the code (an agentic
+        // narrate-then-stop). If the final text isn't actually code, nudge it
+        // to emit the file and continue (bounded), rather than returning prose
+        // that fails the "doesn't look like a TS file" check downstream.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const txt = (resp.content as any[]).find((c) => c.type === "text")?.text ?? "";
+        const looksLikeCode = txt.includes("import") && txt.includes("export");
+        if (!looksLikeCode && nudges < MAX_NUDGES) {
+          nudges++;
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          convo.push({ role: "assistant", content: resp.content as any });
+          convo.push({
+            role: "user",
+            content:
+              "Output the COMPLETE Composition.tsx now — the entire file, starting at the first `import` and ending at the last `export const Section`. No preamble, no explanation, no prose, no markdown fence. Emit ONLY the .tsx source.",
+          });
+          continue;
+        }
+        return resp; // code ready (or out of nudges — return best effort)
+      }
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const toolUses = (resp.content as any[]).filter((c) => c.type === "tool_use");
@@ -1447,8 +1474,11 @@ export const buildAnimatedSections = async (
         // Choreography Pass 2 on the build path. Opus for animation
         // taste + dead-air pacing. Streaming required (Opus + 32k tokens).
         model: MODELS.codingAgentBuild,
-        max_tokens: 64000,
-        thinking: { type: "adaptive" },
+        max_tokens: BUILD_MAX_TOKENS,
+        // GLM (z.ai) reasoning control — NOT Anthropic's adaptive (which z.ai
+        // ignores → empty/truncated output). thinking.type ∈ enabled|disabled;
+        // depth via reasoning_effort. "max" per z.ai's coding recommendation.
+        ...BUILD_REASONING, // GLM thinking:enabled + reasoning_effort (lib/anthropic)
         system: [
           {
             type: "text",
@@ -1638,8 +1668,11 @@ export const buildAnimatedSections = async (
             // Streamed: Opus + 32k max_tokens can exceed the SDK's 10-minute
             // non-streaming threshold.
             model: MODELS.codingAgentBuild,
-            max_tokens: 64000,
-            thinking: { type: "adaptive" },
+            max_tokens: BUILD_MAX_TOKENS,
+            // GLM (z.ai) reasoning control — NOT Anthropic's adaptive (which z.ai
+        // ignores → empty/truncated output). thinking.type ∈ enabled|disabled;
+        // depth via reasoning_effort. "max" per z.ai's coding recommendation.
+        ...BUILD_REASONING, // GLM thinking:enabled + reasoning_effort (lib/anthropic)
             system: [
               {
                 type: "text",
