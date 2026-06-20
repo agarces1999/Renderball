@@ -7,7 +7,7 @@
     "dev": "node scripts/dev.mjs",
     "dev:raw": "next dev",
     "build": "next build",
-    "start": "next start",
+    "start": "next start -H 0.0.0.0",
     "type-check": "tsc --noEmit",
     "test": "node scripts/run-tests.mjs",
     "usage": "node scripts/usage-report.mjs",
