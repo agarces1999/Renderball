@@ -1304,8 +1304,13 @@ export interface FontRoles {
 // pattern and got routed onto headlines as a "display font", forcing a generic
 // serif fallback). The suffix alternative requires a word + `-icon(s)`, so real
 // names like `sodimac` or `Recoleta` are NOT caught.
+// ALSO catches math-rendering LIBRARY fonts (KaTeX_*, MathJax/MJX*): edu/math
+// sites (Duolingo embeds KaTeX for lessons) ship these in CSS, and they were
+// mis-detected as the BRAND font — corrupting the brand identity fed to the
+// design agent AND making the vision gate flag every scene as "missing the
+// brand's KaTeX_Caligraphic font". They are never a brand identity.
 const ICON_FONT_RX =
-  /\b(webflow-?icons?|material-?(?:icons?|symbols?(?:-[a-z]+)?)|font[\s-]*awesome|fa-[a-z0-9-]+|icon-[a-z0-9-]+|[a-z0-9]+[-_]icons?|glyph[a-z0-9-]*|simple-?icons|remixicon|feather-?icons|hero-?icons|lucide-?icons|bootstrap-?icons|ionicons|tabler-?icons|phosphor-?icons|octicons|ant-?design[-_]?icons|line-?icons|streamline)\b/i;
+  /\b(webflow-?icons?|material-?(?:icons?|symbols?(?:-[a-z]+)?)|font[\s-]*awesome|fa-[a-z0-9-]+|icon-[a-z0-9-]+|[a-z0-9]+[-_]icons?|glyph[a-z0-9-]*|simple-?icons|remixicon|feather-?icons|hero-?icons|lucide-?icons|bootstrap-?icons|ionicons|tabler-?icons|phosphor-?icons|octicons|ant-?design[-_]?icons|line-?icons|streamline|katex(?:[_-][a-z0-9]+)?|mathjax[_-]?[a-z0-9]*|mjx[a-z0-9-]*)\b/i;
 
 const MONO_RX =
   /\b(mono|code|courier|consol|menlo|jetbrains|ibm[\s-]*plex[\s-]*mono|source[\s-]*code|fira[\s-]*code|roboto[\s-]*mono|space[\s-]*mono)\b/i;
