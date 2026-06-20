@@ -117,16 +117,24 @@ while true; do
     INFRA_SINCE=""
   fi
 
-  # 4) wedged build? (dev.log silent too long)
+  # 4) wedged build? Track the last REAL build-activity line, FILTERING OUT the
+  # health-ping (GET / …) and HMR "Compiled" lines — those keep dev.log mtime
+  # perpetually fresh and silently DEFEATED the old mtime check (a wedge never
+  # fired). Real activity = [pipeline] lines, POST completions, errors. If the
+  # last real line hasn't changed in STALL seconds, the build is wedged. A single
+  # silent GLM call is ~10-30min < STALL, so no false positive.
   if [ -f "$DEVLOG" ]; then
-    age=$(( $(date +%s) - $(stat -f %m "$DEVLOG" 2>/dev/null || echo "$(date +%s)") ))
-    if [ "$age" -gt "$STALL" ] 2>/dev/null; then
-      log "WEDGED: dev.log silent ${age}s (> ${STALL}s) -> kill+restart server+worker"
+    real=$(grep -avE "GET / [0-9]| Compiled |Compiling" "$DEVLOG" 2>/dev/null | tail -1)
+    nowts=$(date +%s)
+    if [ "$real" != "${LAST_REAL:-}" ]; then LAST_REAL="$real"; LAST_REAL_TS=$nowts; fi
+    if [ -n "${LAST_REAL_TS:-}" ] && [ $(( nowts - LAST_REAL_TS )) -gt "$STALL" ] 2>/dev/null; then
+      log "WEDGED: no real build activity in $(( nowts - LAST_REAL_TS ))s (> ${STALL}s) -> kill+restart server+worker"
       pkill -f rb-build-loop.mjs 2>/dev/null
       start_server
       LAST_HEAD=$(git rev-parse --short HEAD 2>/dev/null)
       start_loop
       record_restart
+      LAST_REAL=""; LAST_REAL_TS=$nowts
     fi
   fi
 

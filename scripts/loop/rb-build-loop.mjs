@@ -102,7 +102,8 @@ while (true) {
     }
     if (!b.json) { infra = true; throw new Error(`build non-JSON (status ${b.status})`); }
     rec.build = { ok: b.json.ok, stage: b.json.stage, error: b.json.error, warnings: b.json.warnings ?? null,
-      render_truth: b.json.render_truth ? { reason: b.json.render_truth.reason, blockingCount: (b.json.render_truth.blocking ?? []).length, steps: b.json.render_truth.steps ?? null } : null };
+      render_errors: b.json.render_errors ?? null,
+      render_truth: b.json.render_truth ? { reason: b.json.render_truth.reason, blockingCount: (b.json.render_truth.blocking ?? []).length, blocking: b.json.render_truth.blocking ?? null, steps: b.json.render_truth.steps ?? null } : null };
     rec.vision = b.json.render_truth?.vision ?? null;
 
     if (b.json.ok) {
