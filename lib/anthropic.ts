@@ -1,6 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { readFileSync } from "fs";
 import path from "path";
+import { Agent } from "undici";
 
 /**
  * Singleton Anthropic client. Reads ANTHROPIC_API_KEY from env at first call.
@@ -73,11 +74,36 @@ export const getAnthropic = (): Anthropic => {
   // so a slow max-effort generation isn't aborted by the SDK, and maxRetries so
   // a transient connection abort (undici idle ETIMEDOUT mid-stream) is retried
   // rather than failing the whole build. Harmless on Anthropic too.
+  //
+  // Transport hardening for the ~38-min mid-stream `read ETIMEDOUT` on long GLM
+  // streams. That error is a KERNEL TCP read-timeout on a dead ESTABLISHED
+  // socket (NOT z.ai timing us out, NOT undici's app-timer — those throw named
+  // UND_ERR_* errors; verified via the transport investigation). Node's global
+  // fetch (undici) defaults to a lax 60s TCP keepalive + a 300s inter-chunk
+  // body timeout, so a long quiet stretch lets an egress NAT/middlebox drop the
+  // idle flow and the kernel later reaps the socket. This dispatcher — scoped to
+  // THIS client only (NOT setGlobalDispatcher, so unrelated R2/Stripe/Next
+  // fetches keep stock behavior) — sends keepalive probes every ~10s to hold the
+  // flow-table entry warm and detect a dead path fast, and disables the 300s
+  // body timer so a genuinely long silent thinking stretch can't trip it.
+  // streamBuildCall (pipeline.ts) stays as the backstop: the SDK cannot retry a
+  // post-headers mid-stream drop, so retry is the only thing that recovers one.
+  // NOTE: keepalive is a (well-reasoned but unproven) bet on idle-NAT eviction;
+  // streamBuildCall logs the err.cause chain so we can confirm whether this
+  // actually reduces drop frequency over the coming builds.
+  const zaiDispatcher = new Agent({
+    connect: { keepAlive: true, keepAliveInitialDelay: 10_000 },
+    bodyTimeout: 0,
+    headersTimeout: 10 * 60_000,
+    keepAliveTimeout: 60 * 60_000,
+    keepAliveMaxTimeout: 60 * 60_000,
+  });
   _client = new Anthropic({
     apiKey,
     ...(baseURL ? { baseURL } : {}),
     timeout: 3_000_000,
     maxRetries: 2,
+    fetchOptions: { dispatcher: zaiDispatcher },
   });
   return _client;
 };
@@ -122,7 +148,12 @@ export const MODELS = {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const BUILD_REASONING: any = {
   thinking: { type: "enabled" },
-  reasoning_effort: "max",
+  // OVERNIGHT BATCH (local): "high", not "max". At "max" a single build does not
+  // converge inside 2h on GLM (design + scoped/whole-comp retries + render-truth,
+  // each call ~18min) — zero builds completed. "high" keeps strong reasoning but
+  // lets builds finish so the multi-brand loop can actually run. Production
+  // default is "max"; revisit per the wall-time finding.
+  reasoning_effort: "high",
 };
 /** GLM 5.2 max output tokens (z.ai ceiling). */
 export const BUILD_MAX_TOKENS = 131072;

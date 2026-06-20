@@ -349,17 +349,38 @@ const isTransientNetErr = (err: unknown): boolean => {
     .join(" ");
   return TRANSIENT_NET_RX.test(parts) || TRANSIENT_NET_RX.test(String(err));
 };
+// Flatten a (possibly nested) fetch/undici error into its diagnostic chain —
+// name:code:syscall:message at each `.cause` level. TELEMETRY: this is how we
+// learn whether the transport dispatcher (lib/anthropic keepalive + bodyTimeout)
+// actually reduces drops, and distinguish causes — a kernel `read ETIMEDOUT`
+// (syscall=read, no UND_ERR_) vs undici's `UND_ERR_BODY_TIMEOUT` vs a reset.
+const errChain = (err: unknown): string => {
+  const out: string[] = [];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let e: any = err;
+  for (let depth = 0; e && depth < 5; depth++) {
+    const parts = [e.name, e.code, e.syscall, e.message].filter(Boolean).join(":");
+    if (parts) out.push(parts);
+    e = e.cause;
+  }
+  return out.join(" <- ") || String(err);
+};
 async function streamBuildCall<T>(label: string, fn: () => Promise<T>, attempts = 3): Promise<T> {
   let lastErr: unknown;
   for (let i = 1; i <= attempts; i++) {
+    const t0 = Date.now();
     try {
       return await fn();
     } catch (err) {
       lastErr = err;
-      if (i === attempts || !isTransientNetErr(err)) throw err;
+      const elapsedS = Math.round((Date.now() - t0) / 1000);
+      const transient = isTransientNetErr(err);
+      // Always log the full cause chain + elapsed so we can correlate drops with
+      // the transport fix over time (the challenge's non-negotiable).
       console.warn(
-        `[pipeline] ${label}: transient network error on attempt ${i}/${attempts} (${err instanceof Error ? err.message : err}) — retrying`,
+        `[pipeline] ${label}: attempt ${i}/${attempts} failed after ${elapsedS}s — ${transient ? "TRANSIENT → retrying" : "non-transient → aborting"} | cause: ${errChain(err)}`,
       );
+      if (i === attempts || !transient) throw err;
     }
   }
   throw lastErr;

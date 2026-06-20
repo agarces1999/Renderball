@@ -29,7 +29,8 @@
     "sharp": "^0.33.5",
     "shiki": "^4.1.0",
     "simple-icons": "^16.21.0",
-    "tailwind-merge": "2.5.4"
+    "tailwind-merge": "2.5.4",
+    "undici": "^7.28.0"
   },
   "devDependencies": {
     "@playwright/test": "^1.60.0",
