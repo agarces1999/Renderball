@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import path from "path";
 import { promises as fs } from "fs";
 import { loadBrief } from "../../../../lib/store";
+import { DEV_OWNER_ID } from "../../../../lib/auth";
 import type { Script } from "../../../../src/schema";
 import { renderBriefToMp4 } from "../../../../lib/render/render-brief";
 
@@ -29,7 +30,7 @@ export async function GET(request: Request) {
     );
   }
 
-  const brief = await loadBrief(briefId);
+  const brief = await loadBrief(briefId, DEV_OWNER_ID);
   if (!brief?.script_id) {
     return NextResponse.json(
       { error: "no script attached to brief" },

@@ -22,6 +22,7 @@
 
 import { getAnthropic, MODELS } from "../anthropic";
 import { usageOf, type Usage } from "../usage";
+import { safeFetch } from "./ssrf-guard";
 
 export interface LogoCandidate {
   url: string;
@@ -113,7 +114,7 @@ const prepareCandidate = async (
     if (cand.url.startsWith("data:")) {
       raw = Buffer.from(cand.url.split(",")[1] ?? "", "base64");
     } else if (isSvg || RASTER_RX.test(cand.url)) {
-      const r = await fetch(cand.url, {
+      const r = await safeFetch(cand.url, {
         signal: AbortSignal.timeout(4500),
         headers: { "User-Agent": userAgent },
         redirect: "follow",
@@ -405,7 +406,7 @@ export const findBrandLogo = async (
   // data: URLs (inline-svg candidates) are self-contained — skip the probe.
   if (!chosen.url.startsWith("data:")) {
     try {
-      const probe = await fetch(chosen.url, {
+      const probe = await safeFetch(chosen.url, {
         method: "HEAD",
         signal: AbortSignal.timeout(3500),
         headers: { "User-Agent": userAgent },

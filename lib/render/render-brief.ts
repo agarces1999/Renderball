@@ -23,6 +23,7 @@ import { bundle } from "@remotion/bundler";
 import { renderMedia, selectComposition } from "@remotion/renderer";
 import type { StoredBrief } from "../store";
 import type { Script } from "../../src/schema";
+import { isStorageConfigured, putObject, renderKey } from "../storage/r2";
 import {
   buildAnimatedSections,
   buildAgentInputFromBrief,
@@ -192,7 +193,9 @@ export const renderBriefToMp4 = async (
     const dims = dimensionsForScript(script);
     const totalFrames = totalFramesForScript(script);
 
-    const outDir = path.join(process.cwd(), "public", "renders");
+    // PRIVATE dir (not public/) so renders are reachable only through the
+    // owner-gated /api/renders/<scriptId> route, never the static handler.
+    const outDir = path.join(process.cwd(), ".data", "renders");
     await fs.mkdir(outDir, { recursive: true });
     const outPath = path.join(outDir, `${brief.script_id}.mp4`);
 
@@ -210,9 +213,25 @@ export const renderBriefToMp4 = async (
       ...RENDER_QUALITY,
     });
 
+    // Push the durable copy to R2. Best-effort: a configured-but-failing upload
+    // must not lose a render the user just spent compute on — it stays on local
+    // disk and /api/renders falls back to it. On a stateless container the local
+    // copy is ephemeral, so R2 is the real source of truth.
+    if (isStorageConfigured() && brief.script_id) {
+      try {
+        await putObject(
+          renderKey(brief.script_id),
+          await fs.readFile(outPath),
+          "video/mp4",
+        );
+      } catch (err) {
+        console.error("[render] R2 upload failed, keeping local copy:", err);
+      }
+    }
+
     return {
       ok: true,
-      url: `/renders/${brief.script_id}.mp4`,
+      url: `/api/renders/${brief.script_id}`,
       warnings,
     };
   } catch (err) {

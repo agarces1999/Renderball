@@ -47,6 +47,12 @@ export interface StoredFileRef {
 
 export interface StoredBrief {
   id: string;
+  /**
+   * Owner of this brief — `User.id` for real users, `DEV_OWNER_ID` for the
+   * dev-only routes. Every read is filtered by it; a brief with a non-matching
+   * (or missing, i.e. legacy) owner is invisible to the requester.
+   */
+  owner_id: string;
   purpose: string;
   duration_seconds: number;
   /**
@@ -90,6 +96,17 @@ const ensureDir = async (dir: string): Promise<void> => {
   await fs.mkdir(dir, { recursive: true });
 };
 
+/**
+ * Path-traversal guard. Every id we read is a ULID (26-char Crockford base32,
+ * see lib/ulid.ts). Anything else — `../`, `.env.local`, absolute paths — is
+ * rejected before it can reach `path.join`, so a user-supplied id can never
+ * escape the briefs/scripts directories. Defense-in-depth: today these ids
+ * arrive via ULID-constrained route params, but the validator means a future
+ * caller that forwards a raw query param can't open a hole.
+ */
+const VALID_ID = /^[0-9A-HJKMNP-TV-Z]{26}$/i;
+export const isValidId = (id: string): boolean => VALID_ID.test(id);
+
 export const saveBrief = async (brief: StoredBrief): Promise<void> => {
   await ensureDir(BRIEFS_DIR);
   await fs.writeFile(
@@ -99,13 +116,20 @@ export const saveBrief = async (brief: StoredBrief): Promise<void> => {
   );
 };
 
-export const loadBrief = async (id: string): Promise<StoredBrief | null> => {
+export const loadBrief = async (
+  id: string,
+  ownerId: string,
+): Promise<StoredBrief | null> => {
+  if (!isValidId(id)) return null;
   try {
     const raw = await fs.readFile(
       path.join(BRIEFS_DIR, `${id}.json`),
       "utf-8",
     );
-    return JSON.parse(raw) as StoredBrief;
+    const brief = JSON.parse(raw) as StoredBrief;
+    // Ownership gate: a brief you don't own reads as "not found".
+    if (brief.owner_id !== ownerId) return null;
+    return brief;
   } catch (err: unknown) {
     if (
       err &&
@@ -119,7 +143,12 @@ export const loadBrief = async (id: string): Promise<StoredBrief | null> => {
   }
 };
 
-export const listBriefs = async (): Promise<StoredBrief[]> => {
+/**
+ * Read every brief on disk. PRIVATE — never expose unscoped briefs to a
+ * request. Callers must filter by owner (see listBriefsByOwner /
+ * loadBriefByScriptId).
+ */
+const listAllBriefs = async (): Promise<StoredBrief[]> => {
   try {
     await ensureDir(BRIEFS_DIR);
     const files = await fs.readdir(BRIEFS_DIR);
@@ -140,6 +169,14 @@ export const listBriefs = async (): Promise<StoredBrief[]> => {
   }
 };
 
+/** Briefs owned by `ownerId`, newest first. The only public list path. */
+export const listBriefsByOwner = async (
+  ownerId: string,
+): Promise<StoredBrief[]> => {
+  const all = await listAllBriefs();
+  return all.filter((b) => b.owner_id === ownerId);
+};
+
 export const saveScript = async (script: Script): Promise<void> => {
   await ensureDir(SCRIPTS_DIR);
   await fs.writeFile(
@@ -158,12 +195,23 @@ export const saveScript = async (script: Script): Promise<void> => {
  */
 export const loadBriefByScriptId = async (
   scriptId: string,
+  ownerId: string,
 ): Promise<StoredBrief | null> => {
-  const all = await listBriefs();
-  return all.find((b) => b.script_id === scriptId) ?? null;
+  const all = await listAllBriefs();
+  return (
+    all.find((b) => b.script_id === scriptId && b.owner_id === ownerId) ?? null
+  );
 };
 
-export const loadScript = async (id: string): Promise<Script | null> => {
+export const loadScript = async (
+  id: string,
+  ownerId: string,
+): Promise<Script | null> => {
+  if (!isValidId(id)) return null;
+  // A script is reachable only through a brief the requester owns — scripts
+  // carry no owner of their own, so we resolve ownership via the linking brief.
+  const owningBrief = await loadBriefByScriptId(id, ownerId);
+  if (!owningBrief) return null;
   try {
     const raw = await fs.readFile(
       path.join(SCRIPTS_DIR, `${id}.json`),

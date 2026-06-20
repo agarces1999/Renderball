@@ -1,4 +1,5 @@
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
+import { getCurrentUser } from "../../../lib/auth";
 import { loadBrief, loadScript } from "../../../lib/store";
 import { AppHeader } from "../../../components/AppHeader";
 import { EditableReview } from "./EditableReview";
@@ -18,13 +19,18 @@ export default async function ReviewPage({
 }: {
   params: { id: string };
 }) {
-  const brief = await loadBrief(params.id);
+  const user = await getCurrentUser();
+  if (!user) redirect("/");
+
+  const brief = await loadBrief(params.id, user.id);
   if (!brief) notFound();
 
   // Load the script for any brief that has one (generated, approved, or
   // rendered) — not just freshly-generated — so reopening past work shows the
   // story instead of a perpetual "drafting" state.
-  const script = brief.script_id ? await loadScript(brief.script_id) : null;
+  const script = brief.script_id
+    ? await loadScript(brief.script_id, user.id)
+    : null;
 
   return (
     <>

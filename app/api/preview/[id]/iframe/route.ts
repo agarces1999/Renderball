@@ -4,6 +4,7 @@ import path from "path";
 import React from "react";
 import * as esbuild from "esbuild";
 import { loadScript } from "../../../../../lib/store";
+import { getCurrentUser } from "../../../../../lib/auth";
 import {
   dimensionsForScript,
   WIDE_LOCKUP_RATIO,
@@ -45,15 +46,16 @@ export async function GET(
   request: Request,
   { params }: { params: { id: string } },
 ) {
-  if (process.env.NODE_ENV === "production") {
-    return NextResponse.json({ error: "dev-only" }, { status: 404 });
+  const user = await getCurrentUser();
+  if (!user) {
+    return new NextResponse("unauthorized", { status: 401 });
   }
 
   const scriptId = params.id;
   const url = new URL(request.url);
   const sceneIndex = parseInt(url.searchParams.get("scene") ?? "0", 10);
 
-  const script = await loadScript(scriptId);
+  const script = await loadScript(scriptId, user.id);
   if (!script) {
     return new NextResponse(`script not found: ${scriptId}`, { status: 404 });
   }

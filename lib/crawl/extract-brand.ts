@@ -9,6 +9,7 @@ import {
 import { readLogoCache, writeLogoCache } from "./logo-cache";
 import { dominantSvgColor } from "./brand-identity";
 import { extractDesignLanguage } from "./design-language";
+import { safeFetch } from "./ssrf-guard";
 
 /**
  * Receives the model + token usage of every Anthropic call the crawl makes —
@@ -81,7 +82,7 @@ export const extractBrand = async (
 
   let html: string;
   try {
-    const res = await fetch(url, {
+    const res = await safeFetch(url, {
       signal: AbortSignal.timeout(HTML_TIMEOUT_MS),
       headers: {
         "User-Agent": USER_AGENT,
@@ -645,7 +646,7 @@ const logoColorFromUrl = async (
         ? Buffer.from(payload, "base64").toString("utf8")
         : decodeURIComponent(payload);
     } else if (/\.svg(\?|#|$)/i.test(url)) {
-      const r = await fetch(url, {
+      const r = await safeFetch(url, {
         signal: AbortSignal.timeout(4_000),
         headers: { "User-Agent": USER_AGENT },
         redirect: "follow",
@@ -695,7 +696,7 @@ const collectLogoCandidates = async (
   // 1. Clearbit Logo API (HEAD-probe; only include if 200).
   try {
     const clearbit = `https://logo.clearbit.com/${baseHostname}?size=512`;
-    const res = await fetch(clearbit, {
+    const res = await safeFetch(clearbit, {
       method: "HEAD",
       signal: AbortSignal.timeout(3_000),
       headers: { "User-Agent": USER_AGENT },
@@ -721,7 +722,7 @@ const collectLogoCandidates = async (
     staticPaths.map(async (path) => {
       try {
         const candidate = new URL(path, baseUrl).toString();
-        const res = await fetch(candidate, {
+        const res = await safeFetch(candidate, {
           method: "HEAD",
           signal: AbortSignal.timeout(2_000),
           headers: { "User-Agent": USER_AGENT },
@@ -1019,7 +1020,7 @@ const extractCssImports = (css: string, baseUrl: string): string[] => {
 
 const fetchCss = async (href: string): Promise<string> => {
   try {
-    const res = await fetch(href, {
+    const res = await safeFetch(href, {
       signal: AbortSignal.timeout(CSS_TIMEOUT_MS),
       headers: {
         "User-Agent": USER_AGENT,

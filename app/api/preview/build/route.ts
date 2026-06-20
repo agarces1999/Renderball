@@ -4,6 +4,7 @@ import {
   loadScript,
   loadBriefByScriptId,
 } from "../../../../lib/store";
+import { getCurrentUser } from "../../../../lib/auth";
 import {
   buildAnimatedSections,
   buildAgentInputFromBrief,
@@ -46,8 +47,9 @@ import {
  * Returns: { ok: true, scriptId, usage } on success.
  */
 export async function POST(request: Request) {
-  if (process.env.NODE_ENV === "production") {
-    return NextResponse.json({ error: "dev-only" }, { status: 404 });
+  const user = await getCurrentUser();
+  if (!user) {
+    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
 
   let body: { scriptId?: string };
@@ -68,12 +70,12 @@ export async function POST(request: Request) {
     );
   }
 
-  const script = await loadScript(scriptId);
+  const script = await loadScript(scriptId, user.id);
   if (!script) {
     return NextResponse.json({ error: "script not found" }, { status: 404 });
   }
 
-  const brief = await loadBriefByScriptId(scriptId);
+  const brief = await loadBriefByScriptId(scriptId, user.id);
   // brief is optional — without it the agents fall back to empty brand context.
 
   // The preview IS the MP4 — it must run the EXACT same gated pipeline, no

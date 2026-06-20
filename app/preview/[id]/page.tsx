@@ -1,7 +1,8 @@
 import Link from "next/link";
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import { promises as fs } from "fs";
 import path from "path";
+import { getCurrentUser } from "../../../lib/auth";
 import { loadScript, loadBriefByScriptId } from "../../../lib/store";
 import { AppHeader } from "../../../components/AppHeader";
 import { PreviewClient } from "./PreviewClient";
@@ -20,7 +21,10 @@ export default async function PreviewPage({
 }: {
   params: { id: string };
 }) {
-  const script = await loadScript(params.id);
+  const user = await getCurrentUser();
+  if (!user) redirect("/");
+
+  const script = await loadScript(params.id, user.id);
   if (!script) notFound();
 
   const compPath = path.join(
@@ -60,7 +64,7 @@ export default async function PreviewPage({
 
   // Recover the brief id so "back to story" lands on the right review page
   // (review is keyed by briefId, not scriptId).
-  const brief = await loadBriefByScriptId(params.id);
+  const brief = await loadBriefByScriptId(params.id, user.id);
   const backHref = brief ? `/review/${brief.id}` : "/videos";
 
   return (

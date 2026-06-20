@@ -1,6 +1,7 @@
 "use server";
 
 import { ulid } from "../../lib/ulid";
+import { getCurrentUser } from "../../lib/auth";
 import { saveBrief, saveScript, type StoredBrief } from "../../lib/store";
 import { generateScript } from "../../lib/agents/script-generator";
 import { saveBriefFiles } from "../../lib/uploads";
@@ -30,6 +31,17 @@ export type {
  * the user fills the rest of the form.
  */
 export async function crawlWebsite(url: string): Promise<BrandExtract> {
+  // Crawling spends Anthropic tokens (palette vision + logo agent) — never let
+  // an unauthenticated caller trigger it.
+  const user = await getCurrentUser();
+  if (!user) {
+    return {
+      url,
+      fetched_at: new Date().toISOString(),
+      ok: false,
+      error: "Please sign in to analyze a website.",
+    };
+  }
   return extractBrand(url);
 }
 
@@ -64,6 +76,11 @@ export async function submitBrief(
     briefParsed = JSON.parse(briefRaw) as BriefInput;
   } catch {
     return { ok: false, error: "Brief payload was not valid JSON." };
+  }
+
+  const user = await getCurrentUser();
+  if (!user) {
+    return { ok: false, error: "Please sign in to create a video." };
   }
 
   const validation = validateBrief(briefParsed);
@@ -126,6 +143,7 @@ export async function submitBrief(
   // moments will be populated from Agent 1's output after the agent runs.
   const baseBrief: StoredBrief = {
     id: brief_id,
+    owner_id: user.id,
     purpose: briefParsed.purpose?.trim() ?? "",
     duration_seconds: briefParsed.duration_seconds,
     distribution_format: briefParsed.distribution_format,

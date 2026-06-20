@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { loadBrief, saveBrief, saveScript } from "../../../../lib/store";
+import { DEV_OWNER_ID } from "../../../../lib/auth";
 import {
   generateScript,
   type AgentBrief,
@@ -30,7 +31,7 @@ export async function GET(request: Request) {
     );
   }
 
-  const brief = await loadBrief(briefId);
+  const brief = await loadBrief(briefId, DEV_OWNER_ID);
   if (!brief) {
     return NextResponse.json({ error: "brief not found" }, { status: 404 });
   }

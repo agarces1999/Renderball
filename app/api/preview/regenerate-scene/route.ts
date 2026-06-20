@@ -6,6 +6,7 @@ import {
   loadBriefByScriptId,
   saveScript,
 } from "../../../../lib/store";
+import { getCurrentUser } from "../../../../lib/auth";
 import {
   regenerateScene,
   buildAgentInputFromBrief,
@@ -30,8 +31,9 @@ import {
  */
 export async function POST(request: Request) {
   // Dev-only gate matches the existing /api/dev/* pattern.
-  if (process.env.NODE_ENV === "production") {
-    return NextResponse.json({ error: "dev-only" }, { status: 404 });
+  const user = await getCurrentUser();
+  if (!user) {
+    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
 
   let body: { scriptId?: string; sceneIndex?: number; instruction?: string };
@@ -58,7 +60,7 @@ export async function POST(request: Request) {
     );
   }
 
-  const script = await loadScript(scriptId);
+  const script = await loadScript(scriptId, user.id);
   if (!script) {
     return NextResponse.json({ error: "script not found" }, { status: 404 });
   }
@@ -71,7 +73,7 @@ export async function POST(request: Request) {
     );
   }
 
-  const brief = await loadBriefByScriptId(scriptId);
+  const brief = await loadBriefByScriptId(scriptId, user.id);
   // brief is optional — if not found we still try with empty brand context.
 
   const generatedDir = path.join(

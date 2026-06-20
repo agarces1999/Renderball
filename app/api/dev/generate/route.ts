@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { ulid } from "../../../../lib/ulid";
 import { saveBrief, saveScript, type StoredBrief } from "../../../../lib/store";
+import { DEV_OWNER_ID } from "../../../../lib/auth";
 import { generateScript } from "../../../../lib/agents/script-generator";
 import { extractBrand } from "../../../../lib/crawl/extract-brand";
 import { MODELS } from "../../../../lib/anthropic";
@@ -74,6 +75,7 @@ export async function POST(request: Request) {
   const brief_id = ulid();
   const baseBrief: StoredBrief = {
     id: brief_id,
+    owner_id: DEV_OWNER_ID,
     purpose: "",
     duration_seconds: duration,
     distribution_format,

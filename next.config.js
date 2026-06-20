@@ -16,6 +16,17 @@ const nextConfig = {
       "esbuild",
     ],
   },
+  async headers() {
+    return [
+      {
+        // User-uploaded brand assets are served straight from public/uploads.
+        // Stop the browser from MIME-sniffing them into an executable type;
+        // pairs with the magic-byte whitelist in lib/uploads.ts.
+        source: "/uploads/:path*",
+        headers: [{ key: "X-Content-Type-Options", value: "nosniff" }],
+      },
+    ];
+  },
 };
 
 module.exports = nextConfig;

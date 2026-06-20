@@ -1,0 +1,147 @@
+// Renderball data model — the multi-tenant store that replaces .data/*.json.
+//
+// Status: DESIGN OF RECORD, not yet wired. To activate:
+//   npm i -D prisma && npm i @prisma/client
+//   npx prisma generate && npx prisma migrate dev --name init
+// Then port lib/store.ts to a thin Prisma adapter (read/write the JSON columns;
+// the existing StoredBrief / Script TypeScript types map straight onto them).
+//
+// Design choices:
+//  - Every owned row carries ownerId; nothing is ever queried without it. This
+//    is the fix for the audit's #1 blocker (listBriefs() returned all briefs).
+//  - Brief + Script are kept as JSON columns on Project so we don't have to
+//    re-model dozens of nested fields up front; we still index the hot lookups
+//    (ownerId, scriptId).
+//  - User.clerkId is the bridge to Clerk; a Clerk webhook upserts User rows.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Plan {
+  free
+  subscription
+}
+
+enum ProjectStatus {
+  awaiting_agent_1
+  script_generated
+  script_approved
+  rendering
+  rendered
+  failed
+}
+
+enum RenderStatus {
+  queued
+  rendering
+  complete
+  failed
+}
+
+model User {
+  id               String   @id @default(cuid())
+  clerkId          String   @unique // subject id from Clerk
+  email            String   @unique
+  stripeCustomerId String?  @unique
+  plan             Plan     @default(free)
+  freeMinuteUsed   Boolean  @default(false) // the "free first minute" gate
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  projects      Project[]
+  renders       Render[]
+  usageRecords  UsageRecord[]
+  subscription  Subscription?
+}
+
+model Subscription {
+  id                   String   @id @default(cuid())
+  userId               String   @unique
+  user                 User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  stripeSubscriptionId String   @unique
+  stripePriceId        String
+  status               String   // active, past_due, canceled, ...
+  currentPeriodEnd     DateTime
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+}
+
+model Project {
+  id           String        @id // ULID, preserved from the current store
+  ownerId      String
+  owner        User          @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  purpose      String
+  status       ProjectStatus @default(awaiting_agent_1)
+  brief        Json          // StoredBrief
+  script       Json?         // Script (set after Agent 1)
+  brandExtract Json?         // BrandExtract cache
+  scriptId     String?       @unique
+  error        String?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  renders Render[]
+
+  @@index([ownerId])
+  @@index([ownerId, createdAt])
+}
+
+model Render {
+  id              String       @id @default(cuid())
+  projectId       String
+  project         Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  ownerId         String
+  owner           User         @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  status          RenderStatus @default(queued)
+  resolution      String       @default("1080p")
+  durationSeconds Float?
+  costUsd         Float?       // billable cost of this render
+  outputUrl       String?      // object-storage URL of the final MP4
+  lambdaRenderId  String?      // Remotion Lambda render id, for progress polling
+  createdAt       DateTime     @default(now())
+  completedAt     DateTime?
+
+  @@index([ownerId])
+  @@index([projectId])
+}
+
+// Per-operation cost ledger — the persisted, user-attributed form of
+// lib/usage.ts's UsageRecord (which today is an anonymous JSONL append).
+model UsageRecord {
+  id           String   @id @default(cuid())
+  ownerId      String
+  owner        User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  projectId    String?
+  operation    String   // crawl | script | build | render | ...
+  model        String
+  costUsd      Float
+  inputTokens  Int      @default(0)
+  outputTokens Int      @default(0)
+  cacheRead    Int      @default(0)
+  cacheWrite   Int      @default(0)
+  failed       Boolean  @default(false)
+  createdAt    DateTime @default(now())
+
+  @@index([ownerId, createdAt])
+}
+
+// Anti-abuse ledger for the no-watermark free tier (PRODUCT.md §825-877).
+model FreeTierSignup {
+  id          String   @id @default(cuid())
+  email       String
+  ip          String?
+  fingerprint String?
+  userId      String?
+  convertedToPaid Boolean @default(false)
+  createdAt   DateTime @default(now())
+
+  @@index([email])
+  @@index([ip])
+  @@index([fingerprint])
+}

@@ -2,7 +2,8 @@
 
 import path from "path";
 import { promises as fs } from "fs";
-import { saveScript, loadBrief } from "../../../lib/store";
+import { saveScript, loadBrief, loadBriefByScriptId } from "../../../lib/store";
+import { getCurrentUser } from "../../../lib/auth";
 import type { Script } from "../../../src/schema";
 import { renderBriefToMp4 } from "../../../lib/render/render-brief";
 
@@ -17,6 +18,11 @@ export async function saveScriptEdits(
   script: Script,
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   try {
+    const user = await getCurrentUser();
+    if (!user) return { ok: false, error: "Please sign in." };
+    // Only the owner of the brief that links this script may edit it.
+    const brief = await loadBriefByScriptId(script.id, user.id);
+    if (!brief) return { ok: false, error: "Script not found." };
     await saveScript(script);
     return { ok: true };
   } catch (err) {
@@ -38,7 +44,9 @@ export async function renderScriptToMp4(
   | { ok: false; error: string; stage?: string }
 > {
   try {
-    const brief = await loadBrief(briefId);
+    const user = await getCurrentUser();
+    if (!user) return { ok: false, error: "Please sign in." };
+    const brief = await loadBrief(briefId, user.id);
     if (!brief?.script_id) {
       return { ok: false, error: "No script attached to this brief." };
     }

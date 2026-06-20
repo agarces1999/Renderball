@@ -1,7 +1,9 @@
 import Link from "next/link";
+import { redirect } from "next/navigation";
 import { promises as fs } from "fs";
 import path from "path";
-import { listBriefs, type BriefStatus, type StoredBrief } from "../../lib/store";
+import { getCurrentUser } from "../../lib/auth";
+import { listBriefsByOwner, type BriefStatus, type StoredBrief } from "../../lib/store";
 import { AppHeader } from "../../components/AppHeader";
 import { ProjectThumb } from "../../components/ProjectThumb";
 
@@ -52,7 +54,9 @@ type Card = {
 };
 
 export default async function VideosPage() {
-  const briefs = await listBriefs();
+  const user = await getCurrentUser();
+  if (!user) redirect("/");
+  const briefs = await listBriefsByOwner(user.id);
 
   const cards: Card[] = await Promise.all(
     briefs.map(async (brief): Promise<Card> => {
@@ -64,7 +68,7 @@ export default async function VideosPage() {
       const sid = brief.script_id;
       if (!sid) return { brief, aspect, mp4Url: null, previewUrl: null };
       const [hasMp4, hasComp] = await Promise.all([
-        exists(path.join(process.cwd(), "public", "renders", `${sid}.mp4`)),
+        exists(path.join(process.cwd(), ".data", "renders", `${sid}.mp4`)),
         exists(
           path.join(process.cwd(), "src", "generated", sid, "Composition.tsx"),
         ),
@@ -72,7 +76,8 @@ export default async function VideosPage() {
       return {
         brief,
         aspect,
-        mp4Url: hasMp4 ? `/renders/${sid}.mp4` : null,
+        // Served through the owner-gated route, not the static public dir.
+        mp4Url: hasMp4 ? `/api/renders/${sid}` : null,
         // Only offer the live preview when there's no finished MP4 to show.
         previewUrl:
           !hasMp4 && hasComp

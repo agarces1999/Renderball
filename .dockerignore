@@ -1,0 +1,26 @@
+# Never ship the host's (macOS) node_modules into the Linux image — npm ci
+# rebuilds the correct platform binaries (sharp, Remotion compositor, Chromium).
+node_modules
+.next
+out
+dist
+
+# Local-only data + dev artifacts (the volume provides .data in production).
+.data
+public/uploads
+public/renders
+src/generated
+
+# Secrets + local config (env comes from Railway, not the image).
+.env
+.env.local
+
+# Repo cruft not needed at runtime.
+.git
+.gitignore
+.gstack
+.claude
+.vercel
+*.log
+*.tsbuildinfo
+docs

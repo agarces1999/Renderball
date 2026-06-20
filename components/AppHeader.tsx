@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { SignedIn, SignedOut, SignInButton, UserButton } from "@clerk/nextjs";
 import { cn } from "../lib/cn";
 
 /**
@@ -63,6 +64,26 @@ export function AppHeader({
           >
             New video
           </Link>
+          <SignedOut>
+            <SignInButton mode="modal">
+              <button
+                type="button"
+                className={cn(
+                  "rounded-md px-3 py-1.5 text-[13px] transition-colors",
+                  light
+                    ? "text-white/85 hover:text-white"
+                    : "text-muted hover:text-ink",
+                )}
+              >
+                Sign in
+              </button>
+            </SignInButton>
+          </SignedOut>
+          <SignedIn>
+            <div className="ml-1.5 flex items-center">
+              <UserButton appearance={{ elements: { avatarBox: "h-7 w-7" } }} />
+            </div>
+          </SignedIn>
         </nav>
       </div>
     </header>

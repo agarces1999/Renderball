@@ -14,6 +14,7 @@
 
 import { getAnthropic, MODELS } from "../anthropic";
 import { usageOf, type Usage } from "../usage";
+import { safeFetch } from "./ssrf-guard";
 
 const HEX_RX = /#[0-9a-fA-F]{6}\b/g;
 
@@ -210,7 +211,7 @@ export const extractPaletteFromPixels = async (
     if (!sharpMod) return [];
     const sharp = sharpMod.default;
 
-    const res = await fetch(imageUrl, { signal: AbortSignal.timeout(8000) });
+    const res = await safeFetch(imageUrl, { signal: AbortSignal.timeout(8000) });
     if (!res.ok) return [];
     const ctype = res.headers.get("content-type") || "";
     if (ctype && !/^image\//i.test(ctype)) return []; // not an image — bail
