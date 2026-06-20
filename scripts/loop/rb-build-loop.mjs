@@ -52,14 +52,27 @@ const brands = readJSON(BRANDS_FILE, { brands: [] }).brands;
 if (!brands.length) { console.error("no brands in", BRANDS_FILE); process.exit(1); }
 
 let state = readJSON(STATE, null);
-if (!state) { state = { target: 100, completed: 0, ok: 0, failed: 0, started_at: new Date().toISOString() }; writeJSON(STATE, state); }
+if (!state) { state = { target: 100, built: 0, qa_done: 0, ok: 0, failed: 0, started_at: new Date().toISOString() }; }
+// Gate fields: `built` = compositions produced; `qa_done` = builds the agent has
+// QA'd + fixed. The worker never lets built run more than 1 ahead of qa_done.
+if (state.built === undefined) state.built = state.completed ?? 0;
+if (state.qa_done === undefined) state.qa_done = state.completed ?? 0;
+writeJSON(STATE, state);
 
-console.log(`[build-loop] up. target=${state.target} completed=${state.completed} brands=${brands.length}`);
+console.log(`[build-loop] up. target=${state.target} built=${state.built} qa_done=${state.qa_done} brands=${brands.length}`);
 
 while (true) {
   state = readJSON(STATE, state);
-  if ((state.completed ?? 0) >= (state.target ?? 100)) { console.log(`[build-loop] target ${state.target} reached`); break; }
-  const iteration = (state.completed ?? 0) + 1;
+  if ((state.qa_done ?? 0) >= (state.target ?? 100)) { console.log(`[build-loop] target ${state.target} qa_done reached`); break; }
+  // QA GATE: never build ahead of QA. If a built composition still awaits the
+  // agent's QA+fix, wait — the fix must land before the next build so quality
+  // compounds build-over-build. Safe if the agent is slow/away: it just waits.
+  if ((state.built ?? 0) > (state.qa_done ?? 0)) {
+    heartbeat("awaiting-qa", state.last?.slug ?? "-", state.built ?? 0, { awaiting: (state.qa_done ?? 0) + 1 });
+    await sleep(30_000);
+    continue;
+  }
+  const iteration = (state.built ?? 0) + 1;
   const brand = brands[(iteration - 1) % brands.length];
   const t0 = Date.now();
   const rec = { iteration, slug: brand.slug, url: brand.url, startedAt: new Date().toISOString() };
@@ -118,17 +131,21 @@ while (true) {
     continue; // completed unchanged → same iteration/brand retried
   }
 
-  // Real verdict → record + count.
-  writeJSON(`${RESULTS}/${String(iteration).padStart(3, "0")}-${brand.slug}.json`, rec);
+  // Real verdict → record + mark BUILT (awaiting QA). The agent QAs + fixes, then
+  // advances qa_done, which releases the gate for the next build.
+  const resultPath = `${RESULTS}/${String(iteration).padStart(3, "0")}-${brand.slug}.json`;
+  writeJSON(resultPath, rec);
   state = readJSON(STATE, state);
-  state.completed = iteration;
+  state.built = iteration;
   if (rec.build?.ok) state.ok = (state.ok ?? 0) + 1; else state.failed = (state.failed ?? 0) + 1;
   state.last = { iteration, slug: brand.slug, ok: rec.build?.ok ?? false, mins: rec.mins,
     visionFindings: Array.isArray(rec.vision) ? rec.vision.length : null, at: rec.endedAt };
   writeJSON(STATE, state);
-  console.log(`[build-loop] iter ${iteration} ${brand.slug}: ${rec.build?.ok ? "OK" : "FAIL(" + rec.build?.stage + ")"} ${rec.mins}m  (${state.completed}/${state.target})`);
-  heartbeat("done", brand.slug, iteration, { ok: rec.build?.ok ?? false });
+  writeJSON(`${LOOPDIR}/awaiting_qa.json`, { iteration, slug: brand.slug, scriptId: rec.scriptId ?? null,
+    ok: rec.build?.ok ?? false, stillsDir: rec.stillsDir ?? null, resultPath });
+  console.log(`[build-loop] iter ${iteration} ${brand.slug}: ${rec.build?.ok ? "OK" : "FAIL(" + rec.build?.stage + ")"} ${rec.mins}m BUILT — awaiting QA (built=${state.built} qa_done=${state.qa_done})`);
+  heartbeat("awaiting-qa", brand.slug, iteration, { ok: rec.build?.ok ?? false });
   await sleep(3000);
 }
-heartbeat("finished", "-", (readJSON(STATE, state).completed ?? 0));
+heartbeat("finished", "-", (readJSON(STATE, state).qa_done ?? 0));
 console.log("[build-loop] finished.");

@@ -47,10 +47,10 @@ LAST_HEAD=$(git rev-parse --short HEAD 2>/dev/null)
 start_loop
 
 while true; do
-  completed=$(jget "$LOOPDIR/state.json" completed 0); completed=${completed:-0}
+  qa_done=$(jget "$LOOPDIR/state.json" qa_done 0); qa_done=${qa_done:-0}
   target=$(jget "$LOOPDIR/state.json" target 100); target=${target:-100}
-  if [ "$completed" -ge "$target" ] 2>/dev/null; then
-    log "TARGET reached ($completed/$target) — stopping worker + server."
+  if [ "$qa_done" -ge "$target" ] 2>/dev/null; then
+    log "TARGET reached (qa_done $qa_done/$target) — stopping worker + server."
     pkill -f rb-build-loop.mjs 2>/dev/null
     lsof -ti :$PORT 2>/dev/null | xargs kill -9 2>/dev/null
     log "===== watchdog done ====="
@@ -71,7 +71,7 @@ while true; do
   HEAD=$(git rev-parse --short HEAD 2>/dev/null)
   if [ -n "$HEAD" ] && [ "$HEAD" != "$LAST_HEAD" ]; then
     phase=$(jget "$LOOPDIR/heartbeat.json" phase '""'); phase=$(echo "$phase" | tr -d '"')
-    if [ "$phase" = "done" ] || [ "$phase" = "finished" ] || [ "$phase" = "generate" ] || [ "$phase" = "infra-backoff" ]; then
+    if [ "$phase" = "done" ] || [ "$phase" = "finished" ] || [ "$phase" = "generate" ] || [ "$phase" = "infra-backoff" ] || [ "$phase" = "awaiting-qa" ]; then
       log "git HEAD $LAST_HEAD -> $HEAD at safe phase '$phase' — restarting server to apply fixes"
       pkill -f rb-build-loop.mjs 2>/dev/null
       start_server
