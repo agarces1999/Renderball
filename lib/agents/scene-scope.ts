@@ -21,7 +21,12 @@
  * and per-scene density is strictly sharper than the file total (a rich scene
  * can no longer mask a sparse one).
  */
-import { findOverflowingElements, findUnboundCopy, type AspectRatio } from "./quality-gates";
+import {
+  findOverflowingElements,
+  findUnboundCopy,
+  assessVerticalFill,
+  type AspectRatio,
+} from "./quality-gates";
 import { sectionRange, sceneIndexAt, listSectionIndices } from "./section-splice";
 
 export interface ScopedFailure {
@@ -130,6 +135,30 @@ export const overflowFailuresByScene = (
         ", ",
       )}px cross the ${aspect} canvas edge in this scene, so they get cropped. Cap every primary element (cards, UI mocks, content blocks) inside the safe width and keep left+width within the frame; only decorative/atmosphere layers may bleed past.`,
     });
+  }
+  return out;
+};
+
+/**
+ * Per-scene vertical under-fill. The file-level `assessVerticalFill` judges the
+ * WHOLE composition, so a single height-filling scene MASKS every other scene's
+ * empty lower band (the PayPal build: scene 0 filled the frame and hid the empty
+ * bottoms of scenes 1/2/4 — the gate passed and nobody fixed them). Run the SAME
+ * check scoped to each Section block so each scene is judged on its own. It's
+ * false-negative-biased (assessVerticalFill skips a section with too few
+ * positioned elements), so it never over-fires on a deliberately-minimal scene.
+ */
+export const fillFailuresByScene = (
+  code: string,
+  scenes: unknown[],
+  aspect: AspectRatio,
+): ScopedFailure[] => {
+  const out: ScopedFailure[] = [];
+  for (let i = 0; i < scenes.length; i++) {
+    const range = sectionRange(code, i);
+    if (!range) continue;
+    const miss = assessVerticalFill(code.slice(range.start, range.end), aspect);
+    if (miss) out.push({ scene: i, message: miss });
   }
   return out;
 };

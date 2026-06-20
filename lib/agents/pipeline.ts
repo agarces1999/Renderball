@@ -7,6 +7,7 @@ import {
   densityFailuresByScene,
   overflowFailuresByScene,
   unboundFailuresByScene,
+  fillFailuresByScene,
   groupByScene,
   sectionsAreSpliceable,
 } from "./scene-scope";
@@ -28,7 +29,6 @@ import {
   assessThroughlinePresence,
   findRedundantCaptions,
   hasCornerLogoSuppression,
-  assessVerticalFill,
   findUndersizedText,
   findUndwelledText,
   countAccentBorders,
@@ -1249,7 +1249,14 @@ export const buildAnimatedSections = async (
   // lower third (corgi scene-0: content stopped at ~53% of height). Conservative
   // (favors false-negatives like the drift gate): only fires on an absolute
   // top-cluster with no flex distribution / bottom anchor / tall element.
-  const fillFailure = assessVerticalFill(designCode, gateAspect);
+  // PER-SCENE: the file-level check passes if ANY scene fills the height, so a
+  // single tall scene masks every other scene's empty lower band (PayPal: scene
+  // 0 filled the frame, hiding the empty bottoms of scenes 1/2/4). Judge each
+  // Section block on its own so a per-scene under-fill actually fires the retry.
+  const fillScenes = fillFailuresByScene(designCode, input.script.scenes ?? [], gateAspect);
+  const fillFailure = fillScenes.length
+    ? fillScenes.map((f) => `Scene ${f.scene}: ${f.message}`).join("\n")
+    : null;
 
   // Text-size floors (scene review #1, polish). Ledes/body <p> below 24px and
   // <li> below 18px were repeatedly unreadable in rendered output. The
@@ -2991,8 +2998,9 @@ const buildBuildWarnings = (
   const gateAspect = (input.script.config?.aspect_ratio ?? "16:9") as AspectRatio;
   // Vertical fill (QA V1) — surface a persistent empty-lower-band so the user
   // sees it even when the one retry didn't resolve it.
-  const fillMiss = assessVerticalFill(code, gateAspect);
-  if (fillMiss) out.low_fill = fillMiss;
+  const fillMisses = fillFailuresByScene(code, input.script.scenes ?? [], gateAspect);
+  if (fillMisses.length)
+    out.low_fill = fillMisses.map((f) => `Scene ${f.scene}: ${f.message}`).join("\n");
   const drift = assessContinuity(code, gateAspect);
   if (drift.length > 0) {
     out.throughline_drift = drift.slice(0, 6).map((d) => ({

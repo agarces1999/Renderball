@@ -11,9 +11,11 @@ import {
   densityFailuresByScene,
   overflowFailuresByScene,
   unboundFailuresByScene,
+  fillFailuresByScene,
   groupByScene,
   sectionsAreSpliceable,
 } from "./scene-scope";
+import { assessVerticalFill } from "./quality-gates";
 
 let passed = 0;
 let failed = 0;
@@ -95,6 +97,41 @@ export const Section1 = () => (<div><h2>Second headline</h2></div>);`;
   const out = unboundFailuresByScene(code, SCENES);
   assert(out.some((f) => f.scene === 1), "scene 1's literal headline is flagged");
   assert(!out.some((f) => f.scene === 0), "scene 0 binds {c.headline} → clean");
+});
+
+// ── per-scene vertical fill (the masking-bug fix) ──────────────────────────
+// Section0 anchors a footer (bottom:) so it fills the height; Section1 clusters
+// every element in the top band with no bottom anchor — under-filled. The
+// file-level check passes (Section0's `bottom:` satisfies it), masking Section1;
+// the per-scene check must still flag Section1.
+const FILL_FILE = `export const Section0 = () => (
+  <AbsoluteFill>
+    <h1 style={{ position: "absolute", top: 120 }}>Headline</h1>
+    <p style={{ position: "absolute", bottom: 90 }}>footer anchored to lower third</p>
+  </AbsoluteFill>
+);
+export const Section1 = () => (
+  <AbsoluteFill>
+    <h6 style={{ position: "absolute", top: 40 }}>eyebrow</h6>
+    <h1 style={{ position: "absolute", top: 120 }}>Headline</h1>
+    <p style={{ position: "absolute", top: 220 }}>lede</p>
+    <div style={{ position: "absolute", top: 320 }}>card</div>
+    <div style={{ position: "absolute", top: 420 }}>row</div>
+  </AbsoluteFill>
+);`;
+
+check("fillFailuresByScene flags the under-filled scene, not the filled one", () => {
+  const out = fillFailuresByScene(FILL_FILE, [{}, {}], "16:9");
+  assert(out.length === 1, `only Section1 under-fills, got ${out.length}`);
+  assert(out[0].scene === 1, "the under-filled scene is 1");
+  assert(/lower band|lower third|unfinished/i.test(out[0].message), "names the empty-lower-band problem");
+});
+
+check("per-scene fill catches what the file-level check masks", () => {
+  // The whole-file gate is satisfied by Section0's bottom anchor → returns null,
+  // hiding Section1's empty bottom. That masking is exactly why this exists.
+  assert(assessVerticalFill(FILL_FILE, "16:9") === null, "file-level masks (passes)");
+  assert(fillFailuresByScene(FILL_FILE, [{}, {}], "16:9").length === 1, "per-scene still catches it");
 });
 
 // ── grouping ──────────────────────────────────────────────────────────────
