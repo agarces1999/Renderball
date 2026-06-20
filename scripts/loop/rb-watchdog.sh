@@ -19,6 +19,24 @@ log(){ echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$WLOG"; }
 
 jget(){ python3 -c "import json,sys;print(json.load(open('$1')).get('$2',$3))" 2>/dev/null; }
 
+# escalate(): the watchdog can RESTART, but only the agent can FIX a code/flow bug
+# that keeps breaking loop 1. When restarts won't help (crash-loop / persistent
+# infra), drop a needs_fix signal the agent picks up to fix the REAL product code
+# — never a harness shortcut; loop 1 must stay true to the user flow. Latest
+# symptom wins.
+escalate(){
+  python3 -c "import json,os,time,sys; t=open('$DEVLOG').read()[-2000:] if os.path.exists('$DEVLOG') else ''; json.dump({'symptom':sys.argv[1],'ts':int(time.time()),'iso':time.strftime('%Y-%m-%d %H:%M:%S'),'devlog_tail':t}, open('$LOOPDIR/needs_fix.json','w'), indent=2)" "$1" 2>/dev/null
+  log "ESCALATED needs_fix: $1"
+}
+RESTARTS=""
+record_restart(){
+  local now recent c=0; now=$(date +%s); RESTARTS="$RESTARTS $now"; recent=""
+  for t in $RESTARTS; do if [ $(( now - t )) -le 900 ]; then recent="$recent $t"; c=$((c+1)); fi; done
+  RESTARTS="$recent"
+  log "unplanned restart ($c in last 15min)"
+  if [ "$c" -ge 3 ]; then escalate "loop-1 crash-loop: $c server/worker restarts in 15min — restarting is not fixing it; needs a code/flow fix in the real pipeline"; fi
+}
+
 server_up(){ curl -sf -o /dev/null "http://localhost:$PORT/" 2>/dev/null; }
 loop_up(){ pgrep -f "rb-build-loop.mjs" >/dev/null 2>&1; }
 
@@ -64,6 +82,7 @@ while true; do
     start_server
     LAST_HEAD=$(git rev-parse --short HEAD 2>/dev/null)
     start_loop
+    record_restart
     sleep "$POLL"; continue
   fi
 
@@ -84,7 +103,19 @@ while true; do
   fi
 
   # 3) worker alive?
-  if ! loop_up; then log "worker DOWN -> restart"; start_loop; fi
+  if ! loop_up; then log "worker DOWN -> restart"; start_loop; record_restart; fi
+
+  # 3b) persistent infra: worker stuck unable to reach a build verdict (server not
+  # serving builds). A restart loop won't help — escalate for a real fix.
+  phase=$(jget "$LOOPDIR/heartbeat.json" phase '""'); phase=$(echo "$phase" | tr -d '"')
+  if [ "$phase" = "infra-backoff" ]; then
+    INFRA_SINCE=${INFRA_SINCE:-$(date +%s)}
+    if [ $(( $(date +%s) - INFRA_SINCE )) -gt 420 ] 2>/dev/null; then
+      escalate "loop-1 persistent infra: worker stuck in infra-backoff >7min — builds are not reaching a verdict"
+    fi
+  else
+    INFRA_SINCE=""
+  fi
 
   # 4) wedged build? (dev.log silent too long)
   if [ -f "$DEVLOG" ]; then
@@ -95,6 +126,7 @@ while true; do
       start_server
       LAST_HEAD=$(git rev-parse --short HEAD 2>/dev/null)
       start_loop
+      record_restart
     fi
   fi
 

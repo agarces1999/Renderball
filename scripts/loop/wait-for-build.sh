@@ -13,6 +13,7 @@ for i in $(seq 1 "$iters"); do
   built=$(jget built 0);   built=${built:-0}
   qa=$(jget qa_done 0);    qa=${qa:-0}
   target=$(jget target 100); target=${target:-100}
+  if [ -f "$LOOPDIR/needs_fix.json" ]; then echo "NEEDS_FIX — watchdog escalated a loop-1 breakage; fix the real pipeline"; exit 0; fi
   if [ "$qa" -ge "$target" ] 2>/dev/null; then echo "TARGET_DONE qa_done=$qa/$target"; exit 0; fi
   if [ "$built" -gt "$qa" ] 2>/dev/null; then echo "BUILD_READY built=$built qa_done=$qa"; exit 0; fi
   sleep 20
