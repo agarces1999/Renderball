@@ -12,6 +12,8 @@ const isProtectedRoute = createRouteMatcher([
   "/videos(.*)",
   "/review(.*)",
   "/preview(.*)",
+  "/account(.*)",
+  "/billing(.*)",
   "/api/preview(.*)",
   "/api/renders(.*)",
 ]);
