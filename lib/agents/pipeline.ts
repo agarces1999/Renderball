@@ -437,7 +437,7 @@ const surgicalCompileFix = async (
         { timeout: COMPOSITION_REQUEST_TIMEOUT_MS },
       )
       .finalMessage();
-    const text = resp.content.find((c) => c.type === "text");
+    const text = resp.content.find((c: { type: string }) => c.type === "text");
     const fixed =
       text && text.type === "text" ? stripCodeFence(text.text.trim()) : null;
     // Guard against a non-file response (refusal / prose) slipping through.
@@ -506,7 +506,7 @@ const surgicalRenderFix = async (
         { timeout: COMPOSITION_REQUEST_TIMEOUT_MS },
       )
       .finalMessage();
-    const text = resp.content.find((c) => c.type === "text");
+    const text = resp.content.find((c: { type: string }) => c.type === "text");
     const raw = text && text.type === "text" ? stripCodeFence(text.text.trim()) : "";
     // Isolate the one section even if the model wraps prose/extra around it.
     const block = raw ? extractSection(raw, sceneIndex) : null;
@@ -661,7 +661,7 @@ const regenerateSectionBlock = async (
         { timeout: COMPOSITION_REQUEST_TIMEOUT_MS },
       )
       .finalMessage();
-    const text = resp.content.find((c) => c.type === "text");
+    const text = resp.content.find((c: { type: string }) => c.type === "text");
     const raw = text && text.type === "text" ? stripCodeFence(text.text.trim()) : "";
     // Isolate the one section even if the model emitted extra context.
     const block = raw ? extractSection(raw, sceneIndex) : null;
@@ -701,7 +701,7 @@ export const regenerateScene = async (
     ...rawInput,
     brand_extract: sanitizeBrandExtract(rawInput.brand_extract),
   };
-  let client;
+  let client: ReturnType<typeof getAnthropic>;
   try {
     client = getAnthropic();
   } catch (err) {
@@ -789,7 +789,7 @@ export const regenerateScene = async (
     };
   }
 
-  const designText = designResponse.content.find((c) => c.type === "text");
+  const designText = designResponse.content.find((c: { type: string }) => c.type === "text");
   if (!designText || designText.type !== "text") {
     return {
       ok: false,
@@ -850,7 +850,7 @@ export const regenerateScene = async (
   }
 
   const animationText = animationResponse.content.find(
-    (c) => c.type === "text",
+    (c: { type: string }) => c.type === "text",
   );
   if (!animationText || animationText.type !== "text") {
     return {
@@ -967,7 +967,7 @@ export const buildAnimatedSections = async (
     ...rawInput,
     brand_extract: sanitizeBrandExtract(rawInput.brand_extract),
   };
-  let client;
+  let client: ReturnType<typeof getAnthropic>;
   try {
     client = getAnthropic();
   } catch (err) {
@@ -1111,36 +1111,51 @@ export const buildAnimatedSections = async (
     // Streaming required for Opus + max_tokens=32k (potential >10min). Now a
     // tool-use loop: the agent may call search_assets; we resolve, feed the
     // results back, and continue until it emits the final composition text.
+    // Bounded so a photo-heavy brand that over-searches can't run away: after
+    // MAX_TOOL_ROUNDS tool rounds we DROP the tools to force text, then allow a
+    // few nudges to coax the actual .tsx out. CRITICAL: this must NEVER throw —
+    // a runaway tool loop degrades to best-effort code (the gates catch bad
+    // output), it does NOT kill the build. (Iter 5 Duolingo died here: a nudge
+    // landed on the final round and fell off the old `for round <= MAX` loop
+    // into a `throw "tool loop exceeded max rounds"`.) Each stream call is
+    // wrapped in streamBuildCall so a transient z.ai drop mid-design is retried.
     const convo = [...messages];
     const MAX_TOOL_ROUNDS = 8;
-    let nudges = 0;
     const MAX_NUDGES = 2;
-    for (let round = 0; round <= MAX_TOOL_ROUNDS; round++) {
-      const withTools = round < MAX_TOOL_ROUNDS; // last round drops tools to force text
-      const resp = await client.messages.stream(
-        {
-          // Design Pass 1 AND its retry (same runDesign helper). Opus for
-          // composition taste + density on the commit-to-MP4 path.
-          model: MODELS.codingAgentBuild,
-          max_tokens: BUILD_MAX_TOKENS,
-          // Reasoning ON: the design pass juggles ~15 machine-checked
-          // constraints; letting the model reason before emitting is the
-          // cheapest first-pass-compliance lever (fewer gate retries).
-          ...BUILD_REASONING, // GLM thinking:enabled + reasoning_effort (lib/anthropic)
-          system: [
-            {
-              type: "text",
-              text: DESIGN_AGENT_SYSTEM_PROMPT,
-              cache_control: { type: "ephemeral" },
-            },
-          ],
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          ...(withTools ? { tools: [SEARCH_ASSETS_TOOL] as any } : {}),
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          messages: convo as any,
-        },
-        { timeout: COMPOSITION_REQUEST_TIMEOUT_MS },
-      ).finalMessage();
+    const HARD_CAP = MAX_TOOL_ROUNDS + MAX_NUDGES + 2;
+    let toolRounds = 0;
+    let nudges = 0;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let lastResp: any = null;
+    for (let turn = 0; turn < HARD_CAP; turn++) {
+      const withTools = toolRounds < MAX_TOOL_ROUNDS; // drop tools after the cap to force text
+      const resp = await streamBuildCall("design pass", () =>
+        client.messages.stream(
+          {
+            // Design Pass 1 AND its retry (same runDesign helper). Opus for
+            // composition taste + density on the commit-to-MP4 path.
+            model: MODELS.codingAgentBuild,
+            max_tokens: BUILD_MAX_TOKENS,
+            // Reasoning ON: the design pass juggles ~15 machine-checked
+            // constraints; letting the model reason before emitting is the
+            // cheapest first-pass-compliance lever (fewer gate retries).
+            ...BUILD_REASONING, // GLM thinking:enabled + reasoning_effort (lib/anthropic)
+            system: [
+              {
+                type: "text",
+                text: DESIGN_AGENT_SYSTEM_PROMPT,
+                cache_control: { type: "ephemeral" },
+              },
+            ],
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            ...(withTools ? { tools: [SEARCH_ASSETS_TOOL] as any } : {}),
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            messages: convo as any,
+          },
+          { timeout: COMPOSITION_REQUEST_TIMEOUT_MS },
+        ).finalMessage(),
+      );
+      lastResp = resp;
 
       if (resp.stop_reason !== "tool_use") {
         // GLM (z.ai) sometimes ENDS THE TURN with a short "…now writing the
@@ -1149,7 +1164,7 @@ export const buildAnimatedSections = async (
         // to emit the file and continue (bounded), rather than returning prose
         // that fails the "doesn't look like a TS file" check downstream.
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const txt = (resp.content as any[]).find((c) => c.type === "text")?.text ?? "";
+        const txt = (resp.content as any[]).find((c: { type: string }) => c.type === "text")?.text ?? "";
         const looksLikeCode = txt.includes("import") && txt.includes("export");
         if (!looksLikeCode && nudges < MAX_NUDGES) {
           nudges++;
@@ -1165,6 +1180,24 @@ export const buildAnimatedSections = async (
         return resp; // code ready (or out of nudges — return best effort)
       }
 
+      // tool_use. If tools weren't offered this round (post-cap) but the model
+      // emitted tool_use anyway, nudge toward text instead of dropping the result.
+      if (!withTools) {
+        if (nudges < MAX_NUDGES) {
+          nudges++;
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          convo.push({ role: "assistant", content: resp.content as any });
+          convo.push({
+            role: "user",
+            content:
+              "Stop searching for assets — you've reached the search limit. Output the COMPLETE Composition.tsx NOW using the assets you already have (or SVG/illustration fallbacks). Start at the first `import`, end at the last `export const Section`. ONLY the .tsx source.",
+          });
+          continue;
+        }
+        return resp;
+      }
+
+      toolRounds++;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const toolUses = (resp.content as any[]).filter((c) => c.type === "tool_use");
       const toolResults = await Promise.all(
@@ -1179,7 +1212,10 @@ export const buildAnimatedSections = async (
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       convo.push({ role: "user", content: toolResults as any });
     }
-    throw new Error("search_assets tool loop exceeded max rounds"); // unreachable (last round forces text)
+    // Hard cap reached — return best effort rather than throwing. A build that
+    // proceeds to the gates beats a design-stage crash.
+    console.warn("[pipeline] design tool loop hit hard cap — returning best-effort response");
+    return lastResp; // always assigned — the loop runs >= 1 iteration before here
   };
 
   let designResponse;
@@ -1195,7 +1231,7 @@ export const buildAnimatedSections = async (
     };
   }
 
-  const designText = designResponse.content.find((c) => c.type === "text");
+  const designText = designResponse.content.find((c: { type: string }) => c.type === "text");
   if (!designText || designText.type !== "text") {
     return {
       ok: false,
@@ -1542,7 +1578,7 @@ export const buildAnimatedSections = async (
         err instanceof Error ? err.message : err,
       );
     }
-    const retryText = designResponse.content.find((c) => c.type === "text");
+    const retryText = designResponse.content.find((c: { type: string }) => c.type === "text");
     if (retryText && retryText.type === "text") {
       const retryCode = stripCodeFence(retryText.text.trim());
       // RE-ASSESS the structural sweep on the retry's output — a retry chased
@@ -1593,7 +1629,7 @@ export const buildAnimatedSections = async (
         { role: "user", content: structuralRetryMessage },
       ]);
       const structuralText = structuralResponse.content.find(
-        (c) => c.type === "text",
+        (c: { type: string }) => c.type === "text",
       );
       if (structuralText && structuralText.type === "text") {
         const structuralCode = stripCodeFence(structuralText.text.trim());
@@ -1670,7 +1706,7 @@ export const buildAnimatedSections = async (
   }
 
   const animationText = animationResponse.content.find(
-    (c) => c.type === "text",
+    (c: { type: string }) => c.type === "text",
   );
   if (!animationText || animationText.type !== "text") {
     return {
@@ -1858,7 +1894,7 @@ export const buildAnimatedSections = async (
           { timeout: COMPOSITION_REQUEST_TIMEOUT_MS },
         )
         .finalMessage();
-      const retryText = retryResponse.content.find((c) => c.type === "text");
+      const retryText = retryResponse.content.find((c: { type: string }) => c.type === "text");
       if (retryText && retryText.type === "text") {
         const retryCode = stripCodeFence(retryText.text.trim());
         if (
