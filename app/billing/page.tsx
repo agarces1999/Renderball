@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { AppShell } from "../../components/AppShell";
+import { AppShellServer } from "../../components/AppShellServer";
 
 /**
  * Billing — current plan + what's available. Paid plans are not wired yet
@@ -11,7 +11,7 @@ export const dynamic = "force-dynamic";
 
 export default function BillingPage() {
   return (
-    <AppShell>
+    <AppShellServer>
       <div className="mx-auto max-w-3xl px-6 py-10">
         <h1 className="mb-2 font-display text-[clamp(24px,3vw,30px)] font-semibold tracking-tight text-ink">
           Billing
@@ -51,6 +51,6 @@ export default function BillingPage() {
           </Link>
         </div>
       </div>
-    </AppShell>
+    </AppShellServer>
   );
 }

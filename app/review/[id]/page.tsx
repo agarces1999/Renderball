@@ -1,7 +1,7 @@
 import { notFound, redirect } from "next/navigation";
 import { getCurrentUser } from "../../../lib/auth";
 import { loadBrief, loadScript } from "../../../lib/store";
-import { AppHeader } from "../../../components/AppHeader";
+import { AppShellServer } from "../../../components/AppShellServer";
 import { EditableReview } from "./EditableReview";
 
 /**
@@ -33,9 +33,8 @@ export default async function ReviewPage({
     : null;
 
   return (
-    <>
-      <AppHeader />
-      <main className="mx-auto max-w-3xl px-6 py-10">
+    <AppShellServer>
+      <div className="mx-auto max-w-3xl px-6 py-10">
         {brief.status === "failed" && brief.error && (
           <ErrorPanel error={brief.error} />
         )}
@@ -52,8 +51,8 @@ export default async function ReviewPage({
         <footer className="mt-16 border-t border-hairline pt-6 font-mono text-[11px] text-faint">
           brief {brief.id} · {brief.status}
         </footer>
-      </main>
-    </>
+      </div>
+    </AppShellServer>
   );
 }
 

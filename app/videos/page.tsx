@@ -4,7 +4,7 @@ import { promises as fs } from "fs";
 import path from "path";
 import { getCurrentUser } from "../../lib/auth";
 import { listBriefsByOwner, type BriefStatus, type StoredBrief } from "../../lib/store";
-import { AppShell } from "../../components/AppShell";
+import { AppShellServer } from "../../components/AppShellServer";
 import { ProjectThumb } from "../../components/ProjectThumb";
 
 /**
@@ -88,7 +88,7 @@ export default async function VideosPage() {
   );
 
   return (
-    <AppShell>
+    <AppShellServer>
       <div className="mx-auto max-w-5xl px-6 py-10">
         <div className="mb-8 flex items-end justify-between gap-4">
           <div>
@@ -119,7 +119,7 @@ export default async function VideosPage() {
           </div>
         )}
       </div>
-    </AppShell>
+    </AppShellServer>
   );
 }
 
