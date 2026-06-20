@@ -14,7 +14,32 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <ClerkProvider>
+    <ClerkProvider
+      appearance={{
+        variables: {
+          colorPrimary: "#00c28a",
+          colorText: "#10141c",
+          colorTextSecondary: "#69707e",
+          colorBackground: "#ffffff",
+          colorInputBackground: "#f5f7f9",
+          colorInputText: "#10141c",
+          borderRadius: "12px",
+          fontFamily: '"Geist", system-ui, sans-serif',
+        },
+        elements: {
+          formButtonPrimary:
+            "bg-accent text-accent-ink font-semibold normal-case hover:brightness-110",
+          card: "shadow-none border border-hairline",
+          headerTitle: "font-display tracking-tight",
+          logoImage: "h-8 w-8",
+        },
+        layout: {
+          logoImageUrl: "/orb.svg",
+          logoPlacement: "inside",
+          socialButtonsPlacement: "top",
+        },
+      }}
+    >
       <html lang="en">
         <head>
           {/* Per DESIGN.md: Cabinet Grotesk (display, story surfaces),

@@ -33,6 +33,11 @@ COPY . .
 # be present here. Railway passes the service variable as a build arg.
 ARG NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
 ENV NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=$NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
+# Static, non-secret Clerk routing (our in-app branded /sign-in and /sign-up).
+ENV NEXT_PUBLIC_CLERK_SIGN_IN_URL=/sign-in \
+    NEXT_PUBLIC_CLERK_SIGN_UP_URL=/sign-up \
+    NEXT_PUBLIC_CLERK_SIGN_IN_FALLBACK_REDIRECT_URL=/videos \
+    NEXT_PUBLIC_CLERK_SIGN_UP_FALLBACK_REDIRECT_URL=/videos
 ENV NODE_ENV=production
 
 RUN npm run build
