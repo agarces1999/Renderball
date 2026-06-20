@@ -558,9 +558,13 @@ export const validateScript = (input: unknown): ValidationResult => {
       }
     }
 
-    // cta — optional, primary required if present
-    const cta = content.cta as Record<string, unknown> | undefined;
-    if (cta !== undefined) {
+    // cta — optional, primary required if present. Treat null as absent: GLM
+    // sometimes emits `"cta": null`, and `null !== undefined` is true while
+    // `typeof null === "object"` — so the old `!== undefined` guard fell through
+    // to `cta.primary` and threw "Cannot read properties of null (reading
+    // 'primary')", 500ing the generate. `!= null` catches null AND undefined.
+    const cta = content.cta as Record<string, unknown> | null | undefined;
+    if (cta != null) {
       if (typeof cta !== "object") {
         return { ok: false, error: `Section ${idx} content.cta must be an object with { primary, secondary? }.` };
       }

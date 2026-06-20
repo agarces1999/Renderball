@@ -331,6 +331,41 @@ const formatAnthropicError = (err: unknown): string => {
 const COMPOSITION_REQUEST_TIMEOUT_MS = 30 * 60 * 1000;
 
 /**
+ * Transient network errors on a long GLM build stream — the connection drops
+ * mid-flight (ETIMEDOUT, terminated, ECONNRESET, socket hang up). The SDK can't
+ * resume a stream, so one blip killed a 38-minute build (feedback-loop iteration
+ * 1: animation stage `read ETIMEDOUT`). Retry the WHOLE call (a fresh stream) on
+ * these — but NEVER on API errors (400 / truncation / auth), which would just
+ * repeat. Keeps a momentary network hiccup from nuking an expensive build, for
+ * the loop AND for real users.
+ */
+const TRANSIENT_NET_RX =
+  /ETIMEDOUT|ECONNRESET|terminated|socket hang up|EPIPE|ECONNREFUSED|fetch failed|network|aborted/i;
+const isTransientNetErr = (err: unknown): boolean => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const e = err as any;
+  const parts = [e?.message, e?.code, e?.cause?.message, e?.cause?.code, e?.cause?.cause?.code]
+    .filter(Boolean)
+    .join(" ");
+  return TRANSIENT_NET_RX.test(parts) || TRANSIENT_NET_RX.test(String(err));
+};
+async function streamBuildCall<T>(label: string, fn: () => Promise<T>, attempts = 3): Promise<T> {
+  let lastErr: unknown;
+  for (let i = 1; i <= attempts; i++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      if (i === attempts || !isTransientNetErr(err)) throw err;
+      console.warn(
+        `[pipeline] ${label}: transient network error on attempt ${i}/${attempts} (${err instanceof Error ? err.message : err}) — retrying`,
+      );
+    }
+  }
+  throw lastErr;
+}
+
+/**
  * One surgical compile-fix round-trip. A compile error in generated code (a
  * stray `>`, an unclosed tag, a truncated expression) is a MECHANICAL defect,
  * not a design problem — so instead of failing the build or paying a full
@@ -697,7 +732,7 @@ export const regenerateScene = async (
 
   let designResponse;
   try {
-    designResponse = await client.messages.stream(
+    designResponse = await streamBuildCall("design pass", () => client.messages.stream(
       {
         // Streaming required: max_tokens=32k × Opus could exceed the
         // SDK's 10-minute non-streaming threshold. finalMessage() returns
@@ -718,7 +753,7 @@ export const regenerateScene = async (
         messages: [{ role: "user", content: designUserMessage }],
       },
       { timeout: COMPOSITION_REQUEST_TIMEOUT_MS },
-    ).finalMessage();
+    ).finalMessage());
   } catch (err) {
     return {
       ok: false,
@@ -760,7 +795,7 @@ export const regenerateScene = async (
 
   let animationResponse;
   try {
-    animationResponse = await client.messages.stream(
+    animationResponse = await streamBuildCall("animation pass", () => client.messages.stream(
       {
         model: MODELS.codingAgent,
         max_tokens: BUILD_MAX_TOKENS,
@@ -778,7 +813,7 @@ export const regenerateScene = async (
         messages: [{ role: "user", content: animationUserMessage }],
       },
       { timeout: COMPOSITION_REQUEST_TIMEOUT_MS },
-    ).finalMessage();
+    ).finalMessage());
   } catch (err) {
     return {
       ok: false,
@@ -1576,7 +1611,7 @@ export const buildAnimatedSections = async (
 
   let animationResponse;
   try {
-    animationResponse = await client.messages.stream(
+    animationResponse = await streamBuildCall("animation pass", () => client.messages.stream(
       {
         // Choreography Pass 2 on the build path. Opus for animation
         // taste + dead-air pacing. Streaming required (Opus + 32k tokens).
@@ -1596,7 +1631,7 @@ export const buildAnimatedSections = async (
         messages: [{ role: "user", content: animationUserMessage }],
       },
       { timeout: COMPOSITION_REQUEST_TIMEOUT_MS },
-    ).finalMessage();
+    ).finalMessage());
   } catch (err) {
     return {
       ok: false,
