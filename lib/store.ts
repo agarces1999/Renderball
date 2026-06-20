@@ -164,12 +164,9 @@ export const loadBriefByScriptId = async (
 };
 
 export const loadScript = async (id: string): Promise<Script | null> => {
+  let raw: string;
   try {
-    const raw = await fs.readFile(
-      path.join(SCRIPTS_DIR, `${id}.json`),
-      "utf-8",
-    );
-    return JSON.parse(raw) as Script;
+    raw = await fs.readFile(path.join(SCRIPTS_DIR, `${id}.json`), "utf-8");
   } catch (err: unknown) {
     if (
       err &&
@@ -179,6 +176,17 @@ export const loadScript = async (id: string): Promise<Script | null> => {
     ) {
       return null;
     }
-    throw err;
+    throw err; // genuine fs error (EACCES, etc.) — surface it
+  }
+  try {
+    return JSON.parse(raw) as Script;
+  } catch {
+    // Corrupt/truncated on-disk script (a crash mid non-atomic write leaves a
+    // partial file). Treat as unusable → null, honoring loadScript's
+    // resolve-or-null contract that every caller assumes. The build route maps
+    // null → a clean 404, rather than letting a SyntaxError escape uncaught and
+    // 500 the endpoint on a corrupt-input edge case.
+    console.warn(`[store] loadScript(${id}): corrupt JSON on disk — treating as missing`);
+    return null;
   }
 };

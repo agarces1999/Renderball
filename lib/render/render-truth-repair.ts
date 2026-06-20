@@ -102,6 +102,15 @@ export const repairRenderTruth = async (
   };
 
   let gate = await cb.measure();
+  // Fail LOUD on a malformed gate. The original symptom was a cryptic "Cannot
+  // read properties of undefined (reading 'length')" here, caused by a measure()
+  // callback that spread an UNAWAITED async gate fn (so blocking/findings were
+  // absent). Assert the shape so the next such mistake names itself.
+  if (!gate || !Array.isArray(gate.blocking) || !Array.isArray(gate.findings)) {
+    throw new Error(
+      "repairRenderTruth: measure() returned a malformed GateResult (findings/blocking must be arrays) — did an async gate fn get spread without await?",
+    );
+  }
   if (gate.blocking.length === 0) {
     return { ok: true, reason: "passed", steps, spentUsd: spent, findings: gate.findings, blocking: [], measurements: gate.measurements };
   }

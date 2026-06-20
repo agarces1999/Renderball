@@ -2,6 +2,7 @@ import { getAnthropic, MODELS } from "../anthropic";
 import { SCRIPT_GENERATOR_SYSTEM_PROMPT } from "./prompts/script-generator";
 import {
   validateScript,
+  normalizeScriptContent,
   findUngroundedClaims,
   findUngroundedStageLabels,
   findTypeOnlyScenes,
@@ -315,7 +316,10 @@ export const generateScript = async (
 
     const withIdentity = injectIdentity(parsed, brief, briefId);
     const withAssets = mergePreallocatedAssets(withIdentity, brief);
-    const validation = validateScript(withAssets);
+    // Strip prose-as-value KPI meta entries before validation so a value-less
+    // stat tile (blank number slot) never reaches the design pass.
+    const normalized = normalizeScriptContent(withAssets);
+    const validation = validateScript(normalized);
     if (validation.ok) {
       // Duration guard: the requested duration is authoritative. If the
       // agent collapsed the video (sizing scenes like ~1s animation beats),

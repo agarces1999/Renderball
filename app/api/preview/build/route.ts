@@ -229,7 +229,13 @@ export async function POST(request: Request) {
         // Thread the raw measurements (with each scene's screenshotPath) out via
         // the GateResult so the advisory vision gate can reuse the final
         // screenshots instead of launching Chromium a second time.
-        return { ...findRenderTruthFailures(measurements), measurements };
+        // findRenderTruthFailures is ASYNC (contrast + dead-region run through
+        // sharp). It MUST be awaited — spreading the unawaited Promise produces a
+        // gate object with no `findings`/`blocking`, so `gate.blocking.length`
+        // in the repair ladder threw "Cannot read properties of undefined
+        // (reading 'length')" and 500'd every build that reached this gate.
+        const gate = await findRenderTruthFailures(measurements);
+        return { ...gate, measurements };
       },
       regenScene: async (sceneIndex, instruction) => {
         const r = await regenerateScene(
@@ -238,7 +244,12 @@ export async function POST(request: Request) {
           sceneIndex,
           instruction,
         );
-        if (!r.ok) return { ok: false, usage: r.usage, error: r.error };
+        // Fold spend even on failure — a failed attempt is not a free attempt;
+        // the ledger must capture the tokens this regen burned.
+        if (!r.ok) {
+          if (r.usage) currentUsage = addUsage(currentUsage, r.usage);
+          return { ok: false, usage: r.usage, error: r.error };
+        }
         currentCode = r.code;
         currentDesign = r.designCode;
         currentWarnings = r.warnings;
@@ -264,7 +275,12 @@ export async function POST(request: Request) {
           ),
         };
         const rb = await buildAnimatedSections(buildAgentInputFromBrief(brief, lighter));
-        if (!rb.ok) return { ok: false, usage: rb.usage, error: rb.error };
+        // Fold spend even on failure — L3's failed design+animation rebuild is
+        // the costliest repair step; the ledger must not drop it.
+        if (!rb.ok) {
+          if (rb.usage) currentUsage = addUsage(currentUsage, rb.usage);
+          return { ok: false, usage: rb.usage, error: rb.error };
+        }
         currentScript = lighter;
         currentCode = rb.code;
         currentDesign = rb.designCode;

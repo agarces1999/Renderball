@@ -289,6 +289,69 @@ const sameCopy = (a: string, b: string): boolean =>
   a.trim().toLowerCase().replace(/\s+/g, " ") ===
   b.trim().toLowerCase().replace(/\s+/g, " ");
 
+// A `meta` value is the BIG number in a KPI tile (or a terse footer datum). It
+// must be short — a stat ("$1.4T", "99.99%", "135+") or a short datum ("Series
+// B", "Mar 2025", "Jane Doe"). GLM sometimes files a DESCRIPTION into `value`
+// instead ({label:"Volume", value:"in payments volume processed in 2025"}),
+// which renders a KPI tile with a blank number slot. A value that is a phrase
+// (too many words / too long) is malformed regardless of brand.
+const META_VALUE_MAX_WORDS = 4;
+const META_VALUE_MAX_CHARS = 32;
+const metaValueIsTerse = (value: string): boolean => {
+  const v = value.trim();
+  if (!v) return false;
+  if (v.length > META_VALUE_MAX_CHARS) return false;
+  return v.split(/\s+/).filter(Boolean).length <= META_VALUE_MAX_WORDS;
+};
+
+/**
+ * Pre-validation content normalizer (pure — returns a cloned object, never
+ * mutates input). Strips `content.meta` entries whose `value` is prose rather
+ * than a terse stat/datum, so a value-less KPI tile (blank number slot) never
+ * reaches the design pass. If a scene's meta empties out, the `meta` key is
+ * removed so the design renders no tile grid at all (better than an empty one).
+ * Any shape it doesn't recognise is left untouched — validateScript owns shape
+ * errors; this only prunes well-formed-but-prose meta values.
+ */
+export const normalizeScriptContent = (input: unknown): unknown => {
+  if (!input || typeof input !== "object") return input;
+  const root = input as Record<string, unknown>;
+  if (!Array.isArray(root.scenes)) return input;
+  let changed = false;
+  const dropped: string[] = [];
+  const scenes = root.scenes.map((sc) => {
+    if (!sc || typeof sc !== "object") return sc;
+    const scene = sc as Record<string, unknown>;
+    const content = scene.content;
+    if (!content || typeof content !== "object") return sc;
+    const c = content as Record<string, unknown>;
+    if (!Array.isArray(c.meta)) return sc;
+    const kept = c.meta.filter((m) => {
+      // Leave malformed shapes for validateScript to reject; only judge well-
+      // formed {label,value} string pairs here.
+      if (!m || typeof m !== "object") return true;
+      const mm = m as Record<string, unknown>;
+      if (typeof mm.value !== "string") return true;
+      const ok = metaValueIsTerse(mm.value);
+      if (!ok) dropped.push(mm.value);
+      return ok;
+    });
+    if (kept.length === c.meta.length) return sc;
+    changed = true;
+    const nextContent: Record<string, unknown> = { ...c };
+    if (kept.length === 0) delete nextContent.meta;
+    else nextContent.meta = kept;
+    return { ...scene, content: nextContent };
+  });
+  if (!changed) return input;
+  console.warn(
+    `[script] normalized meta: dropped ${dropped.length} prose-as-value KPI entr${dropped.length === 1 ? "y" : "ies"} (${dropped
+      .map((d) => `"${d}"`)
+      .join(", ")})`,
+  );
+  return { ...root, scenes };
+};
+
 export const validateScript = (input: unknown): ValidationResult => {
   if (typeof input !== "object" || input === null) {
     return { ok: false, error: "Output is not a JSON object." };

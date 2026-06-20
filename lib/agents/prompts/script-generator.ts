@@ -169,7 +169,7 @@ content: {
   lede?: string;               // 1-2 sentence supporting paragraph, ≤280 chars
   bullets?: string[];          // 2-4 supporting points, each ≤120 chars
   caption?: string;            // small caption under primary content, ≤140 chars
-  meta?: { label: string; value: string }[];   // footer key-value detail (Speaker / Event / Date)
+  meta?: { label: string; value: string }[];   // KPI tiles / footer key-values. value = TERSE number/stat or short datum, NEVER a phrase
   cta?: { primary: string; secondary?: string };
   illustration?: string;       // inline-SVG intent — see "Illustration intent" below
   asset_ids: string[];         // refs into script.assets.images
@@ -198,7 +198,7 @@ For EVERY section, ask: "Does this content tell the viewer the moment, or only l
 - **lede** — 1-2 short sentences. State the WHY or the WHAT NEXT. Speaks to the viewer ("You can now..." / "We built this for..."). Not a tagline; explanation.
 - **bullets** — parallel phrasing, same grammatical shape. Each is a discrete point, not a sentence. 3-6 words each ideally.
 - **caption** — small text. Source attribution, unit, footnote, status text inside a diegetic UI, micro-context. Different size/weight from lede.
-- **meta** — speaker name, event, date, version number, category — fact-shaped data, label-value pairs.
+- **meta** — fact-shaped label-value pairs (rendered as KPI tiles or a footer row). The \`value\` MUST be TERSE: a number/stat ("$1.4T", "99.99%", "135+") or a short datum ("Series B", "Mar 2025", "Jane Doe") — NEVER a phrase or a sentence. The \`label\` is the short caption ("Total volume", "Uptime", "Speaker"). For a stat tile the \`value\` is the big number and the \`label\` is the caption beneath it. If you do NOT have a real, grounded number for a stat, OMIT the meta entry entirely — a value-less stat tile renders with a blank number, which looks broken. Better no tile than an empty one. (The failure to avoid: putting a description like "in payments volume processed in 2025" into \`value\` with no actual number.)
 - **cta.primary** — verb-led, and it MUST differ from that scene's headline. The headline is the invitation ("See how Ramp works"); the pill is the action the viewer takes ("Get a demo", "Start free", "Book a walkthrough"). Never set cta.primary to the same string as the headline — a button that echoes the hero line wastes the one place you tell the viewer what to DO (rejected by a static check). cta.secondary is the smaller line beneath (URL, "limited beta", date).
 
 ### Illustration intent
