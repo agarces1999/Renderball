@@ -233,7 +233,22 @@ export const measureScenes = async (
   // closed per-scene rather than crashing module load.
   let chromium: typeof import("playwright").chromium;
   try {
-    ({ chromium } = await import("playwright"));
+    // CJS/ESM interop: `chromium` is normally on the namespace, but under Next
+    // dev a hot-recompile (e.g. a commit landing mid-build, which is what broke
+    // loop iteration 2) can re-wrap the CJS module so the export lands under
+    // `.default` instead — the bare `({ chromium } = ...)` destructure then
+    // yielded `undefined` and `chromium.launch` crashed with "Cannot read
+    // properties of undefined (reading 'launch')". Resolve BOTH shapes, and fail
+    // loudly (→ "playwright unavailable" measure-error) if truly absent.
+    const pw = (await import("playwright")) as unknown as {
+      chromium?: typeof import("playwright").chromium;
+      default?: { chromium?: typeof import("playwright").chromium };
+    };
+    const resolved = pw.chromium ?? pw.default?.chromium;
+    if (!resolved) {
+      throw new Error("playwright loaded but its `chromium` export is undefined (module interop)");
+    }
+    chromium = resolved;
   } catch (err) {
     const error = `playwright unavailable: ${err instanceof Error ? err.message : String(err)}`;
     return Array.from({ length: sceneCount }, (_, i) => ({
