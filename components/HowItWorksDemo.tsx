@@ -60,8 +60,9 @@ export function HowItWorksDemo() {
 
       <PipelineRail step={step} />
 
-      {/* Stage */}
-      <div className="relative aspect-[16/10] bg-canvas">
+      {/* Stage — fixed height so the content stages fill the frame instead of
+          floating in dead space (the Ready stage flexes to fill regardless). */}
+      <div className="relative h-[400px] bg-canvas sm:h-[440px]">
         <div
           key={step}
           data-rb-anim
