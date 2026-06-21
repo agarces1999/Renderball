@@ -1941,6 +1941,11 @@ export const buildAnimatedSections = async (
       animationUsage = addUsage(animationUsage, r.usage); // billed either way
       return r.code;
     },
+    // 3 attempts (default is 2): slack (iter 10) lost a 58-min build to a syntax
+    // error the 2-attempt repair couldn't recover. A surgical compile-fix is
+    // stochastic + cheap (~one GLM call) vs re-running the whole build, so give
+    // it one more shot before hard-failing.
+    3,
   );
   finalCode = compileRepair.code;
   if (compileRepair.attempts > 0) {
