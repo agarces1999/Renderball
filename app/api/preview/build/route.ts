@@ -335,6 +335,14 @@ export async function POST(request: Request) {
   // by scene count (small) and recorded separately as op "vision-qa".
   let visionFindings: VisionFinding[] = [];
   let visionCostUsd = 0;
+  // VISION GATE DISABLED (2026-06-21): the QA model is GLM 5.2 (MODELS.qaAgent),
+  // and GLM-via-z.ai cannot judge images. Shown a vivid #1ed760 green frame it
+  // answered "Blue"; across 5 brands (linear/duolingo/vercel/shopify/spotify) it
+  // only ever echoed the rubric's OWN example failures back ("near-black/navy",
+  // "wall-of-type", "missing serif") because it can't actually see the screenshot.
+  // A blind advisory gate is pure cost + false noise that pollutes QA records, so
+  // it's off until a vision-capable QA model is wired in. Re-enable: RB_VISION_GATE=on.
+  const VISION_GATE_ENABLED = process.env.RB_VISION_GATE === "on";
   try {
     // Reuse the screenshots from repair's FINAL measure (a measure always runs
     // last) instead of launching Chromium a second time — repair threads them out
@@ -389,11 +397,13 @@ export async function POST(request: Request) {
         .map((b) => (b.type === "text" ? b.text : ""))
         .join("\n");
     });
-    visionFindings = await runVisionGate(
-      measured.map((m) => ({ scene: m.scene, screenshotPath: m.screenshotPath })),
-      brandTruth,
-      judge,
-    );
+    visionFindings = VISION_GATE_ENABLED
+      ? await runVisionGate(
+          measured.map((m) => ({ scene: m.scene, screenshotPath: m.screenshotPath })),
+          brandTruth,
+          judge,
+        )
+      : [];
     if (visionUsage.input_tokens || visionUsage.output_tokens) {
       visionCostUsd = costUsd(MODELS.qaAgent, visionUsage);
       await recordUsage({
