@@ -23,12 +23,12 @@ import {
   makeVisionJudge,
   type VisionFinding,
 } from "../../../../lib/render/vision-gate";
-import { MODELS, getAnthropic } from "../../../../lib/anthropic";
+import { MODELS, VISION_MODEL } from "../../../../lib/anthropic";
+import { callZaiVision } from "../../../../lib/render/zai-vision";
 import {
   recordUsage,
   costUsd,
   addUsage,
-  usageOf,
   EMPTY_USAGE,
 } from "../../../../lib/usage";
 
@@ -335,14 +335,14 @@ export async function POST(request: Request) {
   // by scene count (small) and recorded separately as op "vision-qa".
   let visionFindings: VisionFinding[] = [];
   let visionCostUsd = 0;
-  // VISION GATE DISABLED (2026-06-21): the QA model is GLM 5.2 (MODELS.qaAgent),
-  // and GLM-via-z.ai cannot judge images. Shown a vivid #1ed760 green frame it
-  // answered "Blue"; across 5 brands (linear/duolingo/vercel/shopify/spotify) it
-  // only ever echoed the rubric's OWN example failures back ("near-black/navy",
-  // "wall-of-type", "missing serif") because it can't actually see the screenshot.
-  // A blind advisory gate is pure cost + false noise that pollutes QA records, so
-  // it's off until a vision-capable QA model is wired in. Re-enable: RB_VISION_GATE=on.
-  const VISION_GATE_ENABLED = process.env.RB_VISION_GATE === "on";
+  // VISION GATE — re-enabled 2026-06-21 on GLM-5V-Turbo via z.ai's NATIVE
+  // endpoint (lib/render/zai-vision.ts). It was briefly disabled because the
+  // Anthropic-compat endpoint silently DROPS images, so the old glm-5.2 judge was
+  // blind and only parroted the rubric's example failures. GLM-5V-Turbo on the
+  // native endpoint reads scenes correctly (validated: 0 false positives on 5
+  // good builds; caught a deliberate color mismatch). Still ADVISORY (never
+  // blocks). Disable with RB_VISION_GATE=off if it ever regresses.
+  const VISION_GATE_ENABLED = process.env.RB_VISION_GATE !== "off";
   try {
     // Reuse the screenshots from repair's FINAL measure (a measure always runs
     // last) instead of launching Chromium a second time — repair threads them out
@@ -371,31 +371,12 @@ export async function POST(request: Request) {
       ),
     };
     let visionUsage = { ...EMPTY_USAGE };
+    // GLM-5V-Turbo via the NATIVE z.ai endpoint — the Anthropic-compat SDK client
+    // (getAnthropic) drops images, so vision MUST use callZaiVision. See VISION_MODEL.
     const judge = makeVisionJudge(async (imageBase64, rubric) => {
-      const resp = await getAnthropic().messages.create({
-        model: MODELS.qaAgent,
-        max_tokens: 700,
-        messages: [
-          {
-            role: "user",
-            content: [
-              {
-                type: "image",
-                source: {
-                  type: "base64",
-                  media_type: "image/png",
-                  data: imageBase64,
-                },
-              },
-              { type: "text", text: rubric },
-            ],
-          },
-        ],
-      });
-      visionUsage = addUsage(visionUsage, usageOf(resp.usage));
-      return resp.content
-        .map((b) => (b.type === "text" ? b.text : ""))
-        .join("\n");
+      const { text, usage } = await callZaiVision(imageBase64, rubric);
+      visionUsage = addUsage(visionUsage, usage);
+      return text;
     });
     visionFindings = VISION_GATE_ENABLED
       ? await runVisionGate(
@@ -405,10 +386,10 @@ export async function POST(request: Request) {
         )
       : [];
     if (visionUsage.input_tokens || visionUsage.output_tokens) {
-      visionCostUsd = costUsd(MODELS.qaAgent, visionUsage);
+      visionCostUsd = costUsd(VISION_MODEL, visionUsage);
       await recordUsage({
         op: "vision-qa",
-        model: MODELS.qaAgent,
+        model: VISION_MODEL,
         scriptId,
         url: brief?.brand_kit_url,
         usage: visionUsage,

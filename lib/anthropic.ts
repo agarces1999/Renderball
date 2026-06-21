@@ -130,6 +130,21 @@ export const MODELS = {
 } as const;
 
 /**
+ * Vision model for the QA gate (and, as a follow-up, the crawl's logo/palette
+ * vision). GLM-5V-Turbo is z.ai's multimodal model built to "examine rendered
+ * output and identify discrepancies" — validated 2026-06-21 to read our scene
+ * screenshots accurately (0 false positives on 5 good builds, and it correctly
+ * caught a deliberate color mismatch). The text GLM models (glm-5.2 etc.) are
+ * NOT vision-capable.
+ *
+ * CRITICAL: vision calls MUST go through z.ai's NATIVE endpoint via
+ * lib/render/zai-vision.ts — the Anthropic-compatible endpoint that
+ * getAnthropic() targets silently DROPS image blocks, so images sent through the
+ * SDK client are invisible to the model.
+ */
+export const VISION_MODEL = "glm-5v-turbo";
+
+/**
  * Reasoning + output config for the build/composition calls on GLM 5.2 (z.ai).
  *
  * GLM controls reasoning with `thinking.type` (`enabled`|`disabled`) plus a
