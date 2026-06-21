@@ -298,6 +298,21 @@ export const measureScenes = async (
         }
         // fonts loaded + a beat for layout to settle
         await page.evaluate("document.fonts && document.fonts.ready").catch(() => {});
+        // SETTLE entry animations to their FINAL state before measuring AND
+        // screenshotting. setContent renders at t=0, so without this we captured
+        // an EARLY frame — diegetic elements (cards, terminals, mock UIs, charts)
+        // were still animating in (opacity 0 / off-screen). That caused (a) the
+        // render-truth gate to see false OFF-CANVAS (elements mid slide-in),
+        // triggering the expensive repair ladder, and (b) the advisory vision
+        // gate to judge scenes as "wall-of-type, no diegetic element" (the
+        // over-flagging seen on Linear/Duolingo/Vercel). finish() jumps finite
+        // entry animations to their end; infinite ambient ones throw → skipped.
+        await page
+          .evaluate(
+            "try{(document.getAnimations?document.getAnimations():[]).forEach(function(a){try{a.finish()}catch(e){}})}catch(e){}",
+          )
+          .catch(() => {});
+        await page.waitForTimeout(250).catch(() => {});
         const elements = (await page.evaluate(PAGE_WALK)) as MeasuredElement[];
         const screenshotPath = path.join(outDir, `measure-scene-${i}.png`);
         await page.screenshot({ path: screenshotPath, clip: { x: 0, y: 0, width: dims.w, height: dims.h } });
