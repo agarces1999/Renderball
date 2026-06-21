@@ -9,7 +9,11 @@ import { AppHeader } from "../../components/AppHeader";
  * field. The old "step 1 / step 2" indicator is gone — story-first means
  * no upfront wizard framing.
  */
-export default function NewBriefPage() {
+export default function NewBriefPage({
+  searchParams,
+}: {
+  searchParams: { prompt?: string; url?: string };
+}) {
   return (
     // Emerald mesh field (see globals.css → .brand-field) lives on <main>
     // so it paints over body's grey canvas. A deliberate, approved deviation
@@ -17,7 +21,10 @@ export default function NewBriefPage() {
     // of the app keeps the greyscale chrome.
     <main className="brand-field relative min-h-screen">
       <AppHeader tone="light" />
-      <BriefForm />
+      <BriefForm
+        initialPrompt={searchParams.prompt ?? ""}
+        initialUrl={searchParams.url ?? ""}
+      />
     </main>
   );
 }

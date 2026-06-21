@@ -45,14 +45,22 @@ const newMoment = (): MomentInput => ({
   creativity: "balanced",
 });
 
-export function BriefForm() {
+export function BriefForm({
+  initialPrompt = "",
+  initialUrl = "",
+}: {
+  initialPrompt?: string;
+  initialUrl?: string;
+} = {}) {
   const router = useRouter();
   const [error, setError] = useState<string | null>(null);
 
   // ─── Inputs ──────────────────────────────────────────────────────
-  const [introPrompt, setIntroPrompt] = useState("");
+  // initialPrompt / initialUrl carry a prompt typed on the landing hero
+  // through sign-in into the front door.
+  const [introPrompt, setIntroPrompt] = useState(initialPrompt);
   const [brandFiles] = useState<File[]>([]);
-  const [brandKitUrl, setBrandKitUrl] = useState("");
+  const [brandKitUrl, setBrandKitUrl] = useState(initialUrl);
   /**
    * Single-file slot for the user-uploaded brand logo. Shown when the
    * crawl's logo-discovery agent returned NONE. Separate from brandFiles

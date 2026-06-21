@@ -1,6 +1,8 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { auth } from "@clerk/nextjs/server";
+import { HeroPrompt } from "../components/HeroPrompt";
+import { HowItWorksDemo } from "../components/HowItWorksDemo";
 
 /**
  * Public marketing landing page (the only fully public surface).
@@ -88,23 +90,13 @@ function Hero() {
           MP4 in minutes — your fonts, your colors, your exact text. No
           watermark, no card to start.
         </p>
-        <div className="mt-9 flex flex-wrap items-center justify-center gap-3">
-          <Link
-            href="/new"
-            className="rounded-md bg-accent px-6 py-3 text-[15px] font-semibold text-accent-ink transition-all hover:brightness-110"
-          >
-            Make a free minute
-          </Link>
-          <a
-            href="#how"
-            className="rounded-md border border-hairline-strong bg-surface px-6 py-3 text-[15px] font-medium text-ink transition-colors hover:border-ink/30"
-          >
+        <HeroPrompt />
+        <div className="mt-6 flex flex-wrap items-center justify-center gap-x-4 gap-y-1 font-mono text-[11px] text-faint">
+          <span>Free first minute · 1080p · no watermark</span>
+          <a href="#how" className="underline transition-colors hover:text-muted">
             See how it works
           </a>
         </div>
-        <p className="mt-5 font-mono text-[11px] text-faint">
-          Free first minute · 1080p · no watermark
-        </p>
       </div>
     </section>
   );
@@ -134,10 +126,13 @@ function HowItWorks() {
         <h2 className="mb-2 font-display text-[clamp(24px,3.4vw,32px)] font-semibold tracking-tight text-ink">
           Three gates, no surprises
         </h2>
-        <p className="mb-12 max-w-[52ch] text-[15px] leading-relaxed text-muted">
+        <p className="mb-10 max-w-[52ch] text-[15px] leading-relaxed text-muted">
           You approve the story before any expensive compute runs, so you never
           pay for the wrong video.
         </p>
+        <div className="mb-14">
+          <HowItWorksDemo />
+        </div>
         <div className="grid gap-8 md:grid-cols-3">
           {steps.map((s) => (
             <div key={s.n}>
