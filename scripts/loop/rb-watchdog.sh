@@ -53,6 +53,48 @@ start_loop(){
   log "build-loop started (pid $!)"
 }
 
+# auto_qa(): the QA step, run AUTONOMOUSLY (this is what makes the loop self-driving
+# overnight — previously qa_done only advanced when the agent did it by hand in a
+# session, so the gate parked and the worker stalled). The build POST already ran
+# EVERY gate — render-truth, contrast, structural, and the GLM-5V-Turbo vision gate —
+# so the QA verdict already exists. Here we: capture that verdict into qa_log, advance
+# qa_done so the loop keeps moving, and — when a build FAILED or any gate flagged
+# something — drop needs_review.json so the agent reviews + commits SYSTEMIC fixes
+# async (applied at the next safe phase). The agent no longer hand-advances qa_done.
+auto_qa(){
+  python3 - "$LOOPDIR" >> "$WLOG" 2>/dev/null <<'PY'
+import json,sys,os,glob,time
+loop=sys.argv[1]; sp=loop+'/state.json'
+try: st=json.load(open(sp))
+except Exception: sys.exit(0)
+built=st.get('built',0) or 0; qa=st.get('qa_done',0) or 0
+if built<=qa: sys.exit(0)                      # nothing parked
+aq=loop+'/awaiting_qa.json'
+if not os.path.exists(aq): sys.exit(0)          # build still in flight, not parked yet
+try: info=json.load(open(aq))
+except Exception: sys.exit(0)
+slug=info.get('slug','?'); ok=info.get('ok'); findings=[]; warns=0
+res=sorted(glob.glob(loop+'/results/%03d-*.json'%built))
+if res:
+  d=json.load(open(res[-1])); b=d.get('build') or {}
+  ok=b.get('ok')
+  findings=[(f.get('scene'),str(f.get('issue'))[:90]) for f in (d.get('vision') or [])]
+  w=(b.get('warnings') or {}); warns=sum(len(v) for v in w.values() if isinstance(v,list))
+st['qa_done']=built
+st.setdefault('qa_log',[]).append({'iter':built,'slug':slug,'auto':True,
+  'verdict':'AUTO-QA (watchdog): ok=%s · %d vision finding(s) · %d gate warning(s)'%(ok,len(findings),warns),
+  'findings':findings,'at':time.strftime('%Y-%m-%dT%H:%M:%S')})
+tmp=sp+'.tmp'; json.dump(st,open(tmp,'w'),indent=2); os.replace(tmp,sp)   # atomic
+try: os.remove(aq)
+except OSError: pass
+if (ok is False) or findings or warns:
+  json.dump({'symptom':'auto-QA parked iter %d %s for agent review: ok=%s findings=%d warns=%d'%(built,slug,ok,len(findings),warns),
+             'iter':built,'slug':slug,'ts':int(time.time()),'iso':time.strftime('%Y-%m-%d %H:%M:%S')},
+            open(loop+'/needs_review.json','w'),indent=2)
+print('[%s] AUTO-QA advanced qa_done -> %d (%s ok=%s findings=%d warns=%d)'%(time.strftime('%Y-%m-%d %H:%M:%S'),built,slug,ok,len(findings),warns))
+PY
+}
+
 log "===== watchdog starting ====="
 # Don't fight the in-flight one-off build (build-only.mjs) for the port.
 while pgrep -f "build-only.mjs" >/dev/null 2>&1; do
@@ -65,6 +107,7 @@ LAST_HEAD=$(git rev-parse --short HEAD 2>/dev/null)
 start_loop
 
 while true; do
+  auto_qa   # autonomous QA: capture each completed build's gate verdict + advance qa_done so the loop never parks waiting for a human
   qa_done=$(jget "$LOOPDIR/state.json" qa_done 0); qa_done=${qa_done:-0}
   target=$(jget "$LOOPDIR/state.json" target 100); target=${target:-100}
   if [ "$qa_done" -ge "$target" ] 2>/dev/null; then
