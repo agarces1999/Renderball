@@ -35,6 +35,7 @@ import {
   TEXT_FLOOR_P,
   TEXT_FLOOR_LI,
   repairInvalidLucideImports,
+  addMissingLucideImports,
   findUndefinedJsxComponents,
   findUnboundCopy,
   findDrawnLogoStandIns,
@@ -924,9 +925,15 @@ export const regenerateScene = async (
   finalCodeOut = (await inlineFontFaces(finalCodeOut, fetchFont)).code;
   designCodeOut = (await inlineFontFaces(designCodeOut, fetchFont)).code;
 
-  // Final deterministic safety net: neutralize any invalid lucide-react imports
-  // that survived the gate's retry (e.g. brand logos like Slack/Github that don't
-  // exist → undefined component → render crash). Alias them to a real icon.
+  // Final deterministic lucide-react safety net (same as the main build path):
+  // ADD missing valid-icon imports (<BadgeCheck/> used but not imported → render
+  // crash), then NEUTRALIZE invalid ones (brand logos that don't exist in lucide).
+  {
+    const lucide = await lucideIconNameSet();
+    const isIcon = (n: string) => lucide.has(n);
+    finalCodeOut = addMissingLucideImports(finalCodeOut, isIcon).code;
+    designCodeOut = addMissingLucideImports(designCodeOut, isIcon).code;
+  }
   finalCodeOut = repairInvalidLucideImports(finalCodeOut, assessInvalidLucideImports(finalCodeOut));
   designCodeOut = repairInvalidLucideImports(designCodeOut, assessInvalidLucideImports(designCodeOut));
 
@@ -1996,11 +2003,22 @@ export const buildAnimatedSections = async (
   finalCodeOut = finalFonts.code;
   designCodeOut = designFonts.code;
 
-  // Final deterministic safety net: neutralize any invalid lucide-react imports
-  // that survived the icon gate's one-shot retry (a structural failure ships
-  // best-effort, so a non-compliant retry would otherwise ship a guaranteed
-  // crash — brand logos like Slack/Github don't exist in lucide → undefined
-  // component → "Element type is invalid" white screen). Alias them to a real icon.
+  // Final deterministic safety net for lucide-react. Two complementary repairs:
+  // (1) ADD missing imports — a valid icon used but never imported (<BadgeCheck/>
+  //     → "BadgeCheck is not defined" white screen; cost Coinbase a full build).
+  // (2) NEUTRALIZE invalid imports — brand logos like Slack/Github that don't
+  //     exist in lucide → undefined component → "Element type is invalid".
+  // Add-then-neutralize so the import line is complete before we strip bad names.
+  {
+    const lucide = await lucideIconNameSet();
+    const isIcon = (n: string) => lucide.has(n);
+    const af = addMissingLucideImports(finalCodeOut, isIcon);
+    const ad = addMissingLucideImports(designCodeOut, isIcon);
+    finalCodeOut = af.code;
+    designCodeOut = ad.code;
+    const added = Array.from(new Set([...af.added, ...ad.added]));
+    if (added.length) console.warn("[pipeline] auto-imported missing lucide icons:", added.join(", "));
+  }
   finalCodeOut = repairInvalidLucideImports(finalCodeOut, assessInvalidLucideImports(finalCodeOut));
   designCodeOut = repairInvalidLucideImports(designCodeOut, assessInvalidLucideImports(designCodeOut));
   if (finalFonts.inlined.length || finalFonts.failed.length) {
@@ -2598,6 +2616,28 @@ const INVALID_LUCIDE_BRANDS = new Set([
  * any that are brand logos (not real lucide exports). Pure string match —
  * reliable in any runtime, no `require` of the icon lib needed.
  */
+/**
+ * The set of real lucide-react icon names (~5,800 PascalCase exports), loaded
+ * lazily + memoized server-side. Used to decide whether an undefined JSX tag is a
+ * recoverable missing-import (add it) vs a genuinely-invented component (leave for
+ * the render gate). Defensive: any load failure → empty set → the auto-import is a
+ * no-op (never worse than today).
+ */
+let _lucideIconNames: Set<string> | null = null;
+const lucideIconNameSet = async (): Promise<Set<string>> => {
+  if (_lucideIconNames) return _lucideIconNames;
+  try {
+    const mod = (await import("lucide-react")) as Record<string, unknown> & {
+      default?: Record<string, unknown>;
+    };
+    const keys = [...Object.keys(mod.default ?? {}), ...Object.keys(mod)];
+    _lucideIconNames = new Set(keys.filter((k) => /^[A-Z][A-Za-z0-9]*$/.test(k)));
+  } catch {
+    _lucideIconNames = new Set();
+  }
+  return _lucideIconNames;
+};
+
 const assessInvalidLucideImports = (code: string): string[] => {
   const m = code.match(/import\s*\{([^}]*)\}\s*from\s*["']lucide-react["']/);
   if (!m) return [];
