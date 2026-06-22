@@ -133,7 +133,7 @@ function Stage({ stepKey, reduced }: { stepKey: string; reduced: boolean }) {
 
 // ── Stage 1 · Brief (the user's input) ───────────────────────────────
 const BRIEF_TEXT =
-  "A 30-second launch video for Pulse Analytics. Show the dashboard, 3 key features, end on “Start free.”";
+  "A 45-second launch video for Renderball — show how a brief becomes a finished animated video, on-brand, end on “Make your first minute free.”";
 
 function BriefStage({ reduced }: { reduced: boolean }) {
   const [typed, setTyped] = useState(reduced ? BRIEF_TEXT.length : 0);
@@ -160,13 +160,13 @@ function BriefStage({ reduced }: { reduced: boolean }) {
         </p>
         <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-hairline pt-3">
           <span className="rounded-md bg-surface-2 px-2.5 py-1 font-mono text-[11px] text-ink-soft">
-            pulseanalytics.com
+            renderball.com
           </span>
           <Chip selected>16:9</Chip>
           <Chip>9:16</Chip>
           <Chip>1:1</Chip>
           <span className="rounded-md bg-surface-2 px-2.5 py-1 font-mono text-[11px] text-ink-soft">
-            30s
+            45s
           </span>
         </div>
       </div>
@@ -184,18 +184,18 @@ function BriefStage({ reduced }: { reduced: boolean }) {
 }
 
 // ── Stage 2 · Brand (auto-extracted) ─────────────────────────────────
-const SWATCHES = ["#0F1B2D", "#00C28A", "#10B981", "#E6F4EF", "#7FE9C4"];
+const SWATCHES = ["#10141C", "#00C28A", "#047857", "#EAEDF1", "#7FE9C4"];
 
 function BrandStage() {
   const items = [
-    { label: "Logo found", v: "pulse-mark.svg" },
-    { label: "Palette", v: "5 colors" },
+    { label: "Logo found", v: "the orb mark" },
+    { label: "Palette", v: "emerald + greyscale" },
     { label: "Fonts", v: "Cabinet Grotesk · Geist" },
-    { label: "Motion", v: "medium" },
+    { label: "Motion", v: "restrained" },
   ];
   return (
     <div className="flex h-full flex-col justify-center gap-4 px-6 py-5 sm:px-10">
-      <Label>Reading pulseanalytics.com</Label>
+      <Label>Reading renderball.com</Label>
       <div className="relative overflow-hidden rounded-lg border border-hairline bg-surface p-4">
         <div
           data-rb-anim
@@ -248,10 +248,10 @@ function BrandStage() {
 
 // ── Stage 3 · Script (the second-by-second spec) ─────────────────────
 const SCENES = [
-  { t: "0:00", label: "Opening title", chips: ["Cabinet 96pt", "#0F1B2D", "typewriter"] },
-  { t: "0:04", label: "Dashboard reveal", chips: ["screen UI", "#00C28A", "slide-up"] },
-  { t: "0:12", label: "3 features, staggered", chips: ["cards", "spring", "150ms"] },
-  { t: "0:24", label: "Start free — CTA", chips: ["button", "pulse", "logo out"] },
+  { t: "0:00", label: "The crystal ball opens", chips: ["Cabinet 88pt", "#10141C", "typewriter"] },
+  { t: "0:08", label: "Brief → script → render", chips: ["3 panels", "#00C28A", "slide-up"] },
+  { t: "0:22", label: "On-brand, every frame", chips: ["device UI", "spring", "stagger"] },
+  { t: "0:38", label: "Make your first minute free", chips: ["CTA", "pulse", "orb out"] },
 ];
 
 function ScriptStage() {
@@ -263,7 +263,7 @@ function ScriptStage() {
       >
         <Label>Your script — approve before any render</Label>
         <p className="font-display text-[clamp(16px,2.4vw,20px)] font-semibold leading-tight tracking-tight text-ink">
-          &ldquo;Analytics that move as fast as you do.&rdquo;
+          &ldquo;Animation-rich video, written by AI.&rdquo;
         </p>
       </div>
       <div className="space-y-1.5">
@@ -392,41 +392,88 @@ function QaStage() {
   );
 }
 
-// ── Stage 6 · Ready (the finished video) ─────────────────────────────
+// ── Stage 6 · Ready (the finished video — recursive: Renderball's own) ───
 function ReadyStage() {
+  // Frame counter eases up to a hero number for the payoff.
+  const [frames, setFrames] = useState(0);
+  useEffect(() => {
+    const target = 1243500;
+    const dur = 1700;
+    let startTs: number | null = null;
+    let raf = 0;
+    const tick = (ts: number) => {
+      if (startTs === null) startTs = ts;
+      const p = Math.min((ts - startTs) / dur, 1);
+      const eased = 1 - Math.pow(1 - p, 3);
+      setFrames(Math.round(eased * target));
+      if (p < 1) raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, []);
+
   return (
     <div className="flex h-full flex-col">
-      <div className="relative flex flex-1 items-center justify-center overflow-hidden bg-[#08110d]">
+      <div className="relative flex flex-1 items-center justify-center overflow-hidden bg-[#06100c]">
+        {/* Layered emerald field — the brand's own color, cinematic on dark. */}
         <div
           className="pointer-events-none absolute inset-0"
           style={{
             background:
-              "radial-gradient(58% 76% at 28% 18%, rgba(0,194,138,0.36), transparent 60%), radial-gradient(70% 90% at 84% 96%, rgba(0,224,160,0.22), transparent 62%)",
+              "radial-gradient(56% 72% at 24% 16%, rgba(0,194,138,0.42), transparent 60%), radial-gradient(74% 94% at 88% 98%, rgba(0,224,160,0.28), transparent 62%), radial-gradient(44% 60% at 72% 28%, rgba(110,245,200,0.16), transparent 60%)",
           }}
         />
-        <div className="relative text-center">
+        <div
+          className="pointer-events-none absolute inset-0"
+          style={{ boxShadow: "inset 0 0 120px 20px rgba(0,0,0,0.55)" }}
+        />
+        <div className="relative px-6 text-center">
           <div
             data-rb-anim
-            className="mb-2 font-mono text-[10px] uppercase tracking-[0.34em] text-[#7fe9c4]"
+            className="mb-3 inline-flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.34em] text-[#7fe9c4]"
             style={{ animation: "rb-fade 0.6s ease-out both" }}
           >
-            Introducing
+            <span className="inline-block h-1.5 w-1.5 rounded-full bg-[#7fe9c4]" />
+            Renderball
           </div>
           <div
             data-rb-anim
-            className="font-display text-[clamp(26px,5.5vw,48px)] font-bold tracking-tight text-white"
-            style={{ animation: "rb-kinetic 0.8s cubic-bezier(0.2,0.7,0.2,1) both", animationDelay: "0.1s" }}
+            className="font-display text-[clamp(24px,5vw,44px)] font-bold leading-[1.04] tracking-tight text-white"
+            style={{
+              animation: "rb-kinetic 0.8s cubic-bezier(0.2,0.7,0.2,1) both",
+              animationDelay: "0.1s",
+            }}
           >
-            Pulse Analytics
+            Animation-rich video.
           </div>
           <div
             data-rb-anim
-            className="mt-3 inline-block rounded-full bg-accent px-4 py-1.5 text-[12px] font-semibold text-accent-ink"
-            style={{ animation: "rb-pop 0.5s ease-out both", animationDelay: "0.7s" }}
+            className="font-display text-[clamp(24px,5vw,44px)] font-bold leading-[1.04] tracking-tight text-[#5fe6bb]"
+            style={{
+              animation: "rb-kinetic 0.8s cubic-bezier(0.2,0.7,0.2,1) both",
+              animationDelay: "0.34s",
+            }}
           >
-            Start free →
+            Written by AI.
+          </div>
+          <div
+            data-rb-anim
+            className="mt-4 font-mono text-[11px] tabular-nums text-white/55"
+            style={{ animation: "rb-fade 0.6s ease-out both", animationDelay: "0.75s" }}
+          >
+            {frames.toLocaleString()} frames rendered
+          </div>
+          <div
+            data-rb-anim
+            className="mt-3.5 inline-block rounded-full bg-accent px-4 py-1.5 text-[12px] font-semibold text-accent-ink shadow-[0_8px_28px_-8px_rgba(0,194,138,0.7)]"
+            style={{ animation: "rb-pop 0.5s ease-out both", animationDelay: "0.95s" }}
+          >
+            Make your first minute free →
           </div>
         </div>
+        <span className="absolute bottom-3 right-4 font-mono text-[10px] text-white/35">
+          1080p · no watermark · your license
+        </span>
       </div>
       {/* Playback bar */}
       <div className="flex items-center gap-3 border-t border-hairline bg-surface px-4 py-2.5">
@@ -437,10 +484,10 @@ function ReadyStage() {
           <div
             data-rb-anim
             className="h-full rounded-full bg-accent"
-            style={{ animation: "rb-scrub 4.4s linear both" }}
+            style={{ animation: "rb-scrub 4.6s linear both" }}
           />
         </div>
-        <span className="font-mono text-[10px] text-muted">0:30</span>
+        <span className="font-mono text-[10px] text-muted">0:45</span>
         <span className="rounded-md border border-hairline-strong px-2.5 py-1 font-mono text-[10px] text-ink-soft">
           Download MP4
         </span>
