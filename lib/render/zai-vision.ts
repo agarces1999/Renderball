@@ -60,9 +60,19 @@ export interface ZaiVisionResult {
  * max_tokens, else the budget is spent on reasoning and content comes back empty).
  */
 export const callZaiVision = async (
-  imageBase64: string,
+  // Either raw base64 (wrapped into a data URL) OR a full data:/http(s) URL —
+  // the QA gate passes screenshot base64; the crawl passes a remote hero/og URL.
+  image: string,
   prompt: string,
+  // disableThinking: GLM-5V-Turbo is a thinking model that, on a terse extraction
+  // task, can burn the ENTIRE token budget on reasoning and return empty content.
+  // For deterministic extraction (color roles) pass disableThinking:true so it
+  // answers directly. Judgment tasks (the QA gate) keep thinking on.
+  opts: { disableThinking?: boolean; maxTokens?: number } = {},
 ): Promise<ZaiVisionResult> => {
+  const url = /^(data:|https?:)/i.test(image)
+    ? image
+    : `data:image/png;base64,${image}`;
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 60_000);
   try {
@@ -74,15 +84,13 @@ export const callZaiVision = async (
       },
       body: JSON.stringify({
         model: VISION_MODEL,
-        max_tokens: 1200,
+        max_tokens: opts.maxTokens ?? 1200,
+        ...(opts.disableThinking ? { thinking: { type: "disabled" } } : {}),
         messages: [
           {
             role: "user",
             content: [
-              {
-                type: "image_url",
-                image_url: { url: `data:image/png;base64,${imageBase64}` },
-              },
+              { type: "image_url", image_url: { url } },
               { type: "text", text: prompt },
             ],
           },

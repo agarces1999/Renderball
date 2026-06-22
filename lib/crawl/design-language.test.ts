@@ -14,7 +14,7 @@ import {
 } from "./design-language";
 import { extractPaletteFromImage } from "./vision-brand";
 import { findBrandLogo } from "./find-logo-agent";
-import { MODELS } from "../anthropic";
+import { MODELS, VISION_MODEL } from "../anthropic";
 import type { Usage } from "../usage";
 
 let passed = 0;
@@ -97,6 +97,8 @@ const FAKE_USAGE = {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const fakeClient = (text: string): any =>
   ({ messages: { create: async () => ({ content: [{ type: "text", text }], usage: FAKE_USAGE }) } });
+// extractPaletteFromImage now takes an injected native-vision CALL (not the SDK client).
+const fakeVision = (text: string) => async () => ({ text, usage: FAKE_USAGE });
 
 await check("analyzes a vision-safe image via the injected client", async () => {
   const dl = await analyzeDesignLanguage("https://x.com/shot.png", {
@@ -160,19 +162,19 @@ await check("extractPaletteFromImage reports its model + usage to the collector"
   // Vision now returns a roles OBJECT; the wrapper flattens it to [background,
   // accent, text, ...supporting] — the flat palette existing callers expect.
   const palette = await extractPaletteFromImage("https://x.com/hero.png", {
-    client: fakeClient('{"background":"#4a0e0e","accent":"#ff6a2b","text":"#ffffff"}'),
+    visionCall: fakeVision('{"background":"#4a0e0e","accent":"#ff6a2b","text":"#ffffff"}'),
     onUsage,
   });
   assert(palette.length === 3, `palette: ${JSON.stringify(palette)}`);
   assert(palette[0] === "#4a0e0e", `background must lead the flat palette: ${JSON.stringify(palette)}`);
   assert(calls.length === 1, `expected 1 usage call, got ${calls.length}`);
-  assert(calls[0].model === MODELS.qaAgent, `model: ${calls[0].model}`);
+  assert(calls[0].model === VISION_MODEL, `model: ${calls[0].model}`);
   assert(calls[0].usage.input_tokens === 1200, `usage: ${JSON.stringify(calls[0].usage)}`);
 });
 
 await check("extractPaletteFromImage: skipped image → collector never fires", async () => {
   const { calls, onUsage } = collectUsage();
-  const palette = await extractPaletteFromImage("not-a-url", { client: fakeClient("{}"), onUsage });
+  const palette = await extractPaletteFromImage("not-a-url", { visionCall: fakeVision("{}"), onUsage });
   assert(palette.length === 0 && calls.length === 0, "no call → no usage");
 });
 
