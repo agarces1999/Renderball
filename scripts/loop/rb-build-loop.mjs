@@ -29,6 +29,17 @@ const writeJSON = (p, o) => writeFileSync(p, JSON.stringify(o, null, 2));
 const heartbeat = (phase, slug, iteration, extra = {}) =>
   writeJSON(HEARTBEAT, { ts: nowSec(), iso: new Date().toISOString(), phase, slug, iteration, ...extra });
 
+// A z.ai OUTAGE (balance exhausted — code 1113 / "insufficient balance" /
+// "please recharge"; or rate-limit — 429 / "too many requests") is NOT a real
+// build verdict. Treat it like infra: BACK OFF and retry the same brand, never
+// count it. Without this, when the balance ran out every build failed in <1min,
+// each counted as a failure, and the auto-QA raced the loop to target=100 with
+// ~88 garbage failures (the 2026-06-22 runaway). Outage → pause, don't advance.
+const isOutageErr = (s) =>
+  /\b1113\b|insufficient balance|please recharge|rate[ _-]?limit|\b429\b|too many requests/i.test(
+    String(s || ""),
+  );
+
 // Resolves with the parsed JSON verdict; REJECTS on an infra error (no server,
 // reset, timeout) so the caller can tell "the build ran and failed" (a data
 // point) from "we never reached the server" (retry, don't count).
@@ -86,7 +97,11 @@ while (true) {
         { url: brand.url, prompt: brand.prompt, distribution_format: "landscape", duration_seconds: 30 }, 1_200_000);
     } catch (e) { infra = true; throw new Error(`generate INFRA: ${e.message}`); }
     if (!gen.json) { infra = true; throw new Error(`generate non-JSON (status ${gen.status})`); }
-    if (!gen.json.ok) throw new Error(`generate rejected: ${JSON.stringify(gen.json).slice(0, 200)}`);
+    if (!gen.json.ok) {
+      // z.ai outage during generate → treat as infra (back off + wait, don't count).
+      if (isOutageErr(JSON.stringify(gen.json))) infra = true;
+      throw new Error(`generate ${infra ? "OUTAGE" : "rejected"}: ${JSON.stringify(gen.json).slice(0, 200)}`);
+    }
     rec.scriptId = gen.json.scriptId;
     rec.scenes = (gen.json.script?.scenes ?? []).map((s, i) => ({ i, label: s.label, headline: s.content?.headline }));
 
@@ -105,6 +120,14 @@ while (true) {
       render_errors: b.json.render_errors ?? null,
       render_truth: b.json.render_truth ? { reason: b.json.render_truth.reason, blockingCount: (b.json.render_truth.blocking ?? []).length, blocking: b.json.render_truth.blocking ?? null, steps: b.json.render_truth.steps ?? null } : null };
     rec.vision = b.json.render_truth?.vision ?? null;
+
+    // z.ai outage surfaced as a build verdict (e.g. balance died mid-run) → treat
+    // as infra so the loop backs off + waits for recharge instead of counting it
+    // and advancing toward target.
+    if (!b.json.ok && isOutageErr(b.json.error)) {
+      infra = true;
+      throw new Error(`build OUTAGE: ${String(b.json.error).slice(0, 140)}`);
+    }
 
     if (b.json.ok) {
       heartbeat("stills", brand.slug, iteration, { scriptId: rec.scriptId });
