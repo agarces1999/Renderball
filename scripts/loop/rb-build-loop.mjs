@@ -29,14 +29,20 @@ const writeJSON = (p, o) => writeFileSync(p, JSON.stringify(o, null, 2));
 const heartbeat = (phase, slug, iteration, extra = {}) =>
   writeJSON(HEARTBEAT, { ts: nowSec(), iso: new Date().toISOString(), phase, slug, iteration, ...extra });
 
-// A z.ai OUTAGE (balance exhausted — code 1113 / "insufficient balance" /
-// "please recharge"; or rate-limit — 429 / "too many requests") is NOT a real
-// build verdict. Treat it like infra: BACK OFF and retry the same brand, never
-// count it. Without this, when the balance ran out every build failed in <1min,
-// each counted as a failure, and the auto-QA raced the loop to target=100 with
-// ~88 garbage failures (the 2026-06-22 runaway). Outage → pause, don't advance.
+// A z.ai OUTAGE is NOT a real build verdict — treat it like infra: BACK OFF and
+// retry the same brand, never count it. Two families:
+//   1. BALANCE/RATE — code 1113 / "insufficient balance" / "please recharge";
+//      429 / "too many requests". Without this, when the balance ran out every
+//      build failed in <1min, each counted as a failure, and the auto-QA raced
+//      the loop to target=100 with ~88 garbage failures (the 2026-06-22 runaway).
+//   2. SERVER-OVERLOAD — "overloaded_error" / HTTP 500 "[Operation failed]" /
+//      "Internal Network Failure". z.ai has overload spells (pass-2 counted
+//      figma+linear+duolingo as failures when they were just 500s). The pipeline
+//      now RETRIES these in-stream; this is the loop-level net for when the
+//      retries exhaust or the generate path (no stream retry) hits one.
+// Outage → pause, don't advance, don't count.
 const isOutageErr = (s) =>
-  /\b1113\b|insufficient balance|please recharge|rate[ _-]?limit|\b429\b|too many requests/i.test(
+  /\b1113\b|insufficient balance|please recharge|rate[ _-]?limit|\b429\b|too many requests|overloaded|operation failed|internal network failure/i.test(
     String(s || ""),
   );
 

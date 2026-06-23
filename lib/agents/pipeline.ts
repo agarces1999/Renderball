@@ -332,16 +332,22 @@ const formatAnthropicError = (err: unknown): string => {
 const COMPOSITION_REQUEST_TIMEOUT_MS = 30 * 60 * 1000;
 
 /**
- * Transient network errors on a long GLM build stream — the connection drops
- * mid-flight (ETIMEDOUT, terminated, ECONNRESET, socket hang up). The SDK can't
- * resume a stream, so one blip killed a 38-minute build (feedback-loop iteration
- * 1: animation stage `read ETIMEDOUT`). Retry the WHOLE call (a fresh stream) on
- * these — but NEVER on API errors (400 / truncation / auth), which would just
- * repeat. Keeps a momentary network hiccup from nuking an expensive build, for
- * the loop AND for real users.
+ * Transient errors on a long GLM build stream — retry the WHOLE call (a fresh
+ * stream) on these:
+ *   1. Connection drops mid-flight (ETIMEDOUT, terminated, ECONNRESET, socket
+ *      hang up). The SDK can't resume a stream, so one blip killed a 38-minute
+ *      build (feedback-loop iter 1: animation stage `read ETIMEDOUT`).
+ *   2. z.ai SERVER-OVERLOAD (`overloaded_error`, HTTP 500 `[Operation failed]`).
+ *      z.ai has overload spells where the server returns 500s for a few minutes;
+ *      a fresh attempt usually lands (pass-2 lost figma+duolingo to this). This
+ *      is the ONE class of API error that's transient — Anthropic's own SDK
+ *      retries 500/overloaded by default.
+ * Still NEVER retry the OTHER API errors (400 / truncation / auth) — those just
+ * repeat. Keeps a momentary hiccup from nuking an expensive build, for the loop
+ * AND for real users.
  */
 const TRANSIENT_NET_RX =
-  /ETIMEDOUT|ECONNRESET|terminated|socket hang up|EPIPE|ECONNREFUSED|fetch failed|network|aborted/i;
+  /ETIMEDOUT|ECONNRESET|terminated|socket hang up|EPIPE|ECONNREFUSED|fetch failed|network|aborted|overloaded|Operation failed/i;
 const isTransientNetErr = (err: unknown): boolean => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const e = err as any;
