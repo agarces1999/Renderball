@@ -21,10 +21,11 @@ import { repairRenderTruth } from "../../../../lib/render/render-truth-repair";
 import {
   runVisionGate,
   makeVisionJudge,
+  checkBrandColorFidelity,
   type VisionFinding,
 } from "../../../../lib/render/vision-gate";
 import { MODELS, VISION_MODEL } from "../../../../lib/anthropic";
-import { callZaiVision } from "../../../../lib/render/zai-vision";
+import { callZaiVision, callZaiText } from "../../../../lib/render/zai-vision";
 import {
   recordUsage,
   costUsd,
@@ -385,6 +386,31 @@ export async function POST(request: Request) {
           judge,
         )
       : [];
+    // Brand-color fidelity backstop — TEXT-ONLY (brand name + extracted palette, NO
+    // image, so the model's color recall can't anchor to a wrong frame). Closes the
+    // QA blind spot where a wrong crawl color became the gate's own reference and the
+    // render "matched" it (Robinhood shipped blue, all "on-brand"). Advisory.
+    if (VISION_GATE_ENABLED && brandTruth.name) {
+      try {
+        const palette =
+          be?.palette && be.palette.length
+            ? be.palette
+            : [brandTruth.backgroundColor, brandTruth.accent].filter(
+                (c): c is string => !!c,
+              );
+        const fid = await checkBrandColorFidelity({ name: brandTruth.name }, palette, async (p) => {
+          const { text, usage } = await callZaiText(p, { disableThinking: true, maxTokens: 600 });
+          visionUsage = addUsage(visionUsage, usage);
+          return text;
+        });
+        if (!fid.onBrand && fid.issue) {
+          visionFindings.push({ scene: 0, issue: `BRAND-COLOR: ${fid.issue}` });
+          console.warn(`[preview/build] brand-color fidelity flagged: ${fid.issue}`);
+        }
+      } catch {
+        /* advisory — never block on the backstop */
+      }
+    }
     if (visionUsage.input_tokens || visionUsage.output_tokens) {
       visionCostUsd = costUsd(VISION_MODEL, visionUsage);
       await recordUsage({

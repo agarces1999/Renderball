@@ -119,3 +119,53 @@ export const callZaiVision = async (
     clearTimeout(timer);
   }
 };
+
+/**
+ * Text-only native GLM-5V-Turbo call (no image). Used by the brand-color
+ * fidelity backstop: the model's brand-color knowledge is reliable ONLY when
+ * there's no image to anchor to (with a frame present it parrots the frame's
+ * color). thinking-disabled by default (terse knowledge task burns the budget
+ * reasoning otherwise). Same 60s guard + usage mapping as callZaiVision.
+ */
+export const callZaiText = async (
+  prompt: string,
+  opts: { disableThinking?: boolean; maxTokens?: number } = {},
+): Promise<ZaiVisionResult> => {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 60_000);
+  try {
+    const resp = await fetch(zaiNativeUrl(), {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${zaiKey()}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model: VISION_MODEL,
+        max_tokens: opts.maxTokens ?? 600,
+        ...(opts.disableThinking ? { thinking: { type: "disabled" } } : {}),
+        messages: [{ role: "user", content: prompt }],
+      }),
+      signal: ctrl.signal,
+    });
+    if (!resp.ok) {
+      const body = await resp.text().catch(() => "");
+      throw new Error(`z.ai text ${resp.status}: ${body.slice(0, 200)}`);
+    }
+    const json = (await resp.json()) as {
+      choices?: { message?: { content?: string } }[];
+      usage?: { prompt_tokens?: number; completion_tokens?: number };
+    };
+    const u = json.usage ?? {};
+    return {
+      text: json.choices?.[0]?.message?.content ?? "",
+      usage: {
+        ...EMPTY_USAGE,
+        input_tokens: u.prompt_tokens ?? 0,
+        output_tokens: u.completion_tokens ?? 0,
+      },
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+};
