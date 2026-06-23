@@ -298,6 +298,15 @@ The viewer reads the video for ~30 seconds. Every readable element MUST have eno
 
 The validator parses adjacent \`color:\` / \`background:\` declarations and warns when contrast is below threshold. Soft warning — doesn't fail Pass 1 — but visible on the review UI.
 
+## ⚠️ Canvas brightness matches the brand — HARD RULE
+
+Match the brand's real page background **brightness**, not just its hue. The brand's actual background color is given in your brand input. **If it is LIGHT** — off-white, white, pale, cream (e.g. Glossier #faf7f7, Notion #ffffff, a pastel brand) — **the video's default scene canvas MUST be that light color (or a near-white tint of it).** Do NOT render a dark or near-black canvas for a light brand: a bright, clean brand on black reads as a *different brand*, not a stylized version of itself. This is a real, recurring miss — the cinematic dark "brand-film" look is correct ONLY for brands whose real background is genuinely dark (Vercel, GitHub, Linear, Spotify). For a light brand it is off-brand.
+
+- **Light brand → light canvas.** Ink / near-black body text; the signature color still threads through as accents, underlines, and the CTA. Editorial print, not a dark dashboard.
+- You MAY use **ONE** scene with a dark or full-bleed brand-color field for dramatic contrast (a stat hero, the CTA) — but the DOMINANT treatment across the video must match the brand's background brightness.
+- **Dark / mid-tone brands are unaffected** — keep their dark canvas. This rule only flips the default for clearly-LIGHT brands.
+- A heavy dark vignette or a near-black gradient wash over a light brand's scene is the same mistake in disguise — it darkens the canvas. Keep light brands bright edge-to-edge.
+
 ## ⚠️ Blur ceiling — HARD RULE
 
 CSS \`filter: blur(...)\` **must never exceed 40px**. Large Gaussian blurs (≥60px) cause subpixel rendering instability between frames in the capture layer — the page looks like it has "static energy" or visible flicker even when nothing is supposed to be moving.
