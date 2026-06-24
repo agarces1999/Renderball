@@ -41,8 +41,17 @@ const heartbeat = (phase, slug, iteration, extra = {}) =>
 //      now RETRIES these in-stream; this is the loop-level net for when the
 //      retries exhaust or the generate path (no stream retry) hits one.
 // Outage → pause, don't advance, don't count.
+//
+// IMPORTANT: anchor on the STRUCTURED error tokens, never bare words. An earlier
+// pass matched bare /overloaded/ and /operation failed/, which can appear in MODEL
+// OUTPUT (generated TSX, a compile error echoing source, brand copy) — a real
+// build failure whose text contained those words would be mis-classified infra and
+// retried forever (a brand-scoped soft runaway). So match the z.ai error shapes:
+// the JSON type "overloaded_error", the bracketed "[Operation failed]" message, the
+// "Internal Network Failure" api_error, and the rate/balance signatures — all of
+// which are API-controlled and never emitted by the design/animation models.
 const isOutageErr = (s) =>
-  /\b1113\b|insufficient balance|please recharge|rate[ _-]?limit|\b429\b|too many requests|overloaded|operation failed|internal network failure/i.test(
+  /\b1113\b|insufficient balance|please recharge|rate[ _-]?limit_error|\b429\b|too many requests|overloaded_error|\[operation failed\]|internal network failure/i.test(
     String(s || ""),
   );
 
@@ -105,7 +114,9 @@ while (true) {
     if (!gen.json) { infra = true; throw new Error(`generate non-JSON (status ${gen.status})`); }
     if (!gen.json.ok) {
       // z.ai outage during generate → treat as infra (back off + wait, don't count).
-      if (isOutageErr(JSON.stringify(gen.json))) infra = true;
+      // Match ONLY the error field, never the whole response — gen.json can echo the
+      // generated script/scene content, and matching that risks a false outage classify.
+      if (isOutageErr(gen.json.error)) infra = true;
       throw new Error(`generate ${infra ? "OUTAGE" : "rejected"}: ${JSON.stringify(gen.json).slice(0, 200)}`);
     }
     rec.scriptId = gen.json.scriptId;
