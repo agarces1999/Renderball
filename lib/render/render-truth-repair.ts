@@ -17,6 +17,7 @@
  * All I/O is injected via callbacks, so the ladder logic is unit-tested with
  * mocks — no real build/render spend needed to verify the escalation decisions.
  */
+import { MODELS } from "../anthropic";
 import { costUsd, type Usage } from "../usage";
 import type { RenderTruthFinding } from "./render-truth-gates";
 import type { SceneMeasurement } from "./measure-scene";
@@ -92,7 +93,7 @@ export const repairRenderTruth = async (
   opts: { spentSoFarUsd?: number; ceilingUsd?: number; model?: string } = {},
 ): Promise<RepairResult> => {
   const ceiling = opts.ceilingUsd ?? COST_CEILING_USD;
-  const model = opts.model ?? "claude-opus-4-8";
+  const model = opts.model ?? MODELS.codingAgentBuild;
   const costOf = cb.costOf ?? ((u: Usage) => costUsd(model, u));
   const steps: string[] = [];
   let spent = opts.spentSoFarUsd ?? 0;
