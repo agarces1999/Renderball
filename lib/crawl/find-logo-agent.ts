@@ -1,27 +1,34 @@
 /**
  * Logo-discovery agent — persistent, "no empty hands".
  *
- * The brand's real mark is found by an agent that (1) inspects on-page
- * candidates with vision and (2) searches the web when the page comes up empty.
- * It is mandated NOT to return a fabricated mark, a screenshot, or a customer
- * logo — a real logo, or nothing (→ the resolver renders a clean wordmark, never
- * an invented mark).
+ * The brand's real mark is found by inspecting ON-PAGE candidates with native
+ * vision (GLM-5V-Turbo) in a single multi-image pick. It is mandated NOT to
+ * return a fabricated mark, a screenshot, or a customer logo — a real logo, or
+ * nothing (→ the resolver renders a clean wordmark, never an invented mark).
  *
  * Candidates come from a wide net (inline <svg>, CSS background, header <img>,
  * static /logo.* paths, Clearbit, simple-icons, apple-touch, og, favicon). Two
  * upgrades over the old one-shot pick:
- *   - SVG candidates are RASTERIZED to PNG (Anthropic vision rejects raw SVG), so
- *     the agent actually SEES the inline nav mark — the Fuse miss.
+ *   - SVG candidates are RASTERIZED to PNG (vision rejects raw SVG), so the
+ *     agent actually SEES the inline nav mark — the Fuse miss.
  *   - Each previewed candidate is decoded (sharp) for dimensions; large ~square
  *     images are flagged as likely screenshots/share-cards so the agent doesn't
  *     mistake the homepage screenshot for the logo.
  *
- * Latency: ~10-25s (vision + optional web_search round). Runs inside extractBrand
- * which the wizard fires in the background while the user types.
+ * Transport: the old Anthropic-compat SDK path silently DROPPED image blocks →
+ * the agent was BLIND and picked by text/source heuristics only. All candidate
+ * previews now go through the NATIVE GLM-5V-Turbo endpoint (callZaiVision, which
+ * accepts an ARRAY of base64 PNGs for one multi-image pick) so the model truly
+ * SEES every candidate. No web search (z.ai has none) — the deterministic floor
+ * below handles the no-pick case.
+ *
+ * Latency: ~10-25s (one vision call). Runs inside extractBrand which the wizard
+ * fires in the background while the user types.
  */
 
-import { getAnthropic, MODELS } from "../anthropic";
-import { usageOf, type Usage } from "../usage";
+import { VISION_MODEL } from "../anthropic";
+import { type Usage } from "../usage";
+import { callZaiVision } from "../render/zai-vision";
 import { safeFetch } from "./ssrf-guard";
 
 export interface LogoCandidate {
@@ -61,7 +68,7 @@ const SOURCE_PRIOR: Record<LogoCandidate["source"], number> = {
 
 const SYSTEM_PROMPT = `You are a brand-logo identification expert.
 
-Given image candidates from a brand's website + meta tags, pick the ONE candidate that IS the brand's primary logo or wordmark — the asset you'd put on a launch video to represent the brand. If none qualify, you MUST search the web for the official logo before giving up.
+Given image candidates from a brand's website + meta tags, pick the ONE candidate that IS the brand's primary logo or wordmark — the asset you'd put on a launch video to represent the brand. If none qualify, return null.
 
 HARD REJECTS — never return any of these as the logo:
 - A screenshot of the website / a hero or product photo / a UI mockup — EVEN IF it shows the brand name. A logo is a compact mark or wordmark, not a picture of the page. Candidates flagged "LARGE, likely a screenshot" are almost never the logo.
@@ -75,12 +82,11 @@ PREFER (in this order):
 - A simple-icons brand match, or Clearbit's logo, for well-known brands.
 - apple-touch-icon ONLY as a low-res last resort (and never if it's actually a screenshot).
 
-NO EMPTY HANDS: if none of the on-page candidates is the clean brand mark, USE the web_search tool — search "{brand} logo svg", "{brand} logo png", "{brand} brand assets", "{brand} press kit logo". Prefer a URL on the brand's own domain or a recognized brand-asset host. Only return null if the web search ALSO fails to surface the real logo.
+The candidates are numbered (1-based) and their previews are shown in the SAME order. If none of the on-page candidates is the brand's clean mark, return null — do not invent or fabricate a logo.
 
 OUTPUT (always JSON, never prose):
-- A candidate from the numbered list: {"chosen_index": <the candidate's NUMBER from the list>, "rationale":"one sentence"}. Use the index number — NEVER paste a long data: URL back (it will be truncated).
-- A logo you found via web_search (NOT in the list): {"chosen_url":"https://...","source":"web-search","rationale":"one sentence"}
-- None qualify even after web_search: {"chosen_url":null,"reason":"one sentence"}
+- To pick a candidate: {"chosen_index": <the candidate's 1-based NUMBER from the list>, "rationale":"one sentence"}. Use the index number — NEVER paste a long data: URL back (it will be truncated).
+- If none qualify: {"chosen_index": null, "reason":"one sentence"}
 Only the JSON object. No markdown fence, no commentary.`;
 
 const RASTER_RX = /\.(jpe?g|png|gif|webp)(\?|#|$)/i;
@@ -187,16 +193,21 @@ const scoreConfidence = (
 /**
  * Run the logo-discovery agent. Always returns within ~30s. Network/API/parse
  * failures degrade to { ok:false } → caller renders a clean wordmark.
- * `opts.onUsage` (when given) receives the logo-agent model + token usage of
- * EVERY completed API call — round 1, the no-tools retry, and the round-2 web
- * search all fire it individually so multi-round runs are fully accounted.
+ * `opts.visionCall` is injected for tests; the default sends every candidate
+ * preview as ONE multi-image pick to the native GLM-5V-Turbo endpoint (the old
+ * Anthropic-compat SDK path silently DROPPED the images → the agent was blind).
+ * `opts.onUsage` (when given) receives the vision model + token usage of the
+ * single completed call.
  */
 export const findBrandLogo = async (
   brandHostname: string,
   brandTitle: string | undefined,
   candidates: LogoCandidate[],
   opts: {
-    client?: ReturnType<typeof getAnthropic>;
+    visionCall?: (
+      images: string[],
+      prompt: string,
+    ) => Promise<{ text: string; usage: Usage }>;
     onUsage?: (model: string, usage: Usage) => void;
   } = {},
 ): Promise<LogoAgentResult> => {
@@ -204,15 +215,10 @@ export const findBrandLogo = async (
     return { ok: false, reason: "no candidates to evaluate" };
   }
 
-  let client;
-  try {
-    client = opts.client ?? getAnthropic();
-  } catch (err) {
-    return {
-      ok: false,
-      reason: `anthropic client init failed: ${err instanceof Error ? err.message : String(err)}`,
-    };
-  }
+  const visionCall =
+    opts.visionCall ??
+    ((images, prompt) =>
+      callZaiVision(images, prompt, { disableThinking: true, maxTokens: 1024 }));
 
   const userAgent =
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36";
@@ -225,19 +231,17 @@ export const findBrandLogo = async (
   );
   const byUrl = new Map(prepared.map((p) => [p.cand.url, p]));
 
-  type ContentBlock =
-    | { type: "text"; text: string }
-    | {
-        type: "image";
-        source:
-          | { type: "url"; url: string }
-          | { type: "base64"; media_type: "image/png"; data: string };
-      };
+  // The base64 PNG previews, in candidate order, for ONE multi-image pick. The
+  // native endpoint shows these in the same order as the numbered text list, so
+  // a chosen_index maps cleanly back to candidates[] on our side.
+  const images = prepared
+    .filter((p) => p.visionPng)
+    .map((p) => p.visionPng as string);
 
   const textIntro = [
     `Brand: ${brandTitle ?? brandHostname} (${brandHostname})`,
     "",
-    "Candidates (numbered; previews shown below where available):",
+    "Candidates (numbered; previews are attached in this order where available):",
     ...candidates.map((c, i) => {
       const p = byUrl.get(c.url);
       const note = p?.note ? ` [${p.note}]` : "";
@@ -245,57 +249,14 @@ export const findBrandLogo = async (
       return `  ${i + 1}. [${c.source}] ${c.url.slice(0, 120)}${note}${c.hint ? ` — ${c.hint}` : ""}${shown}`;
     }),
     "",
-    "Pick the brand's primary logo. If none qualify, web_search for the official logo before returning null.",
+    'Pick the brand\'s primary logo by index. If none qualify, return {"chosen_index": null, "reason": "..."}.',
   ].join("\n");
 
-  const content: ContentBlock[] = [{ type: "text", text: textIntro }];
-  for (const p of prepared) {
-    if (p.visionPng) {
-      content.push({
-        type: "image",
-        source: { type: "base64", media_type: "image/png", data: p.visionPng },
-      });
-    }
-  }
-
-  // Report usage for one completed call. Errored calls return no usage object,
-  // so only responses that actually billed reach the collector.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const emitUsage = (response: any) =>
-    opts.onUsage?.(MODELS.logoAgent, usageOf(response?.usage));
-
-  // ── Round 1: vision over candidates (web_search available) ──────────
-  const runOnce = async (
-    messages: { role: "user"; content: ContentBlock[] | string }[],
-  ) => {
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const params: any = {
-        model: MODELS.logoAgent,
-        max_tokens: 1024,
-        system: SYSTEM_PROMPT,
-        messages,
-        tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 4 }],
-      };
-      const response = await client.messages.create(params);
-      emitUsage(response);
-      return response;
-    } catch {
-      // web_search may be unavailable on the account — retry without tools.
-      const response = await client.messages.create({
-        model: MODELS.logoAgent,
-        max_tokens: 1024,
-        system: SYSTEM_PROMPT,
-        messages,
-      });
-      emitUsage(response);
-      return response;
-    }
-  };
+  // callZaiVision can't take a separate system message, so prepend SYSTEM_PROMPT.
+  const prompt = SYSTEM_PROMPT + "\n\n" + textIntro;
 
   const parse = (
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    response: any,
+    text: string,
   ): {
     chosen_index?: number;
     chosen_url?: string | null;
@@ -303,9 +264,7 @@ export const findBrandLogo = async (
     rationale?: string;
     reason?: string;
   } | null => {
-    const textBlock = [...response.content].reverse().find((b: { type: string }) => b.type === "text");
-    if (!textBlock || textBlock.type !== "text") return null;
-    const rawTxt = textBlock.text.trim().replace(/^```(?:json)?\s*|\s*```$/g, "");
+    const rawTxt = text.trim().replace(/^```(?:json)?\s*|\s*```$/g, "");
     try {
       return JSON.parse(rawTxt);
     } catch {
@@ -315,7 +274,8 @@ export const findBrandLogo = async (
 
   // Resolve a parsed result to a concrete pick. A chosen_index maps to the FULL
   // candidate URL on our side — the agent never echoes a long data: URL (it
-  // would truncate it, the bug this fixes). chosen_url is for web_search finds.
+  // would truncate it, the bug this fixes). chosen_url is kept as a harmless
+  // fallback for older response shapes; the prompt now only asks for an index.
   type Chosen = { url: string; source?: string; rationale?: string };
   const resolveChosen = (
     p: { chosen_index?: number; chosen_url?: string | null; source?: string; rationale?: string } | null,
@@ -341,32 +301,16 @@ export const findBrandLogo = async (
     reason?: string;
   } | null;
   try {
-    parsed = parse(await runOnce([{ role: "user", content }]));
+    const { text, usage } = await visionCall(images, prompt);
+    opts.onUsage?.(VISION_MODEL, usage);
+    parsed = parse(text);
   } catch (err) {
     return {
       ok: false,
-      reason: `logo agent API error: ${err instanceof Error ? err.message : String(err)}`,
+      reason: `logo agent vision error: ${err instanceof Error ? err.message : String(err)}`,
     };
   }
-  let chosen = resolveChosen(parsed);
-
-  // ── Round 2: persistence — force a web search when the page came up empty ──
-  if (!chosen) {
-    const webPrompt = [
-      `Brand: ${brandTitle ?? brandHostname} (${brandHostname}).`,
-      "None of the on-page candidates was the brand's clean logo.",
-      "Use web_search NOW to find the official logo. Search \"" +
-        `${brandTitle ?? brandHostname} logo svg`,
-      "\", press kit, or brand assets. Prefer the brand's own domain or a recognized brand-asset host.",
-      'Return JSON: {"chosen_url":"https://...","source":"web-search","rationale":"..."} or {"chosen_url":null,"reason":"..."}.',
-    ].join(" ");
-    try {
-      parsed = parse(await runOnce([{ role: "user", content: webPrompt }]));
-      chosen = resolveChosen(parsed);
-    } catch {
-      // keep round-1 (null) result
-    }
-  }
+  const chosen = resolveChosen(parsed);
 
   // Deterministic floor — "no empty hands". The vision agent is nondeterministic
   // and sometimes returns null even when the page has a clear brand mark (a

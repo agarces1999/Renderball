@@ -13,7 +13,7 @@ import {
   formatDesignLanguage,
 } from "./design-language";
 import { findBrandLogo } from "./find-logo-agent";
-import { MODELS, VISION_MODEL } from "../anthropic";
+import { VISION_MODEL } from "../anthropic";
 import type { Usage } from "../usage";
 
 let passed = 0;
@@ -93,9 +93,6 @@ const FAKE_USAGE = {
   cache_creation_input_tokens: 0,
   cache_read_input_tokens: 0,
 };
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const fakeClient = (text: string): any =>
-  ({ messages: { create: async () => ({ content: [{ type: "text", text }], usage: FAKE_USAGE }) } });
 // Native vision-call fake — returns the GLM-5V-Turbo shape ({ text, usage }).
 const fakeVision = (text: string) => async () => ({ text, usage: FAKE_USAGE });
 
@@ -163,11 +160,17 @@ await check("findBrandLogo reports its model + usage to the collector", async ()
     "corgi.insure",
     "Corgi",
     [{ url: "data:image/svg+xml;base64,bm90LXJlYWwtc3Zn", source: "inline-svg" }],
-    { client: fakeClient('{"chosen_index":1,"rationale":"the nav wordmark"}'), onUsage },
+    {
+      visionCall: async () => ({
+        text: '{"chosen_index":1,"rationale":"the nav wordmark"}',
+        usage: FAKE_USAGE,
+      }),
+      onUsage,
+    },
   );
   assert(result.ok === true, `expected ok, got ${JSON.stringify(result)}`);
   assert(calls.length === 1, `expected 1 usage call (single round), got ${calls.length}`);
-  assert(calls[0].model === MODELS.logoAgent, `model: ${calls[0].model}`);
+  assert(calls[0].model === VISION_MODEL, `model: ${calls[0].model}`);
   assert(calls[0].usage.output_tokens === 80, `usage: ${JSON.stringify(calls[0].usage)}`);
 });
 
