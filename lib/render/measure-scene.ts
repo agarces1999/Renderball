@@ -233,7 +233,22 @@ export const measureScenes = async (
   // closed per-scene rather than crashing module load.
   let chromium: typeof import("playwright").chromium;
   try {
-    ({ chromium } = await import("playwright"));
+    // CJS/ESM interop: `chromium` is normally on the namespace, but under Next
+    // dev a hot-recompile (e.g. a commit landing mid-build, which is what broke
+    // loop iteration 2) can re-wrap the CJS module so the export lands under
+    // `.default` instead — the bare `({ chromium } = ...)` destructure then
+    // yielded `undefined` and `chromium.launch` crashed with "Cannot read
+    // properties of undefined (reading 'launch')". Resolve BOTH shapes, and fail
+    // loudly (→ "playwright unavailable" measure-error) if truly absent.
+    const pw = (await import("playwright")) as unknown as {
+      chromium?: typeof import("playwright").chromium;
+      default?: { chromium?: typeof import("playwright").chromium };
+    };
+    const resolved = pw.chromium ?? pw.default?.chromium;
+    if (!resolved) {
+      throw new Error("playwright loaded but its `chromium` export is undefined (module interop)");
+    }
+    chromium = resolved;
   } catch (err) {
     const error = `playwright unavailable: ${err instanceof Error ? err.message : String(err)}`;
     return Array.from({ length: sceneCount }, (_, i) => ({
@@ -283,6 +298,21 @@ export const measureScenes = async (
         }
         // fonts loaded + a beat for layout to settle
         await page.evaluate("document.fonts && document.fonts.ready").catch(() => {});
+        // SETTLE entry animations to their FINAL state before measuring AND
+        // screenshotting. setContent renders at t=0, so without this we captured
+        // an EARLY frame — diegetic elements (cards, terminals, mock UIs, charts)
+        // were still animating in (opacity 0 / off-screen). That caused (a) the
+        // render-truth gate to see false OFF-CANVAS (elements mid slide-in),
+        // triggering the expensive repair ladder, and (b) the advisory vision
+        // gate to judge scenes as "wall-of-type, no diegetic element" (the
+        // over-flagging seen on Linear/Duolingo/Vercel). finish() jumps finite
+        // entry animations to their end; infinite ambient ones throw → skipped.
+        await page
+          .evaluate(
+            "try{(document.getAnimations?document.getAnimations():[]).forEach(function(a){try{a.finish()}catch(e){}})}catch(e){}",
+          )
+          .catch(() => {});
+        await page.waitForTimeout(250).catch(() => {});
         const elements = (await page.evaluate(PAGE_WALK)) as MeasuredElement[];
         const screenshotPath = path.join(outDir, `measure-scene-${i}.png`);
         await page.screenshot({ path: screenshotPath, clip: { x: 0, y: 0, width: dims.w, height: dims.h } });

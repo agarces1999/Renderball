@@ -115,3 +115,66 @@ export const makeVisionJudge = (
     return parseVerdict(text);
   };
 };
+
+// ─── Brand-fidelity backstop (crawl-independent) ─────────────────────
+//
+// The rest of QA validates render-vs-CRAWL consistency: the vision rubric is told
+// "the brand bg is {extracted_color}" and checks the render matches it. Circular —
+// when the crawl extracts the WRONG color, the render matches the wrong reference
+// and passes (Robinhood shipped blue, all "on-brand" to QA). Nothing audited the
+// crawl against reality.
+//
+// This closes that loop using the model's world-knowledge of the brand — but
+// crucially TEXT-ONLY (brand name + the extracted palette, NO image). Validated
+// 2026-06-22: with a frame present the model parrots the frame's color (passes the
+// wrong color); with no image it recalls accurately (Robinhood green, DoorDash red,
+// Spotify green, Canva cyan) and correctly checks the signature color is PRESENT in
+// the palette — so brand-color-as-accent on a dark canvas (DoorDash) is NOT flagged,
+// while a wrong palette (Robinhood blue) IS.
+
+export interface BrandFidelityVerdict {
+  onBrand: boolean;
+  issue: string;
+}
+
+/** Text-only prompt: recall the brand's signature color, check it's present in the
+ *  extracted palette. High-bar (only a confident, clearly-missing signature color
+ *  flags) + passes cleanly on brands the model doesn't know. */
+export const buildBrandColorPrompt = (name: string, palette: string[]): string =>
+  `The brand is "${name}". A generated video used this color palette: [${palette.join(", ")}]. From your OWN knowledge of ${name}'s single signature brand color, is that signature color present in the palette (allow close shades / the same hue family)? If you do NOT confidently know this brand, set onBrand:true (do not guess). Return ONLY JSON: {"brandColor":"name + hex","present":boolean,"onBrand":boolean,"issue":"<brand color> missing — palette is <short summary>" or ""}. No prose.`;
+
+/** Tolerant parse — defaults to onBrand:true (never flag on an unparseable/odd
+ *  response; this is an advisory backstop, false positives erode trust). */
+export const parseBrandFidelity = (text: string): BrandFidelityVerdict => {
+  try {
+    const m = /\{[\s\S]*\}/.exec(text);
+    if (!m) return { onBrand: true, issue: "" };
+    const o = JSON.parse(m[0]) as { onBrand?: unknown; issue?: unknown };
+    const issue = typeof o.issue === "string" ? o.issue.trim() : "";
+    // Only a verdict that EXPLICITLY says onBrand:false (with a reason) flags.
+    if (o.onBrand === false && issue) return { onBrand: false, issue };
+    return { onBrand: true, issue: "" };
+  } catch {
+    return { onBrand: true, issue: "" };
+  }
+};
+
+/**
+ * Check the brand's signature color (from the model's knowledge) is present in the
+ * crawl-extracted `palette` — NO image, so the recall can't anchor to a wrong frame.
+ * Best-effort + advisory: no name / empty palette / any error → on-brand (never
+ * block, never false-alarm). `callText` injected for unit tests.
+ */
+export const checkBrandColorFidelity = async (
+  brand: { name?: string },
+  palette: string[],
+  callText: (prompt: string) => Promise<string>,
+): Promise<BrandFidelityVerdict> => {
+  if (!brand.name || palette.length === 0) return { onBrand: true, issue: "" };
+  try {
+    const text = await callText(buildBrandColorPrompt(brand.name, palette));
+    return parseBrandFidelity(text);
+  } catch {
+    return { onBrand: true, issue: "" };
+  }
+};

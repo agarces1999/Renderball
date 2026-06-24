@@ -18,6 +18,7 @@ import {
   hasCornerLogoSuppression,
   assessVerticalFill,
   repairInvalidLucideImports,
+  addMissingLucideImports,
   findUndefinedJsxComponents,
   findDrawnLogoStandIns,
   findProvidedComponentRedefinitions,
@@ -932,6 +933,33 @@ if ([abScriptPath, opusCompPath, fableCompPath].every((p) => existsSync(p))) {
 } else {
   console.log("  - skipped REAL-specimen smoke tests (.data/ab fixtures not present)");
 }
+
+// addMissingLucideImports — the deterministic fix for valid lucide icons used
+// but not imported (the Coinbase "BadgeCheck is not defined" build-killer). A
+// mock validator stands in for the 5,800-icon module.
+const isMockIcon = (n: string) => ["BadgeCheck", "ShieldCheck", "Zap"].includes(n);
+check("auto-imports a valid lucide icon used but not imported", () => {
+  const code = `import { Zap } from "lucide-react";\nexport const S = () => <div><Zap/><BadgeCheck/></div>;`;
+  const r = addMissingLucideImports(code, isMockIcon);
+  assert(r.added.includes("BadgeCheck"), `expected BadgeCheck added, got ${JSON.stringify(r.added)}`);
+  assert(/import\s*\{[^}]*\bBadgeCheck\b[^}]*\bZap\b|import\s*\{[^}]*\bZap\b[^}]*\bBadgeCheck\b/.test(r.code), "BadgeCheck spliced into the existing lucide import");
+});
+check("leaves invented / non-lucide components untouched", () => {
+  const code = `export const S = () => <div><OrbitCursors/><BadgeCheck/></div>;`;
+  const r = addMissingLucideImports(code, isMockIcon);
+  assert(r.added.length === 1 && r.added[0] === "BadgeCheck", `only the valid icon, got ${JSON.stringify(r.added)}`);
+  assert(!r.code.includes("OrbitCursors }") && !/OrbitCursors.*lucide/.test(r.code), "invented OrbitCursors not imported");
+});
+check("creates a lucide import when none exists", () => {
+  const code = `import React from "react";\nexport const S = () => <ShieldCheck/>;`;
+  const r = addMissingLucideImports(code, isMockIcon);
+  assert(/import\s*\{\s*ShieldCheck\s*\}\s*from\s*["']lucide-react["']/.test(r.code), "new lucide import created");
+});
+check("no-op when nothing is missing", () => {
+  const code = `import { Zap } from "lucide-react";\nexport const S = () => <Zap/>;`;
+  const r = addMissingLucideImports(code, isMockIcon);
+  assert(r.added.length === 0 && r.code === code, "unchanged when all icons resolve");
+});
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exitCode = 1;

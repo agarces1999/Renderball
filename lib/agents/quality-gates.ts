@@ -746,6 +746,45 @@ export const findUndefinedJsxComponents = (code: string): string[] => {
   return out;
 };
 
+/**
+ * Deterministic FIX for the subset of "undefined JSX components" that are real
+ * lucide-react icons the agent USED but forgot to IMPORT — e.g. `<BadgeCheck/>`
+ * rendered with no matching import ("BadgeCheck is not defined" → white screen at
+ * render; this cost Coinbase a whole 98-min build, the same class as Figma's
+ * earlier ORBIT_CURSORS but RECOVERABLE). Unlike an invented identifier or a
+ * brand logo (which lucide doesn't have), a valid lucide icon has a mechanical
+ * fix: splice it into the lucide-react import. `isLucideIcon` is INJECTED so the
+ * splice logic is unit-testable without loading the 5,800-icon module; names that
+ * aren't valid lucide icons are left untouched (the render gate + agent repair
+ * stay the backstop for genuinely-invented components).
+ */
+export const addMissingLucideImports = (
+  code: string,
+  isLucideIcon: (name: string) => boolean,
+): { code: string; added: string[] } => {
+  const toAdd = Array.from(
+    new Set(findUndefinedJsxComponents(code).filter(isLucideIcon)),
+  );
+  if (toAdd.length === 0) return { code, added: [] };
+  const m = code.match(/import\s*\{([^}]*)\}\s*from\s*["']lucide-react["']/);
+  if (m) {
+    const names = m[1].split(",").map((s) => s.trim()).filter(Boolean);
+    const merged = Array.from(new Set([...names, ...toAdd])).join(", ");
+    return {
+      code: code.replace(m[0], `import { ${merged} } from "lucide-react"`),
+      added: toAdd,
+    };
+  }
+  // No lucide import yet — insert one immediately after the first import line.
+  const first = /^[ \t]*import\b.*$/m.exec(code);
+  const line = `import { ${toAdd.join(", ")} } from "lucide-react";`;
+  if (first) {
+    const at = first.index + first[0].length;
+    return { code: code.slice(0, at) + "\n" + line + code.slice(at), added: toAdd };
+  }
+  return { code: `${line}\n${code}`, added: toAdd };
+};
+
 // ─── Drawn-logo stand-in (the Supabase replica loophole, A1) ─────────
 //
 // When a REAL brand logo resolved, the sanctioned ways to render it are the

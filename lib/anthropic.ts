@@ -1,6 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { readFileSync } from "fs";
 import path from "path";
+import { Agent } from "undici";
 
 /**
  * Singleton Anthropic client. Reads ANTHROPIC_API_KEY from env at first call.
@@ -50,7 +51,60 @@ export const getAnthropic = (): Anthropic => {
     );
   }
 
-  _client = new Anthropic({ apiKey });
+  // ANTHROPIC_BASE_URL points the SDK at z.ai's Anthropic-compatible endpoint
+  // (GLM 5.2 — the build model). Read from .env.local too: Claude Desktop blanks
+  // process.env so the key is read from the file (above), and the base URL must
+  // use the same fallback or the SDK silently hits api.anthropic.com.
+  // Read .env.local FIRST: the host env (Claude Desktop) bakes
+  // ANTHROPIC_BASE_URL=https://api.anthropic.com into process.env, and Next
+  // gives process.env precedence over .env.local — so a process.env-first read
+  // would always pick Anthropic and ignore the z.ai override. .env.local is the
+  // experiment's source of truth here.
+  let baseURL: string | undefined;
+  try {
+    const content = readFileSync(path.join(process.cwd(), ".env.local"), "utf-8");
+    const m = content.match(/^ANTHROPIC_BASE_URL=(.+)$/m);
+    let v = m?.[1]?.trim();
+    if (v && /^["'].*["']$/.test(v)) v = v.slice(1, -1);
+    baseURL = v || undefined;
+  } catch { /* no .env.local */ }
+  if (!baseURL) baseURL = process.env.ANTHROPIC_BASE_URL?.trim() || undefined;
+  console.warn(`[anthropic] client baseURL=${baseURL ?? "(default anthropic)"} keyTail=${apiKey.slice(-4)}`);
+  // GLM/z.ai reliability (LOCAL): long client timeout (z.ai recommends ~50min)
+  // so a slow max-effort generation isn't aborted by the SDK, and maxRetries so
+  // a transient connection abort (undici idle ETIMEDOUT mid-stream) is retried
+  // rather than failing the whole build. Harmless on Anthropic too.
+  //
+  // Transport hardening for the ~38-min mid-stream `read ETIMEDOUT` on long GLM
+  // streams. That error is a KERNEL TCP read-timeout on a dead ESTABLISHED
+  // socket (NOT z.ai timing us out, NOT undici's app-timer — those throw named
+  // UND_ERR_* errors; verified via the transport investigation). Node's global
+  // fetch (undici) defaults to a lax 60s TCP keepalive + a 300s inter-chunk
+  // body timeout, so a long quiet stretch lets an egress NAT/middlebox drop the
+  // idle flow and the kernel later reaps the socket. This dispatcher — scoped to
+  // THIS client only (NOT setGlobalDispatcher, so unrelated R2/Stripe/Next
+  // fetches keep stock behavior) — sends keepalive probes every ~10s to hold the
+  // flow-table entry warm and detect a dead path fast, and disables the 300s
+  // body timer so a genuinely long silent thinking stretch can't trip it.
+  // streamBuildCall (pipeline.ts) stays as the backstop: the SDK cannot retry a
+  // post-headers mid-stream drop, so retry is the only thing that recovers one.
+  // NOTE: keepalive is a (well-reasoned but unproven) bet on idle-NAT eviction;
+  // streamBuildCall logs the err.cause chain so we can confirm whether this
+  // actually reduces drop frequency over the coming builds.
+  const zaiDispatcher = new Agent({
+    connect: { keepAlive: true, keepAliveInitialDelay: 10_000 },
+    bodyTimeout: 0,
+    headersTimeout: 10 * 60_000,
+    keepAliveTimeout: 60 * 60_000,
+    keepAliveMaxTimeout: 60 * 60_000,
+  });
+  _client = new Anthropic({
+    apiKey,
+    ...(baseURL ? { baseURL } : {}),
+    timeout: 3_000_000,
+    maxRetries: 2,
+    fetchOptions: { dispatcher: zaiDispatcher },
+  });
   return _client;
 };
 
@@ -58,35 +112,63 @@ export const getAnthropic = (): Anthropic => {
  * Model registry per stage, per PRODUCT.md §1038.
  * Swap-friendly: model choice is one constant per role.
  */
-// ALL STAGES ON OPUS 4.8 per the 2026-06-14 directive ("every step should be
-// done with opus 4.8"). Previously script-gen/tweak ran Sonnet and QA/logo/
-// design-language ran Haiku for cost; the user opted to trade that spend for
-// uniform top-tier quality across the whole pipeline. Opus 4.8 is vision-
-// capable, so the screenshot-reading stages (qaAgent, logoAgent, designLanguage)
-// work unchanged. Build was briefly Fable 5 (won the 2026-06-11 A/B on taste,
-// .data/ab/negative-audit.json) but Fable access was revoked on our key
-// (404, anthropic.com/news/fable-mythos-access) — revisit Fable if it returns.
+// EVERY STAGE ON GLM 5.2 via z.ai's Anthropic-compatible endpoint
+// (ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic, key in .env.local). This
+// is the production build model: Fable 5 won the 2026-06-11 taste A/B but its
+// access was revoked (404), and Opus is no longer used for builds — GLM 5.2 is
+// the model, full stop (revisit only if Fable access returns). GLM is reached
+// through the same SDK client; the call contract differs from Anthropic's and
+// is captured in BUILD_REASONING / BUILD_MAX_TOKENS below.
 export const MODELS = {
-  // Stage 1 — Script Generator (the storyline agent). Taste-heavy.
-  scriptGenerator: "claude-opus-4-8",
-
-  // Stage 5 — Full-build Design + Choreography pass (taste-heavy
-  // composition + animation choices, plus retries when quality gates
-  // fail). The commit-to-MP4 path.
-  codingAgentBuild: "claude-opus-4-8",
-
-  // Per-scene regenerate Design + Choreography pass (regenerateScene in
-  // pipeline.ts — a single scene, not the full composition). Matches the
-  // build path so a regenerated scene fits the rest of the composition.
-  codingAgent: "claude-opus-4-8",
-
-  // Stage 7 — QA Agent. Vision-capable, structured comparison.
-  qaAgent: "claude-opus-4-8",
-  // Logo-discovery agent — vision evaluation of brand-logo candidates.
-  logoAgent: "claude-opus-4-8",
-  // Design-language analysis — reads the brand's compositional design language
-  // off a homepage screenshot (crawl-time, advisory).
-  designLanguage: "claude-opus-4-8",
-  // Stage 8 — Tweak Agent. Small-edit iteration.
-  tweakAgent: "claude-opus-4-8",
+  scriptGenerator: "glm-5.2",
+  codingAgentBuild: "glm-5.2",
+  codingAgent: "glm-5.2",
+  qaAgent: "glm-5.2",
+  logoAgent: "glm-5.2",
+  designLanguage: "glm-5.2",
+  tweakAgent: "glm-5.2",
 } as const;
+
+/**
+ * Vision model for the QA gate (and, as a follow-up, the crawl's logo/palette
+ * vision). GLM-5V-Turbo is z.ai's multimodal model built to "examine rendered
+ * output and identify discrepancies" — validated 2026-06-21 to read our scene
+ * screenshots accurately (0 false positives on 5 good builds, and it correctly
+ * caught a deliberate color mismatch). The text GLM models (glm-5.2 etc.) are
+ * NOT vision-capable.
+ *
+ * CRITICAL: vision calls MUST go through z.ai's NATIVE endpoint via
+ * lib/render/zai-vision.ts — the Anthropic-compatible endpoint that
+ * getAnthropic() targets silently DROPS image blocks, so images sent through the
+ * SDK client are invisible to the model.
+ */
+export const VISION_MODEL = "glm-5v-turbo";
+
+/**
+ * Reasoning + output config for the build/composition calls on GLM 5.2 (z.ai).
+ *
+ * GLM controls reasoning with `thinking.type` (`enabled`|`disabled`) plus a
+ * separate `reasoning_effort` — NOT Anthropic's `thinking:{type:"adaptive"}`,
+ * which z.ai silently IGNORES. Sending `adaptive` left reasoning off and GLM
+ * returned an empty/truncated composition (the ~984-token / 95-token-preamble
+ * failures); switching to the GLM-native pair fixed it. `"max"` effort is
+ * z.ai's recommendation for coding and matches the "don't cap the thinking"
+ * directive. `max_tokens` is GLM 5.2's 131072 output ceiling.
+ *
+ * Spread into every messages.stream() on the build path so there's ONE source
+ * of truth. Typed `any` because `reasoning_effort` isn't in the Anthropic SDK's
+ * param surface — z.ai accepts it as an extra field on the wire, and spreading
+ * an `any` keeps the call-site object literals type-clean.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export const BUILD_REASONING: any = {
+  thinking: { type: "enabled" },
+  // OVERNIGHT BATCH (local): "high", not "max". At "max" a single build does not
+  // converge inside 2h on GLM (design + scoped/whole-comp retries + render-truth,
+  // each call ~18min) — zero builds completed. "high" keeps strong reasoning but
+  // lets builds finish so the multi-brand loop can actually run. Production
+  // default is "max"; revisit per the wall-time finding.
+  reasoning_effort: "high",
+};
+/** GLM 5.2 max output tokens (z.ai ceiling). */
+export const BUILD_MAX_TOKENS = 131072;

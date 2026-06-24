@@ -12,9 +12,15 @@
  * the CSS palette.
  */
 
-import { getAnthropic, MODELS } from "../anthropic";
-import { usageOf, type Usage } from "../usage";
+import { VISION_MODEL } from "../anthropic";
+import { callZaiVision } from "../render/zai-vision";
+import { type Usage } from "../usage";
 import { safeFetch } from "./ssrf-guard";
+
+// Prompt for the by-role color read. Kept verbatim from the prior SDK path —
+// only the transport changed (now native GLM-5V-Turbo, which can actually SEE).
+const COLOR_ROLES_PROMPT =
+  'This is a brand\'s website hero / share image. Identify the brand\'s ACTUAL colors BY ROLE. "background" = the dominant page/canvas color the content sits ON (often a deep brand color, NOT necessarily black). "text" = the main reading-text color. "accent" = the signature highlight used for CTAs/emphasis (distinct from the background). "supporting" = 1-2 other deliberate brand colors. Ignore photographic colors (skin, sky); focus on deliberate UI colors. Return ONLY a JSON object with lowercase hex values, e.g. {"background":"#440b12","text":"#ffffff","accent":"#ec6839","supporting":["#f4e9df"]}. Omit any role you can\'t identify. No prose.';
 
 const HEX_RX = /#[0-9a-fA-F]{6}\b/g;
 
@@ -79,37 +85,27 @@ const asHex = (v: unknown): string | undefined => {
 export const extractBrandColorRoles = async (
   imageUrl: string | undefined,
   opts: {
-    client?: ReturnType<typeof getAnthropic>;
-    model?: string;
+    // The vision call, injected for tests. Default: native GLM-5V-Turbo. The old
+    // Anthropic-compat SDK path silently DROPPED the image → the model was blind
+    // → it returned a stray UI color (Robinhood shipped BLUE; brand is lime-green
+    // #ccff00). thinking MUST be disabled here: on a terse extraction task the
+    // model otherwise spends the whole token budget reasoning and returns nothing.
+    visionCall?: (
+      image: string,
+      prompt: string,
+    ) => Promise<{ text: string; usage: Usage }>;
     onUsage?: (model: string, usage: Usage) => void;
   } = {},
 ): Promise<BrandColorRoles> => {
   if (!isVisionSafe(imageUrl)) return { supporting: [] };
   try {
-    const client = opts.client ?? getAnthropic();
-    const model = opts.model ?? MODELS.qaAgent; // Haiku — vision-capable, cheap
-    const resp = await client.messages.create({
-      model,
-      max_tokens: 200,
-      messages: [
-        {
-          role: "user",
-          content: [
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            { type: "image", source: { type: "url", url: imageUrl } } as any,
-            {
-              type: "text",
-              text:
-                'This is a brand\'s website hero / share image. Identify the brand\'s ACTUAL colors BY ROLE. "background" = the dominant page/canvas color the content sits ON (often a deep brand color, NOT necessarily black). "text" = the main reading-text color. "accent" = the signature highlight used for CTAs/emphasis (distinct from the background). "supporting" = 1-2 other deliberate brand colors. Ignore photographic colors (skin, sky); focus on deliberate UI colors. Return ONLY a JSON object with lowercase hex values, e.g. {"background":"#440b12","text":"#ffffff","accent":"#ec6839","supporting":["#f4e9df"]}. Omit any role you can\'t identify. No prose.',
-            },
-          ],
-        },
-      ],
-    });
-    opts.onUsage?.(model, usageOf(resp.usage));
-    const text = resp.content.find((c) => c.type === "text");
-    if (!text || text.type !== "text") return { supporting: [] };
-    const obj = parseFirstJsonObject(text.text);
+    const visionCall =
+      opts.visionCall ??
+      ((image, prompt) =>
+        callZaiVision(image, prompt, { disableThinking: true, maxTokens: 500 }));
+    const { text, usage } = await visionCall(imageUrl, COLOR_ROLES_PROMPT);
+    opts.onUsage?.(VISION_MODEL, usage);
+    const obj = parseFirstJsonObject(text);
     if (!obj) return { supporting: [] };
     const supporting = Array.isArray(obj.supporting)
       ? obj.supporting.map(asHex).filter((h): h is string => !!h)
@@ -139,8 +135,10 @@ export const extractBrandColorRoles = async (
 export const extractPaletteFromImage = async (
   imageUrl: string | undefined,
   opts: {
-    client?: ReturnType<typeof getAnthropic>;
-    model?: string;
+    visionCall?: (
+      image: string,
+      prompt: string,
+    ) => Promise<{ text: string; usage: Usage }>;
     onUsage?: (model: string, usage: Usage) => void;
   } = {},
 ): Promise<string[]> => {

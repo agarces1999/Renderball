@@ -9,6 +9,7 @@ import {
   extractStatClaims,
   validateScript,
   findTypeOnlyScenes,
+  normalizeScriptContent,
 } from "./schema-validator";
 
 let passed = 0;
@@ -275,6 +276,62 @@ check("returns the correct mixed indices across a sequence", () => {
     vc("One enormous manifesto line on a dark frame."),// 3 flag
   ];
   assert(JSON.stringify(findTypeOnlyScenes(s)) === "[1,3]", `got ${JSON.stringify(findTypeOnlyScenes(s))}`);
+});
+
+// ── normalizeScriptContent: strip prose-as-value KPI meta ──────────────────
+// The Stripe overnight build emitted meta values that were DESCRIPTIONS, not
+// numbers — {label:"Volume", value:"in payments volume processed in 2025"} —
+// rendering KPI tiles with blank number slots. The normalizer drops them.
+const metaScenes = (meta: { label: string; value: string }[]) => ({
+  scenes: [{ content: { headline: "The scale", meta } }],
+});
+const firstMeta = (out: unknown): unknown =>
+  ((out as { scenes?: { content?: { meta?: unknown } }[] }).scenes?.[0].content?.meta);
+
+check("normalizeScriptContent drops prose-as-value KPI entries", () => {
+  const out = normalizeScriptContent(
+    metaScenes([
+      { label: "Volume", value: "in payments volume processed in 2025" },
+      { label: "Subscriptions", value: "active subscriptions on Stripe Billing" },
+      { label: "Fortune 100", value: "50% have used Stripe to grow" },
+    ]),
+  );
+  // All three values are phrases → all dropped → meta key removed entirely.
+  assert(firstMeta(out) === undefined, `expected meta removed, got ${JSON.stringify(firstMeta(out))}`);
+});
+
+check("normalizeScriptContent keeps terse numeric/datum values", () => {
+  const kept = [
+    { label: "Total volume", value: "$1.4T" },
+    { label: "Uptime", value: "99.99%" },
+    { label: "Stage", value: "Series B" },
+    { label: "Date", value: "Mar 2025" },
+  ];
+  const out = normalizeScriptContent(metaScenes(kept));
+  assert(JSON.stringify(firstMeta(out)) === JSON.stringify(kept), `terse values must survive, got ${JSON.stringify(firstMeta(out))}`);
+});
+
+check("normalizeScriptContent prunes only the bad entries, keeps the good", () => {
+  const out = normalizeScriptContent(
+    metaScenes([
+      { label: "Total volume", value: "$1.4T" },
+      { label: "Volume", value: "in payments volume processed in 2025" },
+    ]),
+  );
+  assert(JSON.stringify(firstMeta(out)) === JSON.stringify([{ label: "Total volume", value: "$1.4T" }]), `only the prose entry should drop, got ${JSON.stringify(firstMeta(out))}`);
+});
+
+check("normalizeScriptContent is a no-op on clean input (returns same ref)", () => {
+  const clean = metaScenes([{ label: "Uptime", value: "99.99%" }]);
+  assert(normalizeScriptContent(clean) === clean, "unchanged input should return the same reference");
+});
+
+check("normalizeScriptContent leaves malformed shapes for the validator", () => {
+  // Non-object meta entries / missing scenes must pass through untouched so
+  // validateScript owns the shape error message.
+  assert(normalizeScriptContent({ nope: 1 }) !== undefined, "non-script object passes through");
+  const bad = { scenes: [{ content: { headline: "x", meta: [{ label: "a" }] } }] };
+  assert(normalizeScriptContent(bad) === bad, "malformed meta entry (no value) is left for validateScript");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

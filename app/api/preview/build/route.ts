@@ -9,6 +9,7 @@ import {
   buildAnimatedSections,
   buildAgentInputFromBrief,
   regenerateScene,
+  repairSceneRenderErrors,
 } from "../../../../lib/agents/pipeline";
 import { writeGeneratedFiles } from "../../../../lib/render/build-wrapper";
 import { verifyScenesRender } from "../../../../lib/render/ssr-render";
@@ -21,14 +22,15 @@ import { repairRenderTruth } from "../../../../lib/render/render-truth-repair";
 import {
   runVisionGate,
   makeVisionJudge,
+  checkBrandColorFidelity,
   type VisionFinding,
 } from "../../../../lib/render/vision-gate";
-import { MODELS, getAnthropic } from "../../../../lib/anthropic";
+import { MODELS, VISION_MODEL } from "../../../../lib/anthropic";
+import { callZaiVision, callZaiText } from "../../../../lib/render/zai-vision";
 import {
   recordUsage,
   costUsd,
   addUsage,
-  usageOf,
   EMPTY_USAGE,
 } from "../../../../lib/usage";
 
@@ -150,24 +152,49 @@ export async function POST(request: Request) {
   // scripts/dogfood-stills.mjs + lib/render/painted-content.ts
   // (verifyPaintedScenes): every dogfood run scores per-scene ink from frames
   // of an actual MP4 render and flags scenes whose content never paints.
-  const renderCheck = await verifyScenesRender(genDir, script.scenes.length, script);
+  let renderCheck = await verifyScenesRender(genDir, script.scenes.length, script);
   if (!renderCheck.ok) {
     console.error(
       "[preview/build] SSR render gate failed:",
       JSON.stringify(renderCheck.errors),
     );
-    // The build burned real tokens but won't ship — record failed:true so the
-    // ledger never understates cost and the report excludes it from per-build
-    // averages (it is not a successful build).
-    await recordUsage({ op: "build", model, scriptId, url: brief?.brand_kit_url, usage: currentUsage, failed: true });
-    return NextResponse.json(
-      {
-        error: "one or more scenes failed to render",
-        stage: "render",
-        render_errors: renderCheck.errors,
-      },
-      { status: 500 },
-    );
+    // RENDER-ERROR AUTO-REPAIR — a scene that PARSES can still THROW at render
+    // (an unguarded access to an optional content field, e.g. `c.cta.primary` on
+    // a scene with no cta). Rather than fail the build, surgically guard the
+    // throwing section(s) and re-gate. Only per-scene throws are repairable;
+    // file-level errors (scene -1) fall straight through to the hard fail.
+    const repairable = renderCheck.errors.some((e) => e.scene >= 0);
+    if (repairable) {
+      const rr = await repairSceneRenderErrors(result.code!, renderCheck.errors);
+      currentUsage = addUsage(currentUsage, rr.usage); // billed either way
+      if (rr.repaired.length > 0) {
+        await writeGeneratedFiles(genDir, {
+          designCode: result.designCode,
+          code: rr.code,
+          script,
+          warnings: result.warnings,
+          assetManifest: result.asset_manifest,
+        });
+        renderCheck = await verifyScenesRender(genDir, script.scenes.length, script);
+        console.warn(
+          `[preview/build] render-repair: guarded scene(s) [${rr.repaired.join(", ")}], re-gate ${renderCheck.ok ? "PASSED" : "still failing"}`,
+        );
+      }
+    }
+    if (!renderCheck.ok) {
+      // The build burned real tokens but won't ship — record failed:true so the
+      // ledger never understates cost and the report excludes it from per-build
+      // averages (it is not a successful build).
+      await recordUsage({ op: "build", model, scriptId, url: brief?.brand_kit_url, usage: currentUsage, failed: true });
+      return NextResponse.json(
+        {
+          error: "one or more scenes failed to render",
+          stage: "render",
+          render_errors: renderCheck.errors,
+        },
+        { status: 500 },
+      );
+    }
   }
 
   // RENDER-TRUTH GATE (Phase 2: BLOCKING + self-repair ladder + $10 ceiling).
@@ -205,7 +232,13 @@ export async function POST(request: Request) {
         // Thread the raw measurements (with each scene's screenshotPath) out via
         // the GateResult so the advisory vision gate can reuse the final
         // screenshots instead of launching Chromium a second time.
-        return { ...findRenderTruthFailures(measurements), measurements };
+        // findRenderTruthFailures is ASYNC (contrast + dead-region run through
+        // sharp). It MUST be awaited — spreading the unawaited Promise produces a
+        // gate object with no `findings`/`blocking`, so `gate.blocking.length`
+        // in the repair ladder threw "Cannot read properties of undefined
+        // (reading 'length')" and 500'd every build that reached this gate.
+        const gate = await findRenderTruthFailures(measurements);
+        return { ...gate, measurements };
       },
       regenScene: async (sceneIndex, instruction) => {
         const r = await regenerateScene(
@@ -214,7 +247,12 @@ export async function POST(request: Request) {
           sceneIndex,
           instruction,
         );
-        if (!r.ok) return { ok: false, usage: r.usage, error: r.error };
+        // Fold spend even on failure — a failed attempt is not a free attempt;
+        // the ledger must capture the tokens this regen burned.
+        if (!r.ok) {
+          if (r.usage) currentUsage = addUsage(currentUsage, r.usage);
+          return { ok: false, usage: r.usage, error: r.error };
+        }
         currentCode = r.code;
         currentDesign = r.designCode;
         currentWarnings = r.warnings;
@@ -240,7 +278,12 @@ export async function POST(request: Request) {
           ),
         };
         const rb = await buildAnimatedSections(buildAgentInputFromBrief(brief, lighter));
-        if (!rb.ok) return { ok: false, usage: rb.usage, error: rb.error };
+        // Fold spend even on failure — L3's failed design+animation rebuild is
+        // the costliest repair step; the ledger must not drop it.
+        if (!rb.ok) {
+          if (rb.usage) currentUsage = addUsage(currentUsage, rb.usage);
+          return { ok: false, usage: rb.usage, error: rb.error };
+        }
         currentScript = lighter;
         currentCode = rb.code;
         currentDesign = rb.designCode;
@@ -295,6 +338,14 @@ export async function POST(request: Request) {
   // by scene count (small) and recorded separately as op "vision-qa".
   let visionFindings: VisionFinding[] = [];
   let visionCostUsd = 0;
+  // VISION GATE — re-enabled 2026-06-21 on GLM-5V-Turbo via z.ai's NATIVE
+  // endpoint (lib/render/zai-vision.ts). It was briefly disabled because the
+  // Anthropic-compat endpoint silently DROPS images, so the old glm-5.2 judge was
+  // blind and only parroted the rubric's example failures. GLM-5V-Turbo on the
+  // native endpoint reads scenes correctly (validated: 0 false positives on 5
+  // good builds; caught a deliberate color mismatch). Still ADVISORY (never
+  // blocks). Disable with RB_VISION_GATE=off if it ever regresses.
+  const VISION_GATE_ENABLED = process.env.RB_VISION_GATE !== "off";
   try {
     // Reuse the screenshots from repair's FINAL measure (a measure always runs
     // last) instead of launching Chromium a second time — repair threads them out
@@ -323,42 +374,50 @@ export async function POST(request: Request) {
       ),
     };
     let visionUsage = { ...EMPTY_USAGE };
+    // GLM-5V-Turbo via the NATIVE z.ai endpoint — the Anthropic-compat SDK client
+    // (getAnthropic) drops images, so vision MUST use callZaiVision. See VISION_MODEL.
     const judge = makeVisionJudge(async (imageBase64, rubric) => {
-      const resp = await getAnthropic().messages.create({
-        model: MODELS.qaAgent,
-        max_tokens: 700,
-        messages: [
-          {
-            role: "user",
-            content: [
-              {
-                type: "image",
-                source: {
-                  type: "base64",
-                  media_type: "image/png",
-                  data: imageBase64,
-                },
-              },
-              { type: "text", text: rubric },
-            ],
-          },
-        ],
-      });
-      visionUsage = addUsage(visionUsage, usageOf(resp.usage));
-      return resp.content
-        .map((b) => (b.type === "text" ? b.text : ""))
-        .join("\n");
+      const { text, usage } = await callZaiVision(imageBase64, rubric);
+      visionUsage = addUsage(visionUsage, usage);
+      return text;
     });
-    visionFindings = await runVisionGate(
-      measured.map((m) => ({ scene: m.scene, screenshotPath: m.screenshotPath })),
-      brandTruth,
-      judge,
-    );
+    visionFindings = VISION_GATE_ENABLED
+      ? await runVisionGate(
+          measured.map((m) => ({ scene: m.scene, screenshotPath: m.screenshotPath })),
+          brandTruth,
+          judge,
+        )
+      : [];
+    // Brand-color fidelity backstop — TEXT-ONLY (brand name + extracted palette, NO
+    // image, so the model's color recall can't anchor to a wrong frame). Closes the
+    // QA blind spot where a wrong crawl color became the gate's own reference and the
+    // render "matched" it (Robinhood shipped blue, all "on-brand"). Advisory.
+    if (VISION_GATE_ENABLED && brandTruth.name) {
+      try {
+        const palette =
+          be?.palette && be.palette.length
+            ? be.palette
+            : [brandTruth.backgroundColor, brandTruth.accent].filter(
+                (c): c is string => !!c,
+              );
+        const fid = await checkBrandColorFidelity({ name: brandTruth.name }, palette, async (p) => {
+          const { text, usage } = await callZaiText(p, { disableThinking: true, maxTokens: 600 });
+          visionUsage = addUsage(visionUsage, usage);
+          return text;
+        });
+        if (!fid.onBrand && fid.issue) {
+          visionFindings.push({ scene: 0, issue: `BRAND-COLOR: ${fid.issue}` });
+          console.warn(`[preview/build] brand-color fidelity flagged: ${fid.issue}`);
+        }
+      } catch {
+        /* advisory — never block on the backstop */
+      }
+    }
     if (visionUsage.input_tokens || visionUsage.output_tokens) {
-      visionCostUsd = costUsd(MODELS.qaAgent, visionUsage);
+      visionCostUsd = costUsd(VISION_MODEL, visionUsage);
       await recordUsage({
         op: "vision-qa",
-        model: MODELS.qaAgent,
+        model: VISION_MODEL,
         scriptId,
         url: brief?.brand_kit_url,
         usage: visionUsage,

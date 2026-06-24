@@ -29,19 +29,20 @@ const assert = (cond: boolean, msg: string) => {
   if (!cond) throw new Error(msg);
 };
 
-const FAKE_USAGE = { input_tokens: 1200, output_tokens: 40 };
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const fakeClient = (text: string): any => ({
-  messages: {
-    create: async () => ({ content: [{ type: "text", text }], usage: FAKE_USAGE }),
-  },
-});
+const FAKE_USAGE = {
+  input_tokens: 1200,
+  output_tokens: 40,
+  cache_creation_input_tokens: 0,
+  cache_read_input_tokens: 0,
+};
+// Inject the vision CALL (native GLM-5V-Turbo in prod) — returns canned text.
+const fakeVision = (text: string) => async () => ({ text, usage: FAKE_USAGE });
 
 const IMG = "https://x.com/hero.png";
 
 await check("parses a clean roles object (background distinct from accent)", async () => {
   const roles = await extractBrandColorRoles(IMG, {
-    client: fakeClient(
+    visionCall: fakeVision(
       '{"background":"#440b12","text":"#ffffff","accent":"#ec6839","supporting":["#f4e9df"]}',
     ),
   });
@@ -60,7 +61,7 @@ await check("parses a clean roles object (background distinct from accent)", asy
 
 await check("tolerates prose / markdown fences around the JSON object", async () => {
   const roles = await extractBrandColorRoles(IMG, {
-    client: fakeClient(
+    visionCall: fakeVision(
       'Here are the colors:\n```json\n{"background":"#1A1A2E","accent":"#E94560"}\n```\nThat\'s it.',
     ),
   });
@@ -71,7 +72,7 @@ await check("tolerates prose / markdown fences around the JSON object", async ()
 
 await check("omits roles it can't identify; never throws on a partial object", async () => {
   const roles = await extractBrandColorRoles(IMG, {
-    client: fakeClient('{"background":"#0d1b2a"}'),
+    visionCall: fakeVision('{"background":"#0d1b2a"}'),
   });
   assert(roles.background === "#0d1b2a", `background: ${roles.background}`);
   assert(roles.accent === undefined && roles.text === undefined, "absent roles stay undefined");
@@ -80,25 +81,26 @@ await check("omits roles it can't identify; never throws on a partial object", a
 
 await check("unparseable response degrades to {supporting:[]}", async () => {
   const roles = await extractBrandColorRoles(IMG, {
-    client: fakeClient("sorry, I can't read this image"),
+    visionCall: fakeVision("sorry, I can't read this image"),
   });
   assert(roles.background === undefined, "no hex → no background");
   assert(roles.supporting.length === 0, "best-effort empty roles");
 });
 
-await check("non-vision-safe URL → empty roles, no client call", async () => {
+await check("non-vision-safe URL → empty roles, no vision call", async () => {
   let called = false;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const c: any = {
-    messages: { create: async () => { called = true; return { content: [] }; } },
-  };
-  const roles = await extractBrandColorRoles("https://x.com/page.svg", { client: c });
+  const roles = await extractBrandColorRoles("https://x.com/page.svg", {
+    visionCall: async () => {
+      called = true;
+      return { text: "", usage: FAKE_USAGE };
+    },
+  });
   assert(roles.supporting.length === 0 && called === false, "svg is not vision-safe → no call");
 });
 
 await check("extractPaletteFromImage flattens roles to [background, accent, text, ...]", async () => {
   const palette = await extractPaletteFromImage(IMG, {
-    client: fakeClient(
+    visionCall: fakeVision(
       '{"background":"#440b12","text":"#ffffff","accent":"#ec6839","supporting":["#f4e9df"]}',
     ),
   });

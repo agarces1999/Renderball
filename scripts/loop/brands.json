@@ -1,0 +1,25 @@
+{
+  "note": "Diverse brand queue for the continuous feedback loop. Round-robined by iteration. ~20 brands across industries so 100 loops cover ~5 each with good coverage. Edit freely; the loop re-reads this each iteration.",
+  "brands": [
+    { "slug": "stripe",    "url": "https://stripe.com",      "prompt": "A 30-second brand film for Stripe — payments infrastructure for the internet. Modern, technical-but-human, story-driven." },
+    { "slug": "notion",    "url": "https://notion.so",       "prompt": "A 30-second brand film for Notion — one connected workspace for docs, notes, and projects. Calm, modern, story-driven." },
+    { "slug": "figma",     "url": "https://figma.com",       "prompt": "A 30-second brand film for Figma — collaborative design in the browser. Bold, creative, story-driven." },
+    { "slug": "linear",    "url": "https://linear.app",      "prompt": "A 30-second brand film for Linear — the issue tracker built for speed. Sleek, focused, story-driven." },
+    { "slug": "duolingo",  "url": "https://duolingo.com",    "prompt": "A 30-second brand film for Duolingo — free, fun, effective language learning. Playful, energetic, story-driven." },
+    { "slug": "airbnb",    "url": "https://airbnb.com",      "prompt": "A 30-second brand film for Airbnb — belong anywhere: stays and experiences around the world. Warm, human, photo-forward, story-driven." },
+    { "slug": "vercel",    "url": "https://vercel.com",      "prompt": "A 30-second brand film for Vercel — the platform for frontend developers, ship instantly. Sharp, minimal, developer-grade, story-driven." },
+    { "slug": "shopify",   "url": "https://shopify.com",     "prompt": "A 30-second brand film for Shopify — the commerce platform to start and grow a business. Optimistic, entrepreneurial, story-driven." },
+    { "slug": "spotify",   "url": "https://spotify.com",     "prompt": "A 30-second brand film for Spotify — music and podcasts for everyone. Vibrant, rhythmic, bold, story-driven." },
+    { "slug": "slack",     "url": "https://slack.com",       "prompt": "A 30-second brand film for Slack — where work happens, the productivity platform. Friendly, modern, story-driven." },
+    { "slug": "robinhood", "url": "https://robinhood.com",   "prompt": "A 30-second brand film for Robinhood — investing for everyone, commission-free. Clean, confident, consumer-fintech, story-driven." },
+    { "slug": "calm",      "url": "https://calm.com",        "prompt": "A 30-second brand film for Calm — the app for sleep, meditation, and relaxation. Serene, soft, atmospheric, story-driven." },
+    { "slug": "coinbase",  "url": "https://coinbase.com",    "prompt": "A 30-second brand film for Coinbase — the trusted place to buy and sell crypto. Modern, secure, story-driven." },
+    { "slug": "canva",     "url": "https://canva.com",       "prompt": "A 30-second brand film for Canva — design anything, publish anywhere. Colorful, accessible, creative, story-driven." },
+    { "slug": "doordash",  "url": "https://doordash.com",    "prompt": "A 30-second brand film for DoorDash — delivery from your favorite local spots. Energetic, local, marketplace, story-driven." },
+    { "slug": "ramp",      "url": "https://ramp.com",        "prompt": "A 30-second brand film for Ramp — corporate cards and spend management that save money. Crisp, efficient, B2B-fintech, story-driven." },
+    { "slug": "github",    "url": "https://github.com",      "prompt": "A 30-second brand film for GitHub — where the world builds software. Developer-grade, collaborative, story-driven." },
+    { "slug": "airtable",  "url": "https://airtable.com",    "prompt": "A 30-second brand film for Airtable — the platform to build apps on your data. Structured, flexible, modern, story-driven." },
+    { "slug": "glossier",  "url": "https://glossier.com",    "prompt": "A 30-second brand film for Glossier — beauty products inspired by real life. Minimal, warm, consumer-beauty, photo-forward, story-driven." },
+    { "slug": "anthropic", "url": "https://anthropic.com",   "prompt": "A 30-second brand film for Anthropic — AI research and products you can rely on. Thoughtful, clean, considered, story-driven." }
+  ]
+}

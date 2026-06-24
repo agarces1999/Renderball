@@ -7,7 +7,7 @@
  * imports, the old stripper left it, esbuild died, and the build still
  * reported ok:true.
  */
-import { stripCodeFence, verifyCompilable } from "./code-extraction";
+import { stripCodeFence, verifyCompilable, repairCompile } from "./code-extraction";
 
 // A small but genuinely valid Remotion component. esbuild's `transform` (used
 // by verifyCompilable) parses TSX without resolving imports, so the unresolved
@@ -114,6 +114,94 @@ check('preserves a leading "use client" directive', async () => {
 check("verifyCompilable returns an error for unparseable code", async () => {
   const err = await verifyCompilable("export const = ;;; <not valid");
   assert(err !== null, "broken code must report an error");
+});
+
+// ── repairCompile: pure loop logic, fully mocked (no model spend) ──────
+
+// 8. Already compiles → never calls fix, attempts 0, returns input verbatim.
+check("repairCompile: clean code short-circuits (0 attempts, no fix call)", async () => {
+  let fixCalls = 0;
+  const out = await repairCompile(
+    VALID_COMP,
+    async () => null, // verify: always compiles
+    async (c) => {
+      fixCalls++;
+      return c;
+    },
+  );
+  assert(out.attempts === 0, `expected 0 attempts, got ${out.attempts}`);
+  assert(fixCalls === 0, "fix must not be called when code already compiles");
+  assert(out.error === null, "error must be null");
+  assert(out.code === VALID_COMP, "clean code must pass through unchanged");
+});
+
+// 9. One real defect → fix repairs it → verify passes on attempt 1.
+check("repairCompile: error-then-fixed converges in 1 attempt", async () => {
+  let verifyCount = 0;
+  const out = await repairCompile(
+    "BROKEN",
+    async (c) => {
+      verifyCount++;
+      // First verify (the input) fails; after fix produced FIXED, it passes.
+      return c === "FIXED" ? null : "Expected \";\"";
+    },
+    async () => "FIXED",
+  );
+  assert(out.attempts === 1, `expected 1 attempt, got ${out.attempts}`);
+  assert(out.error === null, "must compile after the fix");
+  assert(out.code === "FIXED", "must return the repaired code");
+  assert(verifyCount === 2, `expected 2 verifies (initial + post-fix), got ${verifyCount}`);
+});
+
+// 10. Fixer keeps producing non-compiling output → stops at maxAttempts,
+//     returns the residual error (build then fails as it does today).
+check("repairCompile: never-compiles exhausts maxAttempts and returns error", async () => {
+  let fixCalls = 0;
+  const out = await repairCompile(
+    "BROKEN",
+    async () => "still broken", // verify: never passes
+    async (c) => {
+      fixCalls++;
+      return c + ".";
+    },
+    2,
+  );
+  assert(out.attempts === 2, `expected 2 attempts (the cap), got ${out.attempts}`);
+  assert(fixCalls === 2, `fix should be called exactly maxAttempts times, got ${fixCalls}`);
+  assert(out.error === "still broken", "residual error must surface for the caller to fail on");
+});
+
+// 11. Fixer gives up (returns null) → loop stops immediately, no re-verify
+//     of unchanged input, original error preserved.
+check("repairCompile: fix returning null stops the loop early", async () => {
+  let verifyCount = 0;
+  const out = await repairCompile(
+    "BROKEN",
+    async () => {
+      verifyCount++;
+      return "syntax error";
+    },
+    async () => null, // fixer can't help
+    5,
+  );
+  assert(out.attempts === 1, `expected 1 attempt before giving up, got ${out.attempts}`);
+  assert(verifyCount === 1, `must not re-verify after fix gives up, got ${verifyCount} verifies`);
+  assert(out.error === "syntax error", "original error must be preserved");
+  assert(out.code === "BROKEN", "code must be unchanged when fix gives up");
+});
+
+// 12. End-to-end with the REAL verifyCompilable: a stray '>' (the exact
+//     mechanical-failure class #2 targets) is repaired by a trivial fixer.
+check("repairCompile: real verifyCompilable + stray-char fixer", async () => {
+  const broken = VALID_COMP.replace("<h1>{title}</h1>", "<h1>{title}</h1>>");
+  assert((await verifyCompilable(broken)) !== null, "stray '>' must not compile");
+  const out = await repairCompile(
+    broken,
+    verifyCompilable,
+    async () => VALID_COMP, // a real fixer would re-emit the corrected file
+  );
+  assert(out.error === null, "must compile after repair");
+  assert(out.attempts === 1, `expected 1 attempt, got ${out.attempts}`);
 });
 
 await Promise.all(checks);

@@ -6,6 +6,9 @@ import {
   runVisionGate,
   parseVerdict,
   buildRubric,
+  buildBrandColorPrompt,
+  parseBrandFidelity,
+  checkBrandColorFidelity,
   type VisionJudge,
   type VisionVerdict,
 } from "./vision-gate";
@@ -84,6 +87,35 @@ await check("runVisionGate: a judge error on one scene is skipped (advisory)", a
 await check("buildRubric: names the brand background color when provided", () => {
   const r = buildRubric({ backgroundColor: "#440b12", fonts: ["Merriweather"] });
   assert(r.includes("#440b12") && /Merriweather/.test(r), "rubric should cite brand truth");
+});
+
+// ── brand-color fidelity backstop (text-only) ──────────────────────
+await check("parseBrandFidelity: explicit onBrand:false + issue → flags", () => {
+  const v = parseBrandFidelity('```json {"present":false,"onBrand":false,"issue":"green missing — palette is blue"} ```');
+  assert(!v.onBrand && /green missing/.test(v.issue), JSON.stringify(v));
+});
+await check("parseBrandFidelity: onBrand:true → passes", () => {
+  const v = parseBrandFidelity('{"present":true,"onBrand":true,"issue":""}');
+  assert(v.onBrand && v.issue === "", JSON.stringify(v));
+});
+await check("parseBrandFidelity: unparseable → defaults on-brand (no false alarm)", () => {
+  assert(parseBrandFidelity("sorry can't tell").onBrand, "must default on-brand");
+});
+await check("buildBrandColorPrompt: cites brand name + the palette, no image", () => {
+  const p = buildBrandColorPrompt("Robinhood", ["#0668e1", "#ffffff"]);
+  assert(/Robinhood/.test(p) && p.includes("#0668e1"), "prompt cites brand + palette");
+});
+await check("checkBrandColorFidelity: missing brand color → flags (injected)", async () => {
+  const v = await checkBrandColorFidelity({ name: "Robinhood" }, ["#0668e1", "#fff"], async () =>
+    '{"brandColor":"green #00d094","present":false,"onBrand":false,"issue":"Robinhood green missing — palette is blue"}',
+  );
+  assert(!v.onBrand && /green missing/.test(v.issue), JSON.stringify(v));
+});
+await check("checkBrandColorFidelity: no name or empty palette → on-brand, no call", async () => {
+  let called = false;
+  const v1 = await checkBrandColorFidelity({ name: undefined }, ["#fff"], async () => { called = true; return "{}"; });
+  const v2 = await checkBrandColorFidelity({ name: "X" }, [], async () => { called = true; return "{}"; });
+  assert(v1.onBrand && v2.onBrand && !called, "skips the call when there's nothing to check");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);
