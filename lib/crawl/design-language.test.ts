@@ -13,7 +13,7 @@ import {
   formatDesignLanguage,
 } from "./design-language";
 import { findBrandLogo } from "./find-logo-agent";
-import { MODELS } from "../anthropic";
+import { MODELS, VISION_MODEL } from "../anthropic";
 import type { Usage } from "../usage";
 
 let passed = 0;
@@ -96,19 +96,21 @@ const FAKE_USAGE = {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const fakeClient = (text: string): any =>
   ({ messages: { create: async () => ({ content: [{ type: "text", text }], usage: FAKE_USAGE }) } });
+// Native vision-call fake — returns the GLM-5V-Turbo shape ({ text, usage }).
+const fakeVision = (text: string) => async () => ({ text, usage: FAKE_USAGE });
 
-await check("analyzes a vision-safe image via the injected client", async () => {
+await check("analyzes a vision-safe image via the injected vision call", async () => {
   const dl = await analyzeDesignLanguage("https://x.com/shot.png", {
-    client: fakeClient('{"ethos":"editorial","typography":"serif display, tight","layout":"centered"}'),
+    visionCall: fakeVision('{"ethos":"editorial","typography":"serif display, tight","layout":"centered"}'),
   });
   assert(dl !== null && dl.ethos === "editorial", `got ${JSON.stringify(dl)}`);
 });
 
-await check("returns null for a non-vision-safe image URL (no client call)", async () => {
+await check("returns null for a non-vision-safe image URL (no vision call)", async () => {
   let called = false;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const c: any = { messages: { create: async () => { called = true; return { content: [] }; } } };
-  const dl = await analyzeDesignLanguage("https://x.com/page.svg", { client: c });
+  const dl = await analyzeDesignLanguage("https://x.com/page.svg", {
+    visionCall: async () => { called = true; return { text: "", usage: FAKE_USAGE }; },
+  });
   assert(dl === null && called === false, "svg is not vision-safe → null, no call");
 });
 
@@ -125,19 +127,19 @@ const collectUsage = (): { calls: { model: string; usage: Usage }[]; onUsage: (m
 await check("analyzeDesignLanguage reports its model + usage to the collector", async () => {
   const { calls, onUsage } = collectUsage();
   const dl = await analyzeDesignLanguage("https://x.com/shot.png", {
-    client: fakeClient('{"ethos":"editorial","typography":"serif","layout":"centered"}'),
+    visionCall: fakeVision('{"ethos":"editorial","typography":"serif","layout":"centered"}'),
     onUsage,
   });
   assert(dl !== null, "analysis should still succeed");
   assert(calls.length === 1, `expected 1 usage call, got ${calls.length}`);
-  assert(calls[0].model === MODELS.designLanguage, `model: ${calls[0].model}`);
+  assert(calls[0].model === VISION_MODEL, `model: ${calls[0].model}`);
   assert(calls[0].usage.input_tokens === 1200 && calls[0].usage.output_tokens === 80,
     `usage: ${JSON.stringify(calls[0].usage)}`);
 });
 
 await check("analyzeDesignLanguage: skipped image → collector never fires", async () => {
   const { calls, onUsage } = collectUsage();
-  await analyzeDesignLanguage("https://x.com/page.svg", { client: fakeClient("{}"), onUsage });
+  await analyzeDesignLanguage("https://x.com/page.svg", { visionCall: fakeVision("{}"), onUsage });
   assert(calls.length === 0, `no call → no usage, got ${calls.length}`);
 });
 
@@ -146,11 +148,11 @@ await check("extractDesignLanguage threads the collector end-to-end", async () =
   const f = fakeFetch({ status: "success", data: { screenshot: { url: "https://cdn.microlink.io/shot.png" } } });
   const out = await extractDesignLanguage("https://corgi.insure", undefined, {
     fetchImpl: f,
-    client: fakeClient('{"ethos":"playful","typography":"chunky","layout":"grid"}'),
+    visionCall: fakeVision('{"ethos":"playful","typography":"chunky","layout":"grid"}'),
     onUsage,
   });
   assert(out.design_language?.ethos === "playful", `got ${JSON.stringify(out)}`);
-  assert(calls.length === 1 && calls[0].model === MODELS.designLanguage,
+  assert(calls.length === 1 && calls[0].model === VISION_MODEL,
     `expected 1 designLanguage call, got ${JSON.stringify(calls.map((c) => c.model))}`);
 });
 

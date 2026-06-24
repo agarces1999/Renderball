@@ -20,7 +20,14 @@ Core rules to internalize:
   Geist Mono for timings and technical text.
 
 ## Model routing
-Model choice per stage lives in `lib/anthropic.ts` (`MODELS`). Every stage runs
-on Opus 4.8 (`claude-opus-4-8`) per the 2026-06-14 directive — script generation,
-build/regen coding agents, QA, logo discovery, design-language, and tweak. Change
-there, not inline.
+Model choice per stage lives in `lib/anthropic.ts` (`MODELS` + `VISION_MODEL`).
+The stack is **GLM-only** (z.ai) — this is the final call: every text/build stage
+(script generation, build/regen coding agents, QA, logo discovery, design-language,
+tweak) runs on `glm-5.2`, and all vision (the QA gate + crawl image reads) runs on
+`glm-5v-turbo` via z.ai's NATIVE endpoint. Do not propose Opus/Sonnet as a build or
+validation substrate. Change models there, not inline.
+
+Vision MUST go through the native paas endpoint (`lib/render/zai-vision.ts` →
+`callZaiVision`), NOT `getAnthropic()` — z.ai's Anthropic-compat endpoint silently
+drops image blocks, so any image sent through the SDK client is invisible to the
+model (it hallucinates). All crawl/QA image reads use `callZaiVision`.

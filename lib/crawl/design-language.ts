@@ -18,8 +18,9 @@
  * og:image, and a failed analysis just returns undefined (the crawl never fails
  * on this).
  */
-import { getAnthropic, MODELS } from "../anthropic";
-import { usageOf, type Usage } from "../usage";
+import { VISION_MODEL } from "../anthropic";
+import { callZaiVision } from "../render/zai-vision";
+import { type Usage } from "../usage";
 import type { DesignLanguage } from "../../app/new/schema";
 
 export type { DesignLanguage };
@@ -83,33 +84,28 @@ const ANALYZE_PROMPT =
 export const analyzeDesignLanguage = async (
   imageUrl: string | undefined,
   opts: {
-    client?: ReturnType<typeof getAnthropic>;
-    model?: string;
+    // The vision call, injected for tests. Default: native GLM-5V-Turbo. The old
+    // Anthropic-compat SDK path silently DROPPED the image → the model analyzed
+    // nothing (blind), so the design language was guessed, not seen. thinking is
+    // disabled: on a terse extraction task the model otherwise burns the whole
+    // token budget reasoning and returns empty content.
+    visionCall?: (
+      image: string,
+      prompt: string,
+    ) => Promise<{ text: string; usage: Usage }>;
     onUsage?: (model: string, usage: Usage) => void;
   } = {},
 ): Promise<DesignLanguage | null> => {
   if (!isVisionSafe(imageUrl)) return null;
   try {
-    const client = opts.client ?? getAnthropic();
-    const model = opts.model ?? MODELS.designLanguage;
-    const resp = await client.messages.create({
-      model,
-      max_tokens: 500,
-      messages: [
-        {
-          role: "user",
-          content: [
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            { type: "image", source: { type: "url", url: imageUrl } } as any,
-            { type: "text", text: ANALYZE_PROMPT },
-          ],
-        },
-      ],
-    });
-    opts.onUsage?.(model, usageOf(resp.usage));
-    const text = resp.content.find((c) => c.type === "text");
-    if (!text || text.type !== "text") return null;
-    return parseDesignLanguage(text.text);
+    const visionCall =
+      opts.visionCall ??
+      ((image, prompt) =>
+        callZaiVision(image, prompt, { disableThinking: true, maxTokens: 500 }));
+    const { text, usage } = await visionCall(imageUrl, ANALYZE_PROMPT);
+    opts.onUsage?.(VISION_MODEL, usage);
+    if (!text) return null;
+    return parseDesignLanguage(text);
   } catch {
     return null;
   }
@@ -173,8 +169,10 @@ export const extractDesignLanguage = async (
   ogImage: string | undefined,
   opts: {
     fetchImpl?: typeof fetch;
-    client?: ReturnType<typeof getAnthropic>;
-    model?: string;
+    visionCall?: (
+      image: string,
+      prompt: string,
+    ) => Promise<{ text: string; usage: Usage }>;
     onUsage?: (model: string, usage: Usage) => void;
   } = {},
 ): Promise<{ site_screenshot?: string; design_language?: DesignLanguage }> => {
