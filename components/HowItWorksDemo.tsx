@@ -133,7 +133,7 @@ function Stage({ stepKey, reduced }: { stepKey: string; reduced: boolean }) {
 
 // ── Stage 1 · Brief (the user's input) ───────────────────────────────
 const BRIEF_TEXT =
-  "A 45-second launch video for Renderball — show how a brief becomes a finished animated video, on-brand, end on “Make your first minute free.”";
+  "A 45-second launch video for Renderball — show how a brief becomes a finished animated video, on-brand, end on “Start your subscription.”";
 
 function BriefStage({ reduced }: { reduced: boolean }) {
   const [typed, setTyped] = useState(reduced ? BRIEF_TEXT.length : 0);
@@ -251,7 +251,7 @@ const SCENES = [
   { t: "0:00", label: "The crystal ball opens", chips: ["Cabinet 88pt", "#10141C", "typewriter"] },
   { t: "0:08", label: "Brief → script → render", chips: ["3 panels", "#00C28A", "slide-up"] },
   { t: "0:22", label: "On-brand, every frame", chips: ["device UI", "spring", "stagger"] },
-  { t: "0:38", label: "Make your first minute free", chips: ["CTA", "pulse", "orb out"] },
+  { t: "0:38", label: "Start your subscription — CTA", chips: ["CTA", "pulse", "orb out"] },
 ];
 
 function ScriptStage() {
@@ -468,7 +468,7 @@ function ReadyStage() {
             className="mt-3.5 inline-block rounded-full bg-accent px-4 py-1.5 text-[12px] font-semibold text-accent-ink shadow-[0_8px_28px_-8px_rgba(0,194,138,0.7)]"
             style={{ animation: "rb-pop 0.5s ease-out both", animationDelay: "0.95s" }}
           >
-            Make your first minute free →
+            Start for $49.99/mo →
           </div>
         </div>
         <span className="absolute bottom-3 right-4 font-mono text-[10px] text-white/35">

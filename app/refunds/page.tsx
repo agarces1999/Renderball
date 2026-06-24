@@ -8,34 +8,31 @@ export const metadata: Metadata = {
 export default function RefundsPage() {
   return (
     <LegalShell title="Refund Policy" updated="June 2026">
-      <Clause heading="1. Free first minute">
+      <Clause heading="1. Subscription">
         <p>
-          Your first minute of video is free and requires no card, so you can try
-          Renderball and see the output quality before you pay anything.
+          Renderball is offered as a single monthly subscription at $49.99 per
+          month. The subscription renews automatically until you cancel.
         </p>
       </Clause>
-      <Clause heading="2. Failed renders">
+      <Clause heading="2. Cancel anytime">
+        <p>
+          You can cancel from your billing settings at any time. Cancellation
+          takes effect at the end of the current billing period and stops all
+          future charges. You keep access through the end of the period you
+          already paid for.
+        </p>
+      </Clause>
+      <Clause heading="3. Failed renders">
         <p>
           You approve the script before any video is rendered, so you only pay
           for work you have already agreed to. If a render fails for a technical
-          reason on our side, we will re-render it at no extra cost or refund the
-          amount charged for that video.
+          reason on our side, we will re-render it at no extra cost.
         </p>
       </Clause>
-      <Clause heading="3. Pay-as-you-go and credits">
+      <Clause heading="4. Dissatisfaction within 14 days">
         <p>
-          Per-minute charges and credit packs are for delivered renders. Unused
-          credits remain on your account. If you were charged in error, contact
-          us and we will make it right.
-        </p>
-      </Clause>
-      <Clause heading="4. Subscriptions">
-        <p>
-          Subscriptions renew automatically and can be cancelled at any time from
-          your account; cancellation takes effect at the end of the current
-          billing period and stops future charges. If you are dissatisfied with a
-          subscription, contact us within 14 days of a charge and we will review
-          your request in good faith.
+          If you are dissatisfied with the Service, contact us within 14 days of
+          a subscription charge and we will review your request in good faith.
         </p>
       </Clause>
       <Clause heading="5. How to request a refund">

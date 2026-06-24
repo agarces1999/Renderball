@@ -92,7 +92,7 @@ function Hero() {
         </p>
         <HeroPrompt />
         <div className="mt-6 flex flex-wrap items-center justify-center gap-x-4 gap-y-1 font-mono text-[11px] text-faint">
-          <span>Free first minute · 1080p · no watermark</span>
+          <span>$49.99/mo · 1080p · no watermark</span>
           <a href="#how" className="underline transition-colors hover:text-muted">
             See how it works
           </a>
@@ -214,106 +214,67 @@ function WhyAnimationRich() {
 }
 
 function Pricing() {
-  const tiers = [
-    {
-      name: "Free",
-      price: "$0",
-      unit: "first minute",
-      points: [
-        "1 minute of 1080p video",
-        "No watermark, ever",
-        "Email or Google sign-in",
-      ],
-      cta: "Start free",
-      featured: false,
-    },
-    {
-      name: "Pay as you go",
-      price: "$9.99",
-      unit: "per minute",
-      points: [
-        "Full 1080p, frame-checked",
-        "Unlimited script revisions",
-        "First minute counts as a credit",
-      ],
-      cta: "Get started",
-      featured: false,
-    },
-    {
-      name: "Subscription",
-      price: "$29.99",
-      unit: "per month",
-      points: [
-        "5 minutes of video each month",
-        "Priority render queue",
-        "Brand kit storage + script history",
-      ],
-      cta: "Get started",
-      featured: true,
-    },
+  const points = [
+    "Unlimited videos, every month",
+    "1080p, no watermark, your license",
+    "AI voiceover included",
+    "Brand kit storage + script history",
+    "Priority render queue",
+    "Cancel anytime",
   ];
   return (
     <section id="pricing" className="border-t border-hairline bg-surface">
       <div className="mx-auto max-w-6xl px-6 py-20">
-        <h2 className="mb-2 font-display text-[clamp(24px,3.4vw,32px)] font-semibold tracking-tight text-ink">
-          Pricing
+        <h2 className="mb-2 text-center font-display text-[clamp(24px,3.4vw,32px)] font-semibold tracking-tight text-ink">
+          One plan. Everything included.
         </h2>
-        <p className="mb-12 max-w-[52ch] text-[15px] leading-relaxed text-muted">
-          Every tier: full 1080p, AI voiceover included, no watermark. Your
-          license, your assets.
+        <p className="mx-auto mb-12 max-w-[52ch] text-center text-[15px] leading-relaxed text-muted">
+          Full 1080p, no watermark, AI voiceover included. Your license, your
+          assets.
         </p>
-        <div className="grid gap-5 md:grid-cols-3">
-          {tiers.map((t) => (
-            <div
-              key={t.name}
-              className={`flex flex-col rounded-lg border bg-canvas p-6 ${
-                t.featured
-                  ? "border-accent-line shadow-[0_18px_40px_-24px_rgba(0,194,138,0.4)]"
-                  : "border-hairline"
-              }`}
-            >
-              <div className="mb-1 flex items-center gap-2">
-                <h3 className="text-[15px] font-semibold text-ink">{t.name}</h3>
-                {t.featured && (
-                  <span className="rounded-full bg-accent-soft px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.1em] text-accent-text">
-                    Popular
-                  </span>
-                )}
-              </div>
-              <div className="mb-5 flex items-baseline gap-1.5">
-                <span className="font-display text-[34px] font-semibold tracking-tight text-ink">
-                  {t.price}
-                </span>
-                <span className="font-mono text-[12px] text-muted">
-                  {t.unit}
-                </span>
-              </div>
-              <ul className="mb-7 flex-1 space-y-2.5">
-                {t.points.map((p) => (
-                  <li
-                    key={p}
-                    className="flex items-start gap-2.5 text-[14px] text-ink-soft"
-                  >
-                    <span
-                      className="mt-1.5 inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-accent"
-                      aria-hidden
-                    />
-                    {p}
-                  </li>
-                ))}
-              </ul>
-              <Link
-                href="/new"
-                className={`rounded-md px-4 py-2.5 text-center text-[14px] font-semibold transition-all hover:brightness-110 ${
-                  t.featured
-                    ? "bg-accent text-accent-ink"
-                    : "border border-hairline-strong bg-surface text-ink hover:border-ink/30"
-                }`}
-              >
-                {t.cta}
-              </Link>
+        <div className="mx-auto max-w-md">
+          <div className="flex flex-col rounded-lg border border-accent-line bg-canvas p-7 shadow-[0_24px_60px_-30px_rgba(0,194,138,0.5)]">
+            <div className="mb-1 flex items-center justify-between gap-2">
+              <h3 className="text-[15px] font-semibold text-ink">Renderball</h3>
+              <span className="rounded-full bg-accent-soft px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.1em] text-accent-text">
+                Subscription
+              </span>
             </div>
-          ))}
+            <div className="mb-1 flex items-baseline gap-1.5">
+              <span className="font-display text-[42px] font-semibold tracking-tight text-ink">
+                $49.99
+              </span>
+              <span className="font-mono text-[12px] text-muted">
+                per month
+              </span>
+            </div>
+            <p className="mb-6 text-[13px] text-muted">
+              Billed monthly. Cancel anytime.
+            </p>
+            <ul className="mb-7 flex-1 space-y-2.5">
+              {points.map((p) => (
+                <li
+                  key={p}
+                  className="flex items-start gap-2.5 text-[14px] text-ink-soft"
+                >
+                  <span
+                    className="mt-1.5 inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-accent"
+                    aria-hidden
+                  />
+                  {p}
+                </li>
+              ))}
+            </ul>
+            <Link
+              href="/new"
+              className="rounded-md bg-accent px-4 py-3 text-center text-[14.5px] font-semibold text-accent-ink transition-all hover:brightness-110"
+            >
+              Start your subscription
+            </Link>
+            <p className="mt-3 text-center font-mono text-[11px] text-faint">
+              Secure checkout via our payment processor
+            </p>
+          </div>
         </div>
       </div>
     </section>
@@ -328,7 +289,7 @@ function Faq() {
     },
     {
       q: "Will my video have a watermark?",
-      a: "Never. Free, paid, or subscription — every video is yours, clean.",
+      a: "Never. Every video is yours, clean — no watermark, your license.",
     },
     {
       q: "Can I use my own logo, fonts, and brand colors?",
@@ -372,16 +333,16 @@ function FooterCta() {
       <div className="mx-auto max-w-6xl px-6 py-20 text-center">
         <span className="orb mx-auto mb-7 block h-12 w-12" aria-hidden />
         <h2 className="mx-auto max-w-[20ch] font-display text-[clamp(26px,4vw,40px)] font-semibold leading-[1.06] tracking-tight text-ink">
-          Make your first minute
+          Make videos people remember
         </h2>
         <p className="mx-auto mt-4 max-w-[40ch] text-[15px] leading-relaxed text-muted">
-          Free. No card. Premium output. Your brand.
+          One subscription. Unlimited videos. Your brand, every frame.
         </p>
         <Link
           href="/new"
           className="mt-8 inline-block rounded-md bg-accent px-7 py-3 text-[15px] font-semibold text-accent-ink transition-all hover:brightness-110"
         >
-          Make a free minute
+          Start for $49.99/mo
         </Link>
       </div>
     </section>
