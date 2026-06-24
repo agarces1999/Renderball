@@ -113,6 +113,19 @@ check("Haiku base rate: 1M in = $1, 1M out = $5", () => {
   ok(near(costUsd("claude-haiku-4-5", U(0, 1_000_000)), 5));
 });
 
+// z.ai GLM — the models the live pipeline actually runs on. These must NOT fall
+// through to the Sonnet fallback (the bug this locks against): MODELS.* build/QA
+// stages bill on glm-5.2, the vision gate on glm-5v-turbo.
+check("GLM-5.2 base rate: 1M in = $1.4, 1M out = $4.4 (not Sonnet fallback)", () => {
+  ok(near(costUsd("glm-5.2", U(1_000_000, 0)), 1.4));
+  ok(near(costUsd("glm-5.2", U(0, 1_000_000)), 4.4));
+});
+
+check("GLM-5V-Turbo base rate: 1M in = $1.2, 1M out = $4.0 (not Sonnet fallback)", () => {
+  ok(near(costUsd("glm-5v-turbo", U(1_000_000, 0)), 1.2));
+  ok(near(costUsd("glm-5v-turbo", U(0, 1_000_000)), 4.0));
+});
+
 check("cache READ bills at 10% of input rate (Opus)", () => {
   // 1M cache-read tokens on Opus = 0.10 × $5 = $0.50
   ok(near(costUsd("claude-opus-4-8", U(0, 0, 0, 1_000_000)), 0.5));

@@ -54,14 +54,33 @@ export const addUsage = (a: Usage, b: Usage): Usage => ({
   cache_read_input_tokens: a.cache_read_input_tokens + b.cache_read_input_tokens,
 });
 
-/** USD per 1M tokens — base input/output rate per model (Anthropic list price). */
+/**
+ * USD per 1M tokens — base input/output rate per model.
+ *
+ * GLM rows are z.ai list price (docs.z.ai/guides/overview/pricing, fetched
+ * 2026-06-24); Claude rows are Anthropic list price. The live pipeline runs
+ * entirely on z.ai GLM — `glm-5.2` for every text/build/QA stage (MODELS.* in
+ * lib/anthropic.ts) and `glm-5v-turbo` for the vision gate (VISION_MODEL) — so
+ * those two rows price all real spend. Before this they were absent and fell
+ * back to the Sonnet rate ($3/$15), which OVERSTATED GLM cost ~2-3x in
+ * .data/usage.jsonl and the build report. Claude rows are kept for reference /
+ * any future re-route.
+ */
 const RATES: Record<string, { input: number; output: number }> = {
+  // z.ai GLM — the live build substrate
+  "glm-5.2": { input: 1.4, output: 4.4 }, // all text/build/QA stages (MODELS.*)
+  "glm-5v-turbo": { input: 1.2, output: 4.0 }, // vision gate (VISION_MODEL)
+  // Anthropic — reference / fallback
   "claude-fable-5": { input: 10, output: 50 },
   "claude-opus-4-8": { input: 5, output: 25 },
   "claude-sonnet-4-5": { input: 3, output: 15 },
   "claude-haiku-4-5": { input: 1, output: 5 },
 };
-// Prompt-cache pricing, as multiples of the base input rate.
+// Prompt-cache pricing, as multiples of the base input rate. These are
+// Anthropic-calibrated (write 1.25x, read 0.10x). They are an APPROXIMATION for
+// GLM — z.ai's cache-read discount is ~0.20x and its write premium differs —
+// but the imprecision is small: the vision path reports zero cache tokens, and
+// cache is a minor fraction of build spend. Revisit if GLM cache cost matters.
 const CACHE_WRITE_MULT = 1.25;
 const CACHE_READ_MULT = 0.1;
 
