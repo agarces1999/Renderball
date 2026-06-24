@@ -1,3 +1,4 @@
+import { cache } from "react";
 import { auth, currentUser } from "@clerk/nextjs/server";
 import type { User } from "@prisma/client";
 import { prisma } from "./db";
@@ -10,8 +11,12 @@ import { prisma } from "./db";
  * time we see a Clerk subject — no webhook required for creation. The fast path
  * (user already exists) is a single indexed read on `clerkId`; only first sight
  * does the network call to Clerk for the email.
+ *
+ * Wrapped in React `cache()` so repeat calls within ONE request are deduped — a
+ * page render typically resolves the user twice (the page body + AppShellServer),
+ * which without this fires the Clerk `auth()` + Prisma read twice.
  */
-export async function getCurrentUser(): Promise<User | null> {
+export const getCurrentUser = cache(async (): Promise<User | null> => {
   const { userId: clerkId } = await auth();
   if (!clerkId) return null;
 
@@ -33,7 +38,7 @@ export async function getCurrentUser(): Promise<User | null> {
     update: { email },
     create: { clerkId, email },
   });
-}
+});
 
 /**
  * Owner id used by the dev-only routes (app/api/dev/*), which run without a
