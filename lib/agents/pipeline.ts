@@ -1,7 +1,16 @@
-import { getAnthropic, MODELS } from "../anthropic";
+import { getAnthropic, MODELS, BUILD_REASONING, BUILD_MAX_TOKENS } from "../anthropic";
 import { DESIGN_AGENT_SYSTEM_PROMPT } from "./prompts/design-agent";
 import { ANIMATION_AGENT_SYSTEM_PROMPT } from "./prompts/animation-agent";
-import { stripCodeFence, verifyCompilable } from "./code-extraction";
+import { stripCodeFence, verifyCompilable, repairCompile } from "./code-extraction";
+import { extractSection, replaceSection } from "./section-splice";
+import {
+  densityFailuresByScene,
+  overflowFailuresByScene,
+  unboundFailuresByScene,
+  fillFailuresByScene,
+  groupByScene,
+  sectionsAreSpliceable,
+} from "./scene-scope";
 import {
   contrastRatio,
   MIN_CONTRAST_RATIO,
@@ -20,7 +29,6 @@ import {
   assessThroughlinePresence,
   findRedundantCaptions,
   hasCornerLogoSuppression,
-  assessVerticalFill,
   findUndersizedText,
   findUndwelledText,
   countAccentBorders,
@@ -40,7 +48,7 @@ import { makeFontFetcher, inlineFontFaces } from "../render/font-inline";
 import { makeImageProbe, repairBrokenImages } from "../render/image-integrity";
 import { searchPexelsPhotos, searchPexelsVideos } from "../assets/sources/pexels";
 import type { AssetSearchEntry } from "../assets/types";
-import { type Usage, usageOf, addUsage } from "../usage";
+import { type Usage, usageOf, addUsage, EMPTY_USAGE } from "../usage";
 import type { Script } from "../../src/schema";
 import type {
   AgentBrandExtract,
@@ -323,6 +331,289 @@ const formatAnthropicError = (err: unknown): string => {
 const COMPOSITION_REQUEST_TIMEOUT_MS = 30 * 60 * 1000;
 
 /**
+ * One surgical compile-fix round-trip. A compile error in generated code (a
+ * stray `>`, an unclosed tag, a truncated expression) is a MECHANICAL defect,
+ * not a design problem — so instead of failing the build or paying a full
+ * creative regeneration (~17 min on the slow build models), hand the model the
+ * broken file + the EXACT esbuild error and ask for the corrected file back.
+ *
+ * Deliberately thinking-OFF: this is transcribe-and-patch, not composition.
+ * There's nothing to reason about — find the one broken token, fix it, re-emit
+ * verbatim. Omitting `thinking` keeps it fast (~10-30s) and cheap, and works on
+ * both Opus 4.8 and the GLM interim model (an explicit {type:"disabled"} 400s
+ * on some models, so we omit the param entirely). Streamed for parity with the
+ * other Composition calls (a full file can exceed the SDK's 10-min sync ceiling).
+ *
+ * Returns the stripped corrected code (null if the call failed or produced no
+ * usable file) and the call's usage — billed by the caller regardless of
+ * outcome, since the tokens were spent either way. Paired with `repairCompile`
+ * (code-extraction.ts), which owns the verify→fix→re-verify loop + attempt cap.
+ */
+const surgicalCompileFix = async (
+  client: ReturnType<typeof getAnthropic>,
+  model: string,
+  code: string,
+  error: string,
+): Promise<{ code: string | null; usage: Usage }> => {
+  const userMessage = [
+    `The TSX file below fails to compile. Fix ONLY the syntax error and re-emit the COMPLETE file.`,
+    ``,
+    `## Compiler error`,
+    error,
+    ``,
+    `## File`,
+    "```tsx",
+    code,
+    "```",
+    ``,
+    `Output the complete corrected file — same imports, same components, same copy, same styling, same layout. Every line MUST be identical EXCEPT the minimal change that fixes the compile error. Do NOT redesign, reformat, rename, or add/remove features. Output only the file, no commentary.`,
+  ].join("\n");
+
+  try {
+    const resp = await client.messages
+      .stream(
+        {
+          model,
+          max_tokens: BUILD_MAX_TOKENS,
+          // thinking omitted on purpose — see the doc comment.
+          messages: [{ role: "user", content: userMessage }],
+        },
+        { timeout: COMPOSITION_REQUEST_TIMEOUT_MS },
+      )
+      .finalMessage();
+    const text = resp.content.find((c) => c.type === "text");
+    const fixed =
+      text && text.type === "text" ? stripCodeFence(text.text.trim()) : null;
+    // Guard against a non-file response (refusal / prose) slipping through.
+    const usable =
+      fixed && fixed.includes("import") && fixed.includes("export")
+        ? fixed
+        : null;
+    return { code: usable, usage: usageOf(resp.usage) };
+  } catch (err) {
+    console.warn(
+      "[pipeline] surgicalCompileFix call failed:",
+      err instanceof Error ? err.message : err,
+    );
+    return { code: null, usage: EMPTY_USAGE };
+  }
+};
+
+/**
+ * Surgical RENDER-error fix for ONE section. The composition PARSES (it passed
+ * the compile gate) but a scene THROWS at render — almost always an unguarded
+ * access to an OPTIONAL content field (content fields are per-scene, so a scene
+ * without a `cta` crashes on `c.cta.primary`). Hand the model just that section
+ * + the runtime error and ask for the crash-safe version of the SAME section,
+ * re-emitting only it. thinking-off (this is a mechanical guard fix). Returns
+ * the corrected section block (or null) + usage. Paired with section-splice so
+ * the rest of the composition is byte-preserved.
+ */
+const surgicalRenderFix = async (
+  client: ReturnType<typeof getAnthropic>,
+  model: string,
+  sectionCode: string,
+  sceneIndex: number,
+  errorMsg: string,
+): Promise<{ block: string | null; usage: Usage }> => {
+  const sectionName = `Section${sceneIndex}`;
+  const userMessage = [
+    `The React component below (\`${sectionName}\` from a Remotion composition) THROWS at render with:`,
+    ``,
+    errorMsg,
+    ``,
+    `This is a runtime crash, not a syntax error — almost always an UNGUARDED access to an OPTIONAL field. A scene's \`content\` may omit any field, so \`c.cta.primary\`, \`c.bullets.map(...)\`, \`c.meta[0].value\` etc. throw when that field is absent. Make every optional access crash-safe: optional-chain it (\`c.cta?.primary\`) and/or wrap the element in a guard (\`{c.cta?.primary && ( … )}\`). Do NOT remove content that IS present; only make access safe.`,
+    ``,
+    `## ${sectionName}`,
+    "```tsx",
+    sectionCode,
+    "```",
+    ``,
+    `Re-emit ONLY the corrected \`export const ${sectionName} = …\` component — same design, copy, layout, and animations, just crash-safe. No other sections, no imports, no prose.`,
+  ].join("\n");
+
+  try {
+    const resp = await client.messages
+      .stream(
+        {
+          model,
+          max_tokens: BUILD_MAX_TOKENS,
+          // thinking-off: a guard fix is mechanical, not a design decision.
+          messages: [{ role: "user", content: userMessage }],
+        },
+        { timeout: COMPOSITION_REQUEST_TIMEOUT_MS },
+      )
+      .finalMessage();
+    const text = resp.content.find((c) => c.type === "text");
+    const raw = text && text.type === "text" ? stripCodeFence(text.text.trim()) : "";
+    // Isolate the one section even if the model wraps prose/extra around it.
+    const block = raw ? extractSection(raw, sceneIndex) : null;
+    return { block, usage: usageOf(resp.usage) };
+  } catch (err) {
+    console.warn(
+      `[pipeline] surgicalRenderFix(${sectionName}) failed:`,
+      err instanceof Error ? err.message : err,
+    );
+    return { block: null, usage: EMPTY_USAGE };
+  }
+};
+
+/**
+ * Render-error auto-repair (the SSR-gate analogue of #2's compile repair).
+ * Given the full composition + the per-scene render errors the SSR gate found,
+ * surgically fix each throwing section (guard the undefined access) and splice
+ * it back. Only per-scene errors (scene ≥ 0) are section-localizable; file-level
+ * errors (scene -1: missing/compile/eval) are left for the caller to hard-fail.
+ * Returns the (possibly) repaired code, the scenes it touched, and usage. The
+ * caller re-runs the SSR gate to confirm — a fix that didn't take just fails
+ * the gate again, exactly as today, so this can only help.
+ */
+export const repairSceneRenderErrors = async (
+  fullCode: string,
+  errors: { scene: number; error: string }[],
+): Promise<{ code: string; repaired: number[]; usage: Usage }> => {
+  let client: ReturnType<typeof getAnthropic>;
+  try {
+    client = getAnthropic();
+  } catch {
+    return { code: fullCode, repaired: [], usage: EMPTY_USAGE };
+  }
+  let code = fullCode;
+  let usage = EMPTY_USAGE;
+  const repaired: number[] = [];
+  // One fix attempt per distinct failing scene (deduped). Bounded by scene count.
+  const scenes = [...new Set(errors.filter((e) => e.scene >= 0).map((e) => e.scene))];
+  for (const scene of scenes) {
+    const block = extractSection(code, scene);
+    if (!block) continue;
+    const err = errors.find((e) => e.scene === scene)?.error ?? "render error";
+    const fix = await surgicalRenderFix(client, MODELS.codingAgentBuild, block, scene, err);
+    usage = addUsage(usage, fix.usage); // billed either way
+    if (!fix.block) continue;
+    const spliced = replaceSection(code, scene, fix.block);
+    if (spliced) {
+      code = spliced;
+      repaired.push(scene);
+    }
+  }
+  return { code, repaired, usage };
+};
+
+/**
+ * Scoped per-scene design regen (#1). Regenerate ONLY the `Section{index}`
+ * component of an existing (static) composition, fixing the localized quality-
+ * gate failures handed in via `fixMessages`, and return just that section's
+ * block for the caller to splice back in.
+ *
+ * This is the cost lever behind per-scene retries: a whole-composition retry
+ * re-emits every scene (output tokens — the dominant build cost — scale with
+ * the whole file), whereas this asks the model to emit ONE section. Several of
+ * these run in parallel, so wall-clock is one section's generation, not N.
+ * The model gets the full file as READ-ONLY context (so the regenerated scene
+ * stays consistent with the shared fonts/palette/chrome) but is told to output
+ * only the one export; `extractSection` then isolates that block even if the
+ * model over-emits. Returns null when the call fails or the section can't be
+ * recovered — the caller falls back to a whole-composition retry.
+ */
+const regenerateSectionBlock = async (
+  client: ReturnType<typeof getAnthropic>,
+  model: string,
+  input: BuildInput,
+  baseCode: string,
+  sceneIndex: number,
+  fixMessages: string[],
+  mode: "design" | "animation" = "design",
+): Promise<{ block: string | null; usage: Usage }> => {
+  const scene = input.script.scenes[sceneIndex];
+  if (!scene) return { block: null, usage: EMPTY_USAGE };
+  const sectionName = `Section${sceneIndex}`;
+  const dims = dimensionsForScript(input.script);
+  const aspect = input.script.config?.aspect_ratio ?? "16:9";
+  const viewingContext: "mobile" | "desktop" =
+    aspect === "16:9" ? "desktop" : "mobile";
+
+  const userMessage =
+    mode === "animation"
+      ? [
+          `You are fixing the MOTION of ONE section in an existing animated Composition.tsx. Re-emit ONLY the \`export const ${sectionName}\` component with the animation issues below fixed — keep its design, copy, and layout exactly as-is; change only CSS @keyframes / animation / animation-delay / transition.`,
+          ``,
+          `## Animation issues to fix in ${sectionName}`,
+          ...fixMessages.map((m) => `- ${m}`),
+          ``,
+          `## Scene brief`,
+          `${sectionName} runs for ${roundTo(sceneDurationSeconds(scene), 2)}s. Distribute finite (forwards) beats across the timeline — the latest must land at ≥60% of the duration. Text entrances stay fast (headline ≤0.4s, body ≤0.5s); late beats are decorative.`,
+          scene.visual_concept ? `Animations list (from visual_concept):\n${scene.visual_concept}` : "",
+          ``,
+          `## Full Composition.tsx (READ-ONLY context — do not re-emit any of it except ${sectionName})`,
+          "```tsx",
+          baseCode,
+          "```",
+          ``,
+          `Output ONLY the corrected \`export const ${sectionName} = …\` component (with its local <style>/@keyframes if it has them). No imports, no module consts, no other sections, no prose.`,
+        ]
+      : [
+          `You are fixing ONE section of an existing static Composition.tsx. Re-emit ONLY the \`export const ${sectionName}\` component with the issues below fixed — nothing else.`,
+          ``,
+          `## Issues to fix in ${sectionName}`,
+          ...fixMessages.map((m) => `- ${m}`),
+          ``,
+          `## Scene brief`,
+          `Label: "${scene.label}"`,
+          scene.description ? `Story role: ${scene.description}` : "",
+          scene.visual_concept ? `Visual concept:\n> ${scene.visual_concept}` : "",
+          ``,
+          `## Canvas`,
+          `- Aspect ratio: ${aspect} (${viewingContext}), surface ${dims.width}×${dims.height}`,
+          `- Keep text sizes + fontFamily consistent with the rest of the file; reuse the file's existing module consts (PALETTE, FONT_*, keyframes) and components — do NOT redefine them.`,
+          ``,
+          `## Full Composition.tsx (READ-ONLY context — do not re-emit any of it except ${sectionName})`,
+          "```tsx",
+          baseCode,
+          "```",
+          ``,
+          `Output ONLY the corrected \`export const ${sectionName} = …\` component. No imports, no module consts, no other sections, no prose.`,
+        ];
+  const content = userMessage.filter((l) => l.length > 0).join("\n");
+
+  try {
+    const resp = await client.messages
+      .stream(
+        {
+          model,
+          max_tokens: BUILD_MAX_TOKENS,
+          // Reasoning is a real design/motion decision even for a scoped fix —
+          // the win is the small OUTPUT (one section) + scene isolation.
+          ...BUILD_REASONING, // GLM thinking:enabled + reasoning_effort (lib/anthropic)
+          system: [
+            {
+              type: "text",
+              text:
+                mode === "animation"
+                  ? ANIMATION_AGENT_SYSTEM_PROMPT
+                  : DESIGN_AGENT_SYSTEM_PROMPT,
+              cache_control: { type: "ephemeral" },
+            },
+          ],
+          messages: [{ role: "user", content }],
+        },
+        { timeout: COMPOSITION_REQUEST_TIMEOUT_MS },
+      )
+      .finalMessage();
+    const text = resp.content.find((c) => c.type === "text");
+    const raw = text && text.type === "text" ? stripCodeFence(text.text.trim()) : "";
+    // Isolate the one section even if the model emitted extra context.
+    const block = raw ? extractSection(raw, sceneIndex) : null;
+    return { block, usage: usageOf(resp.usage) };
+  } catch (err) {
+    console.warn(
+      `[pipeline] regenerateSectionBlock(${sectionName}, ${mode}) failed:`,
+      err instanceof Error ? err.message : err,
+    );
+    return { block: null, usage: EMPTY_USAGE };
+  }
+};
+
+/**
  * Re-run the Design + Choreography passes for a SINGLE scene without
  * touching the others. Used by the preview-page "Regenerate scene N"
  * button — the user iterates on one moment at a time at ~1/Nth the
@@ -412,8 +703,11 @@ export const regenerateScene = async (
         // SDK's 10-minute non-streaming threshold. finalMessage() returns
         // the same Message shape as messages.create().
         model: MODELS.codingAgent,
-        max_tokens: 64000,
-        thinking: { type: "adaptive" },
+        max_tokens: BUILD_MAX_TOKENS,
+        // GLM (z.ai) reasoning control — NOT Anthropic's adaptive (which z.ai
+        // ignores → empty/truncated output). thinking.type ∈ enabled|disabled;
+        // depth via reasoning_effort. "max" per z.ai's coding recommendation.
+        ...BUILD_REASONING, // GLM thinking:enabled + reasoning_effort (lib/anthropic)
         system: [
           {
             type: "text",
@@ -469,8 +763,11 @@ export const regenerateScene = async (
     animationResponse = await client.messages.stream(
       {
         model: MODELS.codingAgent,
-        max_tokens: 64000,
-        thinking: { type: "adaptive" },
+        max_tokens: BUILD_MAX_TOKENS,
+        // GLM (z.ai) reasoning control — NOT Anthropic's adaptive (which z.ai
+        // ignores → empty/truncated output). thinking.type ∈ enabled|disabled;
+        // depth via reasoning_effort. "max" per z.ai's coding recommendation.
+        ...BUILD_REASONING, // GLM thinking:enabled + reasoning_effort (lib/anthropic)
         system: [
           {
             type: "text",
@@ -500,7 +797,7 @@ export const regenerateScene = async (
       error: "Animation Agent returned no text content.",
     };
   }
-  const finalCode = stripCodeFence(animationText.text.trim());
+  let finalCode = stripCodeFence(animationText.text.trim());
 
   if (!finalCode.includes("import") || !finalCode.includes("export")) {
     return {
@@ -508,6 +805,33 @@ export const regenerateScene = async (
       stage: "animation",
       error: `Animation Agent output doesn't look like a TS file. First 300 chars: ${finalCode.slice(0, 300)}`,
     };
+  }
+
+  // Surgical compile-repair (#2) — same as the full build path. A mechanical
+  // syntax defect gets a fast, thinking-off "fix only this" patch + re-verify
+  // (≤2 attempts) before the hard gate below fails the regen. Run on the raw
+  // composition, before logo/image/font finalize, so the fixer never reproduces
+  // the inlined font data: URLs.
+  let regenUsage = addUsage(
+    usageOf(designResponse.usage),
+    usageOf(animationResponse.usage),
+  );
+  const regenCompileRepair = await repairCompile(
+    finalCode,
+    verifyCompilable,
+    async (c, e) => {
+      const r = await surgicalCompileFix(client, MODELS.codingAgent, c, e);
+      regenUsage = addUsage(regenUsage, r.usage); // billed either way
+      return r.code;
+    },
+  );
+  finalCode = regenCompileRepair.code;
+  if (regenCompileRepair.attempts > 0) {
+    console.warn(
+      `[pipeline] regen surgical compile-repair: ${regenCompileRepair.attempts} attempt(s), ${
+        regenCompileRepair.error ? "still failing" : "fixed"
+      }`,
+    );
   }
 
   // Substitute the brand-logo sentinel with the real logo URL. When the logo is
@@ -566,7 +890,7 @@ export const regenerateScene = async (
     code: finalCodeOut,
     designCode: designCodeOut,
     warnings,
-    usage: addUsage(usageOf(designResponse.usage), usageOf(animationResponse.usage)),
+    usage: regenUsage,
   };
 };
 
@@ -727,6 +1051,8 @@ export const buildAnimatedSections = async (
     // results back, and continue until it emits the final composition text.
     const convo = [...messages];
     const MAX_TOOL_ROUNDS = 8;
+    let nudges = 0;
+    const MAX_NUDGES = 2;
     for (let round = 0; round <= MAX_TOOL_ROUNDS; round++) {
       const withTools = round < MAX_TOOL_ROUNDS; // last round drops tools to force text
       const resp = await client.messages.stream(
@@ -734,11 +1060,11 @@ export const buildAnimatedSections = async (
           // Design Pass 1 AND its retry (same runDesign helper). Opus for
           // composition taste + density on the commit-to-MP4 path.
           model: MODELS.codingAgentBuild,
-          max_tokens: 64000,
-          // Adaptive thinking: the design pass juggles ~15 simultaneous
-          // machine-checked constraints; letting Opus reason before emitting
-          // is the cheapest first-pass-compliance lever (fewer gate retries).
-          thinking: { type: "adaptive" },
+          max_tokens: BUILD_MAX_TOKENS,
+          // Reasoning ON: the design pass juggles ~15 machine-checked
+          // constraints; letting the model reason before emitting is the
+          // cheapest first-pass-compliance lever (fewer gate retries).
+          ...BUILD_REASONING, // GLM thinking:enabled + reasoning_effort (lib/anthropic)
           system: [
             {
               type: "text",
@@ -754,7 +1080,28 @@ export const buildAnimatedSections = async (
         { timeout: COMPOSITION_REQUEST_TIMEOUT_MS },
       ).finalMessage();
 
-      if (resp.stop_reason !== "tool_use") return resp; // composition text ready
+      if (resp.stop_reason !== "tool_use") {
+        // GLM (z.ai) sometimes ENDS THE TURN with a short "…now writing the
+        // Composition.tsx" preamble instead of emitting the code (an agentic
+        // narrate-then-stop). If the final text isn't actually code, nudge it
+        // to emit the file and continue (bounded), rather than returning prose
+        // that fails the "doesn't look like a TS file" check downstream.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const txt = (resp.content as any[]).find((c) => c.type === "text")?.text ?? "";
+        const looksLikeCode = txt.includes("import") && txt.includes("export");
+        if (!looksLikeCode && nudges < MAX_NUDGES) {
+          nudges++;
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          convo.push({ role: "assistant", content: resp.content as any });
+          convo.push({
+            role: "user",
+            content:
+              "Output the COMPLETE Composition.tsx now — the entire file, starting at the first `import` and ending at the last `export const Section`. No preamble, no explanation, no prose, no markdown fence. Emit ONLY the .tsx source.",
+          });
+          continue;
+        }
+        return resp; // code ready (or out of nudges — return best effort)
+      }
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const toolUses = (resp.content as any[]).filter((c) => c.type === "tool_use");
@@ -806,6 +1153,11 @@ export const buildAnimatedSections = async (
     };
   }
 
+  // Tokens spent by retries that DON'T replace `designResponse` (the scoped
+  // per-scene regens splice into designCode rather than swapping the response),
+  // accumulated here and folded into the build's billed usage at return.
+  let extraDesignUsage: Usage = EMPTY_USAGE;
+
   // Quality gate: count headlines / paragraphs / SVGs per section. If
   // the output is sparse, retry once with a specific failure message.
   // STRUCTURAL failures (crash / broken-looking — invented claims, severe
@@ -814,7 +1166,7 @@ export const buildAnimatedSections = async (
   // retry's output and on the final shipped code. They used to be one-shot
   // inline checks against attempt 0 only — which is how the Supabase build
   // shipped a hand-drawn logo replica with an empty warnings.json.
-  const gateReport = assessDesignDensity(designCode, input.script);
+  let gateReport = assessDesignDensity(designCode, input.script);
   let structural = assessStructuralGates(designCode, input);
   // Contrast scan, MINOR tier (QA B1): pairs below the 4.5:1 body floor but
   // readable for large text stay a polish-level nudge (the agent may keep a
@@ -897,7 +1249,14 @@ export const buildAnimatedSections = async (
   // lower third (corgi scene-0: content stopped at ~53% of height). Conservative
   // (favors false-negatives like the drift gate): only fires on an absolute
   // top-cluster with no flex distribution / bottom anchor / tall element.
-  const fillFailure = assessVerticalFill(designCode, gateAspect);
+  // PER-SCENE: the file-level check passes if ANY scene fills the height, so a
+  // single tall scene masks every other scene's empty lower band (PayPal: scene
+  // 0 filled the frame, hiding the empty bottoms of scenes 1/2/4). Judge each
+  // Section block on its own so a per-scene under-fill actually fires the retry.
+  const fillScenes = fillFailuresByScene(designCode, input.script.scenes ?? [], gateAspect);
+  const fillFailure = fillScenes.length
+    ? fillScenes.map((f) => `Scene ${f.scene}: ${f.message}`).join("\n")
+    : null;
 
   // Text-size floors (scene review #1, polish). Ledes/body <p> below 24px and
   // <li> below 18px were repeatedly unreadable in rendered output. The
@@ -940,7 +1299,7 @@ export const buildAnimatedSections = async (
   // Whatever still fails after that ships best-of-attempts and is recorded
   // in warnings.structural_unresolved — never silently.
   const includePolish = !skipRetries;
-  const polishFailure =
+  let polishFailure =
     includePolish &&
     (!gateReport.ok ||
       contrastFailure ||
@@ -951,6 +1310,132 @@ export const buildAnimatedSections = async (
       fillFailure ||
       undersizedFailure ||
       accentFailure);
+
+  // ─── SCOPED per-scene retry fast-path (#1) ─────────────────────────────
+  // When the ONLY failures are scene-localizable (sparse density, off-canvas
+  // crop, baked-in copy), regenerate just the offending Section{N} blocks in
+  // parallel and splice them back — instead of re-emitting the whole
+  // composition (output tokens, the dominant build cost, scale with the file).
+  // A non-localizable failure (contrast, throughline, invented claims, logo
+  // defects, fonts, …) present anywhere disqualifies the fast-path, so we fall
+  // straight through to the whole-comp retry below. The spliced result is
+  // re-compiled + re-gated and only adopted if it doesn't regress, so a bad
+  // splice or an unhelpful regen costs nothing but the (cheap) scoped calls.
+  {
+    const scopeScenes = input.script.scenes ?? [];
+    const scopeAspect = (input.script.config?.aspect_ratio ?? "16:9") as AspectRatio;
+    const LOCALIZABLE_KEYS = new Set(["unbound_copy", "overflow_crop"]);
+    const nonLocalizablePolish =
+      includePolish &&
+      !!(
+        contrastFailure ||
+        throughlineFailure ||
+        driftFailure ||
+        chartFailure ||
+        fontFailure ||
+        fillFailure ||
+        undersizedFailure ||
+        accentFailure
+      );
+    const nonLocalizableStructural = structural.failures.some(
+      (f) => !LOCALIZABLE_KEYS.has(f.key),
+    );
+    const densityFails = includePolish && !gateReport.ok;
+    const overflowFails = structural.failures.some((f) => f.key === "overflow_crop");
+    const unboundFails = structural.failures.some((f) => f.key === "unbound_copy");
+
+    const densityScoped = densityFails
+      ? densityFailuresByScene(designCode, scopeScenes)
+      : [];
+    const overflowScoped = overflowFails
+      ? overflowFailuresByScene(designCode, scopeAspect)
+      : [];
+    const unboundScoped = unboundFails
+      ? unboundFailuresByScene(designCode, scopeScenes)
+      : [];
+
+    // Every failing localizable gate must attribute to at least one scene; if a
+    // crop/literal lives outside any Section block we can't scope it → fall back.
+    const localizationComplete =
+      (!densityFails || densityScoped.length > 0) &&
+      (!overflowFails || overflowScoped.length > 0) &&
+      (!unboundFails || unboundScoped.length > 0);
+
+    const grouped = groupByScene(densityScoped, overflowScoped, unboundScoped);
+    const canScope =
+      grouped.length > 0 &&
+      !nonLocalizablePolish &&
+      !nonLocalizableStructural &&
+      localizationComplete &&
+      sectionsAreSpliceable(designCode, scopeScenes.length);
+
+    if (canScope) {
+      console.warn(
+        `[pipeline] scoped retry: regenerating ${grouped.length} scene(s) [${grouped
+          .map((g) => g.scene)
+          .join(", ")}] instead of the whole composition`,
+      );
+      const results = await Promise.all(
+        grouped.map(({ scene, messages }) =>
+          regenerateSectionBlock(
+            client,
+            MODELS.codingAgentBuild,
+            input,
+            designCode,
+            scene,
+            messages,
+          ).then((r) => ({ scene, ...r })),
+        ),
+      );
+      let spliced = designCode;
+      let anySpliced = false;
+      for (const r of results) {
+        extraDesignUsage = addUsage(extraDesignUsage, r.usage); // billed either way
+        if (!r.block) continue;
+        const next = replaceSection(spliced, r.scene, r.block);
+        if (next) {
+          spliced = next;
+          anySpliced = true;
+        }
+      }
+      // Adopt only if the spliced file COMPILES and doesn't regress the gates.
+      if (anySpliced && (await verifyCompilable(spliced)) === null) {
+        const reStructural = assessStructuralGates(spliced, input);
+        const reDensity = assessDesignDensity(spliced, input.script);
+        const notWorse =
+          reStructural.failures.length <= structural.failures.length &&
+          reStructural.severeContrastCount <= structural.severeContrastCount &&
+          reStructural.inventedClaimCount <= structural.inventedClaimCount;
+        if (notWorse) {
+          designCode = spliced;
+          structural = reStructural;
+          gateReport = reDensity;
+          // Recompute the whole-comp guard: the non-localizable polish flags
+          // were already clean (canScope required it), so only density moves.
+          polishFailure =
+            includePolish &&
+            (!gateReport.ok ||
+              contrastFailure ||
+              throughlineFailure ||
+              driftFailure ||
+              chartFailure ||
+              fontFailure ||
+              fillFailure ||
+              undersizedFailure ||
+              accentFailure);
+          if (structural.failures.length === 0 && (!includePolish || gateReport.ok)) {
+            console.warn("[pipeline] scoped retry cleared all gates — skipping whole-comp retry");
+          } else {
+            console.warn("[pipeline] scoped retry improved but gaps remain — whole-comp retry follows");
+          }
+        } else {
+          console.warn("[pipeline] scoped retry regressed a gate; discarding, falling back to whole-comp");
+        }
+      } else if (anySpliced) {
+        console.warn("[pipeline] scoped retry produced non-compiling splice; falling back to whole-comp");
+      }
+    }
+  }
 
   if (structural.failures.length > 0 || polishFailure) {
     const retryMessage = [
@@ -1096,8 +1581,11 @@ export const buildAnimatedSections = async (
         // Choreography Pass 2 on the build path. Opus for animation
         // taste + dead-air pacing. Streaming required (Opus + 32k tokens).
         model: MODELS.codingAgentBuild,
-        max_tokens: 64000,
-        thinking: { type: "adaptive" },
+        max_tokens: BUILD_MAX_TOKENS,
+        // GLM (z.ai) reasoning control — NOT Anthropic's adaptive (which z.ai
+        // ignores → empty/truncated output). thinking.type ∈ enabled|disabled;
+        // depth via reasoning_effort. "max" per z.ai's coding recommendation.
+        ...BUILD_REASONING, // GLM thinking:enabled + reasoning_effort (lib/anthropic)
         system: [
           {
             type: "text",
@@ -1179,7 +1667,89 @@ export const buildAnimatedSections = async (
           )}. Every text element must finish entering with its reading time left: animation-delay + duration + max(1.2s, words × 0.3s) must fit inside the scene. Move these text beats earlier, and let DECORATIVE elements (accent bars, glows, chart draws, background shifts) carry the late beats the dead-air rule asks for.`
       : null;
   let animationUsage = usageOf(animationResponse.usage);
-  if ((!deadAirReport.ok || readTimeFailure || dwellFailure) && !skipRetries) {
+
+  // ─── SCOPED animation retry fast-path (#1) ─────────────────────────────
+  // Dead-air and late-beat dwell are per-scene problems. When those are the
+  // only animation failures (reading-time / slow-text is NOT scene-attributable
+  // → it disqualifies the fast-path), re-pace just the offending Section{N}
+  // blocks in parallel and splice them back, instead of re-emitting the whole
+  // composition. Re-compiled + re-gated before adoption, with the whole-comp
+  // retry below as the fallback — identical safety model to the design pass.
+  let scopedAnimationCleared = false;
+  if (!skipRetries && !readTimeFailure && (!deadAirReport.ok || dwellFailure)) {
+    const deadAirScenes = deadAirReport.ok ? [] : deadAirReport.failures;
+    const dwellScenes = undwelled.map((u) => ({
+      scene: u.section,
+      message: `Late-beat dwell — <${u.tag}> lands at ${u.landsAt}s of a ${u.sceneDuration.toFixed(
+        1,
+      )}s scene but needs ~${u.readTime}s of reading time. Pull this text beat earlier so animation-delay + duration + reading-time fits inside the scene; carry any required late beats with DECORATIVE finite motion (accent bar, glow, chart draw, gradient deepen), never a paragraph landing at the end.`,
+    }));
+    const grouped = groupByScene(deadAirScenes, dwellScenes);
+    if (
+      grouped.length > 0 &&
+      sectionsAreSpliceable(finalCode, input.script.scenes.length)
+    ) {
+      console.warn(
+        `[pipeline] scoped animation retry: re-pacing ${grouped.length} scene(s) [${grouped
+          .map((g) => g.scene)
+          .join(", ")}] instead of the whole composition`,
+      );
+      const results = await Promise.all(
+        grouped.map(({ scene, messages }) =>
+          regenerateSectionBlock(
+            client,
+            MODELS.codingAgentBuild,
+            input,
+            finalCode,
+            scene,
+            messages,
+            "animation",
+          ).then((r) => ({ scene, ...r })),
+        ),
+      );
+      let spliced = finalCode;
+      let anySpliced = false;
+      for (const r of results) {
+        animationUsage = addUsage(animationUsage, r.usage);
+        if (!r.block) continue;
+        const next = replaceSection(spliced, r.scene, r.block);
+        if (next) {
+          spliced = next;
+          anySpliced = true;
+        }
+      }
+      if (anySpliced && (await verifyCompilable(spliced)) === null) {
+        const reDead = assessDeadAir(spliced, input.script);
+        const reDwell = findUndwelledText(spliced, input.script);
+        const deadNotWorse =
+          reDead.ok ||
+          (!deadAirReport.ok && reDead.failures.length <= deadAirReport.failures.length);
+        if (deadNotWorse && reDwell.length <= undwelled.length) {
+          finalCode = spliced;
+          scopedAnimationCleared = reDead.ok && reDwell.length === 0;
+          console.warn(
+            scopedAnimationCleared
+              ? "[pipeline] scoped animation retry cleared dead-air/dwell — skipping whole-comp retry"
+              : "[pipeline] scoped animation retry improved but gaps remain — whole-comp retry follows",
+          );
+        } else {
+          console.warn(
+            "[pipeline] scoped animation retry regressed a gate; discarding, falling back to whole-comp",
+          );
+        }
+      } else if (anySpliced) {
+        console.warn(
+          "[pipeline] scoped animation retry produced non-compiling splice; falling back to whole-comp",
+        );
+      }
+    }
+  }
+
+  if (
+    !scopedAnimationCleared &&
+    (!deadAirReport.ok || readTimeFailure || dwellFailure) &&
+    !skipRetries
+  ) {
     const retryMessage = [
       deadAirReport.ok
         ? null
@@ -1205,8 +1775,11 @@ export const buildAnimatedSections = async (
             // Streamed: Opus + 32k max_tokens can exceed the SDK's 10-minute
             // non-streaming threshold.
             model: MODELS.codingAgentBuild,
-            max_tokens: 64000,
-            thinking: { type: "adaptive" },
+            max_tokens: BUILD_MAX_TOKENS,
+            // GLM (z.ai) reasoning control — NOT Anthropic's adaptive (which z.ai
+        // ignores → empty/truncated output). thinking.type ∈ enabled|disabled;
+        // depth via reasoning_effort. "max" per z.ai's coding recommendation.
+        ...BUILD_REASONING, // GLM thinking:enabled + reasoning_effort (lib/anthropic)
             system: [
               {
                 type: "text",
@@ -1235,10 +1808,11 @@ export const buildAnimatedSections = async (
           findUndwelledText(retryCode, input.script).length <= undwelled.length
         ) {
           finalCode = retryCode;
-          animationUsage = addUsage(
-            usageOf(animationResponse.usage),
-            usageOf(retryResponse.usage),
-          );
+          // ACCUMULATE — don't overwrite. animationUsage already holds the
+          // initial animation pass (line ~1532) plus any scoped per-scene
+          // regen tokens spent above; clobbering it here would silently drop
+          // the scoped tokens from the billed usage (adversarial-review find).
+          animationUsage = addUsage(animationUsage, usageOf(retryResponse.usage));
         } else {
           console.warn(
             "[pipeline] Dead-air retry didn't pass either; keeping best available.",
@@ -1251,6 +1825,32 @@ export const buildAnimatedSections = async (
         err instanceof Error ? err.message : err,
       );
     }
+  }
+
+  // Surgical compile-repair (#2). A compile error here is MECHANICAL — a stray
+  // char, an unclosed tag, a truncated expression — not a design defect. Rather
+  // than fail the build (the old behavior at the hard gate below), feed the
+  // exact esbuild error to a fast, thinking-off "fix only this" call and
+  // re-verify, up to 2 attempts. Done HERE, on the raw composition, BEFORE
+  // logo-inject / image-repair / font-inline run — so the fixer never has to
+  // reproduce the multi-KB inlined font data: URLs (truncation risk) and the
+  // corrected file flows through the same finalize passes as a clean one.
+  const compileRepair = await repairCompile(
+    finalCode,
+    verifyCompilable,
+    async (c, e) => {
+      const r = await surgicalCompileFix(client, MODELS.codingAgentBuild, c, e);
+      animationUsage = addUsage(animationUsage, r.usage); // billed either way
+      return r.code;
+    },
+  );
+  finalCode = compileRepair.code;
+  if (compileRepair.attempts > 0) {
+    console.warn(
+      `[pipeline] surgical compile-repair: ${compileRepair.attempts} attempt(s), ${
+        compileRepair.error ? "still failing" : "fixed"
+      }`,
+    );
   }
 
   // Finalize the composition (applies to BOTH the animated + design comps, so
@@ -1334,8 +1934,11 @@ export const buildAnimatedSections = async (
       ok: false,
       stage: "animation",
       error: `Generated Composition.tsx does not compile: ${compileErr}`,
-      // Both passes (+ any retries folded into animationUsage) were billed.
-      usage: addUsage(usageOf(designResponse.usage), animationUsage),
+      // Both passes + scoped per-scene regens + retries (animationUsage) billed.
+      usage: addUsage(
+        addUsage(usageOf(designResponse.usage), extraDesignUsage),
+        animationUsage,
+      ),
     };
   }
 
@@ -1345,7 +1948,10 @@ export const buildAnimatedSections = async (
     designCode: designCodeOut,
     warnings,
     asset_manifest: assetSearchLog.length > 0 ? assetSearchLog : undefined,
-    usage: addUsage(usageOf(designResponse.usage), animationUsage),
+    usage: addUsage(
+      addUsage(usageOf(designResponse.usage), extraDesignUsage),
+      animationUsage,
+    ),
   };
 };
 
@@ -2267,8 +2873,10 @@ const assessDesignDensity = (
 const assessDeadAir = (
   code: string,
   script: Script,
-): { ok: true } | { ok: false; error: string } => {
-  const failures: string[] = [];
+):
+  | { ok: true }
+  | { ok: false; error: string; failures: { scene: number; message: string }[] } => {
+  const failures: { scene: number; message: string }[] = [];
 
   for (let i = 0; i < script.scenes.length; i += 1) {
     const scene = script.scenes[i];
@@ -2320,14 +2928,15 @@ const assessDeadAir = (
 
     const requiredDelay = duration * 0.6;
     if (maxFiniteDelay < requiredDelay) {
-      failures.push(
-        `Section${i} ("${scene.label}", ${duration.toFixed(1)}s): latest finite animation-delay is ${maxFiniteDelay.toFixed(2)}s — need ≥${requiredDelay.toFixed(2)}s (60% of duration). Add ${Math.max(2, Math.round(duration / 3))} more finite beats distributed across the back half of the section.`,
-      );
+      failures.push({
+        scene: i,
+        message: `Section${i} ("${scene.label}", ${duration.toFixed(1)}s): latest finite animation-delay is ${maxFiniteDelay.toFixed(2)}s — need ≥${requiredDelay.toFixed(2)}s (60% of duration). Add ${Math.max(2, Math.round(duration / 3))} more finite beats distributed across the back half of the section.`,
+      });
     }
   }
 
   if (failures.length === 0) return { ok: true };
-  return { ok: false, error: failures.join(" | ") };
+  return { ok: false, error: failures.map((f) => f.message).join(" | "), failures };
 };
 
 /**
@@ -2389,8 +2998,9 @@ const buildBuildWarnings = (
   const gateAspect = (input.script.config?.aspect_ratio ?? "16:9") as AspectRatio;
   // Vertical fill (QA V1) — surface a persistent empty-lower-band so the user
   // sees it even when the one retry didn't resolve it.
-  const fillMiss = assessVerticalFill(code, gateAspect);
-  if (fillMiss) out.low_fill = fillMiss;
+  const fillMisses = fillFailuresByScene(code, input.script.scenes ?? [], gateAspect);
+  if (fillMisses.length)
+    out.low_fill = fillMisses.map((f) => `Scene ${f.scene}: ${f.message}`).join("\n");
   const drift = assessContinuity(code, gateAspect);
   if (drift.length > 0) {
     out.throughline_drift = drift.slice(0, 6).map((d) => ({

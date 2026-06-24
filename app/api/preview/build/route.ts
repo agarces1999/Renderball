@@ -8,6 +8,7 @@ import {
   buildAnimatedSections,
   buildAgentInputFromBrief,
   regenerateScene,
+  repairSceneRenderErrors,
 } from "../../../../lib/agents/pipeline";
 import { writeGeneratedFiles } from "../../../../lib/render/build-wrapper";
 import { verifyScenesRender } from "../../../../lib/render/ssr-render";
@@ -148,24 +149,49 @@ export async function POST(request: Request) {
   // scripts/dogfood-stills.mjs + lib/render/painted-content.ts
   // (verifyPaintedScenes): every dogfood run scores per-scene ink from frames
   // of an actual MP4 render and flags scenes whose content never paints.
-  const renderCheck = await verifyScenesRender(genDir, script.scenes.length, script);
+  let renderCheck = await verifyScenesRender(genDir, script.scenes.length, script);
   if (!renderCheck.ok) {
     console.error(
       "[preview/build] SSR render gate failed:",
       JSON.stringify(renderCheck.errors),
     );
-    // The build burned real tokens but won't ship — record failed:true so the
-    // ledger never understates cost and the report excludes it from per-build
-    // averages (it is not a successful build).
-    await recordUsage({ op: "build", model, scriptId, url: brief?.brand_kit_url, usage: currentUsage, failed: true });
-    return NextResponse.json(
-      {
-        error: "one or more scenes failed to render",
-        stage: "render",
-        render_errors: renderCheck.errors,
-      },
-      { status: 500 },
-    );
+    // RENDER-ERROR AUTO-REPAIR — a scene that PARSES can still THROW at render
+    // (an unguarded access to an optional content field, e.g. `c.cta.primary` on
+    // a scene with no cta). Rather than fail the build, surgically guard the
+    // throwing section(s) and re-gate. Only per-scene throws are repairable;
+    // file-level errors (scene -1) fall straight through to the hard fail.
+    const repairable = renderCheck.errors.some((e) => e.scene >= 0);
+    if (repairable) {
+      const rr = await repairSceneRenderErrors(result.code!, renderCheck.errors);
+      currentUsage = addUsage(currentUsage, rr.usage); // billed either way
+      if (rr.repaired.length > 0) {
+        await writeGeneratedFiles(genDir, {
+          designCode: result.designCode,
+          code: rr.code,
+          script,
+          warnings: result.warnings,
+          assetManifest: result.asset_manifest,
+        });
+        renderCheck = await verifyScenesRender(genDir, script.scenes.length, script);
+        console.warn(
+          `[preview/build] render-repair: guarded scene(s) [${rr.repaired.join(", ")}], re-gate ${renderCheck.ok ? "PASSED" : "still failing"}`,
+        );
+      }
+    }
+    if (!renderCheck.ok) {
+      // The build burned real tokens but won't ship — record failed:true so the
+      // ledger never understates cost and the report excludes it from per-build
+      // averages (it is not a successful build).
+      await recordUsage({ op: "build", model, scriptId, url: brief?.brand_kit_url, usage: currentUsage, failed: true });
+      return NextResponse.json(
+        {
+          error: "one or more scenes failed to render",
+          stage: "render",
+          render_errors: renderCheck.errors,
+        },
+        { status: 500 },
+      );
+    }
   }
 
   // RENDER-TRUTH GATE (Phase 2: BLOCKING + self-repair ladder + $10 ceiling).
