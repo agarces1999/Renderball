@@ -156,6 +156,19 @@ export const extractBrand = async (
   // or "real product imagery."
   const bodyWithoutLogoGrids = stripLogoGridContainers(bodySlice);
   const page_images = extractPageImages(bodyWithoutLogoGrids, url);
+
+  // Kick off the independent network/vision stages NOW so they overlap with logo
+  // discovery + CSS fetching below. extractDesignLanguage (screenshot + vision)
+  // and the og:image palette pair depend on neither the logo nor the CSS, so
+  // running them concurrently collapses crawl wall-clock from ~sum-of-stages to
+  // ~slowest-stage. Each is already internally best-effort (safe defaults / {} on
+  // any failure); awaited at their consumption points below.
+  const designP = extractDesignLanguage(url, og_image, { onUsage });
+  const paletteVisionP = Promise.all([
+    extractBrandColorRoles(og_image, { onUsage }),
+    extractPaletteFromPixels(og_image, { maxColors: 8 }),
+  ]).catch(() => null);
+
   const logoResult = await discoverLogoHd(
     bodyWithoutLogoGrids,
     url,
@@ -245,10 +258,9 @@ export const extractBrand = async (
   // discrete background-color role — the role carries the canvas semantic the
   // flat palette loses.
   try {
-    const [roles, pixelPalette] = await Promise.all([
-      extractBrandColorRoles(og_image, { onUsage }),
-      extractPaletteFromPixels(og_image, { maxColors: 8 }),
-    ]);
+    const pv = await paletteVisionP; // hoisted above — overlaps logo + CSS work
+    if (!pv) throw new Error("palette vision unavailable");
+    const [roles, pixelPalette] = pv;
     const visionPalette = [
       roles.background,
       roles.accent,
@@ -280,11 +292,7 @@ export const extractBrand = async (
   // motion don't capture (type treatment, layout patterns, shape, imagery, mood).
   // Falls back to the og:image; any failure leaves both fields undefined and the
   // crawl proceeds unchanged.
-  const { site_screenshot, design_language } = await extractDesignLanguage(
-    url,
-    og_image,
-    { onUsage },
-  );
+  const { site_screenshot, design_language } = await designP; // hoisted above
 
   return {
     url,
