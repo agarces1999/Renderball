@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { cn } from "../lib/cn";
 
 /**
@@ -306,14 +306,12 @@ function RenderStage({ reduced }: { reduced: boolean }) {
   const [frame, setFrame] = useState(reduced ? TOTAL_FRAMES : 0);
   const chunks = 24;
   const filled = Math.round((frame / TOTAL_FRAMES) * chunks);
-  const raf = useRef<number | null>(null);
   useEffect(() => {
     if (reduced) return;
     const id = setInterval(
       () => setFrame((f) => (f >= TOTAL_FRAMES ? f : Math.min(f + 38, TOTAL_FRAMES))),
       70,
     );
-    raf.current = id as unknown as number;
     return () => clearInterval(id);
   }, [reduced]);
   const pct = Math.round((frame / TOTAL_FRAMES) * 100);

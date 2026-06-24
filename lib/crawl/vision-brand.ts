@@ -121,37 +121,6 @@ export const extractBrandColorRoles = async (
   }
 };
 
-/**
- * Read a brand's real color palette (hex) off its hero/share image.
- * Returns 0 colors on any failure (caller falls back to the CSS palette).
- * `opts.onUsage` (when given) receives the resolved model + token usage of the
- * vision call so the crawl's cost lands in the usage log — fired per API call,
- * never when the image is skipped or the call fails.
- *
- * Thin wrapper over extractBrandColorRoles (ONE vision call) that flattens the
- * roles back to the flat, importance-ordered string[] existing callers expect:
- * [background, accent, text, ...supporting], deduped, capped at 6.
- */
-export const extractPaletteFromImage = async (
-  imageUrl: string | undefined,
-  opts: {
-    visionCall?: (
-      image: string,
-      prompt: string,
-    ) => Promise<{ text: string; usage: Usage }>;
-    onUsage?: (model: string, usage: Usage) => void;
-  } = {},
-): Promise<string[]> => {
-  const roles = await extractBrandColorRoles(imageUrl, opts);
-  const ordered = [
-    roles.background,
-    roles.accent,
-    roles.text,
-    ...roles.supporting,
-  ].filter((h): h is string => !!h);
-  return [...new Set(ordered)].slice(0, 6);
-};
-
 // ─── Pixel-exact palette extraction ──────────────────────────────────
 //
 // Why: the vision pass (above) ESTIMATES hex codes by eye — it nails the hue

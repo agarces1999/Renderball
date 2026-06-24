@@ -14,7 +14,7 @@
 
 // ─── Identity & top-level ─────────────────────────────────────────────
 
-export type ScriptStatus =
+type ScriptStatus =
   | "draft"
   | "approved"
   | "rendering"
@@ -161,7 +161,7 @@ export interface ImageAsset {
  * same editorial template (the repetition the non-tech pilot exposed). The
  * Design Agent maps each register to a distinct layout archetype.
  */
-export type SceneRegister =
+type SceneRegister =
   | "stat" // one massive number/metric, minimal supporting copy
   | "quote" // a pull-quote / manifesto line, centered, large
   | "full-bleed" // edge-to-edge imagery or color field with overlaid text

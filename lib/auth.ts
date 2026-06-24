@@ -36,23 +36,6 @@ export async function getCurrentUser(): Promise<User | null> {
 }
 
 /**
- * Throw when there's no signed-in user. Use in server actions / route handlers
- * where the caller converts the throw into a 401 / error result.
- */
-export async function requireUser(): Promise<User> {
-  const user = await getCurrentUser();
-  if (!user) throw new UnauthenticatedError();
-  return user;
-}
-
-export class UnauthenticatedError extends Error {
-  constructor() {
-    super("UNAUTHENTICATED");
-    this.name = "UnauthenticatedError";
-  }
-}
-
-/**
  * Owner id used by the dev-only routes (app/api/dev/*), which run without a
  * Clerk session and are 404'd in production. Keeps their data partitioned from
  * real users in the shared store.

@@ -7,11 +7,7 @@
  *
  * Run: `npm test`.
  */
-import {
-  extractBrandColorRoles,
-  extractPaletteFromImage,
-  snapHexToPixels,
-} from "./vision-brand";
+import { extractBrandColorRoles, snapHexToPixels } from "./vision-brand";
 
 let passed = 0;
 let failed = 0;
@@ -96,18 +92,6 @@ await check("non-vision-safe URL → empty roles, no vision call", async () => {
     },
   });
   assert(roles.supporting.length === 0 && called === false, "svg is not vision-safe → no call");
-});
-
-await check("extractPaletteFromImage flattens roles to [background, accent, text, ...]", async () => {
-  const palette = await extractPaletteFromImage(IMG, {
-    visionCall: fakeVision(
-      '{"background":"#440b12","text":"#ffffff","accent":"#ec6839","supporting":["#f4e9df"]}',
-    ),
-  });
-  assert(palette[0] === "#440b12", `background leads the flat palette: ${JSON.stringify(palette)}`);
-  assert(palette[1] === "#ec6839", `accent second: ${JSON.stringify(palette)}`);
-  assert(palette[2] === "#ffffff", `text third: ${JSON.stringify(palette)}`);
-  assert(palette.length === 4, `four colors, deduped: ${JSON.stringify(palette)}`);
 });
 
 // ── snapHexToPixels ──────────────────────────────────────────────────

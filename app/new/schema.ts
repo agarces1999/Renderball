@@ -58,16 +58,6 @@ export const DISTRIBUTION_FORMATS: Array<{
   },
 ];
 
-export const aspectForFormat = (
-  f: DistributionFormat,
-): "9:16" | "1:1" | "16:9" =>
-  DISTRIBUTION_FORMATS.find((d) => d.value === f)?.aspect ?? "16:9";
-
-export const viewingContextForFormat = (
-  f: DistributionFormat,
-): ViewingContext =>
-  DISTRIBUTION_FORMATS.find((d) => d.value === f)?.viewing ?? "desktop";
-
 export interface MomentInput {
   title: string; // optional short label; may be ""
   description: string;
@@ -145,47 +135,6 @@ export interface BriefInput {
   moment_count?: number;
 }
 
-/**
- * The wizard form's data shape *before* files are uploaded. Files
- * live in browser memory; the server action persists them and produces
- * UploadedFileRef[] which then lands in BriefInput.brand_files.
- */
-export interface ClientBriefDraft {
-  purpose: string;
-  duration_seconds: number;
-  distribution_format: DistributionFormat;
-  moments: MomentInput[];
-  cta: string;
-  brand_kit_url: string;
-  /** One claim per line; surfaced in the wizard as a multi-line textarea. */
-  verified_claims: string;
-  /** Hex codes (from the crawled palette) the user assigned to brand roles. */
-  palette_roles: {
-    primary?: string;
-    accent?: string;
-    light?: string;
-    dark?: string;
-  };
-}
-
-export const CREATIVITY_LABELS: Record<
-  CreativityLevel,
-  { label: string; hint: string }
-> = {
-  literal: {
-    label: "Literal",
-    hint: "Stick to my words. Minimal embellishment.",
-  },
-  balanced: {
-    label: "Balanced",
-    hint: "Add visual taste — but don't invent content.",
-  },
-  bold: {
-    label: "Bold",
-    hint: "Take creative liberties. Surprise me.",
-  },
-};
-
 // ─── Duration ↔ moment count rule ────────────────────────────────────
 //
 // A 1.5-second moment is unparseable — no time to land an idea. We
@@ -200,29 +149,6 @@ export const maxMomentsForDuration = (durationSeconds: number): number => {
   const byDuration = Math.floor(durationSeconds / SECONDS_PER_MOMENT_FLOOR);
   return Math.max(1, Math.min(byDuration, MOMENT_COUNT_ABSOLUTE_MAX));
 };
-
-export const momentCountChips = (durationSeconds: number): number[] => {
-  const max = maxMomentsForDuration(durationSeconds);
-  const all = [2, 3, 4, 5, 6, 8, 10];
-  const filtered = all.filter((n) => n <= max);
-  // Always make 1 available when max is 1 (tiny videos).
-  return max === 1 ? [1] : filtered;
-};
-
-// ─── Setup agent output (DEPRECATED) ────────────────────────────────
-//
-// The Setup Agent has been merged into Agent 1 (Script Generator).
-// Agent 1 now handles both freeform and pre-structured input in a
-// single pass, eliminating the two-agent handoff. This type stays
-// around briefly for backwards compatibility but should not be used
-// by new code.
-
-export interface SetupOutput {
-  purpose: string;
-  duration_seconds: number;
-  moments: MomentInput[];
-  cta: string;
-}
 
 // ─── Brand extract from website crawl ────────────────────────────────
 //

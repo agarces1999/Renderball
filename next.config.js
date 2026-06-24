@@ -9,7 +9,6 @@ const nextConfig = {
     serverComponentsExternalPackages: [
       "@remotion/bundler",
       "@remotion/renderer",
-      "@remotion/cli",
       // esbuild has dynamic requires + ships a .d.ts that webpack tries
       // to parse as JS. Mark external so it's resolved at runtime by
       // the iframe-preview route.

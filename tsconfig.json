@@ -26,7 +26,6 @@
     "app/**/*",
     "lib/**/*",
     "components/**/*",
-    "remotion.config.ts",
     ".next/types/**/*.ts"
   ],
   "exclude": ["node_modules", "out", "public/renders", "src/generated"]

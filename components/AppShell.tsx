@@ -13,7 +13,7 @@ import { cn } from "../lib/cn";
  * account controls at the bottom. The immersive playback surface (/preview)
  * deliberately stays full-bleed so the rendered video is the loudest thing.
  */
-export type SidebarVideo = {
+type SidebarVideo = {
   id: string;
   title: string;
   status: string;

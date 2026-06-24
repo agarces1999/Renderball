@@ -96,12 +96,6 @@ PY
 }
 
 log "===== watchdog starting ====="
-# Don't fight the in-flight one-off build (build-only.mjs) for the port.
-while pgrep -f "build-only.mjs" >/dev/null 2>&1; do
-  log "waiting for in-flight one-off build (build-only.mjs) to finish before claiming port $PORT"
-  sleep "$POLL"
-done
-log "no in-flight one-off build; claiming port $PORT"
 start_server
 LAST_HEAD=$(git rev-parse --short HEAD 2>/dev/null)
 start_loop
