@@ -237,7 +237,11 @@ export async function POST(request: Request) {
         // gate object with no `findings`/`blocking`, so `gate.blocking.length`
         // in the repair ladder threw "Cannot read properties of undefined
         // (reading 'length')" and 500'd every build that reached this gate.
-        const gate = await findRenderTruthFailures(measurements);
+        // brandBackground enables the canvas-brightness check (light brand shipped
+        // on a dark canvas) — advisory, surfaced in warnings.
+        const gate = await findRenderTruthFailures(measurements, {
+          brandBackground: brief?.brand_extract?.background_color,
+        });
         return { ...gate, measurements };
       },
       regenScene: async (sceneIndex, instruction) => {

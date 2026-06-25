@@ -24,6 +24,7 @@ export type RenderTruthKind =
   | "overflow"
   | "contrast"
   | "dead-region"
+  | "canvas-brightness"
   | "measure-error";
 
 export interface RenderTruthFinding {
@@ -197,9 +198,104 @@ export const findDeadRegion = async (
   }
 };
 
+// ── canvas-brightness (light brand shipped on a dark canvas) ─────────────────
+// The #1 brand-fidelity miss: a fundamentally LIGHT brand (Glossier, Canva,
+// Notion, Shopify, Airtable, Ramp) rendered with a near-black default canvas.
+// The design-agent prompt rule (Layer 1) is the primary defense; this is the
+// deterministic Layer-2 backstop the prompt rule lacked. Advisory by default.
+const LIGHT_BRAND_LUM = 0.6; // brand background this bright ⇒ a "light brand"
+const DARK_CANVAS_LUM = 0.3; // a rendered scene canvas this dark ⇒ "dark canvas"
+const MAX_DARK_SCENES = 1; // one deliberate dark/contrast scene is allowed
+
+/** WCAG relative luminance of a #rrggbb hex (null if unparseable). */
+export const hexLuminance = (hex: string): number | null => {
+  const m = /^#?([0-9a-fA-F]{6})$/.exec(hex.trim());
+  if (!m) return null;
+  const n = parseInt(m[1], 16);
+  return relLum((n >> 16) & 255, (n >> 8) & 255, n & 255);
+};
+
+/**
+ * PURE: given the brand background + each scene's measured canvas luminance,
+ * flag the light-brand-shipped-dark case. Only fires for a LIGHT brand (bg lum
+ * > 0.6) with MORE THAN ONE dark-canvas scene (one dark contrast scene is fine).
+ * Dark/mid brands return nothing. Separated from the pixel measurement so the
+ * rule is unit-tested without an image.
+ */
+export const assessCanvasBrightness = (
+  brandBackground: string | undefined,
+  sceneLumas: { scene: number; lum: number | null }[],
+): RenderTruthFinding[] => {
+  if (!brandBackground) return [];
+  const brandLum = hexLuminance(brandBackground);
+  if (brandLum == null || brandLum <= LIGHT_BRAND_LUM) return []; // light brands only
+  const dark = sceneLumas.filter(
+    (s): s is { scene: number; lum: number } =>
+      s.lum != null && s.lum < DARK_CANVAS_LUM,
+  );
+  if (dark.length <= MAX_DARK_SCENES) return [];
+  return dark.map((s) => ({
+    scene: s.scene,
+    kind: "canvas-brightness" as const,
+    detail:
+      `light brand (background ${brandBackground}, lum ${brandLum.toFixed(2)}) but this scene's ` +
+      `canvas is dark (lum ${s.lum.toFixed(2)}); ${dark.length}/${sceneLumas.length} scenes are dark — ` +
+      `keep the default canvas light, at most one dark contrast scene`,
+  }));
+};
+
+/** Median luminance of the downsampled frame — the canvas (background) dominates
+ *  the frame area, so the median ≈ the canvas brightness, robust to foreground
+ *  content. null if sharp is unavailable or the read fails (best-effort). */
+const frameCanvasLuminance = async (
+  screenshotPath: string,
+): Promise<number | null> => {
+  const sharpMod = await import("sharp").catch(() => null);
+  if (!sharpMod) return null;
+  try {
+    const { data, info } = await sharpMod
+      .default(screenshotPath)
+      .resize({ width: 64, withoutEnlargement: true })
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+    const ch = info.channels;
+    const lums: number[] = [];
+    for (let i = 0; i + 2 < data.length; i += ch) {
+      lums.push(relLum(data[i], data[i + 1], data[i + 2]));
+    }
+    if (lums.length === 0) return null;
+    lums.sort((a, b) => a - b);
+    return lums[Math.floor(lums.length / 2)];
+  } catch {
+    return null;
+  }
+};
+
+/** Measure each scene's canvas luminance + apply the light-brand rule. */
+export const findCanvasBrightness = async (
+  measurements: SceneMeasurement[],
+  brandBackground: string | undefined,
+): Promise<RenderTruthFinding[]> => {
+  const brandLum = brandBackground ? hexLuminance(brandBackground) : null;
+  if (brandLum == null || brandLum <= LIGHT_BRAND_LUM) return []; // skip non-light brands (no pixel work)
+  const sceneLumas = await Promise.all(
+    measurements.map(async (m) => ({
+      scene: m.scene,
+      lum:
+        m.error || !m.screenshotPath
+          ? null
+          : await frameCanvasLuminance(m.screenshotPath),
+    })),
+  );
+  return assessCanvasBrightness(brandBackground, sceneLumas);
+};
+
 export interface RenderTruthOptions {
   /** Which checks block. dead-region defaults to advisory (composition taste). */
   blockingKinds?: RenderTruthKind[];
+  /** Brand's real background color (#rrggbb) — enables the canvas-brightness
+   *  check (light brand shipped dark). Omitted ⇒ check skipped. */
+  brandBackground?: string;
 }
 
 /**
@@ -223,6 +319,8 @@ export const findRenderTruthFailures = async (
     findings.push(...(await findContrast(m)));
     findings.push(...(await findDeadRegion(m)));
   }
+  // Cross-scene: light brand shipped on a dark canvas (advisory by default).
+  findings.push(...(await findCanvasBrightness(measurements, opts.brandBackground)));
   const blocking = findings.filter((f) => blockingKinds.has(f.kind));
   return { findings, blocking };
 };

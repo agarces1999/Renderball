@@ -4,7 +4,12 @@
  * is exercised for its blocking-subset logic with screenshot-less measurements
  * (contrast/dead-region no-op without a screenshot — overflow is the blocker).
  */
-import { findOverflow, findRenderTruthFailures } from "./render-truth-gates";
+import {
+  findOverflow,
+  findRenderTruthFailures,
+  hexLuminance,
+  assessCanvasBrightness,
+} from "./render-truth-gates";
 import type { SceneMeasurement, MeasuredElement } from "./measure-scene";
 
 let passed = 0;
@@ -84,6 +89,46 @@ await check("blocking subset = overflow + measure-error (contrast/dead-region ad
   const { findings, blocking } = await findRenderTruthFailures(ms);
   assert(blocking.length === 1 && blocking[0].scene === 1 && blocking[0].kind === "overflow", `blocking=${JSON.stringify(blocking)}`);
   assert(findings.length >= 1, "should have at least the overflow finding");
+});
+
+// ── canvas-brightness gate (light brand shipped dark) ────────────────────────
+await check("hexLuminance: white ≈ 1, black = 0, off-white > 0.6, near-black < 0.1", () => {
+  assert((hexLuminance("#ffffff") ?? 0) > 0.99, "white");
+  assert(hexLuminance("#000000") === 0, "black");
+  assert((hexLuminance("#faf7f7") ?? 0) > 0.6, "off-white is a light brand");
+  assert((hexLuminance("#0e0e12") ?? 1) < 0.1, "near-black canvas");
+  assert(hexLuminance("not-a-hex") === null, "garbage → null");
+});
+
+await check("assessCanvasBrightness: light brand + ≤1 dark scene → no finding", () => {
+  const f = assessCanvasBrightness("#ffffff", [
+    { scene: 0, lum: 0.9 }, { scene: 1, lum: 0.9 }, { scene: 2, lum: 0.05 },
+  ]);
+  assert(f.length === 0, `one dark contrast scene is allowed: ${JSON.stringify(f)}`);
+});
+
+await check("assessCanvasBrightness: light brand + >1 dark scene → flags each dark", () => {
+  const f = assessCanvasBrightness("#faf7f7", [
+    { scene: 0, lum: 0.04 }, { scene: 1, lum: 0.05 }, { scene: 2, lum: 0.92 },
+  ]);
+  assert(f.length === 2 && f.every((x) => x.kind === "canvas-brightness"), `got ${JSON.stringify(f)}`);
+  assert(f.map((x) => x.scene).sort().join(",") === "0,1", "flags the dark scenes");
+});
+
+await check("assessCanvasBrightness: DARK brand on a dark canvas → never flags", () => {
+  const f = assessCanvasBrightness("#0e0e12", [
+    { scene: 0, lum: 0.03 }, { scene: 1, lum: 0.04 }, { scene: 2, lum: 0.03 },
+  ]);
+  assert(f.length === 0, `dark brand keeps its dark canvas: ${JSON.stringify(f)}`);
+});
+
+await check("assessCanvasBrightness: no brand bg / null scene lums handled", () => {
+  assert(assessCanvasBrightness(undefined, [{ scene: 0, lum: 0.05 }]).length === 0, "no bg → no check");
+  // nulls (no screenshot) are ignored; 2 real dark scenes still flag
+  const f = assessCanvasBrightness("#ffffff", [
+    { scene: 0, lum: null }, { scene: 1, lum: 0.05 }, { scene: 2, lum: 0.04 },
+  ]);
+  assert(f.length === 2, `nulls ignored, 2 dark flagged: ${JSON.stringify(f)}`);
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);
