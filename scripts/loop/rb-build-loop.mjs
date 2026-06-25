@@ -126,7 +126,10 @@ while (true) {
     let b;
     for (let attempt = 1; attempt <= 3; attempt++) {
       try {
-        b = await postHttp("/api/preview/build", { scriptId: rec.scriptId }, 10_800_000); // 3h
+        // Dev-only build route — same gated pipeline as /api/preview/build, but
+        // under /api/dev/* so the sessionless loop clears the Clerk auth
+        // middleware (which 404s /api/preview/* without a login).
+        b = await postHttp("/api/dev/build", { scriptId: rec.scriptId }, 10_800_000); // 3h
       } catch (e) { infra = true; throw new Error(`build INFRA: ${e.message}`); }
       const transient = b.status === 404 || (typeof b.raw === "string" && b.raw.trimStart().startsWith("<"));
       if (!transient) break;
