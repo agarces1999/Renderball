@@ -6,7 +6,10 @@
 # session nor sleep can take it down:
 #   nohup caffeinate -is bash scripts/loop/rb-watchdog.sh >.../watchdog.out 2>&1 </dev/null & disown
 set +e
-cd /Users/alfonsogarces/VIDEO_GEN-speed || exit 1
+# Operate on the repo this script lives in (script is at <repo>/scripts/loop/),
+# so the loop runs against whatever worktree it's launched from — not a hardcoded
+# path. (Was pinned to VIDEO_GEN-speed, which silently ran the wrong worktree.)
+cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)" || exit 1
 LOOPDIR=.data/loops
 mkdir -p "$LOOPDIR/results"
 DEVLOG="$LOOPDIR/dev.log"
