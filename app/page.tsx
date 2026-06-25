@@ -24,7 +24,6 @@ export default async function LandingPage() {
       <LandingHeader />
       <Hero />
       <HowItWorks />
-      <WhyAnimationRich />
       <Pricing />
       <Faq />
       <FooterCta />
@@ -76,9 +75,15 @@ function LandingHeader() {
 
 function Hero() {
   return (
-    <section className="relative overflow-hidden">
-      <div className="mx-auto max-w-6xl px-6 pb-20 pt-20 text-center sm:pt-28">
-        <span className="orb orb-spin mx-auto mb-9 block h-16 w-16" aria-hidden />
+    // Emerald brand-field scoped to the hero (DESIGN.md decisions log 2026-06-06
+    // already approves this treatment on /new — extending the same exception
+    // here so the front door reads as a brand moment, not a doc page).
+    <section className="brand-field relative overflow-hidden">
+      <div className="mx-auto max-w-6xl px-6 pb-24 pt-16 text-center sm:pt-24">
+        <span
+          className="orb orb-spin mx-auto mb-9 block h-[120px] w-[120px]"
+          aria-hidden
+        />
         <p className="mb-5 font-mono text-[11px] uppercase tracking-[0.18em] text-muted">
           AI-native video generation
         </p>
@@ -87,8 +92,7 @@ function Hero() {
         </h1>
         <p className="mx-auto mt-6 max-w-[56ch] text-[clamp(15px,2vw,18px)] leading-relaxed text-ink-soft">
           Describe the video you want. Approve a detailed script. Get a polished
-          MP4 in minutes — your fonts, your colors, your exact text. No
-          watermark, no card to start.
+          MP4 in minutes. Your fonts, your colors, your exact text.
         </p>
         <HeroPrompt />
         <div className="mt-6 flex flex-wrap items-center justify-center gap-x-4 gap-y-1 font-mono text-[11px] text-faint">
@@ -153,66 +157,6 @@ function HowItWorks() {
   );
 }
 
-function WhyAnimationRich() {
-  const rows = [
-    {
-      cat: "Talking-head avatars",
-      gets: "An AI avatar reading your script",
-      wrong: "Wrong format for anything that isn't a person talking",
-    },
-    {
-      cat: "Stitched stock",
-      gets: "Stock clips, captions, and music",
-      wrong: "Every video looks the same — cheap and obvious",
-    },
-    {
-      cat: "Generative AI video",
-      gets: "Cinematic AI-imagined footage",
-      wrong: "Uncontrollable — wrong logos, wrong text, off-brand color",
-    },
-  ];
-  return (
-    <section className="border-t border-hairline">
-      <div className="mx-auto max-w-6xl px-6 py-20">
-        <h2 className="mb-2 font-display text-[clamp(24px,3.4vw,32px)] font-semibold tracking-tight text-ink">
-          Most AI video falls into one of three traps
-        </h2>
-        <p className="mb-10 max-w-[56ch] text-[15px] leading-relaxed text-muted">
-          Renderball is different. We render animation from code, written by AI,
-          controlled by you — your fonts, your colors, your exact text, every
-          frame deterministic. The output looks like motion graphics from a top
-          agency, delivered in minutes instead of weeks.
-        </p>
-        <div className="overflow-hidden rounded-lg border border-hairline">
-          {rows.map((r, i) => (
-            <div
-              key={r.cat}
-              className={`grid grid-cols-1 gap-1 px-5 py-4 sm:grid-cols-[1fr_1.2fr_1.4fr] sm:gap-6 ${
-                i > 0 ? "border-t border-hairline" : ""
-              }`}
-            >
-              <div className="text-[14px] font-semibold text-ink">{r.cat}</div>
-              <div className="text-[14px] text-ink-soft">{r.gets}</div>
-              <div className="text-[14px] text-muted">{r.wrong}</div>
-            </div>
-          ))}
-          <div className="grid grid-cols-1 gap-1 border-t border-accent-line bg-accent-soft px-5 py-4 sm:grid-cols-[1fr_1.2fr_1.4fr] sm:gap-6">
-            <div className="text-[14px] font-semibold text-accent-text">
-              Renderball
-            </div>
-            <div className="text-[14px] text-ink">
-              Animation rendered from code, on-brand
-            </div>
-            <div className="text-[14px] text-ink-soft">
-              Your fonts and colors, exact text, agency-grade — in minutes
-            </div>
-          </div>
-        </div>
-      </div>
-    </section>
-  );
-}
-
 function Pricing() {
   const points = [
     "Unlimited videos, every month",
@@ -225,7 +169,10 @@ function Pricing() {
   return (
     <section id="pricing" className="border-t border-hairline bg-surface">
       <div className="mx-auto max-w-6xl px-6 py-20">
-        <h2 className="mb-2 text-center font-display text-[clamp(24px,3.4vw,32px)] font-semibold tracking-tight text-ink">
+        <p className="mb-4 text-center font-mono text-[11px] uppercase tracking-[0.18em] text-muted">
+          Pricing
+        </p>
+        <h2 className="mb-3 text-center font-display text-[clamp(26px,3.6vw,36px)] font-semibold tracking-tight text-ink">
           One plan. Everything included.
         </h2>
         <p className="mx-auto mb-12 max-w-[52ch] text-center text-[15px] leading-relaxed text-muted">
@@ -329,21 +276,29 @@ function Faq() {
 
 function FooterCta() {
   return (
-    <section className="border-t border-hairline bg-surface">
-      <div className="mx-auto max-w-6xl px-6 py-20 text-center">
-        <span className="orb mx-auto mb-7 block h-12 w-12" aria-hidden />
-        <h2 className="mx-auto max-w-[20ch] font-display text-[clamp(26px,4vw,40px)] font-semibold leading-[1.06] tracking-tight text-ink">
+    // Closer: same brand-field as the hero, so the landing opens and closes on
+    // an emerald moment with the content in between in the quiet greyscale.
+    <section className="brand-field relative overflow-hidden border-t border-hairline">
+      <div className="mx-auto max-w-6xl px-6 py-28 text-center">
+        <span
+          className="orb orb-spin mx-auto mb-9 block h-[140px] w-[140px]"
+          aria-hidden
+        />
+        <h2 className="mx-auto max-w-[22ch] font-display text-[clamp(32px,5vw,52px)] font-semibold leading-[1.04] tracking-tight text-ink">
           Make videos people remember
         </h2>
-        <p className="mx-auto mt-4 max-w-[40ch] text-[15px] leading-relaxed text-muted">
+        <p className="mx-auto mt-5 max-w-[44ch] text-[clamp(15px,2vw,17px)] leading-relaxed text-ink-soft">
           One subscription. Unlimited videos. Your brand, every frame.
         </p>
         <Link
           href="/new"
-          className="mt-8 inline-block rounded-md bg-accent px-7 py-3 text-[15px] font-semibold text-accent-ink transition-all hover:brightness-110"
+          className="mt-10 inline-block rounded-md bg-accent px-8 py-3.5 text-[15px] font-semibold text-accent-ink shadow-[0_20px_50px_-20px_rgba(0,194,138,0.7)] transition-all hover:brightness-110"
         >
-          Start for $49.99/mo
+          Start for $49.99/mo →
         </Link>
+        <p className="mt-5 font-mono text-[11px] text-faint">
+          Billed monthly. Cancel anytime.
+        </p>
       </div>
     </section>
   );
