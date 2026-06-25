@@ -1,4 +1,5 @@
 import { getAnthropic, MODELS } from "../anthropic";
+import { withTransientRetry } from "./transient-retry";
 import { SCRIPT_GENERATOR_SYSTEM_PROMPT } from "./prompts/script-generator";
 import {
   validateScript,
@@ -259,20 +260,27 @@ export const generateScript = async (
       // Richer brand context (e.g. liquiddeath.com's 8 headlines + body
       // excerpts) makes the generation long enough to trip it. .finalMessage()
       // returns the same Message shape, so downstream parsing is unchanged.
-      response = await client.messages
-        .stream({
-          model: MODELS.scriptGenerator,
-          max_tokens: 16000,
-          system: [
-            {
-              type: "text",
-              text: SCRIPT_GENERATOR_SYSTEM_PROMPT,
-              cache_control: { type: "ephemeral" },
-            },
-          ],
-          messages: history,
-        })
-        .finalMessage();
+      // A dropped stream ("terminated") is transient — re-run the WHOLE call a
+      // bounded few times rather than failing the entire script step on one blip
+      // (which cascaded into the worker re-attempting the brand for hours). Only
+      // the transport drop retries here; content/validation retries are the outer
+      // MAX_ATTEMPTS loop, and a real API error (400/auth) still fails fast.
+      response = await withTransientRetry("script-gen", () =>
+        client.messages
+          .stream({
+            model: MODELS.scriptGenerator,
+            max_tokens: 16000,
+            system: [
+              {
+                type: "text",
+                text: SCRIPT_GENERATOR_SYSTEM_PROMPT,
+                cache_control: { type: "ephemeral" },
+              },
+            ],
+            messages: history,
+          })
+          .finalMessage(),
+      );
     } catch (err) {
       return {
         ok: false,
