@@ -131,7 +131,11 @@ while (true) {
         // middleware (which 404s /api/preview/* without a login).
         b = await postHttp("/api/dev/build", { scriptId: rec.scriptId }, 10_800_000); // 3h
       } catch (e) { infra = true; throw new Error(`build INFRA: ${e.message}`); }
-      const transient = b.status === 404 || (typeof b.raw === "string" && b.raw.trimStart().startsWith("<"));
+      // Transient = a 404 with NO json body (the bodyless/HTML 404 the Clerk
+      // middleware returns for a route it's still wiring up) or an HTML error
+      // page. A 404 WITH a json body is a deterministic verdict (e.g. /api/dev/build's
+      // {error:"script not found"}) — break immediately, don't retry a miss 3×.
+      const transient = (b.status === 404 && !b.json) || (typeof b.raw === "string" && b.raw.trimStart().startsWith("<"));
       if (!transient) break;
       await sleep(5000);
     }

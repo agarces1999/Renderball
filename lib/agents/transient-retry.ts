@@ -11,6 +11,11 @@
  * 2026-06-25 generate-retry storm: ~50 calls/brand, $0 of value). z.ai drops
  * are intermittent, so the cheapest first step must survive them.
  */
+// Mirrors pipeline.ts streamBuildCall's set, with one INTENTIONAL omission: no
+// `aborted` token. The script-gen call (the only caller) wires no AbortController,
+// so an "aborted" error here would signal a real failure, not a transient drop —
+// do NOT re-add it. (The bare `network` token is a broad substring match inherited
+// from pipeline.ts; left as-is for parity — no real non-transient error contains it.)
 const TRANSIENT_RX =
   /ETIMEDOUT|ECONNRESET|terminated|socket hang up|EPIPE|ECONNREFUSED|fetch failed|network|overloaded_error|\[operation failed\]|internal network failure/i;
 
