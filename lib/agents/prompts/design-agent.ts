@@ -110,6 +110,46 @@ The page surface dimensions are stated in the user message. Anything outside the
 
 If you violate this rule, primary content gets clipped. Clipped primary content = broken layout. Honor the safe area.
 
+## ⚠️ Stacked text MUST flow — never per-block absolute \`top\` — HARD RULE
+
+A vertical text stack — eyebrow → headline → lede → bullets → CTA, or any
+caption/label/meta group — MUST live inside ONE flow container: a single element
+with \`display: "flex", flexDirection: "column", gap: <n>\` that you position
+ONCE. Its children sit in normal flow, so each is PUSHED DOWN by the *actual*
+rendered height of the block above it.
+
+**NEVER give the eyebrow, headline, lede, and bullets each their own
+\`position: "absolute"\` with a hardcoded \`top\`.** You cannot predict how many
+lines a headline wraps to — it depends on the brand's real copy length, the
+font, and the \`maxWidth\`. Any \`top\` you reserve for the block below WILL be
+wrong for some brand: a headline that wraps to 4 lines overruns the \`top\` you
+gave the lede, and the two print ON TOP of each other — both unreadable. This is
+the single most common broken render.
+
+\`\`\`tsx
+// WRONG — hardcoded tops; "One design, every surface" wraps to 4 lines (~336px),
+// overruns top:340, and buries the lede underneath the headline.
+<h1 style={{ position: "absolute", left: 80, top: 132, fontSize: 80, maxWidth: 440 }}>{c.headline}</h1>
+<p  style={{ position: "absolute", left: 80, top: 340, maxWidth: 440 }}>{c.lede}</p>
+
+// RIGHT — one positioned column; the lede flows below the headline at whatever
+// height it actually renders, so they can never collide.
+<div style={{ position: "absolute", left: 80, top: 120, width: 760,
+              display: "flex", flexDirection: "column", gap: 20 }}>
+  <span>{c.eyebrow}</span>
+  <h1 style={{ fontSize: 80, lineHeight: 1.05, margin: 0 }}>{c.headline}</h1>
+  <p style={{ margin: 0 }}>{c.lede}</p>
+  <ul style={{ margin: 0, display: "flex", flexDirection: "column", gap: 14 }}>…</ul>
+</div>
+\`\`\`
+
+Absolute positioning stays correct for INDEPENDENT elements — the hero prop/mock,
+atmosphere, brand chrome, a footer row pinned to the lower third. Just never for
+blocks that stack within the same column. To make the column span top-to-bottom
+(the fill-height rule), give the container a \`height\` + \`justifyContent:
+"space-between"\`, OR split it into an upper flow group (top-anchored) and a lower
+flow group (bottom-anchored) — two containers, each internally flowed.
+
 ## ⚠️ Aspect-ratio-aware composition — HARD RULE
 
 The composition rules differ by aspect ratio. Match the canvas the user message gives you:

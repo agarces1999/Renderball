@@ -6,6 +6,7 @@
  */
 import {
   findOverflow,
+  findTextOverlap,
   findRenderTruthFailures,
   hexLuminance,
   assessCanvasBrightness,
@@ -89,6 +90,54 @@ await check("blocking subset = overflow + measure-error (contrast/dead-region ad
   const { findings, blocking } = await findRenderTruthFailures(ms);
   assert(blocking.length === 1 && blocking[0].scene === 1 && blocking[0].kind === "overflow", `blocking=${JSON.stringify(blocking)}`);
   assert(findings.length >= 1, "should have at least the overflow finding");
+});
+
+// ── text-on-text overlap (wrapping headline buries the lede) ─────────────────
+const txt = (p: Partial<MeasuredElement>): MeasuredElement =>
+  el({ fontSize: 24, text: "x", bg: "rgba(0,0,0,0)", ...p });
+
+await check("flags a wrapped headline overrunning the lede (the Canva scene-2/4 defect)", () => {
+  // headline @top:132 wraps to ~336px tall (ends ~468); lede hardcoded @top:340
+  // sits entirely inside the headline's box — a full collision.
+  const m = scene(2, [
+    txt({ tag: "h1", text: "One design, every surface", x: 80, y: 132, w: 440, h: 336, fontSize: 80 }),
+    txt({ tag: "p", text: "Make one design for any format in a tap.", x: 80, y: 340, w: 440, h: 80 }),
+  ]);
+  const r = findTextOverlap(m);
+  assert(r.length === 1 && r[0].kind === "text-overlap", `got ${JSON.stringify(r)}`);
+});
+
+await check("does NOT flag a container whose text contains the child's (ul ⊇ li)", () => {
+  const m = scene(0, [
+    txt({ tag: "ul", text: "Real-time · Fractional · Free", x: 80, y: 470, w: 440, h: 120 }),
+    txt({ tag: "li", text: "Real-time", x: 80, y: 470, w: 440, h: 36 }),
+  ]);
+  assert(findTextOverlap(m).length === 0, "container/child text containment must not flag");
+});
+
+await check("does NOT flag text sitting on an opaque chip/card (intentional overlap)", () => {
+  // a label on a colored badge: the label's own bg is the chip color (opaque).
+  const m = scene(1, [
+    txt({ tag: "span", text: "SALE", x: 600, y: 270, w: 80, h: 40, bg: "rgba(216,27,96,1)" }),
+    txt({ tag: "span", text: "Social Post", x: 690, y: 275, w: 120, h: 30, bg: "rgba(216,27,96,1)" }),
+  ]);
+  assert(findTextOverlap(m).length === 0, "text on an opaque surface must not flag");
+});
+
+await check("does NOT flag cleanly stacked, non-overlapping text", () => {
+  const m = scene(0, [
+    txt({ tag: "h1", text: "Headline here", x: 80, y: 120, w: 600, h: 160, fontSize: 80 }),
+    txt({ tag: "p", text: "A lede comfortably below.", x: 80, y: 320, w: 600, h: 70 }),
+  ]);
+  assert(findTextOverlap(m).length === 0, "non-overlapping stack must not flag");
+});
+
+await check("does NOT flag a tiny (<30%) incidental overlap", () => {
+  const m = scene(0, [
+    txt({ tag: "h1", text: "Alpha", x: 80, y: 120, w: 400, h: 120 }),
+    txt({ tag: "p", text: "Bravo", x: 80, y: 235, w: 400, h: 120 }), // only ~4% overlap
+  ]);
+  assert(findTextOverlap(m).length === 0, "minor incidental overlap must not flag");
 });
 
 // ── canvas-brightness gate (light brand shipped dark) ────────────────────────

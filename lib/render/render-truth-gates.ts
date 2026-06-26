@@ -22,6 +22,7 @@ import type { SceneMeasurement, MeasuredElement } from "./measure-scene";
 
 export type RenderTruthKind =
   | "overflow"
+  | "text-overlap"
   | "contrast"
   | "dead-region"
   | "canvas-brightness"
@@ -61,6 +62,73 @@ export const findOverflow = (m: SceneMeasurement): RenderTruthFinding[] => {
       kind: "overflow",
       detail: `${e.tag} ${label} clipped at ${where} (box ${e.x},${e.y} ${e.w}×${e.h} on ${m.width}×${m.height})`,
     });
+  }
+  return out;
+};
+
+// ── text-on-text overlap (the wrapping-headline-buries-the-lede defect) ──────
+// Two DISTINCT text blocks printed on top of each other — both unreadable. The
+// canonical cause: a scene stacks eyebrow/headline/lede/bullets with per-block
+// `position:absolute; top:…`, then a headline wraps to more lines than the
+// hardcoded gap reserved, overrunning the block below. The overflow gate misses
+// it (nothing crosses the canvas edge — the collision is INSIDE the frame). The
+// design-agent prompt rule ("stacked text MUST flow") is the primary fix; this is
+// the deterministic detector. ADVISORY by default (not in blockingKinds) so it
+// surfaces the defect without risking a wrongful regen of a good scene.
+const OVERLAP_MIN_TEXT_PX = 12;
+const OVERLAP_MIN_FRAC = 0.3; // intersection ≥30% of the SMALLER box ⇒ a collision
+
+// Alpha of a CSS rgb/rgba color. rgb(...) (no alpha) ⇒ opaque (1). Used to keep
+// the check to text sitting on the CANVAS — text on an opaque chip/card/badge
+// overlaps that surface by design and must not be flagged.
+const cssAlpha = (color: string): number => {
+  const m = /rgba?\(([^)]+)\)/.exec(color || "");
+  if (!m) return 0; // no parseable bg ⇒ treat as transparent
+  const p = m[1].split(",").map((v) => parseFloat(v.trim()));
+  return p.length >= 4 ? (Number.isNaN(p[3]) ? 1 : p[3]) : 1;
+};
+
+// A free-standing text block on the canvas (not a chip/badge label, not an icon).
+const isOverlapText = (e: MeasuredElement): boolean =>
+  !e.isImg &&
+  e.text.trim().length >= 2 &&
+  e.fontSize >= OVERLAP_MIN_TEXT_PX &&
+  e.opacity > 0.1 &&
+  cssAlpha(e.bg) < 0.15;
+
+/**
+ * Distinct text blocks whose measured boxes significantly overlap. Pairs are
+ * skipped when one element's text CONTAINS the other's — that's a container/child
+ * (e.g. a <ul> box around its <li>s, or a wrapper around its text node), not a
+ * collision. What remains — two blocks with different copy overlapping ≥30% of
+ * the smaller box — is the headline-buries-lede defect.
+ */
+export const findTextOverlap = (m: SceneMeasurement): RenderTruthFinding[] => {
+  if (m.error) return []; // measure-error already surfaced by findOverflow
+  const texts = m.elements.filter(isOverlapText);
+  const out: RenderTruthFinding[] = [];
+  for (let i = 0; i < texts.length; i++) {
+    for (let j = i + 1; j < texts.length; j++) {
+      const a = texts[i];
+      const b = texts[j];
+      // Container/child or a repeated string — not a collision.
+      if (a.text.includes(b.text) || b.text.includes(a.text)) continue;
+      const ix = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
+      const iy = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
+      if (ix <= 0 || iy <= 0) continue; // no intersection
+      const minArea = Math.min(a.w * a.h, b.w * b.h);
+      if (minArea <= 0) continue;
+      const frac = (ix * iy) / minArea;
+      if (frac < OVERLAP_MIN_FRAC) continue;
+      out.push({
+        scene: m.scene,
+        kind: "text-overlap",
+        detail:
+          `text "${a.text.slice(0, 24)}" overlaps text "${b.text.slice(0, 24)}" — ` +
+          `${Math.round(frac * 100)}% of the smaller box ` +
+          `(${a.tag}@${a.x},${a.y} ${a.w}×${a.h} ∩ ${b.tag}@${b.x},${b.y} ${b.w}×${b.h})`,
+      });
+    }
   }
   return out;
 };
@@ -316,6 +384,7 @@ export const findRenderTruthFailures = async (
   const findings: RenderTruthFinding[] = [];
   for (const m of measurements) {
     findings.push(...findOverflow(m));
+    findings.push(...findTextOverlap(m));
     findings.push(...(await findContrast(m)));
     findings.push(...(await findDeadRegion(m)));
   }
