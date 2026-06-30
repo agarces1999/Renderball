@@ -25,6 +25,7 @@ Return the COMPLETE TypeScript source of a single \`Composition.tsx\` file.
 - Each Section component is **self-contained**: it includes a local \`<style>\` block at the top of its JSX with the brand \`@font-face\` declarations. This way the section renders correctly even when mounted independently.
 - A top-level named export \`export const Generated\` that renders all sections — used for preview only.
 - **Pure React.** Use \`React\` and any built-in HTML/CSS. For image elements use \`<Img>\` from the sibling \`"./Img"\` module — it's a normal image component, use it identically to an HTML \`<img>\` tag with a \`src\` prop.
+- **Piece markers — wrap each top-level role (the LEGO model).** Wrap each TOP-LEVEL role of a Section in a transparent <Piece> from "./Piece" (it renders its children unchanged, ZERO visual effect — keep ALL positioning, styling, and animation on your own elements inside it). It lets the editor move / regenerate / delete each role independently. Form: <Piece id="s{N}.{role}" kind="text" | "diegetic" | "image" | "atmosphere" | "chrome"> … </Piece>. The roles: the editorial copy stack = ONE kind="text" piece (the whole eyebrow→headline→lede→bullets→meta column — never split it); each diegetic UI object / mock / chart / KPI cluster = one kind="diegetic" piece (a mock is ONE piece — do NOT wrap the icons or rows inside it); each standalone image = kind="image"; each full-bleed decorative layer (glow, grain) = kind="atmosphere"; the BrandChrome = kind="chrome". If a role is the recurring throughline motif, add throughline="{slug}" to its <Piece> (and keep data-throughline on the motif element). A typical Section = 3–6 Pieces. This is STRUCTURAL ONLY — it must not change a single pixel of your design.
 - **No animation imports.** Don't import \`useCurrentFrame\`, \`useVideoConfig\`, \`interpolate\`, \`spring\`, \`Easing\`, \`Sequence\`. Don't reference \`frame\` anywhere. This is a static page — animation is added by a separate pass later.
 - Inline styles or CSS-in-string \`<style>\` tags. Both work. No external CSS files, no Tailwind classes.
 - **Runtime data shape:** the \`script\` prop is shaped as \`{ scenes: [{ content, ... }, ...], assets: { images: [...], fonts: [...] }, config: {...} }\`. The array is named \`scenes\`, NOT \`sections\` — the COMPONENT naming you use externally (Section0, Section1) is unrelated to the data field name. When you access content at runtime in JSX, write \`script.scenes[0].content\`, \`script.scenes[1].content.headline\`, etc. NEVER \`script.sections[...]\` — that doesn't exist.
@@ -35,6 +36,7 @@ Skeleton:
 \`\`\`tsx
 import React from "react";
 import { Img } from "./Img";
+import { Piece } from "./Piece";
 
 interface Script { /* type-only, no runtime use */ }
 
@@ -57,7 +59,11 @@ const SECTION_FRAME: React.CSSProperties = {
 export const Section0: React.FC<{ script: Script }> = ({ script }) => (
   <div style={{ ...SECTION_FRAME, background: "…", fontFamily: \`"Neue Montreal", …\` }}>
     <style dangerouslySetInnerHTML={{ __html: BRAND_FONTS_CSS }} />
-    {/* COMPLETE static section — every element at its final position */}
+    {/* Each TOP-LEVEL role wrapped in a transparent <Piece> — see "Piece markers": */}
+    <Piece id="s0.atmos" kind="atmosphere">{/* full-bleed glow / grain */}</Piece>
+    <Piece id="s0.copy" kind="text">{/* ONE positioned flow column: eyebrow → headline → lede → bullets → meta */}</Piece>
+    <Piece id="s0.hero" kind="diegetic">{/* the diegetic mock / chart / KPI cluster at its final position */}</Piece>
+    <Piece id="s0.chrome" kind="chrome">{/* <BrandChrome … /> */}</Piece>
   </div>
 );
 

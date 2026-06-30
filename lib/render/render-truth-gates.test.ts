@@ -132,14 +132,20 @@ await check("does NOT flag cleanly stacked, non-overlapping text", () => {
   assert(findTextOverlap(m).length === 0, "non-overlapping stack must not flag");
 });
 
-await check("does NOT flag an inline <em> emphasis inside its headline (lastWordAccent)", () => {
-  // measure-scene reports the h1 and its inline <em> last word as separate elements;
-  // the em sits inside the h1 box by design — never a collision.
-  const m = scene(1, [
+await check("does NOT flag an inline accent (em OR span) inside its headline", () => {
+  // measure-scene reports the h1 and its inline accent as separate elements; the
+  // accent sits inside the h1 by design — never a collision, whatever the tag.
+  const em = scene(1, [
     txt({ tag: "h1", text: "The market was built for the", x: 96, y: 188, w: 760, h: 162, fontSize: 78 }),
     txt({ tag: "em", text: "few", x: 538, y: 262, w: 130, h: 95, fontSize: 78 }),
   ]);
-  assert(findTextOverlap(m).length === 0, "inline emphasis child must not flag against its parent");
+  assert(findTextOverlap(em).length === 0, "inline <em> accent must not flag");
+  // The real Robinhood case: "everyone" is a styled <span> inside the headline.
+  const span = scene(1, [
+    txt({ tag: "h1", text: "Investing for", x: 393, y: 139, w: 1135, h: 120, fontSize: 96 }),
+    txt({ tag: "span", text: "everyone", x: 1041, y: 139, w: 486, h: 120, fontSize: 96 }),
+  ]);
+  assert(findTextOverlap(span).length === 0, "inline <span> accent must not flag");
 });
 
 await check("does NOT flag a tiny (<30%) incidental overlap", () => {

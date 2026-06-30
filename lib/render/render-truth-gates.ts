@@ -88,19 +88,23 @@ const cssAlpha = (color: string): number => {
   return p.length >= 4 ? (Number.isNaN(p[3]) ? 1 : p[3]) : 1;
 };
 
-// Inline-emphasis tags are part of a parent text block's flow (a colored last
-// word via lastWordAccent, a bolded span) — they sit INSIDE their block by
-// design, so they must never count as a separate colliding block (they'd
-// false-fire against their own parent). A real collision is always block-level.
-const INLINE_EMPHASIS = new Set([
+// Inline text containers — emphasis tags AND span/a/label — sit INSIDE a parent
+// text block (a colored accent word via lastWordAccent, a styled <span>), so they
+// must never count as a separate colliding block (they'd false-fire against their
+// own parent). A real headline-buries-lede collision is always between BLOCK-level
+// text (h1/h2/p/div/li). Tag-based exclusion is REQUIRED because measure-scene
+// reports a parent's OWN text node (excluding inline-child text), so the
+// substring-containment skip below can't catch an accent child geometrically.
+const INLINE_TEXT_TAGS = new Set([
+  "span", "a", "label", "time", "cite",
   "em", "i", "b", "strong", "mark", "sub", "sup", "small", "u", "s", "code", "kbd", "abbr",
 ]);
 
-// A free-standing text block on the canvas (not a chip/badge label, not an icon,
-// not inline emphasis inside another block).
+// A free-standing text BLOCK on the canvas (not a chip/badge label, not an icon,
+// not an inline accent inside another block).
 const isOverlapText = (e: MeasuredElement): boolean =>
   !e.isImg &&
-  !INLINE_EMPHASIS.has(e.tag.toLowerCase()) &&
+  !INLINE_TEXT_TAGS.has(e.tag.toLowerCase()) &&
   e.text.trim().length >= 2 &&
   e.fontSize >= OVERLAP_MIN_TEXT_PX &&
   e.opacity > 0.1 &&

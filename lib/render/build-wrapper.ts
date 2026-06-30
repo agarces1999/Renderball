@@ -267,6 +267,24 @@ export const Img: React.FC<ImgProps> = (props) =>
 `;
 
 /**
+ * Transparent edit-marker shim (the LEGO engine). `<Piece id kind throughline?>`
+ * renders its children UNCHANGED — zero visual effect, exactly like a fragment —
+ * so a Composition with Piece wrappers renders byte-identically to one without.
+ * Its id/kind/throughline props exist only in the source string, where the
+ * deterministic decomposer reads them to slice each top-level role into its own
+ * editable piece file. Works in preview (Next.js) and render (Remotion) alike.
+ */
+export const PIECE_SHIM_SOURCE = `import React from "react";
+
+export const Piece: React.FC<{
+  id?: string;
+  kind?: string;
+  throughline?: string;
+  children?: React.ReactNode;
+}> = ({ children }) => React.createElement(React.Fragment, null, children);
+`;
+
+/**
  * Dual-context Video shim. Dropped next to Composition.tsx so the agent's
  * `import { Video } from "./Video"` resolves locally.
  * - In a Remotion RENDER → <OffthreadVideo> (deterministic, frame-accurate,
@@ -633,6 +651,7 @@ export const writeGeneratedFiles = async (
 ): Promise<void> => {
   await fs.mkdir(genDir, { recursive: true });
   await fs.writeFile(path.join(genDir, "Img.tsx"), IMG_SHIM_SOURCE, "utf-8");
+  await fs.writeFile(path.join(genDir, "Piece.tsx"), PIECE_SHIM_SOURCE, "utf-8");
   await fs.writeFile(path.join(genDir, "Video.tsx"), VIDEO_SHIM_SOURCE, "utf-8");
   await fs.writeFile(path.join(genDir, "Lottie.tsx"), LOTTIE_SHIM_SOURCE, "utf-8");
   await fs.writeFile(path.join(genDir, "BrandChrome.tsx"), BRAND_CHROME_SOURCE, "utf-8");
