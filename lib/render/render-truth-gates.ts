@@ -88,9 +88,19 @@ const cssAlpha = (color: string): number => {
   return p.length >= 4 ? (Number.isNaN(p[3]) ? 1 : p[3]) : 1;
 };
 
-// A free-standing text block on the canvas (not a chip/badge label, not an icon).
+// Inline-emphasis tags are part of a parent text block's flow (a colored last
+// word via lastWordAccent, a bolded span) — they sit INSIDE their block by
+// design, so they must never count as a separate colliding block (they'd
+// false-fire against their own parent). A real collision is always block-level.
+const INLINE_EMPHASIS = new Set([
+  "em", "i", "b", "strong", "mark", "sub", "sup", "small", "u", "s", "code", "kbd", "abbr",
+]);
+
+// A free-standing text block on the canvas (not a chip/badge label, not an icon,
+// not inline emphasis inside another block).
 const isOverlapText = (e: MeasuredElement): boolean =>
   !e.isImg &&
+  !INLINE_EMPHASIS.has(e.tag.toLowerCase()) &&
   e.text.trim().length >= 2 &&
   e.fontSize >= OVERLAP_MIN_TEXT_PX &&
   e.opacity > 0.1 &&

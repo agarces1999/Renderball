@@ -132,6 +132,16 @@ await check("does NOT flag cleanly stacked, non-overlapping text", () => {
   assert(findTextOverlap(m).length === 0, "non-overlapping stack must not flag");
 });
 
+await check("does NOT flag an inline <em> emphasis inside its headline (lastWordAccent)", () => {
+  // measure-scene reports the h1 and its inline <em> last word as separate elements;
+  // the em sits inside the h1 box by design — never a collision.
+  const m = scene(1, [
+    txt({ tag: "h1", text: "The market was built for the", x: 96, y: 188, w: 760, h: 162, fontSize: 78 }),
+    txt({ tag: "em", text: "few", x: 538, y: 262, w: 130, h: 95, fontSize: 78 }),
+  ]);
+  assert(findTextOverlap(m).length === 0, "inline emphasis child must not flag against its parent");
+});
+
 await check("does NOT flag a tiny (<30%) incidental overlap", () => {
   const m = scene(0, [
     txt({ tag: "h1", text: "Alpha", x: 80, y: 120, w: 400, h: 120 }),
