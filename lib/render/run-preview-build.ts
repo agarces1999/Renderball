@@ -7,6 +7,7 @@ import {
   repairSceneRenderErrors,
 } from "../agents/pipeline";
 import { writeGeneratedFiles } from "./build-wrapper";
+import { decomposeGenDir } from "../agents/lego-store";
 import { verifyScenesRender } from "./ssr-render";
 import { measureScenes } from "./measure-scene";
 import { findRenderTruthFailures, measureOutDir } from "./render-truth-gates";
@@ -331,6 +332,16 @@ export async function runPreviewBuild(
   // The build shipped — record the full build-model spend (initial + every
   // repair regen/rewrite) as ONE successful row.
   await recordUsage({ op: "build", model, scriptId, url: brief?.brand_kit_url, usage: currentUsage });
+
+  // LEGO engine: split the shipped composition into editable per-piece artifacts
+  // under genDir/lego/ for the visual editor. Best-effort + byte-identity-guarded —
+  // it never touches the render source, so a failure just means "not piece-editable".
+  try {
+    const lego = await decomposeGenDir(genDir);
+    console.log(`[preview/build] lego decompose: ${lego.ok ? `${lego.pieces} pieces` : `skipped (${lego.reason})`}`);
+  } catch (err) {
+    console.warn("[preview/build] lego decompose skipped:", err);
+  }
 
   return {
     status: 200,
