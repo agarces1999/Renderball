@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Script } from "../../../src/schema";
 import { cn } from "../../../lib/cn";
+import { ElementEditor } from "./ElementEditor";
 
 interface Props {
   scriptId: string;
@@ -58,6 +59,7 @@ interface PreviewWarnings {
 export function PreviewClient({ scriptId, script, initialWarnings }: Props) {
   const [sceneIndex, setSceneIndex] = useState(0);
   const [playing, setPlaying] = useState(true);
+  const [editing, setEditing] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
   const [regenerating, setRegenerating] = useState(false);
   const [regenError, setRegenError] = useState<string | null>(null);
@@ -69,9 +71,9 @@ export function PreviewClient({ scriptId, script, initialWarnings }: Props) {
 
   const dims = useMemo(() => getDimensions(script), [script]);
 
-  // Auto-advance scenes when playing.
+  // Auto-advance scenes when playing (never while editing elements).
   useEffect(() => {
-    if (!playing) return;
+    if (!playing || editing) return;
     const scene = script.scenes[sceneIndex];
     if (!scene) return;
     const startSec = scene.start_seconds ?? 0;
@@ -83,7 +85,7 @@ export function PreviewClient({ scriptId, script, initialWarnings }: Props) {
       setReloadKey((k) => k + 1);
     }, durMs);
     return () => clearTimeout(t);
-  }, [sceneIndex, playing, script.scenes, reloadKey]);
+  }, [sceneIndex, playing, editing, script.scenes, reloadKey]);
 
   const replayScene = () => setReloadKey((k) => k + 1);
   const selectScene = (i: number) => {
@@ -175,6 +177,16 @@ export function PreviewClient({ scriptId, script, initialWarnings }: Props) {
             background: "#0b0d12",
           }}
         />
+        {editing && (
+          <ElementEditor
+            iframeRef={iframeRef}
+            scriptId={scriptId}
+            sceneIndex={sceneIndex}
+            reloadKey={reloadKey}
+            canvasWidth={dims.width}
+            onChanged={() => setReloadKey((k) => k + 1)}
+          />
+        )}
       </div>
 
       {/* Scene rail */}
@@ -201,8 +213,28 @@ export function PreviewClient({ scriptId, script, initialWarnings }: Props) {
       <div className="mb-6 flex flex-wrap items-center gap-2">
         <button
           type="button"
+          onClick={() => {
+            setEditing((e) => {
+              const next = !e;
+              if (next) setPlaying(false);
+              return next;
+            });
+            setReloadKey((k) => k + 1);
+          }}
+          className={cn(
+            "rounded-md border px-4 py-2 text-[13px] transition-colors",
+            editing
+              ? "border-accent-line bg-accent-soft text-ink"
+              : "border-hairline-strong bg-surface text-ink hover:bg-surface-2",
+          )}
+        >
+          {editing ? "Done editing" : "Edit elements"}
+        </button>
+        <button
+          type="button"
           onClick={() => setPlaying((p) => !p)}
-          className="rounded-md border border-hairline-strong bg-surface px-4 py-2 text-[13px] text-ink transition-colors hover:bg-surface-2"
+          disabled={editing}
+          className="rounded-md border border-hairline-strong bg-surface px-4 py-2 text-[13px] text-ink transition-colors hover:bg-surface-2 disabled:opacity-40"
         >
           {playing ? "Pause" : "Play"}
         </button>

@@ -1,0 +1,195 @@
+import { promises as fs } from "fs";
+import path from "path";
+import React from "react";
+import * as esbuild from "esbuild";
+import type { Script } from "../../src/schema";
+import { dimensionsForScript, WIDE_LOCKUP_RATIO } from "./build-wrapper";
+
+// react-dom/server via runtime require to bypass Next's app-router static check.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const { renderToStaticMarkup } = eval("require")("react-dom/server") as {
+  renderToStaticMarkup: (node: React.ReactNode) => string;
+};
+
+export type SceneDocResult =
+  | { ok: true; html: string }
+  | { ok: false; status: number; message: string };
+
+/**
+ * SSR one Section{N} of a generated Composition into a self-contained HTML doc —
+ * the shared core of the preview iframe. esbuild compiles Composition.tsx on demand
+ * (webpack can't dynamic-import dirs created mid-session), we eval it in a synthesized
+ * CJS context reusing this process's require (so react/lucide/recharts are the same
+ * instances), render the Section, and wrap it in an auto-scaling canvas doc.
+ *
+ * Auth + script loading are the caller's job; this is pure given a loaded script.
+ */
+export async function renderSceneDoc(
+  scriptId: string,
+  sceneIndex: number,
+  script: Script,
+): Promise<SceneDocResult> {
+  if (sceneIndex < 0 || sceneIndex >= script.scenes.length) {
+    return { ok: false, status: 400, message: `scene ${sceneIndex} out of range (0..${script.scenes.length - 1})` };
+  }
+
+  const compPath = path.join(process.cwd(), "src", "generated", scriptId, "Composition.tsx");
+  try {
+    await fs.access(compPath);
+  } catch {
+    return { ok: false, status: 404, message: `Composition.tsx not found at ${compPath}. Run a build first.` };
+  }
+
+  let bundleSource: string;
+  try {
+    const result = await esbuild.build({
+      entryPoints: [compPath],
+      bundle: true,
+      format: "cjs",
+      platform: "node",
+      target: "node18",
+      jsx: "automatic",
+      write: false,
+      external: [
+        "react",
+        "react-dom",
+        "react-dom/server",
+        "recharts",
+        "lucide-react",
+        "shiki",
+        "simple-icons",
+        "simple-icons/icons",
+        "remotion",
+        "@remotion/lottie",
+      ],
+      logLevel: "silent",
+    });
+    bundleSource = result.outputFiles[0].text;
+  } catch (err) {
+    return { ok: false, status: 500, message: `Compilation error: ${err instanceof Error ? err.message : String(err)}` };
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const moduleObj: { exports: Record<string, any> } = { exports: {} };
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-implied-eval
+    const fn = new Function("module", "exports", "require", bundleSource);
+    fn(moduleObj, moduleObj.exports, eval("require"));
+  } catch (err) {
+    return { ok: false, status: 500, message: `Module eval error: ${err instanceof Error ? err.message : String(err)}` };
+  }
+
+  const mod = moduleObj.exports;
+  const candidates = [`Section${sceneIndex}`, `Scene${sceneIndex}Slide`, `Scene${sceneIndex}`, `Slide${sceneIndex}`];
+  let Section: React.ComponentType<{ script: typeof script }> | undefined;
+  for (const name of candidates) {
+    if (typeof mod[name] === "function") {
+      Section = mod[name];
+      break;
+    }
+  }
+  if (!Section) {
+    return { ok: false, status: 500, message: `No Section${sceneIndex} exported. Exports: ${Object.keys(mod).join(", ")}` };
+  }
+
+  let sectionHtml: string;
+  try {
+    sectionHtml = renderToStaticMarkup(React.createElement(Section, { script }));
+  } catch (err) {
+    return { ok: false, status: 500, message: `Render error: ${err instanceof Error ? err.message : String(err)}` };
+  }
+
+  const dims = dimensionsForScript(script);
+
+  const lottieMount = sectionHtml.includes("rb-lottie")
+    ? `<script src="https://cdnjs.cloudflare.com/ajax/libs/lottie-web/5.12.2/lottie.min.js"></script>
+<script>
+  (function () {
+    function play() {
+      var els = document.querySelectorAll('.rb-lottie[data-lottie-src]');
+      for (var i = 0; i < els.length; i++) {
+        var el = els[i];
+        if (el.getAttribute('data-rb-init') || !window.lottie) continue;
+        el.setAttribute('data-rb-init', '1');
+        try {
+          window.lottie.loadAnimation({
+            container: el,
+            path: el.getAttribute('data-lottie-src'),
+            renderer: 'svg',
+            loop: el.getAttribute('data-lottie-loop') !== '0',
+            autoplay: true,
+          });
+        } catch (e) {}
+      }
+    }
+    if (window.lottie) play();
+    document.addEventListener('DOMContentLoaded', play);
+    window.addEventListener('load', play);
+  })();
+</script>`
+    : "";
+
+  const lockupMount = sectionHtml.includes("data-rb-brand-logo")
+    ? `<script>
+  (function () {
+    function apply(img) {
+      if (!(img.naturalHeight > 0 && img.naturalWidth / img.naturalHeight > ${WIDE_LOCKUP_RATIO})) return;
+      var mark = img.parentElement;
+      var span = mark && mark.querySelector('[data-rb-brand-wordmark]');
+      if (span) span.style.display = 'none';
+    }
+    function scan() {
+      var imgs = document.querySelectorAll('img[data-rb-brand-logo]');
+      for (var i = 0; i < imgs.length; i++) {
+        if (imgs[i].complete) apply(imgs[i]);
+        else imgs[i].addEventListener('load', function (e) { apply(e.target); });
+      }
+    }
+    document.addEventListener('DOMContentLoaded', scan);
+    window.addEventListener('load', scan);
+  })();
+</script>`
+    : "";
+
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Preview · Scene ${sceneIndex}</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #000; overflow: hidden; height: 100%; }
+  body { display: flex; align-items: center; justify-content: center; }
+  .renderball-canvas {
+    width: ${dims.width}px;
+    height: ${dims.height}px;
+    position: relative;
+    transform-origin: top left;
+  }
+</style>
+<script>
+  function fit() {
+    var c = document.querySelector('.renderball-canvas');
+    if (!c) return;
+    var sx = window.innerWidth / ${dims.width};
+    var sy = window.innerHeight / ${dims.height};
+    var s = Math.min(sx, sy);
+    c.style.transform = 'scale(' + s + ')';
+    var w = ${dims.width} * s;
+    var h = ${dims.height} * s;
+    c.style.position = 'absolute';
+    c.style.left = ((window.innerWidth - w) / 2) + 'px';
+    c.style.top = ((window.innerHeight - h) / 2) + 'px';
+  }
+  window.addEventListener('resize', fit);
+  document.addEventListener('DOMContentLoaded', fit);
+</script>
+</head>
+<body>
+<div class="renderball-canvas">${sectionHtml}</div>
+${lottieMount}
+${lockupMount}
+</body>
+</html>`;
+
+  return { ok: true, html };
+}

@@ -274,6 +274,11 @@ export const Img: React.FC<ImgProps> = (props) =>
  * deterministic decomposer reads them to slice each top-level role into its own
  * editable piece file. Works in preview (Next.js) and render (Remotion) alike.
  */
+// Piece renders a display:contents wrapper carrying data-piece/data-kind. display:
+// contents generates NO layout box — the children lay out exactly as if the wrapper
+// weren't there (proven pixel-identical to a Fragment in the Remotion render) — so it
+// costs the MP4 nothing, but gives the visual editor a real DOM node to resolve a
+// click to its piece (event.target.closest('[data-piece]')) and to bound a highlight.
 export const PIECE_SHIM_SOURCE = `import React from "react";
 
 export const Piece: React.FC<{
@@ -281,7 +286,12 @@ export const Piece: React.FC<{
   kind?: string;
   throughline?: string;
   children?: React.ReactNode;
-}> = ({ children }) => React.createElement(React.Fragment, null, children);
+}> = ({ id, kind, throughline, children }) =>
+  React.createElement(
+    "div",
+    { "data-piece": id, "data-kind": kind, "data-throughline": throughline, style: { display: "contents" } },
+    children,
+  );
 `;
 
 /**
