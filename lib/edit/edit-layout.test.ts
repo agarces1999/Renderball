@@ -100,6 +100,57 @@ await check("delete on a missing piece → ok:false", async () => {
   assert(!r.ok, "second delete of same id should fail");
 });
 
+// ---- nesting / drill-in (delete a CHILD of a composite) --------------------
+const ndir = path.join(os.tmpdir(), "rb-edit-layout-nested-test");
+const NCODE = `import React from "react";
+import { Piece } from "./Piece";
+
+const Card: React.FC<{ n: number }> = ({ n }) => (
+  <div style={{ position: "absolute", left: n * 100, top: 100, width: 80, height: 80 }} />
+);
+
+export const Section0: React.FC<{ script: any }> = ({ script }) => (
+  <div style={{ position: "absolute", inset: 0 }}>
+    <Piece id="s0.copy" kind="text"><h1 style={{ position: "absolute", left: 40, top: 40 }}>Hi</h1></Piece>
+    <Piece id="s0.cards" kind="diegetic">
+      <Piece id="s0.cards.0" kind="card"><Card n={0} /></Piece>
+      <Piece id="s0.cards.1" kind="card"><Card n={1} /></Piece>
+      <Piece id="s0.cards.2" kind="card"><Card n={2} /></Piece>
+    </Piece>
+  </div>
+);
+
+export const Generated: React.FC<{ script: any }> = ({ script }) => (<Section0 script={script} />);
+`;
+
+await check("nested setup: decompose keeps children inside the composite (2 top-level pieces)", async () => {
+  await fs.rm(ndir, { recursive: true, force: true });
+  await fs.mkdir(ndir, { recursive: true });
+  await fs.writeFile(path.join(ndir, "Composition.tsx"), NCODE, "utf8");
+  const rep = await decomposeGenDir(ndir);
+  assert(rep.ok && rep.pieces === 2, `nested decompose: ${JSON.stringify(rep)}`);
+});
+
+await check("delete a CHILD: only that child leaves; siblings + parent + other pieces stay", async () => {
+  const r = await deleteElement({ genDir: ndir, sceneIndex: 0, pieceId: "s0.cards.1" });
+  assert(r.ok && r.remaining === 2, `child delete: ${JSON.stringify(r)}`);
+  const comp = await fs.readFile(path.join(ndir, "Composition.tsx"), "utf8");
+  assert(!comp.includes('id="s0.cards.1"') && !comp.includes("n={1}"), "deleted child still present");
+  assert(comp.includes('id="s0.cards.0"') && comp.includes('id="s0.cards.2"'), "sibling children dropped");
+  assert(comp.includes('id="s0.cards"') && comp.includes('id="s0.copy"'), "parent or other piece dropped");
+});
+
+await check("delete a missing child → ok:false", async () => {
+  const r = await deleteElement({ genDir: ndir, sceneIndex: 0, pieceId: "s0.cards.9" });
+  assert(!r.ok, "missing child delete should fail");
+});
+
+await check("move a child → rejected with a clear message (not supported yet)", async () => {
+  const r = await moveElement({ genDir: ndir, sceneIndex: 0, pieceId: "s0.cards.0", dx: 10, dy: 10 });
+  assert(!r.ok && /nested/.test(r.error ?? ""), `expected nested-move rejection, got ${JSON.stringify(r)}`);
+});
+
+await fs.rm(ndir, { recursive: true, force: true }).catch(() => {});
 await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
 
 console.log(`\n${passed} passed, ${failed} failed`);

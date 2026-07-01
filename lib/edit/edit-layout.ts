@@ -18,6 +18,8 @@ import path from "path";
 import {
   readManifest,
   writeManifest,
+  readDecomposed,
+  writePieceBody,
   setPieceOffset,
   removePieceFromManifest,
   reassembleFromDisk,
@@ -26,6 +28,7 @@ import {
 import { finalizeUndefinedRefs } from "../agents/finalize-refs";
 import { verifyCompilable } from "../agents/code-extraction";
 import { withGenDirLock } from "./gendir-lock";
+import { findChildInScene, removeChildBlock } from "./nested-piece";
 
 const msg = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
@@ -70,7 +73,16 @@ export const moveElement = async (input: MoveElementInput): Promise<MoveElementR
     const piece = snapshot.scenes
       .find((s) => s.sceneIndex === sceneIndex)
       ?.pieces.find((p) => p.id === pieceId);
-    if (!piece) return { ok: false, error: `piece "${pieceId}" not found in scene ${sceneIndex}` };
+    if (!piece) {
+      // Nested children can be regenerated/deleted but not (yet) moved — their offset
+      // would live inside the parent's coordinate space, not the manifest.
+      const d = await readDecomposed(genDir);
+      const scene = d.scenes.find((s) => s.sceneIndex === sceneIndex);
+      if (scene && findChildInScene(scene, pieceId)) {
+        return { ok: false, error: "moving a nested element isn't supported yet — regenerate or delete it, or move the whole group" };
+      }
+      return { ok: false, error: `piece "${pieceId}" not found in scene ${sceneIndex}` };
+    }
 
     const prev = piece.offset ?? { dx: 0, dy: 0 };
     const offset: PieceOffset = { dx: prev.dx + dx, dy: prev.dy + dy };
@@ -106,23 +118,44 @@ export const deleteElement = async (input: DeleteElementInput): Promise<DeleteEl
 
   return withGenDirLock(genDir, async () => {
     const snapshot = await readManifest(genDir);
-    // Mutate the manifest but DEFER the irreversible body-file delete until commit
-    // succeeds, so a compile failure rolls back to an intact store.
+    // A top-level piece: mutate the manifest but DEFER the irreversible body-file
+    // delete until commit succeeds, so a compile failure rolls back to an intact store.
     const removed = await removePieceFromManifest(genDir, sceneIndex, pieceId);
-    if (!removed.ok) return { ok: false, error: `piece "${pieceId}" not found in scene ${sceneIndex}` };
+    if (removed.ok) {
+      try {
+        const res = await commit(genDir);
+        if (!res.ok) {
+          await writeManifest(genDir, snapshot); // restore the piece + slot
+          return { ok: false, error: res.error };
+        }
+        await fs.rm(removed.file!, { force: true }); // safe now — commit succeeded
+        const manifest = await readManifest(genDir);
+        const remaining = manifest.scenes.find((s) => s.sceneIndex === sceneIndex)?.pieces.length ?? 0;
+        return { ok: true, code: res.code, remaining };
+      } catch (e) {
+        await writeManifest(genDir, snapshot).catch(() => {});
+        return { ok: false, error: `delete failed: ${msg(e)}` };
+      }
+    }
 
+    // Not a top-level piece — it may be a nested CHILD. Splice its <Piece> block out
+    // of the parent's body; only the parent piece file changes, no sibling reflows.
+    const d = await readDecomposed(genDir);
+    const scene = d.scenes.find((s) => s.sceneIndex === sceneIndex);
+    const nested = scene ? findChildInScene(scene, pieceId) : null;
+    if (!nested) return { ok: false, error: `piece "${pieceId}" not found in scene ${sceneIndex}` };
+
+    const originalBody = nested.parent.body;
     try {
+      await writePieceBody(genDir, nested.parent.id, removeChildBlock(originalBody, nested.child));
       const res = await commit(genDir);
       if (!res.ok) {
-        await writeManifest(genDir, snapshot); // restore the piece + slot
+        await writePieceBody(genDir, nested.parent.id, originalBody); // rollback the parent body
         return { ok: false, error: res.error };
       }
-      await fs.rm(removed.file!, { force: true }); // safe now — commit succeeded
-      const manifest = await readManifest(genDir);
-      const remaining = manifest.scenes.find((s) => s.sceneIndex === sceneIndex)?.pieces.length ?? 0;
-      return { ok: true, code: res.code, remaining };
+      return { ok: true, code: res.code, remaining: nested.siblings.length };
     } catch (e) {
-      await writeManifest(genDir, snapshot).catch(() => {});
+      await writePieceBody(genDir, nested.parent.id, originalBody).catch(() => {});
       return { ok: false, error: `delete failed: ${msg(e)}` };
     }
   });

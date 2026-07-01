@@ -53,8 +53,34 @@ export interface Decomposed {
 
 const PIECE_OPEN_RX = /<Piece\b[^>]*>/g;
 const CLOSE = "</Piece>";
+/** The literal </Piece> close tag — exported so the nested-edit splicer can rebuild a
+ *  child block without re-hardcoding it. */
+export const CLOSE_TAG = CLOSE;
 const SLOT_OPEN = "{/*RB:";
 const SLOT_CLOSE = "*/}";
+
+// Matches an opening <Piece ...> OR a closing </Piece>, so we can find the close
+// that BALANCES a given open — a composite piece's body may itself contain nested
+// <Piece> markers (child pieces), and a naive indexOf("</Piece>") would stop at the
+// first child's close and truncate the parent. Depth-count to the matching close.
+const PIECE_TOKEN_RX = /<Piece\b[^>]*>|<\/Piece>/g;
+
+/** Index of the </Piece> that closes the piece whose body starts at bodyStart
+ *  (i.e. depth 0 at bodyStart). Returns -1 if unbalanced. */
+const matchingCloseIdx = (src: string, bodyStart: number): number => {
+  PIECE_TOKEN_RX.lastIndex = bodyStart;
+  let depth = 0;
+  let t: RegExpExecArray | null;
+  while ((t = PIECE_TOKEN_RX.exec(src))) {
+    if (t[0] === CLOSE) {
+      if (depth === 0) return t.index;
+      depth--;
+    } else {
+      depth++; // a nested <Piece ...> open
+    }
+  }
+  return -1;
+};
 
 const attr = (tag: string, name: string): string | undefined => {
   const m = tag.match(new RegExp("\\b" + name + '\\s*=\\s*"([^"]*)"'));
@@ -67,6 +93,45 @@ const slot = (id: string): string => SLOT_OPEN + id + SLOT_CLOSE;
  *  reassembler replaces with `openTag + body + close`. Exposed so the store can
  *  strip a slot on delete (M3) without duplicating the SLOT_OPEN/CLOSE format. */
 export const pieceSlot = (id: string): string => slot(id);
+
+/** A top-level <Piece> block located within an arbitrary source string (start/end
+ *  are indices into that string, for splicing). Used to find CHILD pieces inside a
+ *  composite piece's body for drill-in edits (nesting). */
+export interface PieceBlock {
+  id: string;
+  kind: string;
+  throughline?: string;
+  openTag: string;
+  body: string;
+  start: number; // index of openTag
+  end: number; // index just past </Piece>
+}
+
+/** List the TOP-LEVEL <Piece> blocks in `src` (not recursing into their bodies).
+ *  On a scene's Section source this returns the scene's pieces; on a composite
+ *  piece's body it returns that piece's direct CHILD pieces. */
+export const listPieceBlocks = (src: string): PieceBlock[] => {
+  const blocks: PieceBlock[] = [];
+  PIECE_OPEN_RX.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = PIECE_OPEN_RX.exec(src))) {
+    const openTag = m[0];
+    const bodyStart = m.index + openTag.length;
+    const closeIdx = matchingCloseIdx(src, bodyStart);
+    if (closeIdx === -1) break;
+    blocks.push({
+      id: attr(openTag, "id") ?? "",
+      kind: attr(openTag, "kind") ?? "diegetic",
+      throughline: attr(openTag, "throughline"),
+      openTag,
+      body: src.slice(bodyStart, closeIdx),
+      start: m.index,
+      end: closeIdx + CLOSE.length,
+    });
+    PIECE_OPEN_RX.lastIndex = closeIdx + CLOSE.length;
+  }
+  return blocks;
+};
 
 export const decompose = (code: string): Decomposed => {
   const ranges = sectionRanges(code);
@@ -85,7 +150,9 @@ export const decompose = (code: string): Decomposed => {
     while ((m = PIECE_OPEN_RX.exec(src))) {
       const openTag = m[0];
       const bodyStart = m.index + openTag.length;
-      const closeIdx = src.indexOf(CLOSE, bodyStart);
+      // Balanced close, so a composite's nested child <Piece> markers stay verbatim
+      // inside its body (they're spliced separately for drill-in edits).
+      const closeIdx = matchingCloseIdx(src, bodyStart);
       if (closeIdx === -1) break; // malformed open tag with no close — leave the rest verbatim
       const body = src.slice(bodyStart, closeIdx);
       const id = attr(openTag, "id") ?? "s" + r.index + ".p" + pieces.length;

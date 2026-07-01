@@ -97,6 +97,38 @@ check("editing ONE piece changes only that piece's region (zero neighbor effect)
   assert(orig === got, "the template, preamble, tail, and sibling pieces are byte-identical after a single-piece edit");
 });
 
+check("NESTED pieces: balanced match keeps children in the parent body, byte-identical round trip", () => {
+  const NESTED = `import React from "react";
+import { Piece } from "./Piece";
+
+const PALETTE = { a: "#fff" };
+
+export const Section0: React.FC<{ script: any }> = ({ script }) => (
+  <div style={{ position: "absolute", inset: 0 }}>
+    <Piece id="s0.copy" kind="text"><h1>Hi</h1></Piece>
+    <Piece id="s0.cards" kind="diegetic">
+      <Piece id="s0.cards.c0" kind="card"><Card n={0} /></Piece>
+      <Piece id="s0.cards.c1" kind="card"><Card n={1} /></Piece>
+    </Piece>
+  </div>
+);
+
+export const Generated: React.FC<{ script: any }> = ({ script }) => (<Section0 script={script} />);
+`;
+  const nd = decompose(NESTED);
+  assert(reassemble(nd) === NESTED, "nested reassemble must be byte-identical");
+  // only TOP-LEVEL pieces are extracted; children live inside the composite's body
+  assert(pieceCount(nd) === 2, `expected 2 top-level pieces, got ${pieceCount(nd)}`);
+  const cards = nd.scenes[0].pieces.find((p) => p.id === "s0.cards");
+  assert(!!cards, "s0.cards composite not found");
+  assert(cards!.body.includes('<Piece id="s0.cards.c0"') && cards!.body.includes('<Piece id="s0.cards.c1"'),
+    "child <Piece> markers must remain verbatim inside the composite's body");
+  // editing the composite's body changes only its region; s0.copy is untouched
+  const edited = reassemble(nd, (_si, p) => (p.id === "s0.cards" ? "<div>REPLACED</div>" : p.body));
+  assert(edited.includes("REPLACED") && edited.includes("<h1>Hi</h1>") && !edited.includes("Card n={0}"),
+    "composite edit is isolated from the sibling piece");
+});
+
 check("a body override containing $-special sequences is inserted VERBATIM", () => {
   // $$, $&, $`, $' are String.replace replacement-pattern specials — a plain-string
   // replacer would mangle them. reassemble uses a function replacer, so a regenerated

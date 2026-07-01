@@ -19,6 +19,8 @@ import { regeneratePiece } from "../agents/regenerate-piece";
 import { finalizeUndefinedRefs } from "../agents/finalize-refs";
 import { verifyCompilable } from "../agents/code-extraction";
 import { withGenDirLock } from "./gendir-lock";
+import { findChildInScene, spliceChildBody, blockAsPiece } from "./nested-piece";
+import type { DecomposedPiece } from "../agents/lego-decompose";
 import type { Usage } from "../usage";
 
 export interface RegenerateElementInput {
@@ -46,13 +48,34 @@ export const regenerateElement = async (
   const d = await readDecomposed(genDir);
   const scene = d.scenes.find((s) => s.sceneIndex === sceneIndex);
   if (!scene) return { ok: false, error: `scene ${sceneIndex} not found` };
-  const piece = scene.pieces.find((p) => p.id === pieceId);
-  if (!piece) return { ok: false, error: `piece "${pieceId}" not found in scene ${sceneIndex}` };
-  const siblings = scene.pieces.filter((p) => p.id !== pieceId);
+
+  // Route: a top-level piece regenerates directly; a nested child (a <Piece> inside
+  // a composite's body — e.g. one card in a panel) regenerates against its sibling
+  // children and is spliced back into the PARENT's body, so the parent piece file is
+  // the only thing rewritten. `writeId` is whichever piece file gets persisted.
+  const top = scene.pieces.find((p) => p.id === pieceId);
+  let regenTarget: DecomposedPiece;
+  let siblings: DecomposedPiece[];
+  let writeId: string;
+  let makeBody: (regenBody: string) => string;
+
+  if (top) {
+    regenTarget = top;
+    siblings = scene.pieces.filter((p) => p.id !== pieceId);
+    writeId = pieceId;
+    makeBody = (b) => b;
+  } else {
+    const nested = findChildInScene(scene, pieceId);
+    if (!nested) return { ok: false, error: `piece "${pieceId}" not found in scene ${sceneIndex}` };
+    regenTarget = blockAsPiece(nested.child);
+    siblings = nested.siblings.map(blockAsPiece);
+    writeId = nested.parent.id;
+    makeBody = (b) => spliceChildBody(nested.parent.body, nested.child, b);
+  }
 
   const regen = await regeneratePiece({
     preamble: d.preamble,
-    piece,
+    piece: regenTarget,
     siblings,
     sceneIndex,
     instruction,
@@ -60,12 +83,12 @@ export const regenerateElement = async (
   if (!regen.ok || !regen.body) {
     return { ok: false, usage: regen.usage, error: regen.error || "regeneration failed" };
   }
-  const newBody = regen.body;
+  const newBody = makeBody(regen.body);
 
-  // Reassemble the FULL composition, overriding ONLY this piece's body; every
+  // Reassemble the FULL composition, overriding ONLY the written piece's body; every
   // sibling re-inlines byte-identically from its own file.
   const reassembled = await reassembleFromDisk(genDir, (si, p) =>
-    si === sceneIndex && p.id === pieceId ? newBody : p.body,
+    si === sceneIndex && p.id === writeId ? newBody : p.body,
   );
 
   // Finalize the render source the same way the build does — a regen can reach for
@@ -84,9 +107,9 @@ export const regenerateElement = async (
   // Composition.tsx (the render source, with any added imports/stubs). The manifest
   // preamble stays as-authored; finalize re-applies on every reassemble, so it
   // self-heals across subsequent edits.
-  await writePieceBody(genDir, pieceId, newBody);
+  await writePieceBody(genDir, writeId, newBody);
   await fs.writeFile(path.join(genDir, "Composition.tsx"), candidate, "utf8");
 
-  return { ok: true, code: candidate, body: newBody, usage: regen.usage };
+  return { ok: true, code: candidate, body: regen.body, usage: regen.usage };
   });
 };
