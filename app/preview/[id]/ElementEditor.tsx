@@ -57,11 +57,27 @@ export function ElementEditor({
   const [busy, setBusy] = useState<null | "regenerate" | "delete" | "move">(null);
   const [error, setError] = useState<string | null>(null);
   const dragRef = useRef<{ startX: number; startY: number; scale: number } | null>(null);
+  const dragHandlersRef = useRef<{ move: (e: MouseEvent) => void; up: (e: MouseEvent) => void } | null>(null);
   const [dragDelta, setDragDelta] = useState<{ dx: number; dy: number } | null>(null);
 
-  const rectOf = (el: Element): Rect => {
-    const r = el.getBoundingClientRect();
-    return { left: r.left, top: r.top, width: r.width, height: r.height };
+  // A piece's wrapper is a display:contents node — it generates NO layout box, so
+  // its own getBoundingClientRect() is all-zero. Measure the piece's VISIBLE extent
+  // as the union of its rendered descendants' rects (a piece can have several
+  // absolutely-positioned children). Returns null if the piece paints nothing.
+  const rectOf = (el: Element): Rect | null => {
+    const rects: DOMRect[] = [];
+    const own = el.getBoundingClientRect();
+    if (own.width > 0 && own.height > 0) rects.push(own);
+    el.querySelectorAll("*").forEach((c) => {
+      const r = c.getBoundingClientRect();
+      if (r.width > 0 && r.height > 0) rects.push(r);
+    });
+    if (rects.length === 0) return null;
+    const left = Math.min(...rects.map((r) => r.left));
+    const top = Math.min(...rects.map((r) => r.top));
+    const right = Math.max(...rects.map((r) => r.right));
+    const bottom = Math.max(...rects.map((r) => r.bottom));
+    return { left, top, width: right - left, height: bottom - top };
   };
 
   // Reset selection whenever the scene or reload changes, and (re)attach the
@@ -80,12 +96,17 @@ export function ElementEditor({
         setSelected(null);
         return;
       }
+      const rect = rectOf(el);
+      if (!rect) {
+        setSelected(null);
+        return;
+      }
       e.preventDefault();
       e.stopPropagation();
       setSelected({
         pieceId: el.getAttribute("data-piece")!,
         kind: el.getAttribute("data-kind") ?? "",
-        rect: rectOf(el),
+        rect,
       });
     };
 
@@ -172,45 +193,60 @@ export function ElementEditor({
     return w > 0 ? w / canvasWidth : 1;
   };
 
+  const detachDrag = () => {
+    const h = dragHandlersRef.current;
+    if (h) {
+      window.removeEventListener("mousemove", h.move);
+      window.removeEventListener("mouseup", h.up);
+      dragHandlersRef.current = null;
+    }
+  };
+
   const onDragStart = (e: React.MouseEvent) => {
     if (!selected || busy) return;
     e.preventDefault();
     dragRef.current = { startX: e.clientX, startY: e.clientY, scale: canvasScale() };
     setDragDelta({ dx: 0, dy: 0 });
-    window.addEventListener("mousemove", onDragMove);
-    window.addEventListener("mouseup", onDragEnd);
+
+    const move = (ev: MouseEvent) => {
+      const d = dragRef.current;
+      if (!d) return;
+      setDragDelta({ dx: ev.clientX - d.startX, dy: ev.clientY - d.startY });
+    };
+    const up = async (ev: MouseEvent) => {
+      detachDrag();
+      const d = dragRef.current;
+      dragRef.current = null;
+      setDragDelta(null);
+      if (!d || !selected) return;
+      const scale = d.scale || 1;
+      const dx = Math.round((ev.clientX - d.startX) / scale);
+      const dy = Math.round((ev.clientY - d.startY) / scale);
+      if (dx === 0 && dy === 0) return;
+      setBusy("move");
+      const ok = await post(`${apiBase}/edit-layout`, {
+        scriptId,
+        sceneIndex,
+        pieceId: selected.pieceId,
+        op: "move",
+        dx,
+        dy,
+      });
+      setBusy(null);
+      if (ok) {
+        setSelected(null);
+        onChanged();
+      }
+    };
+
+    dragHandlersRef.current = { move, up };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
   };
-  const onDragMove = (e: MouseEvent) => {
-    const d = dragRef.current;
-    if (!d) return;
-    setDragDelta({ dx: e.clientX - d.startX, dy: e.clientY - d.startY });
-  };
-  const onDragEnd = async (e: MouseEvent) => {
-    window.removeEventListener("mousemove", onDragMove);
-    window.removeEventListener("mouseup", onDragEnd);
-    const d = dragRef.current;
-    dragRef.current = null;
-    setDragDelta(null);
-    if (!d || !selected) return;
-    const scale = d.scale || 1;
-    const dx = Math.round((e.clientX - d.startX) / scale);
-    const dy = Math.round((e.clientY - d.startY) / scale);
-    if (dx === 0 && dy === 0) return;
-    setBusy("move");
-    const ok = await post(`${apiBase}/edit-layout`, {
-      scriptId,
-      sceneIndex,
-      pieceId: selected.pieceId,
-      op: "move",
-      dx,
-      dy,
-    });
-    setBusy(null);
-    if (ok) {
-      setSelected(null);
-      onChanged();
-    }
-  };
+
+  // Remove any live drag listeners if the overlay unmounts mid-drag (e.g. editing
+  // toggled off while the mouse is held), so a stray mouseup can't fire a stale move.
+  useEffect(() => detachDrag, []);
 
   const box = selected
     ? {
