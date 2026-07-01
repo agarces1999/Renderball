@@ -63,6 +63,11 @@ const attr = (tag: string, name: string): string | undefined => {
 
 const slot = (id: string): string => SLOT_OPEN + id + SLOT_CLOSE;
 
+/** The exact template slot placeholder for a piece id — the substring the
+ *  reassembler replaces with `openTag + body + close`. Exposed so the store can
+ *  strip a slot on delete (M3) without duplicating the SLOT_OPEN/CLOSE format. */
+export const pieceSlot = (id: string): string => slot(id);
+
 export const decompose = (code: string): Decomposed => {
   const ranges = sectionRanges(code);
   if (ranges.length === 0) return { preamble: code, scenes: [], tail: "" };
@@ -114,7 +119,10 @@ export const reassemble = (
     let out = s.template;
     for (const p of s.pieces) {
       const body = bodyOf ? bodyOf(s.sceneIndex, p) : p.body;
-      out = out.replace(slot(p.id), p.openTag + body + CLOSE);
+      // Function replacer so the body is inserted VERBATIM — a plain-string
+      // replacement would let $$, $&, $`, $' in a body (e.g. a "$$" price label, or
+      // an LLM-regenerated body) inject match/sibling bytes into the piece.
+      out = out.replace(slot(p.id), () => p.openTag + body + CLOSE);
     }
     return out;
   });

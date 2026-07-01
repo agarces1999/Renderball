@@ -97,5 +97,15 @@ check("editing ONE piece changes only that piece's region (zero neighbor effect)
   assert(orig === got, "the template, preamble, tail, and sibling pieces are byte-identical after a single-piece edit");
 });
 
+check("a body override containing $-special sequences is inserted VERBATIM", () => {
+  // $$, $&, $`, $' are String.replace replacement-pattern specials — a plain-string
+  // replacer would mangle them. reassemble uses a function replacer, so a regenerated
+  // body (e.g. a "$$" price label) survives byte-for-byte with no foreign bytes spliced.
+  const tricky = "<p>Tiers: $$ and $& and $` and $' price {c.price}</p>";
+  const out = reassemble(d, (_si, p) => (p.id === "s0.copy" ? tricky : p.body));
+  assert(out.includes(tricky), "the $-special body was corrupted by reassemble");
+  assert(out.split("export const Generated").length === 2, "reassemble injected/duplicated surrounding text");
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exitCode = 1;

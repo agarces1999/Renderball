@@ -18,6 +18,7 @@ import { readDecomposed, writePieceBody, reassembleFromDisk } from "../agents/le
 import { regeneratePiece } from "../agents/regenerate-piece";
 import { finalizeUndefinedRefs } from "../agents/finalize-refs";
 import { verifyCompilable } from "../agents/code-extraction";
+import { withGenDirLock } from "./gendir-lock";
 import type { Usage } from "../usage";
 
 export interface RegenerateElementInput {
@@ -39,6 +40,9 @@ export const regenerateElement = async (
 ): Promise<RegenerateElementResult> => {
   const { genDir, sceneIndex, pieceId, instruction } = input;
 
+  // Serialize with any other edit to the same video (move/delete/regen) so their
+  // read-modify-write of manifest + Composition.tsx cannot interleave.
+  return withGenDirLock(genDir, async () => {
   const d = await readDecomposed(genDir);
   const scene = d.scenes.find((s) => s.sceneIndex === sceneIndex);
   if (!scene) return { ok: false, error: `scene ${sceneIndex} not found` };
@@ -84,4 +88,5 @@ export const regenerateElement = async (
   await fs.writeFile(path.join(genDir, "Composition.tsx"), candidate, "utf8");
 
   return { ok: true, code: candidate, body: newBody, usage: regen.usage };
+  });
 };
