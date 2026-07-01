@@ -785,6 +785,44 @@ export const addMissingLucideImports = (
   return { code: `${line}\n${code}`, added: toAdd };
 };
 
+/**
+ * Render-safe net for genuinely-invented or mis-scoped CUSTOM components — the
+ * backstop the render gate + agent repair are supposed to provide but sometimes
+ * miss (a hallucinated `<Thumb>` that's never defined, or a `<DesignCard>` defined
+ * inside one Section's body and referenced from another where it isn't in scope).
+ * Left unfixed they throw at SSR and hard-fail the WHOLE build. This injects a
+ * module-scope stub that renders nothing, so the build ships with that one element
+ * dropped instead of crashing — the structural gate still surfaces the name for QA.
+ * lucide names are handled by addMissingLucideImports and excluded here. Where a
+ * component IS defined locally, that local shadows this module stub in its own
+ * scope, so it still renders correctly there; the stub only covers the scopes that
+ * lacked it.
+ */
+export const stubUndefinedComponents = (
+  code: string,
+  isLucideIcon: (name: string) => boolean,
+): { code: string; stubbed: string[] } => {
+  const undef = Array.from(
+    new Set(findUndefinedJsxComponents(code).filter((n) => !isLucideIcon(n))),
+  );
+  if (undef.length === 0) return { code, stubbed: [] };
+  const stubs =
+    "\n\n/* auto-stubbed: undefined components render null so SSR can't hard-fail */\n" +
+    undef.map((n) => `const ${n}: React.FC<any> = () => null;`).join("\n");
+  // Insert after the LAST import STATEMENT. Multi-line aware — a line-based match
+  // would land the stub in the MIDDLE of a multi-line `import { … } from "…"` and
+  // break it (the real compositions have multi-line lucide imports).
+  const importStmtRe = /import\b[\s\S]*?from\s*["'][^"']+["']\s*;?/g;
+  let last: RegExpExecArray | null = null;
+  let m: RegExpExecArray | null;
+  while ((m = importStmtRe.exec(code)) !== null) last = m;
+  if (last) {
+    const at = last.index + last[0].length;
+    return { code: code.slice(0, at) + stubs + code.slice(at), stubbed: undef };
+  }
+  return { code: stubs.trimStart() + "\n" + code, stubbed: undef };
+};
+
 // ─── Drawn-logo stand-in (the Supabase replica loophole, A1) ─────────
 //
 // When a REAL brand logo resolved, the sanctioned ways to render it are the

@@ -20,6 +20,7 @@ import {
   repairInvalidLucideImports,
   addMissingLucideImports,
   findUndefinedJsxComponents,
+  stubUndefinedComponents,
   findDrawnLogoStandIns,
   findProvidedComponentRedefinitions,
   findUndersizedText,
@@ -323,6 +324,20 @@ check("lists every distinct undefined tag, deduped", () => {
     r.length === 2 && r.includes("Ghost") && r.includes("Phantom"),
     `got ${JSON.stringify(r)}`,
   );
+});
+
+check("stubUndefinedComponents: stubs invented customs, leaves lucide/defined alone", () => {
+  const code = UNDEF_BASE + `\nexport const S1 = () => <><HeroPanel /><Check /></>;`;
+  const { code: out, stubbed } = stubUndefinedComponents(code, (n) => n === "Check" || n === "Slack");
+  assert(stubbed.length === 1 && stubbed[0] === "HeroPanel", `stubbed: ${JSON.stringify(stubbed)}`);
+  assert(out.includes("const HeroPanel: React.FC<any> = () => null;"), "stub injected at module scope");
+  assert(!out.includes("const Check:") && !out.includes("const Slack:"), "lucide names not stubbed");
+  assert(findUndefinedJsxComponents(out).length === 0, "nothing undefined remains after stubbing");
+});
+
+check("stubUndefinedComponents: no-op when everything resolves", () => {
+  const { code: out, stubbed } = stubUndefinedComponents(UNDEF_BASE, () => false);
+  assert(stubbed.length === 0 && out === UNDEF_BASE, "clean file untouched");
 });
 
 check("JSX member tags (<Foo.Bar>) are skipped", () => {

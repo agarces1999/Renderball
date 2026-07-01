@@ -36,6 +36,7 @@ import {
   TEXT_FLOOR_LI,
   repairInvalidLucideImports,
   addMissingLucideImports,
+  stubUndefinedComponents,
   findUndefinedJsxComponents,
   findUnboundCopy,
   findDrawnLogoStandIns,
@@ -939,6 +940,15 @@ export const regenerateScene = async (
     const isIcon = (n: string) => lucide.has(n);
     finalCodeOut = addMissingLucideImports(finalCodeOut, isIcon).code;
     designCodeOut = addMissingLucideImports(designCodeOut, isIcon).code;
+    // Render-safe net for genuinely-invented / mis-scoped custom components (a
+    // hallucinated <Thumb>, or a Section-local <DesignCard> referenced elsewhere):
+    // stub them to null so SSR can't hard-fail the whole build. Better a dropped
+    // element than a broken build; the structural gate still surfaces the names.
+    const stubF = stubUndefinedComponents(finalCodeOut, isIcon);
+    finalCodeOut = stubF.code;
+    designCodeOut = stubUndefinedComponents(designCodeOut, isIcon).code;
+    if (stubF.stubbed.length)
+      console.warn(`[pipeline] stubbed undefined component(s): ${stubF.stubbed.join(", ")}`);
   }
   finalCodeOut = repairInvalidLucideImports(finalCodeOut, assessInvalidLucideImports(finalCodeOut));
   designCodeOut = repairInvalidLucideImports(designCodeOut, assessInvalidLucideImports(designCodeOut));
