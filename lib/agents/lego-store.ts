@@ -101,6 +101,30 @@ export const decomposeGenDir = async (
 };
 
 /**
+ * Overwrite ONE piece's body file in place (M2 regenerate / text edit). Finds the
+ * piece by id across scenes via the manifest, writes the new body to its file. The
+ * next readDecomposed/reassembleFromDisk picks it up; every sibling file is
+ * untouched, so the zero-neighbor guarantee holds as a filesystem fact. Returns
+ * false if the id isn't in the manifest.
+ */
+export const writePieceBody = async (
+  genDir: string,
+  pieceId: string,
+  body: string,
+): Promise<boolean> => {
+  const legoDir = path.join(genDir, LEGO_DIR);
+  const manifest: Manifest = JSON.parse(await fs.readFile(path.join(legoDir, "manifest.json"), "utf8"));
+  for (const s of manifest.scenes) {
+    const pm = s.pieces.find((p) => p.id === pieceId);
+    if (pm) {
+      await fs.writeFile(path.join(legoDir, pm.file), body, "utf8");
+      return true;
+    }
+  }
+  return false;
+};
+
+/**
  * Reassemble the Composition.tsx from the on-disk lego artifacts, applying optional
  * per-piece body edits. The basis for the M2/M3 edit + regenerate + move flows —
  * with no edits it reproduces the byte-identical original.

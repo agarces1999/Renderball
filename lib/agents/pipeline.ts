@@ -17,6 +17,7 @@ import {
   SEVERE_CONTRAST_RATIO,
 } from "./contrast";
 import { dimensionsForScript } from "../render/build-wrapper";
+import { lucideIconNameSet, assessInvalidLucideImports } from "./finalize-refs";
 import {
   findSlowTextEntrances,
   findOverflowingElements,
@@ -2607,62 +2608,9 @@ const appendBrandContext = (
   lines.push("");
 };
 
-/**
- * Brand/company names the agent reaches for as lucide-react icons —
- * which lucide DOES NOT include (it removed all brand logos). Importing
- * any of these from "lucide-react" yields `undefined` and crashes the
- * render at runtime ("Element type is invalid") while compiling cleanly.
- * This denylist is the known failure mode (brand logos in comparison /
- * tool-sprawl scenes). Brand logos must come from `simple-icons` instead.
- */
-const INVALID_LUCIDE_BRANDS = new Set([
-  "Slack", "Figma", "Trello", "Notion", "Github", "GitHub", "Gitlab", "GitLab",
-  "Twitter", "Linkedin", "LinkedIn", "Youtube", "YouTube", "Facebook",
-  "Instagram", "Discord", "Twitch", "Dribbble", "Behance", "Codepen", "CodePen",
-  "Framer", "Stripe", "Spotify", "Airbnb", "Dropbox", "Salesforce", "Hubspot",
-  "HubSpot", "Zoom", "Google", "Apple", "Microsoft", "Amazon", "Meta", "Tiktok",
-  "TikTok", "Snapchat", "Pinterest", "Reddit", "Whatsapp", "WhatsApp", "Telegram",
-  "Chrome", "Firefox", "Safari", "Atlassian", "Jira", "Asana", "Airtable",
-  "Vercel", "Netlify", "Mongodb", "MongoDB", "Datadog", "Twilio", "Snowflake",
-  "Intercom", "Shopify", "Canva", "Linear", "Trello",
-]);
-
-/**
- * Scan a generated composition's `lucide-react` named imports and return
- * any that are brand logos (not real lucide exports). Pure string match —
- * reliable in any runtime, no `require` of the icon lib needed.
- */
-/**
- * The set of real lucide-react icon names (~5,800 PascalCase exports), loaded
- * lazily + memoized server-side. Used to decide whether an undefined JSX tag is a
- * recoverable missing-import (add it) vs a genuinely-invented component (leave for
- * the render gate). Defensive: any load failure → empty set → the auto-import is a
- * no-op (never worse than today).
- */
-let _lucideIconNames: Set<string> | null = null;
-const lucideIconNameSet = async (): Promise<Set<string>> => {
-  if (_lucideIconNames) return _lucideIconNames;
-  try {
-    const mod = (await import("lucide-react")) as Record<string, unknown> & {
-      default?: Record<string, unknown>;
-    };
-    const keys = [...Object.keys(mod.default ?? {}), ...Object.keys(mod)];
-    _lucideIconNames = new Set(keys.filter((k) => /^[A-Z][A-Za-z0-9]*$/.test(k)));
-  } catch {
-    _lucideIconNames = new Set();
-  }
-  return _lucideIconNames;
-};
-
-const assessInvalidLucideImports = (code: string): string[] => {
-  const m = code.match(/import\s*\{([^}]*)\}\s*from\s*["']lucide-react["']/);
-  if (!m) return [];
-  const names = m[1]
-    .split(",")
-    .map((s) => s.trim().split(/\s+as\s+/)[0].trim())
-    .filter(Boolean);
-  return names.filter((n) => INVALID_LUCIDE_BRANDS.has(n));
-};
+// lucideIconNameSet + assessInvalidLucideImports (+ the INVALID_LUCIDE_BRANDS
+// denylist) now live in ./finalize-refs — the canonical undefined-reference net,
+// shared with the M2 element editor. Imported at the top of this file.
 
 /**
  * STRUCTURAL gate sweep — the crash / broken-looking tier, distinct from

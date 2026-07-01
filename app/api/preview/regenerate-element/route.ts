@@ -1,0 +1,63 @@
+import { NextResponse } from "next/server";
+import path from "path";
+import { getCurrentUser } from "../../../../lib/auth";
+import { loadScript } from "../../../../lib/store";
+import { regenerateElement } from "../../../../lib/edit/regenerate-element";
+
+/**
+ * M2 element-regenerate endpoint — the ONE LLM op of the visual editor.
+ *
+ * Regenerates a SINGLE piece (element) of a built scene against the scene's frozen
+ * design system + its read-only siblings, then rewrites exactly one piece file and
+ * reassembles Composition.tsx. Every sibling is byte-identical, so "regenerate this
+ * card" provably cannot disturb its neighbors. The preview iframe and the MP4 render
+ * both consume Composition.tsx, so the change shows in both.
+ *
+ * POST body: { scriptId, sceneIndex, pieceId, instruction? }
+ * Returns: { ok, sceneIndex, pieceId, usage? } | { ok:false, error }
+ */
+export async function POST(request: Request) {
+  const user = await getCurrentUser();
+  if (!user) {
+    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  }
+
+  let body: {
+    scriptId?: string;
+    sceneIndex?: number;
+    pieceId?: string;
+    instruction?: string;
+  };
+  try {
+    body = await request.json();
+  } catch {
+    return NextResponse.json({ error: "invalid JSON body" }, { status: 400 });
+  }
+
+  const { scriptId, sceneIndex, pieceId, instruction } = body;
+  if (!scriptId || typeof scriptId !== "string") {
+    return NextResponse.json({ error: "scriptId required" }, { status: 400 });
+  }
+  if (typeof sceneIndex !== "number" || sceneIndex < 0) {
+    return NextResponse.json({ error: "sceneIndex must be a non-negative number" }, { status: 400 });
+  }
+  if (!pieceId || typeof pieceId !== "string") {
+    return NextResponse.json({ error: "pieceId required" }, { status: 400 });
+  }
+
+  // Ownership check — loadScript is scoped to the caller.
+  const script = await loadScript(scriptId, user.id);
+  if (!script) {
+    return NextResponse.json({ error: "script not found" }, { status: 404 });
+  }
+
+  const genDir = path.join(process.cwd(), "src", "generated", scriptId);
+  const result = await regenerateElement({ genDir, sceneIndex, pieceId, instruction });
+  const status = result.ok ? 200 : /not found/.test(result.error ?? "") ? 404 : 400;
+  return NextResponse.json(
+    result.ok
+      ? { ok: true, sceneIndex, pieceId, usage: result.usage }
+      : { ok: false, error: result.error },
+    { status },
+  );
+}
