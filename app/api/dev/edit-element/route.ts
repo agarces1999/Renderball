@@ -1,20 +1,20 @@
 import { NextResponse } from "next/server";
 import path from "path";
 import { promises as fs } from "fs";
-import { getCurrentUser } from "../../../../lib/auth";
+import { DEV_OWNER_ID } from "../../../../lib/auth";
 import { loadScript, saveScript } from "../../../../lib/store";
 import { editableFields, type SceneContent } from "../../../../lib/edit/scene-content";
 import { applyTextEdit } from "../../../../lib/edit/apply-text-edit";
 
 /**
  * GET — list the editable copy fields for one scene, so the editor can decide (client-side)
- * whether a clicked text element maps to bound content and resolve its exact path.
+ * whether a clicked text element maps to bound content and resolve its exact path. Dev-only.
  * Query: ?scriptId=..&sceneIndex=..  →  { ok, sceneIndex, fields: [{ path, label, value }] }
  */
 export async function GET(request: Request) {
-  const user = await getCurrentUser();
-  if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
-
+  if (process.env.NODE_ENV === "production") {
+    return NextResponse.json({ error: "dev-only" }, { status: 404 });
+  }
   const url = new URL(request.url);
   const scriptId = url.searchParams.get("scriptId");
   const sceneIndex = Number(url.searchParams.get("sceneIndex"));
@@ -22,7 +22,7 @@ export async function GET(request: Request) {
   if (!Number.isInteger(sceneIndex) || sceneIndex < 0) {
     return NextResponse.json({ error: "sceneIndex must be a non-negative integer" }, { status: 400 });
   }
-  const script = await loadScript(scriptId, user.id);
+  const script = await loadScript(scriptId, DEV_OWNER_ID);
   if (!script) return NextResponse.json({ error: "script not found" }, { status: 404 });
   if (sceneIndex >= script.scenes.length) {
     return NextResponse.json({ error: `sceneIndex ${sceneIndex} out of range` }, { status: 400 });
@@ -32,23 +32,16 @@ export async function GET(request: Request) {
 }
 
 /**
- * M1 element-edit endpoint — apply a click-to-edit text change or a delete to a
- * single scene's content, with NO LLM call.
+ * Dev-only inline text edit — headless counterpart to /api/preview/edit-element for
+ * the editor harness (no Clerk session). NODE_ENV-gated (404 in prod). No-LLM: updates
+ * script.scenes[K].content by path (or by matched text) and re-saves; the preview
+ * iframe + MP4 both read the script, so the change shows in both.
  *
- * Text in generated compositions is bound to script.scenes[K].content, so an
- * edit = update that content field + re-save the script. The preview iframe and
- * the MP4 render both read the script, so the change shows in both. We also
- * refresh the on-disk genDir/script.json so the MP4 path REUSES the previewed
- * composition (which renders {c.*} from the script) rather than rebuilding.
- *
- * POST body: { scriptId, sceneIndex, path, op: "edit"|"delete", value? }
- *   path is a scene-content path: "headline" | "bullets.0" | "cta.primary" | …
- * Returns: { ok: true, sceneIndex, path, content } — the updated scene content.
+ * POST body: { scriptId, sceneIndex, path?, matchText?, op: "edit"|"delete", value? }
  */
 export async function POST(request: Request) {
-  const user = await getCurrentUser();
-  if (!user) {
-    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  if (process.env.NODE_ENV === "production") {
+    return NextResponse.json({ error: "dev-only" }, { status: 404 });
   }
 
   let body: {
@@ -79,15 +72,12 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'op must be "edit" or "delete"' }, { status: 400 });
   }
 
-  const script = await loadScript(scriptId, user.id);
+  const script = await loadScript(scriptId, DEV_OWNER_ID);
   if (!script) {
     return NextResponse.json({ error: "script not found" }, { status: 404 });
   }
   if (sceneIndex >= script.scenes.length) {
-    return NextResponse.json(
-      { error: `sceneIndex ${sceneIndex} out of range (script has ${script.scenes.length} scenes)` },
-      { status: 400 },
-    );
+    return NextResponse.json({ error: `sceneIndex ${sceneIndex} out of range` }, { status: 400 });
   }
 
   const scene = script.scenes[sceneIndex] as { content?: unknown };
@@ -101,9 +91,6 @@ export async function POST(request: Request) {
 
   await saveScript(script);
 
-  // Best-effort: keep the MP4-reuse contract by refreshing the built script.json.
-  // A missing genDir just means the next render rebuilds with the new content
-  // (still correct, just not reusing the cached composition).
   try {
     const genScript = path.join(process.cwd(), "src", "generated", scriptId, "script.json");
     await fs.writeFile(genScript, JSON.stringify(script, null, 2));

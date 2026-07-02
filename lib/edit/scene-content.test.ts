@@ -7,8 +7,10 @@ import {
   getField,
   setField,
   deleteField,
+  findPathByValue,
   type SceneContent,
 } from "./scene-content";
+import { applyTextEdit } from "./apply-text-edit";
 
 let passed = 0;
 let failed = 0;
@@ -97,6 +99,60 @@ check("deleteField: removes array items, clears singles, cleans empties", () => 
 
   const ctaGone = deleteField({ cta: { primary: "Go" } }, "cta.primary");
   assert(ctaGone.cta === undefined, "emptied cta dropped");
+});
+
+// -- findPathByValue: the inline-edit resolver for videos with no data-content-path --
+
+check("findPathByValue: exact match resolves the right path", () => {
+  const c = full();
+  assert(findPathByValue(c, "One design, every surface") === "headline", "headline");
+  assert(findPathByValue(c, "Snap-to-grid precision") === "bullets.1", "bullet");
+  assert(findPathByValue(c, "Start designing today") === "cta.primary", "cta");
+  assert(findPathByValue(c, "One tap") === "meta.1.value", "meta value");
+});
+
+check("findPathByValue: trims and normalizes whitespace", () => {
+  const c = full();
+  assert(findPathByValue(c, "  One design, every surface  ") === "headline", "surrounding ws trimmed");
+  // textContent of an accent-split headline collapses internal newlines/spaces
+  assert(findPathByValue({ headline: "One design,\n  every surface" }, "One design, every surface") === "headline", "internal ws normalized");
+});
+
+check("findPathByValue: no match → null", () => {
+  assert(findPathByValue(full(), "not in this scene") === null, "miss → null");
+});
+
+// -- applyTextEdit: resolve (path | matchText) then edit/delete --
+
+check("applyTextEdit: explicit path wins", () => {
+  const r = applyTextEdit(full(), { path: "headline", op: "edit", value: "New head" });
+  assert(r.ok && r.path === "headline" && r.content!.headline === "New head", "edited by path");
+});
+
+check("applyTextEdit: falls back to matchText when path absent", () => {
+  const r = applyTextEdit(full(), { matchText: "Start designing today", op: "edit", value: "Go now" });
+  assert(r.ok && r.path === "cta.primary" && r.content!.cta!.primary === "Go now", "resolved via matchText");
+});
+
+check("applyTextEdit: falls back to matchText when path is stale/unknown", () => {
+  const r = applyTextEdit(full(), { path: "bogus.path", matchText: "One design, every surface", op: "edit", value: "X" });
+  assert(r.ok && r.path === "headline" && r.content!.headline === "X", "stale path → matchText");
+});
+
+check("applyTextEdit: delete op removes the resolved field", () => {
+  const r = applyTextEdit(full(), { matchText: "Snap-to-grid precision", op: "delete" });
+  assert(r.ok && r.path === "bullets.1", "resolved delete path");
+  assert(JSON.stringify(r.content!.bullets) === JSON.stringify(["Thousands of free elements", "Brand kit colors"]), "bullet removed");
+});
+
+check("applyTextEdit: unresolvable → ok:false, no throw", () => {
+  const r = applyTextEdit(full(), { matchText: "ghost text", op: "edit", value: "x" });
+  assert(!r.ok && !!r.error, "miss returns error, not throw");
+});
+
+check("applyTextEdit: edit without a string value → ok:false", () => {
+  const r = applyTextEdit(full(), { path: "headline", op: "edit" });
+  assert(!r.ok && r.error === "value required for edit", "guards missing value");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

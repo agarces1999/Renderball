@@ -93,6 +93,35 @@ export const editableFields = (content: SceneContent): EditableField[] => {
   return out;
 };
 
+/**
+ * Resolve a piece of rendered text back to the content path that produced it, by
+ * matching the field VALUE. Lets the visual editor turn "the words you clicked" into
+ * an editable field without the composition carrying an explicit tag — the fallback
+ * when data-content-path is absent (existing videos). Exact-trim match first, then a
+ * whitespace-normalized match; returns null if nothing matches (not editable copy).
+ */
+export const findPathByValue = (content: SceneContent, text: string): string | null =>
+  matchFieldPath(editableFields(content), text);
+
+/**
+ * Match a clicked string against an already-enumerated field list (path + value).
+ * Same two-pass logic as findPathByValue — exact-trim first, then whitespace-normalized —
+ * but over a plain `{ path, value }[]`, so the browser editor can reuse it on fields it
+ * fetched over the wire (no SceneContent object client-side). Returns null on no match.
+ */
+export const matchFieldPath = (
+  fields: { path: string; value: string }[],
+  text: string,
+): string | null => {
+  const t = text.trim();
+  const exact = fields.find((f) => f.value.trim() === t);
+  if (exact) return exact.path;
+  const norm = (s: string) => s.replace(/\s+/g, " ").trim();
+  const nt = norm(text);
+  const fuzzy = fields.find((f) => norm(f.value) === nt);
+  return fuzzy ? fuzzy.path : null;
+};
+
 /** Resolve a path to its current string value (undefined if absent). */
 export const getField = (content: SceneContent, path: string): string | undefined => {
   const seg = path.split(".");
