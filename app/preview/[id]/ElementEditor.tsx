@@ -65,6 +65,8 @@ export function ElementEditor({
 
   const editingRef = useRef(false);
   const textTargetRef = useRef<TextTarget | null>(null);
+  // Active multi-field edit session's finisher (Done button / unmount call it).
+  const finishSessionRef = useRef<((save: boolean) => void) | null>(null);
   // The scene's editable copy fields (path+value), fetched so we can tell whether a
   // clicked text element is bound content and resolve its exact path — the affordance
   // for "Edit text" appears only on text that actually maps to a field.
@@ -74,15 +76,30 @@ export function ElementEditor({
   const [dragDelta, setDragDelta] = useState<{ dx: number; dy: number } | null>(null);
 
   // A piece's wrapper is display:contents (no box), so its own rect is all-zero.
-  // Measure its extent as the union of its rendered descendants' non-zero rects.
+  // Measure its extent as the union of its rendered descendants' non-zero rects —
+  // but EXCLUDE full-bleed decorative layers (a background wash / glow / gradient a
+  // diegetic piece may contain). Those would inflate the box to the whole canvas, so
+  // the selection covers everything and the toolbar lands far from the real element
+  // (the Arc CTA "can't select the right mock" bug). Fall back to including them only
+  // when a piece is nothing BUT full-bleed (a pure atmosphere layer) so it still boxes.
   const rectOf = (el: Element): Rect | null => {
-    const rects: DOMRect[] = [];
-    const own = el.getBoundingClientRect();
-    if (own.width > 0 && own.height > 0) rects.push(own);
-    el.querySelectorAll("*").forEach((c) => {
-      const r = c.getBoundingClientRect();
-      if (r.width > 0 && r.height > 0) rects.push(r);
-    });
+    const doc = el.ownerDocument;
+    const vw = doc?.documentElement?.clientWidth || iframeRef.current?.clientWidth || 0;
+    const vh = doc?.documentElement?.clientHeight || iframeRef.current?.clientHeight || 0;
+    const isFullBleed = (r: DOMRect): boolean =>
+      vw > 0 && vh > 0 && r.width >= vw * 0.92 && r.height >= vh * 0.92;
+    const collect = (dropFullBleed: boolean): DOMRect[] => {
+      const rects: DOMRect[] = [];
+      const own = el.getBoundingClientRect();
+      if (own.width > 0 && own.height > 0 && !(dropFullBleed && isFullBleed(own))) rects.push(own);
+      el.querySelectorAll("*").forEach((c) => {
+        const r = c.getBoundingClientRect();
+        if (r.width > 0 && r.height > 0 && !(dropFullBleed && isFullBleed(r))) rects.push(r);
+      });
+      return rects;
+    };
+    let rects = collect(true);
+    if (rects.length === 0) rects = collect(false); // pure full-bleed (atmosphere) → keep its box
     if (rects.length === 0) return null;
     const left = Math.min(...rects.map((r) => r.left));
     const top = Math.min(...rects.map((r) => r.top));
@@ -131,97 +148,140 @@ export function ElementEditor({
     return null;
   };
 
-  // ---- inline text edit ---------------------------------------------------
-  const startTextEdit = (tt: TextTarget) => {
-    const el = tt.el;
-    if (!el.isConnected) return;
-    const savedHTML = el.innerHTML;
-    el.textContent = tt.oldText; // flatten accent spans etc. for clean editing
-    el.setAttribute("contenteditable", "true");
-    el.setAttribute("spellcheck", "false");
-    el.style.outline = "2px solid #378add";
-    el.style.outlineOffset = "2px";
-    el.style.cursor = "text";
-    editingRef.current = true;
-    setEditing(true);
-    setSelected(null);
-    setHovered(null);
+  // ---- inline text edit (multi-field session) -----------------------------
+  // "Edit text" opens EVERY editable copy field in the piece at once (headline,
+  // eyebrow, lede, bullets, cta, meta…), each outlined — not just the one clicked.
+  // Click any to edit; Done / click-away saves all changed; Esc cancels; Enter
+  // hops to the next field. Editable = maps to a scene-content field (a
+  // data-content-path tag, or a text-match), so decorative diegetic copy stays put.
+  const BLOCK_FIELD_SEL = "h1,h2,h3,h4,h5,h6,p,li,figcaption,blockquote,dd,dt,td,th";
+  const collectEditableFields = (piece: Element): { el: HTMLElement; path?: string; oldText: string }[] => {
+    const out: { el: HTMLElement; path?: string; oldText: string }[] = [];
+    const seenPaths = new Set<string>();
+    const add = (el: HTMLElement, path: string | undefined, oldText: string) => {
+      if (!oldText) return;
+      if (path && seenPaths.has(path)) return; // one element per content field
+      if (out.some((f) => f.el.contains(el) || el.contains(f.el))) return; // no nested editables
+      out.push({ el, path, oldText });
+      if (path) seenPaths.add(path);
+    };
+    // Tagged fields first (precise), then text-matched block elements (untagged builds).
+    piece.querySelectorAll<HTMLElement>("[data-content-path]").forEach((el) =>
+      add(el, el.getAttribute("data-content-path") ?? undefined, (el.textContent ?? "").trim()),
+    );
+    piece.querySelectorAll<HTMLElement>(BLOCK_FIELD_SEL).forEach((el) => {
+      const t = (el.textContent ?? "").trim();
+      const path = matchFieldPath(fieldsRef.current, t) ?? undefined;
+      if (path) add(el, path, t);
+    });
+    return out;
+  };
 
+  const focusField = (el: HTMLElement, doc: Document) => {
     el.focus();
-    const doc = el.ownerDocument;
     const range = doc.createRange();
     range.selectNodeContents(el);
     const sel = doc.getSelection();
     sel?.removeAllRanges();
     sel?.addRange(range);
+  };
+
+  const startTextFields = (piece: Element, focus?: HTMLElement | null) => {
+    const doc = iframeRef.current?.contentDocument;
+    if (!doc) return;
+    const found = collectEditableFields(piece);
+    if (found.length === 0) return;
+    const fields = found.map((f) => ({ ...f, savedHTML: f.el.innerHTML }));
+    for (const f of fields) {
+      f.el.textContent = f.oldText; // flatten accents for clean editing
+      f.el.setAttribute("contenteditable", "true");
+      f.el.setAttribute("spellcheck", "false");
+      f.el.style.outline = "2px solid #378add";
+      f.el.style.outlineOffset = "2px";
+      f.el.style.borderRadius = "3px";
+      f.el.style.cursor = "text";
+    }
+    editingRef.current = true;
+    setEditing(true);
+    setSelected(null);
+    setHovered(null);
+    focusField(focus && fields.some((f) => f.el === focus) ? focus : fields[0].el, doc);
 
     let done = false;
     const finish = async (save: boolean) => {
       if (done) return;
       done = true;
-      el.removeEventListener("blur", onBlur);
-      el.removeEventListener("keydown", onKey);
-      el.removeAttribute("contenteditable");
-      el.style.outline = "";
-      el.style.outlineOffset = "";
-      el.style.cursor = "";
+      doc.removeEventListener("keydown", onKey, true);
+      doc.removeEventListener("mousedown", onDown, true);
+      finishSessionRef.current = null;
       editingRef.current = false;
       setEditing(false);
-      const newText = (el.textContent ?? "").trim();
-      if (!save || newText.length === 0 || newText === tt.oldText) {
-        el.innerHTML = savedHTML; // restore original markup
-        return;
+      const changed: { path?: string; oldText: string; newText: string }[] = [];
+      for (const f of fields) {
+        f.el.removeAttribute("contenteditable");
+        f.el.style.outline = "";
+        f.el.style.outlineOffset = "";
+        f.el.style.borderRadius = "";
+        f.el.style.cursor = "";
+        const newText = (f.el.textContent ?? "").trim();
+        if (save && newText.length > 0 && newText !== f.oldText) {
+          changed.push({ path: f.path, oldText: f.oldText, newText });
+        } else {
+          f.el.innerHTML = f.savedHTML; // revert flatten (unchanged / cancelled)
+        }
       }
+      if (changed.length === 0) return;
       setBusy("text");
-      const ok = await post(`${apiBase}/edit-element`, {
-        scriptId,
-        sceneIndex,
-        op: "edit",
-        ...(tt.path ? { path: tt.path } : {}),
-        matchText: tt.oldText,
-        value: newText,
-      });
+      let anyOk = false;
+      for (const c of changed) {
+        const ok = await post(`${apiBase}/edit-element`, {
+          scriptId,
+          sceneIndex,
+          op: "edit",
+          ...(c.path ? { path: c.path } : {}),
+          matchText: c.oldText,
+          value: c.newText,
+        });
+        anyOk = anyOk || ok;
+      }
       setBusy(null);
-      if (ok) onChanged(); // reload re-SSRs with the new copy + re-applies accents
-      else el.innerHTML = savedHTML;
+      if (anyOk) onChanged(); // one reload re-SSRs all edited copy + re-applies accents
     };
-    const onBlur = () => finish(true);
+    finishSessionRef.current = finish;
+
     const onKey = (ev: KeyboardEvent) => {
-      if (ev.key === "Enter") {
-        ev.preventDefault();
-        el.blur();
-      } else if (ev.key === "Escape") {
+      if (ev.key === "Escape") {
         ev.preventDefault();
         finish(false);
-        el.blur();
+      } else if (ev.key === "Enter") {
+        ev.preventDefault();
+        const active = doc.activeElement as HTMLElement | null;
+        const idx = fields.findIndex((f) => f.el === active);
+        if (idx >= 0 && idx < fields.length - 1) focusField(fields[idx + 1].el, doc);
+        else finish(true);
       }
     };
-    el.addEventListener("blur", onBlur);
-    el.addEventListener("keydown", onKey);
+    const onDown = (ev: MouseEvent) => {
+      const t = ev.target as Node | null;
+      if (t && fields.some((f) => f.el === t || f.el.contains(t))) return; // within a field → keep editing
+      finish(true); // clicked elsewhere in the scene → commit
+    };
+    doc.addEventListener("keydown", onKey, true);
+    doc.addEventListener("mousedown", onDown, true);
   };
 
   const editTextFromToolbar = () => {
     const doc = iframeRef.current?.contentDocument;
     if (!doc || !selected) return;
-    let tt = textTargetRef.current;
-    if (!tt || !tt.el.isConnected) {
-      const piece = doc.querySelector(`[data-piece="${selected.pieceId}"]`);
-      if (piece) {
-        const cand = piece.querySelector("[data-content-path], h1, h2, h3, p, li");
-        const t = (cand?.textContent ?? "").trim();
-        if (cand && t)
-          tt = {
-            el: cand as HTMLElement,
-            path: (cand as HTMLElement).getAttribute("data-content-path") ?? matchFieldPath(fieldsRef.current, t) ?? undefined,
-            oldText: t,
-          };
-      }
-    }
-    if (tt) startTextEdit(tt);
+    const piece = doc.querySelector(`[data-piece="${selected.pieceId}"]`);
+    if (!piece) return;
+    const clicked = textTargetRef.current?.el;
+    startTextFields(piece, clicked && piece.contains(clicked) ? clicked : null);
   };
 
   // ---- attach resolver + hover to the iframe document ---------------------
   useEffect(() => {
+    finishSessionRef.current?.(false); // cancel any edit session from the prior scene
     setSelected(null);
     setHovered(null);
     setError(null);
@@ -256,11 +316,11 @@ export function ElementEditor({
       const target = e.target as Element | null;
       const piece = target?.closest?.("[data-piece]") as Element | null;
       if (!piece || !target) return;
-      const tt = resolveTextTarget(target, piece);
-      if (tt) {
+      // Double-click opens the whole piece's text fields, focused on the one clicked.
+      if (collectEditableFields(piece).length > 0) {
         e.preventDefault();
         e.stopPropagation();
-        startTextEdit(tt);
+        startTextFields(piece, target as HTMLElement);
       }
     };
 
@@ -392,6 +452,8 @@ export function ElementEditor({
     window.addEventListener("mouseup", up);
   };
   useEffect(() => detachDrag, []);
+  // Cancel an in-progress text-edit session if the editor unmounts.
+  useEffect(() => () => finishSessionRef.current?.(false), []);
 
   const regenerate = async () => {
     if (!selected) return;
@@ -452,11 +514,18 @@ export function ElementEditor({
         </div>
       )}
       {editing && (
-        <div
-          style={{ pointerEvents: "none" }}
-          className="absolute left-1/2 top-3 -translate-x-1/2 rounded-full bg-black/70 px-3 py-1 text-[11px] font-medium text-white"
-        >
-          Editing text — enter to save · esc to cancel
+        <div className="absolute left-1/2 top-3 flex -translate-x-1/2 items-center gap-2" style={{ pointerEvents: "auto" }}>
+          <span className="rounded-full bg-black/70 px-3 py-1 text-[11px] font-medium text-white">
+            Editing text — click any field · enter for next · esc to cancel
+          </span>
+          <button
+            type="button"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => finishSessionRef.current?.(true)}
+            className="rounded-full bg-sky-500 px-3 py-1 text-[11px] font-semibold text-white hover:bg-sky-400"
+          >
+            Done
+          </button>
         </div>
       )}
 
