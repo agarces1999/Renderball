@@ -165,6 +165,11 @@ export async function runPreviewBuild(
         // canvas-brightness check (light brand shipped on a dark canvas).
         const gate = await findRenderTruthFailures(measurements, {
           brandBackground: brief?.brand_extract?.background_color,
+          // Barbell (a >30% empty horizontal band) is a measured, high-precision
+          // composition failure — block on the build path so the repair ladder
+          // regenerates the scene with the empty-band reason, rather than shipping
+          // it with only an advisory warning (the prior state: prose rules alone).
+          blockingKinds: ["overflow", "measure-error", "barbell"],
         });
         return { ...gate, measurements };
       },

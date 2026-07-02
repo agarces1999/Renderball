@@ -104,8 +104,126 @@ export const INK_FLOOR = 0.02;
 export const QUADRANT_FLOOR = 0.004;
 export const DEFAULT_COLOR_DISTANCE = 32;
 export const DEFAULT_SAMPLE_WIDTH = 320;
+/** A downsampled row carrying less than this share of ink counts as "empty". */
+export const ROW_INK_FLOOR = 0.006;
+/** Wider sample for the band scan → more vertical rows (finer band resolution). */
+export const BAND_SAMPLE_WIDTH = 480;
 
 const ZERO_QUADRANTS: QuadrantInk = { tl: 0, tr: 0, bl: 0, br: 0 };
+
+/**
+ * Longest run of `true` in `empty[loInc..hiExc)`. Pure (no image) — the
+ * band-scan's core, unit-tested directly. Returns the run length + its start
+ * index (both in the caller's row units).
+ */
+export const largestEmptyRun = (
+  empty: ReadonlyArray<boolean>,
+  loInc: number,
+  hiExc: number,
+): { len: number; start: number } => {
+  let runStart = -1;
+  let best = 0;
+  let bestStart = loInc;
+  for (let y = loInc; y <= hiExc; y++) {
+    const isEmpty = y < hiExc && empty[y] === true;
+    if (isEmpty) {
+      if (runStart < 0) runStart = y;
+    } else if (runStart >= 0) {
+      if (y - runStart > best) {
+        best = y - runStart;
+        bestStart = runStart;
+      }
+      runStart = -1;
+    }
+  }
+  return { len: best, start: bestStart };
+};
+
+export interface EmptyBand {
+  /** Tallest empty horizontal band within the safe interior, as a fraction of frame H. */
+  bandFracH: number;
+  /** Where that band starts, as a fraction of frame H (diagnostics). */
+  startFracH: number;
+}
+
+/**
+ * The tallest horizontal band carrying (almost) no painted ink, within the safe
+ * interior (top/bottom margins are expected clear). Pixel-truth version of the
+ * barbell / empty-lower-half check — robust where an element-rect scan is not:
+ * thin-bar visualizations (waveforms, sparklines, bar charts) ARE ink so their
+ * body never reads empty, and soft gradient backdrops are discarded by the same
+ * dominant-background subtraction assessFrameInk uses.
+ */
+export const assessEmptyBand = async (
+  input: string | Buffer,
+  opts: InkOptions & {
+    rowInkFloor?: number;
+    topMargin?: number;
+    bottomMargin?: number;
+  } = {},
+): Promise<EmptyBand> => {
+  const colorDistance = opts.colorDistance ?? DEFAULT_COLOR_DISTANCE;
+  const sampleWidth = opts.sampleWidth ?? BAND_SAMPLE_WIDTH;
+  const rowFloor = opts.rowInkFloor ?? ROW_INK_FLOOR;
+  const topMargin = opts.topMargin ?? 0.1;
+  const bottomMargin = opts.bottomMargin ?? 0.1;
+
+  const { data, info } = await sharp(input)
+    .resize({ width: sampleWidth, withoutEnlargement: true })
+    .removeAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  const W = info.width;
+  const H = info.height;
+  const ch = info.channels;
+  const N = W * H;
+
+  // Dominant background tone (same histogram as assessFrameInk).
+  const buckets = new Map<number, [number, number, number, number]>();
+  for (let i = 0; i < N; i++) {
+    const p = i * ch;
+    const r = data[p];
+    const g = ch >= 3 ? data[p + 1] : r;
+    const b = ch >= 3 ? data[p + 2] : r;
+    const key = ((r >> 4) << 8) | ((g >> 4) << 4) | (b >> 4);
+    const e = buckets.get(key);
+    if (e) {
+      e[0]++;
+      e[1] += r;
+      e[2] += g;
+      e[3] += b;
+    } else {
+      buckets.set(key, [1, r, g, b]);
+    }
+  }
+  let dom: [number, number, number, number] = [1, 0, 0, 0];
+  for (const e of buckets.values()) if (e[0] > dom[0]) dom = e;
+  const bgR = dom[1] / dom[0];
+  const bgG = dom[2] / dom[0];
+  const bgB = dom[3] / dom[0];
+
+  // Per-row ink share → an "empty" row is one below the floor.
+  const d2 = colorDistance * colorDistance;
+  const empty: boolean[] = new Array(H);
+  for (let y = 0; y < H; y++) {
+    let ink = 0;
+    for (let x = 0; x < W; x++) {
+      const p = (y * W + x) * ch;
+      const r = data[p];
+      const g = ch >= 3 ? data[p + 1] : r;
+      const b = ch >= 3 ? data[p + 2] : r;
+      const dr = r - bgR;
+      const dg = g - bgG;
+      const db = b - bgB;
+      if (dr * dr + dg * dg + db * db > d2) ink++;
+    }
+    empty[y] = W > 0 && ink / W < rowFloor;
+  }
+  const lo = Math.floor(H * topMargin);
+  const hi = Math.ceil(H * (1 - bottomMargin));
+  const run = largestEmptyRun(empty, lo, hi);
+  return { bandFracH: H > 0 ? run.len / H : 0, startFracH: H > 0 ? run.start / H : 0 };
+};
 
 /**
  * Measure how much of a frame is actually painted.

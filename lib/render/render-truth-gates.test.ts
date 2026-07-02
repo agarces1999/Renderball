@@ -4,9 +4,14 @@
  * is exercised for its blocking-subset logic with screenshot-less measurements
  * (contrast/dead-region no-op without a screenshot — overflow is the blocker).
  */
+import { promises as fs } from "fs";
+import os from "os";
+import path from "path";
+import sharp from "sharp";
 import {
   findOverflow,
   findTextOverlap,
+  findEmptyBand,
   findRenderTruthFailures,
   hexLuminance,
   assessCanvasBrightness,
@@ -194,6 +199,56 @@ await check("assessCanvasBrightness: no brand bg / null scene lums handled", () 
     { scene: 0, lum: null }, { scene: 1, lum: 0.05 }, { scene: 2, lum: 0.04 },
   ]);
   assert(f.length === 2, `nulls ignored, 2 dark flagged: ${JSON.stringify(f)}`);
+});
+
+// ── findEmptyBand (barbell) — needs a real settled-frame screenshot ─────────
+// Full 1920×1080 dark canvas with bright content strips at given y-bands.
+const frameWithBands = async (bands: [number, number][]): Promise<string> => {
+  const W = 1920, H = 1080;
+  const blocks = await Promise.all(
+    bands.map(async ([top, h]) =>
+      sharp({ create: { width: W, height: h, channels: 3, background: { r: 235, g: 235, b: 240 } } }).png().toBuffer().then((input) => ({ input, top })),
+    ),
+  );
+  const buf = await sharp({ create: { width: W, height: H, channels: 3, background: { r: 12, g: 12, b: 18 } } })
+    .composite(blocks.map((b) => ({ input: b.input, left: 0, top: b.top })))
+    .png()
+    .toBuffer();
+  const p = path.join(os.tmpdir(), `rb-band-${Math.abs(bands[0][0])}-${bands.length}-${bands[0][1]}.png`);
+  await fs.writeFile(p, buf);
+  return p;
+};
+
+await check("findEmptyBand flags a barbell (top+bottom clusters, empty middle)", async () => {
+  // clusters at y 120..300 and y 900..1000 → empty middle ~600px (56% of 1080)
+  const shot = await frameWithBands([[120, 180], [900, 100]]);
+  const m: SceneMeasurement = { scene: 3, width: 1920, height: 1080, elements: [], screenshotPath: shot };
+  const r = await findEmptyBand(m);
+  await fs.unlink(shot).catch(() => {});
+  assert(r.length === 1 && r[0].kind === "barbell" && /empty horizontal band/.test(r[0].detail), `got ${JSON.stringify(r)}`);
+});
+
+await check("findEmptyBand passes a frame whose interior is filled top-to-bottom", async () => {
+  // content strips distributed across the interior (dark canvas stays the majority,
+  // so it's the dominant background) — gaps ≤120px, no band near the 30% gate.
+  const shot = await frameWithBands([[120, 120], [360, 120], [600, 120], [840, 90]]);
+  const m: SceneMeasurement = { scene: 0, width: 1920, height: 1080, elements: [], screenshotPath: shot };
+  const r = await findEmptyBand(m);
+  await fs.unlink(shot).catch(() => {});
+  assert(r.length === 0, `filled interior must not flag, got ${JSON.stringify(r)}`);
+});
+
+await check("findEmptyBand no-ops without a screenshot (rects-only measurement)", async () => {
+  const r = await findEmptyBand(scene(1, [el({ text: "hi", y: 40 })]));
+  assert(r.length === 0, "no screenshotPath ⇒ no barbell finding");
+});
+
+await check("barbell joins the blocking subset when requested", async () => {
+  const shot = await frameWithBands([[120, 180], [900, 100]]);
+  const ms: SceneMeasurement[] = [{ scene: 0, width: 1920, height: 1080, elements: [], screenshotPath: shot }];
+  const { blocking } = await findRenderTruthFailures(ms, { blockingKinds: ["overflow", "measure-error", "barbell"] });
+  await fs.unlink(shot).catch(() => {});
+  assert(blocking.some((f) => f.kind === "barbell"), `barbell should block: ${JSON.stringify(blocking)}`);
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

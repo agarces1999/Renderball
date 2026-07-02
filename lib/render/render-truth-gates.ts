@@ -17,12 +17,13 @@
  * Findings are returned, not thrown; the pipeline decides blocking vs advisory.
  */
 import path from "path";
-import { assessFrameInk, QUADRANT_FLOOR, INK_FLOOR } from "./painted-content";
+import { assessFrameInk, assessEmptyBand, QUADRANT_FLOOR, INK_FLOOR } from "./painted-content";
 import type { SceneMeasurement, MeasuredElement } from "./measure-scene";
 
 export type RenderTruthKind =
   | "overflow"
   | "text-overlap"
+  | "barbell"
   | "contrast"
   | "dead-region"
   | "canvas-brightness"
@@ -64,6 +65,48 @@ export const findOverflow = (m: SceneMeasurement): RenderTruthFinding[] => {
     });
   }
   return out;
+};
+
+// ── barbell / empty-band (a tall empty horizontal strip inside the safe area) ─
+// The overflow gate catches content pushed OFF the canvas; this catches content
+// that VACATES a large horizontal band OF the canvas — the "barbell" (a cluster
+// up top, a cluster at the bottom, a void between) and the "empty lower half".
+// The design-agent prose rules ("space-between is NOT a hollow barbell", "no
+// internal empty band >~120px") target exactly this, but the agent obeys them
+// inconsistently, and every prior anti-barbell fix pulled only the SPAN lever
+// (content reaches top+bottom) — which a tiny eyebrow-at-top + dots-at-bottom
+// satisfies while the middle stays empty. This measures the actual empty band.
+//
+// PIXEL-truth (not element rects): it scans painted ink per row of the settled
+// screenshot, so a thin-bar visualization (waveform, sparkline, bar chart) reads
+// as filled — its bars ARE ink — while a soft gradient backdrop is discarded by
+// the same dominant-background subtraction the dead-region gate uses. A rect/
+// element filter can't tell a 4px waveform bar from decoration; ink can.
+const BAND_FAIL_FRAC = 0.3; // an empty interior band over this frac of H ⇒ barbell
+
+/** Tallest empty horizontal band on the settled frame; barbell over BAND_FAIL_FRAC. */
+export const findEmptyBand = async (m: SceneMeasurement): Promise<RenderTruthFinding[]> => {
+  if (m.error || !m.screenshotPath) return []; // measure-error already surfaced by findOverflow
+  try {
+    const { bandFracH, startFracH } = await assessEmptyBand(m.screenshotPath);
+    if (bandFracH < BAND_FAIL_FRAC) return [];
+    const bandPx = Math.round(bandFracH * m.height);
+    const startPx = Math.round(startFracH * m.height);
+    return [
+      {
+        scene: m.scene,
+        kind: "barbell",
+        detail:
+          `empty horizontal band ~${bandPx}px tall (from y≈${startPx} of ${m.height}, ` +
+          `~${Math.round(bandFracH * 100)}% of the frame) carries no painted content — a barbell / ` +
+          `empty-band. Fill it: scale the hero or diegetic element up so it occupies the middle, or add ` +
+          `a real supporting row (a chart, KPI tiles, a caption/meta cluster) inside that band. Do NOT ` +
+          `stretch a top cluster and a bottom cluster apart with empty space between (the barbell failure).`,
+      },
+    ];
+  } catch {
+    return [];
+  }
 };
 
 // ── text-on-text overlap (the wrapping-headline-buries-the-lede defect) ──────
@@ -399,6 +442,7 @@ export const findRenderTruthFailures = async (
   for (const m of measurements) {
     findings.push(...findOverflow(m));
     findings.push(...findTextOverlap(m));
+    findings.push(...(await findEmptyBand(m)));
     findings.push(...(await findContrast(m)));
     findings.push(...(await findDeadRegion(m)));
   }

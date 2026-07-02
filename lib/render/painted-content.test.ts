@@ -22,6 +22,8 @@ import path from "path";
 import sharp from "sharp";
 import {
   assessFrameInk,
+  assessEmptyBand,
+  largestEmptyRun,
   verifyPaintedScenes,
   INK_FLOOR,
   QUADRANT_FLOOR,
@@ -292,6 +294,73 @@ if (!haveRealFrames) {
     );
   });
 }
+
+// ── largestEmptyRun (pure — the band-scan core) ────────────────────────────
+await check("largestEmptyRun: finds the longest empty run in range", () => {
+  // filled at 2,3 and 7 → empty runs [0,1]=2, [4,6]=3, [8,9]=2 within [0,10)
+  const e = [true, true, false, false, true, true, true, false, true, true];
+  const r = largestEmptyRun(e, 0, 10);
+  assert(r.len === 3 && r.start === 4, `got len=${r.len} start=${r.start}`);
+});
+await check("largestEmptyRun: respects the [lo,hi) window (margins excluded)", () => {
+  // all empty, but window is [3,7) → longest run is 4 starting at 3
+  const e = new Array(10).fill(true);
+  const r = largestEmptyRun(e, 3, 7);
+  assert(r.len === 4 && r.start === 3, `got len=${r.len} start=${r.start}`);
+});
+await check("largestEmptyRun: no empty rows → len 0", () => {
+  const r = largestEmptyRun(new Array(10).fill(false), 0, 10);
+  assert(r.len === 0, `got ${r.len}`);
+});
+await check("largestEmptyRun: a run ending exactly at hi is counted", () => {
+  // empty from 5..9; window [0,10) → run len 5 start 5
+  const e = [false, false, false, false, false, true, true, true, true, true];
+  const r = largestEmptyRun(e, 0, 10);
+  assert(r.len === 5 && r.start === 5, `got len=${r.len} start=${r.start}`);
+});
+
+// ── assessEmptyBand (pixel band on synthetic frames) ───────────────────────
+// bright content on a dark bg (bg is the majority ⇒ dominant-background = dark).
+const withBlocks = async (rects: [number, number, number, number][]): Promise<Buffer> => {
+  const blocks = await Promise.all(
+    rects.map(async ([, , w, h]) =>
+      sharp({ create: { width: w, height: h, channels: 3, background: { r: 240, g: 240, b: 240 } } }).png().toBuffer(),
+    ),
+  );
+  return sharp({ create: { width: W, height: H, channels: 3, background: { r: 16, g: 16, b: 24 } } })
+    .composite(blocks.map((input, i) => ({ input, left: rects[i][0], top: rects[i][1] })))
+    .png()
+    .toBuffer();
+};
+
+await check("assessEmptyBand: a top-only content cluster ⇒ large empty band below", async () => {
+  // one bright strip in the top 22% (y 0..40 of 180); interior [18,162) mostly empty
+  const r = await assessEmptyBand(await withBlocks([[0, 0, W, 40]]));
+  assert(r.bandFracH > 0.55, `expected a big band, got ${r.bandFracH.toFixed(2)}`);
+});
+
+await check("assessEmptyBand: a barbell (top + bottom, empty middle) fires", async () => {
+  // cluster at top (y 8..44) and bottom (y 150..168), empty middle ~106px = 59%H
+  const r = await assessEmptyBand(await withBlocks([[0, 8, W, 36], [0, 150, W, 18]]));
+  assert(r.bandFracH >= 0.3, `barbell should exceed the 0.30 gate, got ${r.bandFracH.toFixed(2)}`);
+});
+
+await check("assessEmptyBand: content spanning the interior ⇒ small band (no fire)", async () => {
+  // a centered column covering y 30..150 (67% of H) with columns 80..240 (real ink rows)
+  const r = await assessEmptyBand(await withBlocks([[80, 30, 160, 120]]));
+  assert(r.bandFracH < 0.3, `filled interior must not fire, got ${r.bandFracH.toFixed(2)}`);
+});
+
+await check("assessEmptyBand: thin bars across a row keep it filled (waveform case)", async () => {
+  // 20 thin 4px bars at the SAME rows (y 70..110) — a waveform. The bars ARE ink,
+  // so the mid band is filled; only the top/bottom margins are empty (< gate).
+  const bars: [number, number, number, number][] = [];
+  for (let i = 0; i < 20; i++) bars.push([10 + i * 15, 70, 4, 40]);
+  const r = await assessEmptyBand(await withBlocks(bars));
+  // top gap [18,70)=52px=29% and bottom [110,162)=52px=29% — each under 30%; the
+  // waveform band itself is NOT counted empty (proves thin bars register as ink).
+  assert(r.bandFracH < 0.3, `waveform rows must read filled, got ${r.bandFracH.toFixed(2)} at ${r.startFracH.toFixed(2)}`);
+});
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exitCode = 1;
