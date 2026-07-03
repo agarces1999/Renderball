@@ -11,7 +11,7 @@
 //
 import { getAnthropic, MODELS } from "../anthropic";
 import { withTransientRetry } from "./transient-retry";
-import { stripCodeFence } from "./code-extraction";
+import { stripCodeFence, elideDataUris } from "./code-extraction";
 import { usageOf, type Usage } from "../usage";
 import type { DecomposedPiece } from "./lego-decompose";
 
@@ -27,8 +27,12 @@ HARD RULES:
 - Define NOTHING at module scope and reference NO undefined components — use only the provided consts + inline JSX/SVG (and <Img> for images).
 - It must be valid TSX that compiles when inlined.`;
 
+// Long inlined data-URIs are elided from READ-ONLY context (preamble + sibling
+// summaries) — measured 97% of Arc's 505KB preamble was base64 ≈ ~130k junk
+// tokens per regen. Never elided from the piece body itself: the model re-emits
+// the body, and an elided URI there would ship a broken image.
 const siblingLine = (p: DecomposedPiece): string =>
-  `- ${p.id} (${p.kind}): ${p.body.replace(/\s+/g, " ").trim().slice(0, 150)}`;
+  `- ${p.id} (${p.kind}): ${elideDataUris(p.body).replace(/\s+/g, " ").trim().slice(0, 150)}`;
 
 export interface RegenPieceInput {
   /** The decomposed module preamble (the frozen design system) — read-only context. */
@@ -58,7 +62,7 @@ export const regeneratePiece = async (
   const user = [
     "SHARED DESIGN SYSTEM (module consts already in scope — reference them, never redefine):",
     "```tsx",
-    preamble.trim(),
+    elideDataUris(preamble.trim()),
     "```",
     "",
     `THIS ELEMENT to regenerate — scene ${sceneIndex}, id "${piece.id}", kind "${piece.kind}". Current JSX:`,

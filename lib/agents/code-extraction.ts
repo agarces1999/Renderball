@@ -120,3 +120,41 @@ export const repairCompile = async (
   }
   return { code: current, error, attempts };
 };
+
+/**
+ * Elide long inlined base64 data-URIs from READ-ONLY prompt context.
+ *
+ * Generated compositions inline logos/images as module-const data-URIs, and a
+ * preamble/composition can be dominated by them (measured: Arc's regen preamble
+ * was 505KB, 97% base64 ≈ ~130k junk tokens per call). The model must reference
+ * those consts BY NAME and never re-emit the literal, so in read-only context
+ * the payload is pure token waste — slower TTFT, higher cost, context-limit risk.
+ *
+ * ONLY safe on context the model will NOT re-emit. Never elide code the model is
+ * asked to reproduce (a piece body, the target section) — an elided URI there
+ * would ship a broken image.
+ */
+const DATA_URI_RX = /(data:[a-z][\w/+.-]*;base64,)[A-Za-z0-9+/=]{120,}/g;
+export const elideDataUris = (code: string): string =>
+  code.replace(DATA_URI_RX, "$1<base64 elided — reference this const by name>");
+
+/**
+ * Elide data-URIs everywhere EXCEPT inside the target `Section{index}` block —
+ * for prompts where the full composition is read-only context but the model
+ * re-emits that one section (scene regen / scoped retries). The section region
+ * is preserved verbatim so any in-section inline image survives re-emission.
+ * `sectionRangeFn` is injected (section-splice) to keep this module dependency-free.
+ */
+export const elideDataUrisOutsideSection = (
+  code: string,
+  sectionRangeFn: (code: string, index: number) => { start: number; end: number } | null,
+  index: number,
+): string => {
+  const r = sectionRangeFn(code, index);
+  if (!r) return elideDataUris(code);
+  return (
+    elideDataUris(code.slice(0, r.start)) +
+    code.slice(r.start, r.end) +
+    elideDataUris(code.slice(r.end))
+  );
+};

@@ -7,7 +7,14 @@
  * imports, the old stripper left it, esbuild died, and the build still
  * reported ok:true.
  */
-import { stripCodeFence, verifyCompilable, repairCompile } from "./code-extraction";
+import {
+  stripCodeFence,
+  verifyCompilable,
+  repairCompile,
+  elideDataUris,
+  elideDataUrisOutsideSection,
+} from "./code-extraction";
+import { sectionRange } from "./section-splice";
 
 // A small but genuinely valid Remotion component. esbuild's `transform` (used
 // by verifyCompilable) parses TSX without resolving imports, so the unresolved
@@ -202,6 +209,41 @@ check("repairCompile: real verifyCompilable + stray-char fixer", async () => {
   );
   assert(out.error === null, "must compile after repair");
   assert(out.attempts === 1, `expected 1 attempt, got ${out.attempts}`);
+});
+
+// ── elideDataUris (prompt-context token-waste eliding) ──────────────────────
+const B64 = "A".repeat(400);
+check("elideDataUris: replaces a long base64 payload, keeps the mime prefix", () => {
+  const code = `const LOGO_SRC = "data:image/svg+xml;base64,${B64}";`;
+  const out = elideDataUris(code);
+  assert(!out.includes(B64), "payload should be gone");
+  assert(out.includes("data:image/svg+xml;base64,<base64 elided"), `prefix kept: ${out.slice(0, 80)}`);
+  assert(out.length < code.length / 3, "should shrink dramatically");
+});
+
+check("elideDataUris: leaves short data-URIs + normal code untouched", () => {
+  const code = `const A = "data:image/png;base64,iVBORw0KGgo="; const b = atob("${"B".repeat(200)}");`;
+  assert(elideDataUris(code) === code, "short URI + non-URI base64-ish strings untouched");
+});
+
+check("elideDataUrisOutsideSection: preserves the target section verbatim", () => {
+  const code = [
+    `import React from "react";`,
+    `const LOGO_SRC = "data:image/svg+xml;base64,${B64}";`,
+    `export const Section0: React.FC = () => <img src="data:image/png;base64,${B64}" />;`,
+    `export const Section1: React.FC = () => <div>one</div>;`,
+  ].join("\n");
+  const out = elideDataUrisOutsideSection(code, sectionRange, 0);
+  // module-const URI (outside Section0) elided; Section0's inline URI preserved
+  const s0 = out.slice(out.indexOf("Section0"), out.indexOf("Section1"));
+  assert(s0.includes(B64), "target section's inline data-URI must survive");
+  assert(!out.slice(0, out.indexOf("Section0")).includes(B64), "module-const URI must be elided");
+});
+
+check("elideDataUrisOutsideSection: missing section → elides everywhere", () => {
+  const code = `const X = "data:image/png;base64,${B64}"; // no sections here`;
+  const out = elideDataUrisOutsideSection(code, sectionRange, 3);
+  assert(!out.includes(B64), "falls back to whole-text elide");
 });
 
 await Promise.all(checks);

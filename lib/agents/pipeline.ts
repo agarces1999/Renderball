@@ -1,8 +1,8 @@
 import { getAnthropic, MODELS, BUILD_REASONING, BUILD_MAX_TOKENS } from "../anthropic";
 import { DESIGN_AGENT_SYSTEM_PROMPT } from "./prompts/design-agent";
 import { ANIMATION_AGENT_SYSTEM_PROMPT } from "./prompts/animation-agent";
-import { stripCodeFence, verifyCompilable, repairCompile } from "./code-extraction";
-import { extractSection, replaceSection } from "./section-splice";
+import { stripCodeFence, verifyCompilable, repairCompile, elideDataUrisOutsideSection } from "./code-extraction";
+import { extractSection, replaceSection, sectionRange } from "./section-splice";
 import {
   densityFailuresByScene,
   overflowFailuresByScene,
@@ -602,6 +602,9 @@ const regenerateSectionBlock = async (
   const aspect = input.script.config?.aspect_ratio ?? "16:9";
   const viewingContext: "mobile" | "desktop" =
     aspect === "16:9" ? "desktop" : "mobile";
+  // Base64 data-URIs outside the target section are read-only waste — elide
+  // (the target section itself is preserved verbatim: the model re-emits it).
+  const baseContext = elideDataUrisOutsideSection(baseCode, sectionRange, sceneIndex);
 
   const userMessage =
     mode === "animation"
@@ -617,7 +620,7 @@ const regenerateSectionBlock = async (
           ``,
           `## Full Composition.tsx (READ-ONLY context — do not re-emit any of it except ${sectionName})`,
           "```tsx",
-          baseCode,
+          baseContext,
           "```",
           ``,
           `Output ONLY the corrected \`export const ${sectionName} = …\` component (with its local <style>/@keyframes if it has them). No imports, no module consts, no other sections, no prose.`,
@@ -639,7 +642,7 @@ const regenerateSectionBlock = async (
           ``,
           `## Full Composition.tsx (READ-ONLY context — do not re-emit any of it except ${sectionName})`,
           "```tsx",
-          baseCode,
+          baseContext,
           "```",
           ``,
           `Output ONLY the corrected \`export const ${sectionName} = …\` component. No imports, no module consts, no other sections, no prose.`,
@@ -690,13 +693,13 @@ const regenerateSectionBlock = async (
  * button — the user iterates on one moment at a time at ~1/Nth the
  * cost of rebuilding the whole composition.
  *
- * The implementation passes the existing Composition.tsx to the agents
- * as context and instructs them to return the FULL file with only
- * Section{N} replaced. Module-scope constants (FONT_DISPLAY, PALETTE,
- * BrandChrome, …) and all other Sections stay byte-identical.
- *
- * Falls back to a full rebuild if the splice can't find Section{N}
- * boundaries in the existing file — better to overwrite than fail.
+ * Both passes emit ONLY the `Section{N}` block (the full file rides along as
+ * read-only context, with base64 data-URIs elided outside the target section)
+ * and the caller splices it back — module consts, imports, and every other
+ * Section stay byte-identical BY CONSTRUCTION, and output tokens (the dominant
+ * regen cost + latency) drop from a full ~18k-token file re-emission per pass
+ * to one ~3-4k-token section. Returns ok:false when the section can't be
+ * isolated or spliced; callers (repair ladder / regen button) surface it.
  */
 export const regenerateScene = async (
   rawInput: BuildInput,
@@ -734,18 +737,25 @@ export const regenerateScene = async (
   const viewingContext: "mobile" | "desktop" =
     aspect === "16:9" ? "desktop" : "mobile";
 
-  // ─── Pass 1 (single-section variant) ─────────────────────────────
+  // ─── Pass 1 (single-section EMISSION + splice) ───────────────────
+  // The model re-emits ONLY Section{N}; replaceSection splices it back, so every
+  // other section / module const / import is byte-identical BY CONSTRUCTION (the
+  // old full-file re-emission merely *requested* byte-identity — and cost ~18k
+  // output tokens per pass to re-print unchanged code, the dominant regen cost).
+  // Long base64 data-URIs are elided from the read-only context outside the
+  // target section (a composition can be >90% inlined-image base64).
+  const designContext = elideDataUrisOutsideSection(existingCode, sectionRange, sceneIndex);
   const designUserMessage = [
     `You are regenerating ONE Section component inside an existing Composition.tsx.`,
     ``,
     `## What to change`,
-    `Replace ${sectionName} (scene index ${sceneIndex}, "${scene.label}", duration ${roundTo(sceneDurationSeconds(scene), 2)}s). Output the COMPLETE Composition.tsx with ONLY ${sectionName} replaced — every other section, every module-scope constant (FONT_*, PALETTE, BrandChrome, etc.), every keyframe definition, every import MUST be byte-identical to what's below.`,
+    `Replace ${sectionName} (scene index ${sceneIndex}, "${scene.label}", duration ${roundTo(sceneDurationSeconds(scene), 2)}s). Re-emit ONLY the \`export const ${sectionName} = …\` component — the rest of the file is READ-ONLY context and is preserved verbatim by the caller.`,
     ``,
     `## Canvas`,
     `- Aspect ratio: ${aspect}`,
     `- Viewing context: ${viewingContext}${viewingContext === "mobile" ? " (mobile floors: lede ≥36px, paragraphs ≥28px, captions/meta ≥22px, headlines ≥80px)" : ""}`,
     `- Surface: ${dims.width}×${dims.height}`,
-    `- IMPORTANT: keep text sizes in the replaced ${sectionName} consistent with the rest of the file — don't shrink body type below the floor.`,
+    `- IMPORTANT: keep text sizes in ${sectionName} consistent with the rest of the file — don't shrink body type below the floor. Reuse the file's existing module consts (PALETTE, FONT_*, LOGO_SRC, keyframes) and components — do NOT redefine them, do NOT invent new ones.`,
     ``,
     `## Scene brief`,
     `Label: "${scene.label}"`,
@@ -756,12 +766,12 @@ export const regenerateScene = async (
       : "",
     instruction ? `\nUser direction: ${instruction}` : "",
     ``,
-    `## Existing Composition.tsx (do NOT change anything outside ${sectionName})`,
+    `## Existing Composition.tsx (READ-ONLY context — do not re-emit any of it except ${sectionName})`,
     "```tsx",
-    existingCode,
+    designContext,
     "```",
     ``,
-    `Output the COMPLETE updated Composition.tsx file. Same imports, same constants, same BrandChrome, same other Section exports, only ${sectionName} replaced.`,
+    `Output ONLY the replacement \`export const ${sectionName} = …\` component. No imports, no module consts, no other sections, no prose.`,
   ]
     .filter((l) => l.length > 0)
     .join("\n");
@@ -806,11 +816,29 @@ export const regenerateScene = async (
       error: "Design Agent returned no text content.",
     };
   }
-  const designCode = stripCodeFence(designText.text.trim());
+  // Isolate the one section (tolerates over-emission) and splice it into the
+  // existing file — everything outside Section{N} is byte-preserved.
+  const designBlock = extractSection(stripCodeFence(designText.text.trim()), sceneIndex);
+  if (!designBlock) {
+    return {
+      ok: false,
+      stage: "design",
+      error: `Design Agent response did not contain an isolable ${sectionName} block.`,
+    };
+  }
+  const designCode = replaceSection(existingCode, sceneIndex, designBlock);
+  if (!designCode) {
+    return {
+      ok: false,
+      stage: "design",
+      error: `Could not splice ${sectionName} into the existing composition (section boundaries not found).`,
+    };
+  }
 
-  // ─── Pass 2 (full-file, single scene focused) ────────────────────
+  // ─── Pass 2 (single-section EMISSION + splice, animation) ────────
+  const animationContext = elideDataUrisOutsideSection(designCode, sectionRange, sceneIndex);
   const animationUserMessage = [
-    `Add CSS animations to ${sectionName} in the Composition.tsx below. Use ONLY CSS @keyframes / animation / animation-delay / transition.`,
+    `Add CSS animations to ${sectionName} in the Composition.tsx below. Use ONLY CSS @keyframes / animation / animation-delay / transition. Re-emit ONLY the animated \`export const ${sectionName} = …\` component (with its local <style>/@keyframes) — the rest of the file is READ-ONLY context and is preserved verbatim by the caller.`,
     ``,
     `## Scene brief`,
     `${sectionName} runs for ${roundTo(sceneDurationSeconds(scene), 2)}s.`,
@@ -819,12 +847,12 @@ export const regenerateScene = async (
       : "",
     `Latest finite animation-delay in ${sectionName} MUST be ≥${(sceneDurationSeconds(scene) * 0.6).toFixed(2)}s (60% of duration). Distribute events across the full timeline — no front-loading.`,
     ``,
-    `## Source (modify ONLY ${sectionName}'s animations + its local <style> @keyframes)`,
+    `## Full Composition.tsx (READ-ONLY context — do not re-emit any of it except ${sectionName})`,
     "```tsx",
-    designCode,
+    animationContext,
     "```",
     ``,
-    `Output the COMPLETE updated Composition.tsx. Other Sections keep their existing animations as-is.`,
+    `Output ONLY the animated \`export const ${sectionName} = …\` component. No imports, no module consts, no other sections, no prose.`,
   ]
     .filter((l) => l.length > 0)
     .join("\n");
@@ -868,13 +896,29 @@ export const regenerateScene = async (
       error: "Animation Agent returned no text content.",
     };
   }
-  let finalCode = stripCodeFence(animationText.text.trim());
+  const animBlock = extractSection(stripCodeFence(animationText.text.trim()), sceneIndex);
+  if (!animBlock) {
+    return {
+      ok: false,
+      stage: "animation",
+      error: `Animation Agent response did not contain an isolable ${sectionName} block.`,
+    };
+  }
+  const splicedFinal = replaceSection(designCode, sceneIndex, animBlock);
+  if (!splicedFinal) {
+    return {
+      ok: false,
+      stage: "animation",
+      error: `Could not splice animated ${sectionName} into the composition.`,
+    };
+  }
+  let finalCode = splicedFinal;
 
   if (!finalCode.includes("import") || !finalCode.includes("export")) {
     return {
       ok: false,
       stage: "animation",
-      error: `Animation Agent output doesn't look like a TS file. First 300 chars: ${finalCode.slice(0, 300)}`,
+      error: `Spliced composition doesn't look like a TS file. First 300 chars: ${finalCode.slice(0, 300)}`,
     };
   }
 
