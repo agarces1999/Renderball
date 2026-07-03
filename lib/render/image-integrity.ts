@@ -25,6 +25,19 @@
 const IMAGE_URL_RX =
   /https?:\/\/[^\s"'`)<>]+\.(?:jpe?g|png|webp|gif|avif|bmp)(?:\?[^\s"'`)<>]*)?/gi;
 
+// ANY http(s) URL used as an element src — catches what the extension regex
+// structurally misses: brand-CDN SVGs (flag icons, partner logos) and
+// extension-less image paths. Measured miss: an ElevenLabs build shipped 5
+// asset 404s (circle-flags/*.svg, payloadcms/*.svg, a chunked _next path) that
+// IMAGE_URL_RX never saw. Both src={"…"} and src="…" forms.
+const SRC_URL_RX = /src=\{?["'`](https?:\/\/[^"'`]+)["'`]\}?/gi;
+
+// Only raster photos are sensible pool-replacements; a dead SVG icon (flag,
+// partner logo) swapped for an arbitrary page photo would look worse than the
+// transparent-pixel neutralize (layout preserved, nothing broken rendered).
+const isRasterUrl = (u: string): boolean =>
+  /\.(?:jpe?g|png|webp|gif|avif|bmp)(?:\?|$)/i.test(u);
+
 // 1×1 transparent GIF — renders nothing (no broken icon) when no valid swap exists.
 const TRANSPARENT_PX =
   "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
@@ -80,7 +93,10 @@ export const repairBrokenImages = async (
   pool: string[],
   probe: (u: string) => Promise<boolean>,
 ): Promise<ImageRepairReport> => {
-  const urls = [...new Set(code.match(IMAGE_URL_RX) || [])];
+  const srcUrls: string[] = [];
+  SRC_URL_RX.lastIndex = 0;
+  for (let m = SRC_URL_RX.exec(code); m; m = SRC_URL_RX.exec(code)) srcUrls.push(m[1]);
+  const urls = [...new Set([...(code.match(IMAGE_URL_RX) || []), ...srcUrls])];
   if (urls.length === 0) return { code, replaced: [], neutralized: [] };
 
   const liveness = await Promise.all(
@@ -105,7 +121,8 @@ export const repairBrokenImages = async (
   const replaced: { from: string; to: string }[] = [];
   const neutralized: string[] = [];
   for (const d of dead) {
-    const repl = await nextValid();
+    // Pool-swap only raster photos; dead icons/SVGs neutralize (see isRasterUrl).
+    const repl = isRasterUrl(d) ? await nextValid() : null;
     if (repl) {
       out = out.split(d).join(repl);
       replaced.push({ from: d, to: repl });
