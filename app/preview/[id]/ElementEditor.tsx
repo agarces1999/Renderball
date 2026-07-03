@@ -59,11 +59,24 @@ export function ElementEditor({
   const [hovered, setHovered] = useState<PieceRef | null>(null);
   const [showAll, setShowAll] = useState(false);
   const [allPieces, setAllPieces] = useState<PieceRef[]>([]);
-  const [busy, setBusy] = useState<null | "regenerate" | "delete" | "move" | "text">(null);
+  const [busy, setBusyState] = useState<null | "regenerate" | "delete" | "move" | "text">(null);
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
+  // Bumped when the iframe's document (re)loads — recomputes x-ray rects + restores
+  // selection against the NEW document (contentDocument is stale at src-change time).
+  const [docTick, setDocTick] = useState(0);
 
   const editingRef = useRef(false);
+  // busy mirrored in a ref: the iframe handlers are attached once per effect and
+  // would otherwise close over a stale `busy` — clicking piece B during piece A's
+  // in-flight regen would show B's toolbar reading "Regenerating…".
+  const busyRef = useRef<typeof busy>(null);
+  const setBusy = (b: typeof busy) => {
+    busyRef.current = b;
+    setBusyState(b);
+  };
+  // Piece to re-select after the post-edit reload (move/regenerate keep selection).
+  const reselectIdRef = useRef<string | null>(null);
   const textTargetRef = useRef<TextTarget | null>(null);
   // Active multi-field edit session's finisher (Done button / unmount call it).
   const finishSessionRef = useRef<((save: boolean) => void) | null>(null);
@@ -108,25 +121,32 @@ export function ElementEditor({
     return { left, top, width: right - left, height: bottom - top };
   };
 
-  const post = useCallback(async (url: string, body: unknown): Promise<boolean> => {
-    setError(null);
-    try {
-      const res = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      const json = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
-      if (!res.ok || !json.ok) {
-        setError(json.error || `request failed (${res.status})`);
-        return false;
+  const postJson = useCallback(
+    async (url: string, body: unknown): Promise<{ ok: boolean; json: Record<string, unknown> }> => {
+      setError(null);
+      try {
+        const res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        const json = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+        if (!res.ok || !json.ok) {
+          setError(json.error || `request failed (${res.status})`);
+          return { ok: false, json: json as Record<string, unknown> };
+        }
+        return { ok: true, json: json as Record<string, unknown> };
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+        return { ok: false, json: {} };
       }
-      return true;
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-      return false;
-    }
-  }, []);
+    },
+    [],
+  );
+  const post = useCallback(
+    async (url: string, body: unknown): Promise<boolean> => (await postJson(url, body)).ok,
+    [postJson],
+  );
 
   // Resolve the clicked node to the copy field it belongs to: a data-content-path
   // element (precise) or the nearest block-level text element within the piece. When
@@ -154,7 +174,11 @@ export function ElementEditor({
   // Click any to edit; Done / click-away saves all changed; Esc cancels; Enter
   // hops to the next field. Editable = maps to a scene-content field (a
   // data-content-path tag, or a text-match), so decorative diegetic copy stays put.
-  const BLOCK_FIELD_SEL = "h1,h2,h3,h4,h5,h6,p,li,figcaption,blockquote,dd,dt,td,th";
+  // Matches BLOCK_TEXT (incl. div/label): the untagged pass only accepts elements
+  // whose text EXACTLY matches a scene-content field, so layout divs stay excluded —
+  // without div/label here, div-rendered copy showed "Edit text" but the session
+  // opened zero fields (a silent no-op).
+  const BLOCK_FIELD_SEL = "h1,h2,h3,h4,h5,h6,p,li,div,label,figcaption,blockquote,dd,dt,td,th";
   const collectEditableFields = (piece: Element): { el: HTMLElement; path?: string; oldText: string }[] => {
     const out: { el: HTMLElement; path?: string; oldText: string }[] = [];
     const seenPaths = new Set<string>();
@@ -186,11 +210,14 @@ export function ElementEditor({
     sel?.addRange(range);
   };
 
-  const startTextFields = (piece: Element, focus?: HTMLElement | null) => {
+  const startTextFields = (piece: Element, focus?: HTMLElement | null): boolean => {
     const doc = iframeRef.current?.contentDocument;
-    if (!doc) return;
+    if (!doc) return false;
+    // Defensive: never stack sessions (a second start would orphan the first
+    // session's doc listeners and clobber finishSessionRef).
+    finishSessionRef.current?.(false);
     const found = collectEditableFields(piece);
-    if (found.length === 0) return;
+    if (found.length === 0) return false;
     const fields = found.map((f) => ({ ...f, savedHTML: f.el.innerHTML }));
     for (const f of fields) {
       f.el.textContent = f.oldText; // flatten accents for clean editing
@@ -232,20 +259,25 @@ export function ElementEditor({
       }
       if (changed.length === 0) return;
       setBusy("text");
-      let anyOk = false;
-      for (const c of changed) {
-        const ok = await post(`${apiBase}/edit-element`, {
-          scriptId,
-          sceneIndex,
-          op: "edit",
+      // ONE batched request (one script load/save server-side) instead of N
+      // sequential round-trips; per-edit results surface partial failures.
+      const { ok, json } = await postJson(`${apiBase}/edit-element`, {
+        scriptId,
+        sceneIndex,
+        edits: changed.map((c) => ({
+          op: "edit" as const,
           ...(c.path ? { path: c.path } : {}),
           matchText: c.oldText,
           value: c.newText,
-        });
-        anyOk = anyOk || ok;
-      }
+        })),
+      });
       setBusy(null);
-      if (anyOk) onChanged(); // one reload re-SSRs all edited copy + re-applies accents
+      const results = (json.results ?? []) as { ok: boolean; error?: string }[];
+      const failedCount = results.filter((r) => !r.ok).length;
+      if (ok && failedCount > 0) {
+        setError(`${failedCount} of ${changed.length} edits could not be applied — the rest were saved.`);
+      }
+      if (ok) onChanged(); // one reload re-SSRs all edited copy + re-applies accents
     };
     finishSessionRef.current = finish;
 
@@ -268,6 +300,7 @@ export function ElementEditor({
     };
     doc.addEventListener("keydown", onKey, true);
     doc.addEventListener("mousedown", onDown, true);
+    return true;
   };
 
   const editTextFromToolbar = () => {
@@ -276,7 +309,13 @@ export function ElementEditor({
     const piece = doc.querySelector(`[data-piece="${selected.pieceId}"]`);
     if (!piece) return;
     const clicked = textTargetRef.current?.el;
-    startTextFields(piece, clicked && piece.contains(clicked) ? clicked : null);
+    const opened = startTextFields(piece, clicked && piece.contains(clicked) ? clicked : null);
+    // Never a silent no-op: if no field resolved (fields fetch failed / still in
+    // flight on an untagged build), say so and refetch instead of doing nothing.
+    if (!opened) {
+      setError("No editable text found in this piece — retrying field lookup…");
+      void fetchFields();
+    }
   };
 
   // ---- attach resolver + hover to the iframe document ---------------------
@@ -294,7 +333,7 @@ export function ElementEditor({
     let lastHover = "";
 
     const onClick = (e: Event) => {
-      if (editingRef.current) return;
+      if (editingRef.current || busyRef.current) return;
       const target = e.target as Element | null;
       const piece = target?.closest?.("[data-piece]") as Element | null;
       if (!piece || !piece.getAttribute("data-piece")) {
@@ -313,6 +352,9 @@ export function ElementEditor({
     };
 
     const onDbl = (e: Event) => {
+      // Inside an active session, double-click must fall through to native word
+      // selection — starting a second session would orphan the first's listeners.
+      if (editingRef.current || busyRef.current) return;
       const target = e.target as Element | null;
       const piece = target?.closest?.("[data-piece]") as Element | null;
       if (!piece || !target) return;
@@ -325,7 +367,7 @@ export function ElementEditor({
     };
 
     const onOver = (e: Event) => {
-      if (editingRef.current) return;
+      if (editingRef.current || busyRef.current) return;
       const piece = (e.target as Element | null)?.closest?.("[data-piece]") as Element | null;
       const id = piece?.getAttribute("data-piece") ?? "";
       if (id === lastHover) return;
@@ -350,6 +392,25 @@ export function ElementEditor({
         doc.addEventListener("dblclick", onDbl, true);
         doc.addEventListener("mouseover", onOver, true);
         doc.addEventListener("mouseleave", onLeave, true);
+        // The NEW document is live now — recompute anything measured against the
+        // old one (x-ray rects) and restore the selection a move/regen preserved.
+        setDocTick((t) => t + 1);
+        const reselect = reselectIdRef.current;
+        if (reselect) {
+          reselectIdRef.current = null;
+          // settle-mode renders land in final layout; a beat for paint, then re-measure.
+          setTimeout(() => {
+            try {
+              const piece = iframe.contentDocument?.querySelector(`[data-piece="${reselect}"]`);
+              const rect = piece ? rectOf(piece) : null;
+              if (piece && rect) {
+                setSelected({ pieceId: reselect, kind: piece.getAttribute("data-kind") ?? "", rect });
+              }
+            } catch {
+              /* ignore — reselect is best-effort */
+            }
+          }, 60);
+        }
       } catch {
         /* cross-origin — should not happen (SAMEORIGIN) */
       }
@@ -372,24 +433,36 @@ export function ElementEditor({
 
   // Fetch this scene's editable copy fields so text affordances are precise (offer
   // "Edit text" only on bound content, and resolve its exact path). Refreshes on scene
-  // change and after any edit (reloadKey) so matches track the current copy.
+  // change and after any edit (reloadKey); a transient failure retries once so text
+  // editing isn't silently dead for the scene.
+  const fetchFields = useCallback(async (): Promise<boolean> => {
+    try {
+      const res = await fetch(`${apiBase}/edit-element?scriptId=${encodeURIComponent(scriptId)}&sceneIndex=${sceneIndex}`);
+      const json = (await res.json().catch(() => ({}))) as { fields?: { path: string; value: string }[] };
+      if (!res.ok || !Array.isArray(json.fields)) return false;
+      fieldsRef.current = json.fields;
+      return true;
+    } catch {
+      return false;
+    }
+  }, [apiBase, scriptId, sceneIndex]);
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      try {
-        const res = await fetch(`${apiBase}/edit-element?scriptId=${encodeURIComponent(scriptId)}&sceneIndex=${sceneIndex}`);
-        const json = (await res.json().catch(() => ({}))) as { fields?: { path: string; value: string }[] };
-        if (!cancelled) fieldsRef.current = Array.isArray(json.fields) ? json.fields : [];
-      } catch {
-        if (!cancelled) fieldsRef.current = [];
+      const ok = await fetchFields();
+      if (!ok && !cancelled) {
+        await new Promise((r) => setTimeout(r, 700));
+        if (!cancelled) await fetchFields(); // one retry — then tagged builds still work
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [apiBase, scriptId, sceneIndex, reloadKey]);
+  }, [fetchFields, reloadKey]);
 
-  // Compute every piece's rect for the "show all" x-ray.
+  // Compute every piece's rect for the "show all" x-ray. docTick ties this to the
+  // LIVE document: at src-change time contentDocument is still the outgoing doc, so
+  // without it the outlines showed the previous scene's boxes until toggled twice.
   useEffect(() => {
     if (!showAll) return;
     const doc = iframeRef.current?.contentDocument;
@@ -402,7 +475,8 @@ export function ElementEditor({
       if (rect) out.push({ pieceId: id, kind: el.getAttribute("data-kind") ?? "", rect });
     });
     setAllPieces(out);
-  }, [showAll, reloadKey, sceneIndex, iframeRef]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showAll, reloadKey, sceneIndex, docTick, iframeRef]);
 
   // ---- drag to move -------------------------------------------------------
   const canvasScale = (): number => {
@@ -433,16 +507,27 @@ export function ElementEditor({
       detachDrag();
       const d = dragRef.current;
       dragRef.current = null;
-      setDragDelta(null);
-      if (!d || !selected) return;
+      if (!d || !selected) {
+        setDragDelta(null);
+        return;
+      }
       const scale = d.scale || 1;
       const dx = Math.round((ev.clientX - d.startX) / scale);
       const dy = Math.round((ev.clientY - d.startY) / scale);
-      if (dx === 0 && dy === 0) return;
+      if (dx === 0 && dy === 0) {
+        setDragDelta(null);
+        return;
+      }
+      // Keep the box at the DRAGGED position while the move persists — clearing
+      // dragDelta before the await snapped the outline back to the old spot for
+      // the whole POST. On success the reload shows the piece at its new place
+      // and the selection is restored (reselectIdRef) so nudging can continue.
       setBusy("move");
       const ok = await post(`${apiBase}/edit-layout`, { scriptId, sceneIndex, pieceId: selected.pieceId, op: "move", dx, dy });
       setBusy(null);
+      setDragDelta(null);
       if (ok) {
+        reselectIdRef.current = selected.pieceId;
         setSelected(null);
         onChanged();
       }
@@ -461,6 +546,7 @@ export function ElementEditor({
     const ok = await post(`${apiBase}/regenerate-element`, { scriptId, sceneIndex, pieceId: selected.pieceId });
     setBusy(null);
     if (ok) {
+      reselectIdRef.current = selected.pieceId; // keep it selected across the reload
       setSelected(null);
       onChanged();
     }
@@ -493,6 +579,12 @@ export function ElementEditor({
 
   return (
     <div style={{ position: "absolute", inset: 0, pointerEvents: "none", zIndex: 5 }}>
+      {/* drag shield: while dragging, catch every mouse event before the iframe can
+          swallow it (iframe docs don't forward mousemove to the parent window, so a
+          fast drag that escaped the handle used to stall mid-gesture) */}
+      {dragDelta && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 60, cursor: "move", pointerEvents: "auto" }} />
+      )}
       {/* show-all toggle + hint */}
       <button
         type="button"
@@ -510,7 +602,7 @@ export function ElementEditor({
           style={{ pointerEvents: "none" }}
           className="absolute left-1/2 top-3 -translate-x-1/2 rounded-full bg-black/55 px-3 py-1 text-[11px] font-medium text-white/85"
         >
-          {editing ? "Editing text — press enter to save" : "Hover to explore · click an element to edit"}
+          Hover to explore · click an element to edit
         </div>
       )}
       {editing && (

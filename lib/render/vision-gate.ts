@@ -74,15 +74,20 @@ export const runVisionGate = async (
   judge: VisionJudge,
 ): Promise<VisionFinding[]> => {
   const rubric = buildRubric(brand);
+  // The judge calls are fully independent (same rubric, different image) — run
+  // them CONCURRENTLY. Serially this was 5 sequential vision round-trips (each
+  // with a 60s abort ceiling); parallel is one round-trip of wall-clock.
+  const judged = await Promise.allSettled(
+    scenes
+      .filter((s): s is { scene: number; screenshotPath: string } => !!s.screenshotPath)
+      .map(async (s) => ({ scene: s.scene, verdict: await judge(s.screenshotPath, s.scene, rubric) })),
+  );
   const out: VisionFinding[] = [];
-  for (const s of scenes) {
-    if (!s.screenshotPath) continue;
-    try {
-      const v = await judge(s.screenshotPath, s.scene, rubric);
-      if (!v.ok) for (const issue of v.issues) out.push({ scene: s.scene, issue });
-    } catch {
-      // advisory — skip a scene whose judge call failed
-    }
+  for (const r of judged) {
+    // advisory — a scene whose judge call failed is skipped (never breaks a build)
+    if (r.status !== "fulfilled") continue;
+    const { scene, verdict } = r.value;
+    if (!verdict.ok) for (const issue of verdict.issues) out.push({ scene, issue });
   }
   return out;
 };

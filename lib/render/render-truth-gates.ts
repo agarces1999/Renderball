@@ -104,7 +104,13 @@ export const findEmptyBand = async (m: SceneMeasurement): Promise<RenderTruthFin
           `stretch a top cluster and a bottom cluster apart with empty space between (the barbell failure).`,
       },
     ];
-  } catch {
+  } catch (err) {
+    // Fail OPEN deliberately (a measurement-infra error must not block a build) —
+    // but never silently: barbell is a BLOCKING gate, so a broken screenshot/sharp
+    // path would otherwise disable it without a trace.
+    console.warn(
+      `[render-truth] findEmptyBand skipped for scene ${m.scene}: ${err instanceof Error ? err.message : err}`,
+    );
     return [];
   }
 };

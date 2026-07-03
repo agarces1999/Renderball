@@ -106,6 +106,7 @@ A viewer has to READ the text. The most common failure is spending the scene's t
 - **Text enters FAST.** Headline entrance duration ≤ **0.4s**; body / lede / bullets / caption ≤ **0.5s**. Never put a long (>0.6s) or letter-by-letter reveal on a multi-word text element — it keeps the words unreadable while they animate. A short \`fadeRise\` / \`fadeIn\` is enough.
 - **Then text DWELLS.** Once a text element finishes its entrance it must stay fully settled, opaque, and STATIC so it can be read for the rest of its time on screen. Do not re-animate, move, or fade text mid-scene (a one-time late color shift on a single word is the only exception).
 - **Decoration can be slow — and runs CONCURRENTLY.** Icons, illustrations, diegetic-UI builds, charts drawing in, atmosphere drifting: these may take their time (1-4s, looping) BECAUSE they don't block reading. Start them at the same time as or after the text, never before. The headline should be legible within ~0.5s of the scene starting; a slow icon draw must not delay it.
+- **The FIRST text beat starts at delay ≤0.2s.** A scene must never open on more than ~0.5s of pure atmosphere — eyebrow/headline begin entering almost immediately, everything else layers around them.
 - **Rule of thumb:** if an element holds words a human reads, its entrance is short and its dwell is long. If it's decorative, it can animate slowly. Spend the long, luxurious animation budget on decoration, never on text.
 
 A build-time gate flags any text element whose entrance animation exceeds 1.0s and will force a regeneration — but aim for ≤0.4-0.5s, well under that.
@@ -149,7 +150,7 @@ Apply: \`animation: fadeRise 0.8s cubic-bezier(.2,.8,.2,1) forwards;\`
 }
 \`\`\`
 
-### Entry: letter-spacing settle (for editorial headlines)
+### Entry: letter-spacing settle (for editorial headlines — keep it ≤0.4s, per the reading-time rule)
 
 \`\`\`css
 @keyframes letterSettle {
@@ -420,17 +421,19 @@ const Section1: React.FC<{ script: Script }> = ({ script }) => (
       <div style={{
         fontSize: 13, letterSpacing: "0.18em", textTransform: "uppercase", color: BRAND_ACCENT,
         opacity: 0,
-        animation: "fadeRise 0.6s cubic-bezier(.2,.8,.2,1) 0s forwards",
+        animation: "fadeRise 0.4s cubic-bezier(.2,.8,.2,1) 0s forwards",
       }}>{/* eyebrow */}</div>
       <h1 style={{
         fontFamily: '"Merriweather", serif', fontSize: 96, color: "#FFF",
         opacity: 0,
-        animation: "letterSettle 1.2s cubic-bezier(.2,.8,.2,1) 0.6s forwards",
+        // text enters FAST (≤0.4s, reading-time rule) — legible ~0.55s in; the
+        // long, luxurious timing budget goes to DECORATION below, never text
+        animation: "letterSettle 0.4s cubic-bezier(.2,.8,.2,1) 0.15s forwards",
       }}>{/* headline */}</h1>
       <div style={{
         marginTop: 18, height: 4, width: 0,
         background: BRAND_ACCENT, borderRadius: 2,
-        animation: "drawWidth 0.8s cubic-bezier(.2,.8,.2,1) 1.6s forwards",
+        animation: "drawWidth 0.8s cubic-bezier(.2,.8,.2,1) 0.6s forwards",
         ["--target-width" as any]: "40%",
       }} />
     </div>

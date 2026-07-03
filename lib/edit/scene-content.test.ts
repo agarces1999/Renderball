@@ -10,7 +10,7 @@ import {
   findPathByValue,
   type SceneContent,
 } from "./scene-content";
-import { applyTextEdit } from "./apply-text-edit";
+import { applyTextEdit, applyTextEdits } from "./apply-text-edit";
 
 let passed = 0;
 let failed = 0;
@@ -153,6 +153,36 @@ check("applyTextEdit: unresolvable → ok:false, no throw", () => {
 check("applyTextEdit: edit without a string value → ok:false", () => {
   const r = applyTextEdit(full(), { path: "headline", op: "edit" });
   assert(!r.ok && r.error === "value required for edit", "guards missing value");
+});
+
+// -- applyTextEdits: the batch shape (editor's multi-field save) --
+
+check("applyTextEdits: applies multiple edits in one pass against evolving content", () => {
+  const { content, results, okCount } = applyTextEdits(full(), [
+    { path: "headline", op: "edit", value: "New head" },
+    { matchText: "Start designing today", op: "edit", value: "Go now" },
+    { matchText: "Snap-to-grid precision", op: "delete" },
+  ]);
+  assert(okCount === 3 && results.every((r) => r.ok), JSON.stringify(results));
+  assert(content.headline === "New head", "headline updated");
+  assert(content.cta!.primary === "Go now", "cta updated via matchText");
+  assert(content.bullets!.length === 2, "bullet deleted");
+});
+
+check("applyTextEdits: partial failure reports per-edit results, applies the rest", () => {
+  const { content, results, okCount } = applyTextEdits(full(), [
+    { matchText: "ghost text that matches nothing", op: "edit", value: "x" },
+    { path: "headline", op: "edit", value: "Kept" },
+  ]);
+  assert(okCount === 1, `okCount ${okCount}`);
+  assert(!results[0].ok && !!results[0].error, "first edit failed with error");
+  assert(results[1].ok && content.headline === "Kept", "second edit applied");
+});
+
+check("applyTextEdits: all-fail → okCount 0, content unchanged", () => {
+  const before = full();
+  const { content, okCount } = applyTextEdits(before, [{ matchText: "nope", op: "edit", value: "x" }]);
+  assert(okCount === 0 && JSON.stringify(content) === JSON.stringify(before), "unchanged");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

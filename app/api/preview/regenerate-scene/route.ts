@@ -11,6 +11,8 @@ import {
   regenerateScene,
   buildAgentInputFromBrief,
 } from "../../../../lib/agents/pipeline";
+import { decomposeGenDir } from "../../../../lib/agents/lego-store";
+import { withGenDirLock } from "../../../../lib/edit/gendir-lock";
 
 /**
  * Per-scene regenerate endpoint backing the /preview/[id] page's
@@ -110,13 +112,27 @@ export async function POST(request: Request) {
     );
   }
 
-  // Write the updated files back to disk.
-  await fs.writeFile(compPath, result.code, "utf-8");
-  await fs.writeFile(
-    path.join(generatedDir, "Composition.design.tsx"),
-    result.designCode,
-    "utf-8",
-  );
+  // Write the updated files back to disk — under the genDir lock so a concurrent
+  // editor op can't interleave, and RE-DECOMPOSE the lego store: piece edits
+  // reassemble Composition.tsx from genDir/lego/, so a stale manifest would make
+  // the FIRST piece edit after this regen silently revert the whole scene.
+  await withGenDirLock(generatedDir, async () => {
+    await fs.writeFile(compPath, result.code, "utf-8");
+    await fs.writeFile(
+      path.join(generatedDir, "Composition.design.tsx"),
+      result.designCode,
+      "utf-8",
+    );
+    try {
+      await decomposeGenDir(generatedDir);
+    } catch (err) {
+      // Best-effort: decompose is guarded by its byte-identical round-trip check;
+      // a failure leaves piece editing unavailable for this scene, never corrupt.
+      console.warn(
+        `[regenerate-scene] lego re-decompose failed: ${err instanceof Error ? err.message : err}`,
+      );
+    }
+  });
 
   // Mark scene as regenerated so downstream code can track freshness.
   (script.scenes[sceneIndex] as unknown as Record<string, string>).regenerated_at =

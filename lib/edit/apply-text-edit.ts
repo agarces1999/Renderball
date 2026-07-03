@@ -28,6 +28,31 @@ export interface TextEditResult {
   error?: string;
 }
 
+/**
+ * Apply a BATCH of edits to one scene's content in a single pass — the editor's
+ * multi-field save sends every changed field at once (one script load/save cycle
+ * instead of N sequential round-trips). Edits apply in order against the evolving
+ * content; per-edit results report each field's outcome so a partial failure is
+ * visible (nothing silently swallowed).
+ */
+export const applyTextEdits = (
+  content: SceneContent,
+  edits: TextEditInput[],
+): { content: SceneContent; results: TextEditResult[]; okCount: number } => {
+  let current = content;
+  const results: TextEditResult[] = [];
+  let okCount = 0;
+  for (const e of edits) {
+    const r = applyTextEdit(current, e);
+    results.push(r);
+    if (r.ok && r.content) {
+      current = r.content;
+      okCount++;
+    }
+  }
+  return { content: current, results, okCount };
+};
+
 export const applyTextEdit = (content: SceneContent, input: TextEditInput): TextEditResult => {
   let path = input.path && input.path.length > 0 ? input.path : undefined;
 

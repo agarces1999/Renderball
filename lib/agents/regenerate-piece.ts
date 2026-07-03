@@ -60,11 +60,6 @@ export const regeneratePiece = async (
   const client = getAnthropic();
 
   const user = [
-    "SHARED DESIGN SYSTEM (module consts already in scope — reference them, never redefine):",
-    "```tsx",
-    elideDataUris(preamble.trim()),
-    "```",
-    "",
     `THIS ELEMENT to regenerate — scene ${sceneIndex}, id "${piece.id}", kind "${piece.kind}". Current JSX:`,
     "```tsx",
     piece.body.trim(),
@@ -86,7 +81,23 @@ export const regeneratePiece = async (
         .stream({
           model,
           max_tokens: 4000,
-          system: [{ type: "text", text: SYSTEM }],
+          // The preamble is per-video constant, so it lives in a CACHED system
+          // block: iterative regens on the same video prefill it from cache
+          // (z.ai honors Anthropic-compat caching — build calls measure 86-139k
+          // cache-read tokens). Only the small piece+instruction turn re-prefills.
+          system: [
+            { type: "text", text: SYSTEM },
+            {
+              type: "text",
+              text: [
+                "SHARED DESIGN SYSTEM (module consts already in scope — reference them, never redefine):",
+                "```tsx",
+                elideDataUris(preamble.trim()),
+                "```",
+              ].join("\n"),
+              cache_control: { type: "ephemeral" },
+            },
+          ],
           messages: [{ role: "user", content: user }],
         })
         .finalMessage(),
