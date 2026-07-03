@@ -22,7 +22,10 @@ export function DevEditClient({
   const [sceneIndex, setSceneIndex] = useState(0);
   const [reloadKey, setReloadKey] = useState(0);
   const iframeRef = useRef<HTMLIFrameElement>(null);
-  const iframeSrc = `/api/dev/${scriptId}/iframe?scene=${sceneIndex}&v=${reloadKey}`;
+  // The dev harness IS edit mode — always render settled (entry animations at their
+  // end state) so scenes are instantly clickable and post-edit reloads land in ~300ms
+  // instead of replaying up to ~6s of entrance choreography.
+  const iframeSrc = `/api/dev/${scriptId}/iframe?scene=${sceneIndex}&v=${reloadKey}&settle=1`;
 
   return (
     <div style={{ maxWidth: 1100, margin: "0 auto", padding: 24, fontFamily: "system-ui, sans-serif" }}>

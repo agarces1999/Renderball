@@ -146,7 +146,10 @@ export function PreviewClient({ scriptId, script, initialWarnings }: Props) {
   };
 
   const currentScene = script.scenes[sceneIndex];
-  const iframeSrc = `/api/preview/${scriptId}/iframe?scene=${sceneIndex}&v=${reloadKey}`;
+  // Edit mode renders SETTLED (entry animations at their end state): interactions are
+  // instant and rects are stable — you edit a static scene, you WATCH motion in play
+  // mode. Toggling edit changes the src, so the browser swaps modes naturally.
+  const iframeSrc = `/api/preview/${scriptId}/iframe?scene=${sceneIndex}&v=${reloadKey}${editing ? "&settle=1" : ""}`;
 
   const hasWarnings =
     warnings &&

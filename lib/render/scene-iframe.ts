@@ -24,10 +24,22 @@ export type SceneDocResult =
  *
  * Auth + script loading are the caller's job; this is pure given a loaded script.
  */
+export interface SceneDocOptions {
+  /**
+   * Render the scene SETTLED: jump every finite entry animation to its end state
+   * (the same `animation-delay: -100000s` override measure-scene.ts uses, which the
+   * MP4's late frames match). The editor passes this on post-edit reloads so an edit
+   * shows its final result in ~300ms instead of replaying up to ~6s of entrance
+   * choreography. First loads / scene switches keep animations (settle omitted).
+   */
+  settle?: boolean;
+}
+
 export async function renderSceneDoc(
   scriptId: string,
   sceneIndex: number,
   script: Script,
+  opts: SceneDocOptions = {},
 ): Promise<SceneDocResult> {
   if (sceneIndex < 0 || sceneIndex >= script.scenes.length) {
     return { ok: false, status: 400, message: `scene ${sceneIndex} out of range (0..${script.scenes.length - 1})` };
@@ -151,6 +163,14 @@ export async function renderSceneDoc(
 </script>`
     : "";
 
+  // Settled mode: the !important longhand beats inline shorthand delays, jumping
+  // finite fill-forwards entry animations to their final frame (infinite ambient
+  // loops just phase-shift — they keep looping). Matches measure-scene + MP4 truth.
+  const settleCss = opts.settle
+    ? `
+  *, *::before, *::after { animation-delay: -100000s !important; }`
+    : "";
+
   const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -158,7 +178,7 @@ export async function renderSceneDoc(
 <title>Preview · Scene ${sceneIndex}</title>
 <style>
   html, body { margin: 0; padding: 0; background: #000; overflow: hidden; height: 100%; }
-  body { display: flex; align-items: center; justify-content: center; }
+  body { display: flex; align-items: center; justify-content: center; }${settleCss}
   .renderball-canvas {
     width: ${dims.width}px;
     height: ${dims.height}px;
