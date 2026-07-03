@@ -21,11 +21,12 @@ export function DevEditClient({
 }) {
   const [sceneIndex, setSceneIndex] = useState(0);
   const [reloadKey, setReloadKey] = useState(0);
+  // Editing happens on a SETTLED scene (entry animations at their end state —
+  // instant clicks, stable outlines, ~300ms post-edit reloads). "Play motion"
+  // replays the scene's choreography from t=0 to preview the animation.
+  const [playMotion, setPlayMotion] = useState(false);
   const iframeRef = useRef<HTMLIFrameElement>(null);
-  // The dev harness IS edit mode — always render settled (entry animations at their
-  // end state) so scenes are instantly clickable and post-edit reloads land in ~300ms
-  // instead of replaying up to ~6s of entrance choreography.
-  const iframeSrc = `/api/dev/${scriptId}/iframe?scene=${sceneIndex}&v=${reloadKey}&settle=1`;
+  const iframeSrc = `/api/dev/${scriptId}/iframe?scene=${sceneIndex}&v=${reloadKey}${playMotion ? "" : "&settle=1"}`;
 
   return (
     <div style={{ maxWidth: 1100, margin: "0 auto", padding: 24, fontFamily: "system-ui, sans-serif" }}>
@@ -48,15 +49,19 @@ export function DevEditClient({
           title={`Scene ${sceneIndex + 1}`}
           style={{ position: "absolute", inset: 0, width: "100%", height: "100%", border: 0 }}
         />
-        <ElementEditor
-          iframeRef={iframeRef}
-          scriptId={scriptId}
-          sceneIndex={sceneIndex}
-          reloadKey={reloadKey}
-          canvasWidth={width}
-          onChanged={() => setReloadKey((k) => k + 1)}
-          apiBase="/api/dev"
-        />
+        {/* While motion plays, the editor overlay unmounts — rects measured
+            mid-animation are wrong, and the surface is for watching, not editing. */}
+        {!playMotion && (
+          <ElementEditor
+            iframeRef={iframeRef}
+            scriptId={scriptId}
+            sceneIndex={sceneIndex}
+            reloadKey={reloadKey}
+            canvasWidth={width}
+            onChanged={() => setReloadKey((k) => k + 1)}
+            apiBase="/api/dev"
+          />
+        )}
       </div>
       <div style={{ display: "flex", gap: 6, marginTop: 12, flexWrap: "wrap" }}>
         {sceneLabels.map((label, i) => (
@@ -85,7 +90,26 @@ export function DevEditClient({
           onClick={() => setReloadKey((k) => k + 1)}
           style={{ borderRadius: 999, border: "1px solid #ddd", background: "#fff", padding: "5px 12px", fontSize: 12, cursor: "pointer" }}
         >
-          Reload
+          {playMotion ? "Replay" : "Reload"}
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setPlayMotion((p) => !p);
+            setReloadKey((k) => k + 1); // reload swaps settle mode + restarts choreography
+          }}
+          style={{
+            borderRadius: 999,
+            border: "1px solid " + (playMotion ? "#6366f1" : "#ddd"),
+            background: playMotion ? "#6366f1" : "#fff",
+            color: playMotion ? "#fff" : "#333",
+            padding: "5px 12px",
+            fontSize: 12,
+            fontWeight: 600,
+            cursor: "pointer",
+          }}
+        >
+          {playMotion ? "✎ Back to editing" : "▶ Play motion"}
         </button>
       </div>
     </div>
