@@ -20,7 +20,12 @@ export default async function DevEditPage({ params }: { params: { id: string } }
   return (
     <DevEditClient
       scriptId={params.id}
-      sceneLabels={script.scenes.map((s) => s.label)}
+      scenes={script.scenes.map((s) => ({
+        label: s.label,
+        description: s.description ?? null,
+        seconds: Math.max(0, (s.end_seconds ?? 0) - (s.start_seconds ?? 0)),
+      }))}
+      logline={script.narrative?.logline ?? null}
       width={dims.width}
       height={dims.height}
     />

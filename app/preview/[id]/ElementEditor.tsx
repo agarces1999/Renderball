@@ -42,6 +42,8 @@ interface Props {
   canvasWidth: number;
   onChanged: () => void;
   apiBase?: string;
+  /** Start with the piece x-ray on (the dev dashboard defaults to visible). */
+  defaultShowAll?: boolean;
 }
 
 const BLOCK_TEXT = /^(H[1-6]|P|LI|DIV|FIGCAPTION|LABEL|BLOCKQUOTE|DD|DT|TD|TH)$/;
@@ -54,10 +56,11 @@ export function ElementEditor({
   canvasWidth,
   onChanged,
   apiBase = "/api/preview",
+  defaultShowAll = false,
 }: Props) {
   const [selected, setSelected] = useState<PieceRef | null>(null);
   const [hovered, setHovered] = useState<PieceRef | null>(null);
-  const [showAll, setShowAll] = useState(false);
+  const [showAll, setShowAll] = useState(defaultShowAll);
   const [allPieces, setAllPieces] = useState<PieceRef[]>([]);
   const [busy, setBusyState] = useState<null | "regenerate" | "delete" | "move" | "text">(null);
   const [error, setError] = useState<string | null>(null);
@@ -383,6 +386,11 @@ export function ElementEditor({
       lastHover = "";
       setHovered(null);
     };
+    // Escape clears the selection (a text session's own Escape handler runs first
+    // and stops the session; this only fires when no session is active).
+    const onEsc = (ev: KeyboardEvent) => {
+      if (ev.key === "Escape" && !editingRef.current) setSelected(null);
+    };
 
     const attach = () => {
       try {
@@ -392,6 +400,16 @@ export function ElementEditor({
         doc.addEventListener("dblclick", onDbl, true);
         doc.addEventListener("mouseover", onOver, true);
         doc.addEventListener("mouseleave", onLeave, true);
+        doc.addEventListener("keydown", onEsc);
+        // Affordance: everything inside a piece is selectable — show a pointer
+        // cursor so regeneratable elements read as clickable (edit surface only;
+        // an active text session overrides with cursor:text inline).
+        if (!doc.getElementById("rb-editor-affordance")) {
+          const style = doc.createElement("style");
+          style.id = "rb-editor-affordance";
+          style.textContent = "[data-piece] *:hover { cursor: pointer; }";
+          doc.head?.appendChild(style);
+        }
         // The NEW document is live now — recompute anything measured against the
         // old one (x-ray rects) and restore the selection a move/regen preserved.
         setDocTick((t) => t + 1);
@@ -424,6 +442,7 @@ export function ElementEditor({
         doc?.removeEventListener("dblclick", onDbl, true);
         doc?.removeEventListener("mouseover", onOver, true);
         doc?.removeEventListener("mouseleave", onLeave, true);
+        doc?.removeEventListener("keydown", onEsc);
       } catch {
         /* ignore */
       }
@@ -602,7 +621,7 @@ export function ElementEditor({
           style={{ pointerEvents: "none" }}
           className="absolute left-1/2 top-3 -translate-x-1/2 rounded-full bg-black/55 px-3 py-1 text-[11px] font-medium text-white/85"
         >
-          Hover to explore · click an element to edit
+          Outlined pieces are editable · click to select · double-click text to edit
         </div>
       )}
       {editing && (
@@ -629,9 +648,13 @@ export function ElementEditor({
           </div>
         ))}
 
-      {/* hover reveal (only when not selected) */}
+      {/* hover reveal (only when not selected) — labeled so what you'd select is explicit */}
       {hovered && !selected && !editing && (
-        <div style={{ position: "absolute", left: hovered.rect.left, top: hovered.rect.top, width: hovered.rect.width, height: hovered.rect.height, border: "1.5px solid rgba(99,102,241,0.7)", borderRadius: 6, pointerEvents: "none" }} />
+        <div style={{ position: "absolute", left: hovered.rect.left, top: hovered.rect.top, width: hovered.rect.width, height: hovered.rect.height, border: "1.5px solid rgba(99,102,241,0.7)", borderRadius: 6, pointerEvents: "none" }}>
+          <span className="absolute -top-[10px] left-1 rounded-sm bg-indigo-500/90 px-1.5 text-[9px] font-medium leading-[1.5] text-white">
+            {hovered.kind} · click to edit
+          </span>
+        </div>
       )}
 
       {box && selected && (
