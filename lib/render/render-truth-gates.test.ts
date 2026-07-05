@@ -11,6 +11,7 @@ import sharp from "sharp";
 import {
   findOverflow,
   findTextOverlap,
+  findCrossPieceOverlap,
   findEmptyBand,
   findRenderTruthFailures,
   hexLuminance,
@@ -37,7 +38,7 @@ const assert = (c: boolean, m: string) => {
 const el = (p: Partial<MeasuredElement>): MeasuredElement => ({
   tag: "div", x: 0, y: 0, w: 100, h: 100, color: "rgb(255,255,255)",
   bg: "rgba(0,0,0,0)", text: "", isImg: false, src: undefined, fontSize: 0,
-  opacity: 1, ...p,
+  opacity: 1, piece: "", onOpaqueSurface: false, coveredAtCenter: false, ...p,
 });
 const scene = (i: number, els: MeasuredElement[]): SceneMeasurement => ({
   scene: i, width: 1920, height: 1080, elements: els, screenshotPath: undefined,
@@ -199,6 +200,51 @@ await check("assessCanvasBrightness: no brand bg / null scene lums handled", () 
     { scene: 0, lum: null }, { scene: 1, lum: 0.05 }, { scene: 2, lum: 0.04 },
   ]);
   assert(f.length === 2, `nulls ignored, 2 dark flagged: ${JSON.stringify(f)}`);
+});
+
+// ── findCrossPieceOverlap (title colliding with a diegetic mock) ─────────────
+// Reproduces the Framer defect: a transparent-backed headline from the copy
+// piece clipped by the editor-mock panel from a different piece.
+const HEADLINE = { tag: "h1", text: "Every pixel, exactly where you want it", fontSize: 76, x: 90, y: 106, w: 900, h: 60, piece: "s2.copy", coveredAtCenter: true };
+const MOCK_PANEL = { tag: "div", bg: "rgb(18,18,20)", x: 90, y: 150, w: 1740, h: 630, piece: "s2.editor" };
+
+await check("flags a headline clipped by a foreign mock panel (the Framer defect)", () => {
+  const m = scene(2, [el(HEADLINE), el(MOCK_PANEL)]);
+  const r = findCrossPieceOverlap(m);
+  assert(r.length === 1 && r[0].kind === "cross-piece-overlap" && /s2\.editor/.test(r[0].detail), JSON.stringify(r));
+});
+
+await check("does NOT flag text on its OWN opaque surface (Arc-style overlay card)", () => {
+  const m = scene(0, [el({ ...HEADLINE, piece: "s0.copy", onOpaqueSurface: true }), el({ ...MOCK_PANEL, piece: "s0.browser" })]);
+  assert(findCrossPieceOverlap(m).length === 0, "intentional overlay card must not flag");
+});
+
+await check("does NOT flag same-piece overlap (labels inside their own mock)", () => {
+  const m = scene(1, [el({ ...HEADLINE, piece: "s1.editor", fontSize: 28 }), el({ ...MOCK_PANEL, piece: "s1.editor" })]);
+  assert(findCrossPieceOverlap(m).length === 0, "same-piece is by design");
+});
+
+await check("does NOT flag overlap with a transparent atmosphere layer", () => {
+  const m = scene(1, [el(HEADLINE), el({ ...MOCK_PANEL, piece: "s2.atmos", bg: "rgba(0,0,0,0)" })]);
+  assert(findCrossPieceOverlap(m).length === 0, "transparent layers are not panels");
+});
+
+await check("does NOT flag tiny (<20%) grazing intersections", () => {
+  const m = scene(1, [el({ ...HEADLINE, y: 100, h: 60 }), el({ ...MOCK_PANEL, y: 155 })]);
+  // intersection = 5px of a 60px-tall text box ≈ 8%
+  assert(findCrossPieceOverlap(m).length === 0, "grazing contact must not flag");
+});
+
+await check("does NOT flag text stacked visibly ON TOP of a foreign panel (z-order truth)", () => {
+  // geometric overlap but the text is the top element at its center — a deliberate
+  // over-panel composition, not a clip (the Arc false-positive class).
+  const m = scene(1, [el({ ...HEADLINE, coveredAtCenter: false }), el(MOCK_PANEL)]);
+  assert(findCrossPieceOverlap(m).length === 0, "text on top must not flag");
+});
+
+await check("does NOT flag full-bleed backgrounds as panels", () => {
+  const m = scene(1, [el(HEADLINE), el({ ...MOCK_PANEL, x: 0, y: 0, w: 1920, h: 1080, piece: "s2.frame" })]);
+  assert(findCrossPieceOverlap(m).length === 0, "the canvas itself is not a panel");
 });
 
 // ── findEmptyBand (barbell) — needs a real settled-frame screenshot ─────────

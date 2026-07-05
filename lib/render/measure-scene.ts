@@ -80,6 +80,15 @@ export interface MeasuredElement {
   src?: string;
   fontSize: number;
   opacity: number;
+  /** Enclosing LEGO piece id (closest [data-piece]), "" when outside any piece. */
+  piece: string;
+  /** True when an ancestor WITHIN the same piece paints an opaque background or
+   *  gradient under this element (text on its own card/scrim — intentional). */
+  onOpaqueSurface: boolean;
+  /** True when elementFromPoint at this element's center hits a NON-related
+   *  element — i.e. something else is stacked ON TOP of it (the clipped-by-mock
+   *  signal; text that is visibly on top reports false). */
+  coveredAtCenter: boolean;
 }
 
 export interface SceneMeasurement {
@@ -103,6 +112,12 @@ export const CANVAS_DIMS: Record<string, { w: number; h: number }> = {
 // dependency-free and self-contained.
 const PAGE_WALK = `(() => {
   const out = [];
+  const alphaOf = (c) => {
+    const m = /rgba?\\(([^)]+)\\)/.exec(c || "");
+    if (!m) return 0;
+    const p = m[1].split(",").map((v) => parseFloat(v.trim()));
+    return p.length >= 4 ? (isNaN(p[3]) ? 1 : p[3]) : 1;
+  };
   const els = document.querySelectorAll("*");
   for (const el of els) {
     const r = el.getBoundingClientRect();
@@ -113,6 +128,32 @@ const PAGE_WALK = `(() => {
     let text = "";
     for (const n of el.childNodes) if (n.nodeType === 3) text += n.textContent;
     text = text.replace(/\\s+/g, " ").trim().slice(0, 60);
+    // LEGO piece ancestry + whether an ancestor INSIDE the same piece paints an
+    // opaque surface under this element (text on its own card = intentional).
+    // Gradients count: computed backgroundColor is transparent for them, but a
+    // gradient-backed card is every bit a surface (Arc's overlay card).
+    const pieceEl = el.closest ? el.closest("[data-piece]") : null;
+    const piece = pieceEl ? pieceEl.getAttribute("data-piece") || "" : "";
+    let onOpaqueSurface = false;
+    for (let a = el.parentElement; a && pieceEl && pieceEl.contains(a); a = a.parentElement) {
+      const acs = getComputedStyle(a);
+      if (alphaOf(acs.backgroundColor) >= 0.5 || (acs.backgroundImage && acs.backgroundImage !== "none")) {
+        onOpaqueSurface = true;
+        break;
+      }
+      if (a === pieceEl) break;
+    }
+    // Stacking truth: is something unrelated painted ON TOP of this element's
+    // center? (elementFromPoint sees the topmost hit-testable element — the
+    // clipped-by-a-mock case; an element visibly on top reports false.)
+    let coveredAtCenter = false;
+    try {
+      const cx = r.x + r.width / 2, cy = r.y + r.height / 2;
+      if (cx >= 0 && cy >= 0 && cx < window.innerWidth && cy < window.innerHeight) {
+        const hit = document.elementFromPoint(cx, cy);
+        coveredAtCenter = !!hit && hit !== el && !el.contains(hit) && !hit.contains(el);
+      }
+    } catch (e) {}
     out.push({
       tag: el.tagName.toLowerCase(),
       x: Math.round(r.x), y: Math.round(r.y),
@@ -124,6 +165,9 @@ const PAGE_WALK = `(() => {
       src: el.tagName === "IMG" ? el.getAttribute("src") || undefined : undefined,
       fontSize: parseFloat(cs.fontSize) || 0,
       opacity: parseFloat(cs.opacity),
+      piece,
+      onOpaqueSurface,
+      coveredAtCenter,
     });
   }
   return out;

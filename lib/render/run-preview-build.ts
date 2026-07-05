@@ -165,11 +165,12 @@ export async function runPreviewBuild(
         // canvas-brightness check (light brand shipped on a dark canvas).
         const gate = await findRenderTruthFailures(measurements, {
           brandBackground: brief?.brand_extract?.background_color,
-          // Barbell (a >30% empty horizontal band) is a measured, high-precision
-          // composition failure — block on the build path so the repair ladder
-          // regenerates the scene with the empty-band reason, rather than shipping
-          // it with only an advisory warning (the prior state: prose rules alone).
-          blockingKinds: ["overflow", "measure-error", "barbell"],
+          // Barbell (a >30% empty horizontal band) and cross-piece overlap (a
+          // title colliding with a diegetic mock — shipped in 2 of 3 brands in
+          // one batch) are measured, high-precision composition failures — block
+          // on the build path so the repair ladder regenerates the scene with
+          // the concrete reason, rather than shipping with an advisory warning.
+          blockingKinds: ["overflow", "measure-error", "barbell", "cross-piece-overlap"],
         });
         return { ...gate, measurements };
       },

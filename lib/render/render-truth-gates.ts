@@ -23,6 +23,7 @@ import type { SceneMeasurement, MeasuredElement } from "./measure-scene";
 export type RenderTruthKind =
   | "overflow"
   | "text-overlap"
+  | "cross-piece-overlap"
   | "barbell"
   | "contrast"
   | "dead-region"
@@ -63,6 +64,77 @@ export const findOverflow = (m: SceneMeasurement): RenderTruthFinding[] => {
       kind: "overflow",
       detail: `${e.tag} ${label} clipped at ${where} (box ${e.x},${e.y} ${e.w}×${e.h} on ${m.width}×${m.height})`,
     });
+  }
+  return out;
+};
+
+// ── cross-piece overlap (a title colliding with a diegetic mock) ─────────────
+// The overlap class the text-vs-text gate can't see: a free-standing TEXT block
+// from one LEGO piece intersecting an OPAQUE PANEL from a DIFFERENT piece — a
+// headline clipped by (or unreadably printed over) a UI mock. Shipped in 2 of 3
+// brands in one batch (Framer s1+s2: headlines cut mid-glyph by the editor
+// mocks), so this is a high-frequency, ship-blocking class. Precision guards:
+//   - the text must be on the CANVAS (own bg transparent AND not sitting on an
+//     opaque/gradient ancestor surface within its own piece — an overlay card
+//     like Arc s0's headline-on-browser is intentional and excluded),
+//   - the text must be COVERED at its center (elementFromPoint stacking truth:
+//     something else painted on top — text that is visibly on top never flags;
+//     validated against 4 real builds where geometric overlap alone false-fired),
+//   - the other element must be a substantive opaque panel (real surface, not
+//     atmosphere glow — gradients report transparent backgroundColor),
+//   - same-piece overlap is by-design (labels inside their own mock).
+const XP_MIN_TEXT_PX = 24; // headline/lede class, not micro-labels
+const XP_MIN_TEXT_LEN = 8;
+const XP_MIN_PANEL_AREA = 40_000; // ≥ ~200×200 — a real panel
+const XP_MIN_PANEL_ALPHA = 0.5;
+const XP_MIN_FRAC = 0.2; // ≥20% of the text box intersected ⇒ a collision
+
+/** Free-standing text from piece A intersecting an opaque panel from piece B. */
+export const findCrossPieceOverlap = (m: SceneMeasurement): RenderTruthFinding[] => {
+  if (m.error) return [];
+  const texts = m.elements.filter(
+    (e) =>
+      !e.isImg &&
+      e.piece &&
+      !e.onOpaqueSurface &&
+      e.coveredAtCenter && // something IS stacked on top of it — the clip signal
+      e.text.trim().length >= XP_MIN_TEXT_LEN &&
+      e.fontSize >= XP_MIN_TEXT_PX &&
+      e.opacity > 0.1 &&
+      cssAlpha(e.bg) < 0.15,
+  );
+  const panels = m.elements.filter(
+    (e) =>
+      e.piece &&
+      e.opacity > 0.1 &&
+      cssAlpha(e.bg) >= XP_MIN_PANEL_ALPHA &&
+      e.w * e.h >= XP_MIN_PANEL_AREA &&
+      // full-bleed backgrounds are the canvas, not a panel
+      !(e.w >= m.width * 0.97 && e.h >= m.height * 0.97),
+  );
+  const out: RenderTruthFinding[] = [];
+  const seen = new Set<string>();
+  for (const t of texts) {
+    for (const p of panels) {
+      if (t.piece === p.piece) continue; // same piece = by design
+      const ix = Math.min(t.x + t.w, p.x + p.w) - Math.max(t.x, p.x);
+      const iy = Math.min(t.y + t.h, p.y + p.h) - Math.max(t.y, p.y);
+      if (ix <= 0 || iy <= 0) continue;
+      const frac = (ix * iy) / Math.max(1, t.w * t.h);
+      if (frac < XP_MIN_FRAC) continue;
+      const key = `${t.piece}|${p.piece}|${t.text.slice(0, 20)}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({
+        scene: m.scene,
+        kind: "cross-piece-overlap",
+        detail:
+          `text "${t.text.slice(0, 36)}" (piece ${t.piece}) collides with the opaque panel of piece ` +
+          `${p.piece} — ${Math.round(frac * 100)}% of the text box is covered ` +
+          `(text @${t.x},${t.y} ${t.w}×${t.h} ∩ panel @${p.x},${p.y} ${p.w}×${p.h}). ` +
+          `Move or shrink one so the copy clears the mock, or give the text its own opaque surface/scrim.`,
+      });
+    }
   }
   return out;
 };
@@ -448,6 +520,7 @@ export const findRenderTruthFailures = async (
   for (const m of measurements) {
     findings.push(...findOverflow(m));
     findings.push(...findTextOverlap(m));
+    findings.push(...findCrossPieceOverlap(m));
     findings.push(...(await findEmptyBand(m)));
     findings.push(...(await findContrast(m)));
     findings.push(...(await findDeadRegion(m)));
