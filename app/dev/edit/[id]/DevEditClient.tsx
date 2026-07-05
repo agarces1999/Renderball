@@ -2,15 +2,20 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ElementEditor } from "../../../preview/[id]/ElementEditor";
+import { cn } from "../../../../lib/cn";
 
 /**
- * Dev editing dashboard (no Clerk session; NODE_ENV-gated route).
+ * Dev editing dashboard (no Clerk session; NODE_ENV-gated route), on the
+ * DESIGN.md system: quiet cool-greyscale chrome (canvas/surface/hairline/ink
+ * tokens), Geist UI + Geist Mono meta + Cabinet Grotesk for the story surfaces
+ * (logline, scene title), emerald only on active states. The dark canvas frame
+ * recedes so the brand-color scene is the loudest thing — same rules as
+ * /preview, mirrored here without the Clerk-bound AppShell.
  *
  * Layout: canvas (settled edit surface + ElementEditor overlay) with the SCRIPT
- * panel beside it — the story logline, the current scene's role, and its copy
- * fields, so what you're editing is always visible next to where you edit it.
- * Navigation: prev/next + ←/→ keys, a scene rail with durations, Esc deselects
- * (in the editor), and the Play motion toggle to preview choreography.
+ * panel beside it — logline, the scene's story role, and its copy fields.
+ * Navigation: prev/next + ←/→ keys, durations on the rail, Esc deselects,
+ * Play motion replays choreography.
  */
 
 interface SceneSummary {
@@ -39,9 +44,8 @@ export function DevEditClient({
 }) {
   const [sceneIndex, setSceneIndex] = useState(0);
   const [reloadKey, setReloadKey] = useState(0);
-  // Editing happens on a SETTLED scene (entry animations at their end state —
-  // instant clicks, stable outlines, ~300ms post-edit reloads). "Play motion"
-  // replays the scene's choreography from t=0 to preview the animation.
+  // Editing happens on a SETTLED scene (instant clicks, stable outlines);
+  // "Play motion" replays the choreography from t=0.
   const [playMotion, setPlayMotion] = useState(false);
   const [fields, setFields] = useState<Field[]>([]);
   const iframeRef = useRef<HTMLIFrameElement>(null);
@@ -88,123 +92,145 @@ export function DevEditClient({
     };
   }, [scriptId, sceneIndex, reloadKey]);
 
-  const pill = (active: boolean): React.CSSProperties => ({
-    borderRadius: 999,
-    border: "1px solid " + (active ? "#6366f1" : "#ddd"),
-    background: active ? "#6366f1" : "#fff",
-    color: active ? "#fff" : "#333",
-    padding: "5px 12px",
-    fontSize: 12,
-    cursor: "pointer",
-    fontWeight: active ? 600 : 400,
-  });
-
   return (
-    <div style={{ maxWidth: 1400, margin: "0 auto", padding: "20px 24px", fontFamily: "system-ui, sans-serif", color: "#1a1d24" }}>
-      {/* header: what you're editing */}
-      <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 4 }}>
-        <h1 style={{ fontSize: 16, fontWeight: 700, margin: 0 }}>Renderball editor</h1>
-        <span style={{ fontSize: 11, color: "#9aa0ab", fontFamily: "monospace" }}>
-          {scriptId} · {scenes.length} scenes · {Math.round(totalSeconds)}s
-        </span>
-      </div>
-      {logline && (
-        <p style={{ fontSize: 12.5, color: "#6b7280", margin: "0 0 14px", maxWidth: 860, lineHeight: 1.45 }}>{logline}</p>
-      )}
-
-      {/* canvas + script panel */}
-      <div style={{ display: "flex", gap: 16, alignItems: "flex-start" }}>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div
-            style={{
-              position: "relative",
-              aspectRatio: `${width}/${height}`,
-              background: "#0b0d12",
-              borderRadius: 8,
-              overflow: "hidden",
-              border: "1px solid #e5e5e5",
-            }}
-          >
-            <iframe
-              ref={iframeRef}
-              src={iframeSrc}
-              title={`Scene ${sceneIndex + 1}`}
-              style={{ position: "absolute", inset: 0, width: "100%", height: "100%", border: 0 }}
-            />
-            {/* While motion plays, the editor overlay unmounts — rects measured
-                mid-animation are wrong, and the surface is for watching, not editing. */}
-            {!playMotion && (
-              <ElementEditor
-                iframeRef={iframeRef}
-                scriptId={scriptId}
-                sceneIndex={sceneIndex}
-                reloadKey={reloadKey}
-                canvasWidth={width}
-                onChanged={() => setReloadKey((k) => k + 1)}
-                apiBase="/api/dev"
-                defaultShowAll
-              />
-            )}
-          </div>
-
-          {/* navigation rail */}
-          <div style={{ display: "flex", gap: 6, marginTop: 12, flexWrap: "wrap", alignItems: "center" }}>
-            <button type="button" onClick={() => goTo(sceneIndex - 1)} disabled={sceneIndex === 0} style={{ ...pill(false), opacity: sceneIndex === 0 ? 0.4 : 1 }} title="Previous scene (←)">
-              ‹
-            </button>
-            {scenes.map((s, i) => (
-              <button key={i} type="button" onClick={() => goTo(i)} style={pill(i === sceneIndex)}>
-                <span style={{ fontFamily: "monospace", opacity: 0.6, marginRight: 4 }}>{i + 1}</span>
-                {s.label}
-                <span style={{ fontFamily: "monospace", fontSize: 10, opacity: 0.55, marginLeft: 5 }}>{Math.round(s.seconds)}s</span>
-              </button>
-            ))}
-            <button type="button" onClick={() => goTo(sceneIndex + 1)} disabled={sceneIndex === scenes.length - 1} style={{ ...pill(false), opacity: sceneIndex === scenes.length - 1 ? 0.4 : 1 }} title="Next scene (→)">
-              ›
-            </button>
-            <span style={{ flex: 1 }} />
-            <button type="button" onClick={() => setReloadKey((k) => k + 1)} style={pill(false)}>
-              {playMotion ? "Replay" : "Reload"}
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setPlayMotion((p) => !p);
-                setReloadKey((k) => k + 1); // reload swaps settle mode + restarts choreography
-              }}
-              style={pill(playMotion)}
-            >
-              {playMotion ? "✎ Back to editing" : "▶ Play motion"}
-            </button>
-          </div>
+    <div className="min-h-screen bg-canvas">
+      <div className="mx-auto max-w-[1180px] px-6 py-5">
+        {/* quiet header — orb mark + wordmark, mono metadata */}
+        <div className="mb-1 flex items-baseline gap-3">
+          <span className="orb h-5 w-5 shrink-0 translate-y-[3px]" aria-hidden />
+          <h1 className="text-[15px] font-semibold text-ink">
+            Renderball <span className="font-normal text-muted">editor</span>
+          </h1>
+          <span className="font-mono text-[11px] text-faint">
+            {scriptId} · {scenes.length} scenes · {Math.round(totalSeconds)}s
+          </span>
         </div>
+        {logline && (
+          <p className="mb-5 ml-8 max-w-[760px] font-display text-[17px] font-medium leading-snug tracking-[-0.015em] text-ink-soft">
+            {logline}
+          </p>
+        )}
 
-        {/* SCRIPT panel — the story + this scene's copy, beside where you edit it */}
-        <aside style={{ width: 300, flexShrink: 0, border: "1px solid #e5e5e5", borderRadius: 8, background: "#fafafa", padding: "14px 16px", maxHeight: "78vh", overflowY: "auto" }}>
-          <div style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: "0.08em", color: "#9aa0ab", marginBottom: 6 }}>
-            SCRIPT · SCENE {sceneIndex + 1} OF {scenes.length}
-          </div>
-          <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 2 }}>{scene?.label}</div>
-          <div style={{ fontSize: 11, fontFamily: "monospace", color: "#9aa0ab", marginBottom: 8 }}>{Math.round(scene?.seconds ?? 0)}s on screen</div>
-          {scene?.description && (
-            <p style={{ fontSize: 12, color: "#6b7280", lineHeight: 1.5, margin: "0 0 12px" }}>{scene.description}</p>
-          )}
-          <div style={{ borderTop: "1px solid #e8e8e8", paddingTop: 10 }}>
-            <div style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: "0.08em", color: "#9aa0ab", marginBottom: 8 }}>
-              COPY IN THIS SCENE
+        {/* canvas + script panel */}
+        <div className="flex items-start gap-5">
+          <div className="min-w-0 flex-1">
+            <div
+              className="relative overflow-hidden rounded-[18px] border border-hairline bg-[#0b0d12]"
+              style={{ aspectRatio: `${width}/${height}` }}
+            >
+              <iframe
+                ref={iframeRef}
+                src={iframeSrc}
+                title={`Scene ${sceneIndex + 1}`}
+                style={{ position: "absolute", inset: 0, width: "100%", height: "100%", border: 0 }}
+              />
+              {/* While motion plays, the editor overlay unmounts — rects measured
+                  mid-animation are wrong, and the surface is for watching. */}
+              {!playMotion && (
+                <ElementEditor
+                  iframeRef={iframeRef}
+                  scriptId={scriptId}
+                  sceneIndex={sceneIndex}
+                  reloadKey={reloadKey}
+                  canvasWidth={width}
+                  onChanged={() => setReloadKey((k) => k + 1)}
+                  apiBase="/api/dev"
+                  defaultShowAll
+                />
+              )}
             </div>
-            {fields.length === 0 && <div style={{ fontSize: 12, color: "#9aa0ab" }}>No editable copy fields.</div>}
-            {fields.map((f) => (
-              <div key={f.path} style={{ marginBottom: 9 }}>
-                <div style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: "0.06em", color: "#a5aab5", textTransform: "uppercase" }}>{f.label}</div>
-                <div style={{ fontSize: 12.5, color: "#374151", lineHeight: 1.4 }}>{f.value}</div>
+
+            {/* navigation rail */}
+            <div className="mt-3 flex flex-wrap items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => goTo(sceneIndex - 1)}
+                disabled={sceneIndex === 0}
+                title="Previous scene (←)"
+                className="rounded-full border border-hairline-strong px-2.5 py-1.5 text-[12px] text-muted transition-colors hover:text-ink disabled:opacity-35"
+              >
+                ‹
+              </button>
+              {scenes.map((s, i) => (
+                <button
+                  key={i}
+                  type="button"
+                  onClick={() => goTo(i)}
+                  className={cn(
+                    "rounded-full border px-3 py-1.5 text-[12px] transition-colors",
+                    i === sceneIndex
+                      ? "border-accent-line bg-accent-soft text-ink"
+                      : "border-hairline-strong text-muted hover:text-ink",
+                  )}
+                >
+                  <span className="font-mono text-faint">{i + 1}</span> {s.label}{" "}
+                  <span className="font-mono text-[10px] text-faint">{Math.round(s.seconds)}s</span>
+                </button>
+              ))}
+              <button
+                type="button"
+                onClick={() => goTo(sceneIndex + 1)}
+                disabled={sceneIndex === scenes.length - 1}
+                title="Next scene (→)"
+                className="rounded-full border border-hairline-strong px-2.5 py-1.5 text-[12px] text-muted transition-colors hover:text-ink disabled:opacity-35"
+              >
+                ›
+              </button>
+              <span className="flex-1" />
+              <button
+                type="button"
+                onClick={() => setReloadKey((k) => k + 1)}
+                className="rounded-md border border-hairline-strong bg-surface px-3.5 py-1.5 text-[12.5px] text-ink transition-colors hover:bg-surface-2"
+              >
+                {playMotion ? "Replay" : "Reload"}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setPlayMotion((p) => !p);
+                  setReloadKey((k) => k + 1); // reload swaps settle mode + restarts choreography
+                }}
+                className={cn(
+                  "rounded-md border px-3.5 py-1.5 text-[12.5px] transition-colors",
+                  playMotion
+                    ? "border-accent-line bg-accent-soft text-ink"
+                    : "border-hairline-strong bg-surface text-ink hover:bg-surface-2",
+                )}
+              >
+                {playMotion ? "✎ Back to editing" : "▶ Play motion"}
+              </button>
+            </div>
+          </div>
+
+          {/* SCRIPT panel — the story + this scene's copy, beside where you edit it */}
+          <aside className="max-h-[78vh] w-[300px] shrink-0 overflow-y-auto rounded-[12px] border border-hairline bg-surface px-4 py-3.5">
+            <div className="mb-1.5 font-mono text-[10.5px] uppercase tracking-[0.14em] text-faint">
+              Script · Scene {sceneIndex + 1} of {scenes.length}
+            </div>
+            <div className="font-display text-[19px] font-bold leading-tight tracking-[-0.015em] text-ink">
+              {scene?.label}
+            </div>
+            <div className="mb-2 font-mono text-[11px] text-faint">{Math.round(scene?.seconds ?? 0)}s on screen</div>
+            {scene?.description && (
+              <p className="mb-3 text-[13px] leading-relaxed text-ink-soft">{scene.description}</p>
+            )}
+            <div className="border-t border-hairline pt-2.5">
+              <div className="mb-2 font-mono text-[10.5px] uppercase tracking-[0.14em] text-faint">
+                Copy in this scene
               </div>
-            ))}
-            <div style={{ fontSize: 10.5, color: "#b0b5bf", marginTop: 10, lineHeight: 1.5 }}>
-              Double-click any text in the canvas to edit it — changes save to the script and render in the MP4.
+              {fields.length === 0 && <div className="text-[12.5px] text-faint">No editable copy fields.</div>}
+              {fields.map((f) => (
+                <div key={f.path} className="mb-2.5">
+                  <div className="font-mono text-[9.5px] uppercase tracking-[0.1em] text-faint">{f.label}</div>
+                  <div className="text-[13px] leading-normal text-ink-soft">{f.value}</div>
+                </div>
+              ))}
+              <div className="mt-3 text-[11px] leading-relaxed text-faint">
+                Double-click any text in the canvas to edit it — changes save to the script and render in the MP4.
+              </div>
             </div>
-          </div>
-        </aside>
+          </aside>
+        </div>
       </div>
     </div>
   );
