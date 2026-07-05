@@ -51,7 +51,7 @@ import { makeFontFetcher, inlineFontFaces } from "../render/font-inline";
 import { makeImageProbe, repairBrokenImages } from "../render/image-integrity";
 import { searchPexelsPhotos, searchPexelsVideos } from "../assets/sources/pexels";
 import type { AssetSearchEntry } from "../assets/types";
-import { type Usage, usageOf, addUsage, EMPTY_USAGE } from "../usage";
+import { type Usage, usageOf, addUsage, recordUsage, EMPTY_USAGE } from "../usage";
 import type { Script } from "../../src/schema";
 import type {
   AgentBrandExtract,
@@ -389,6 +389,20 @@ async function streamBuildCall<T>(label: string, fn: () => Promise<T>, attempts 
       console.warn(
         `[pipeline] ${label}: attempt ${i}/${attempts} failed after ${elapsedS}s — ${transient ? "TRANSIENT → retrying" : "non-transient → aborting"} | cause: ${errChain(err)}`,
       );
+      // Ledger visibility: z.ai BILLS a stream that dies mid-generation (input
+      // prefill + all tokens generated before the drop), but the error path
+      // exposes no usage — so the cost ledger silently undercounted every
+      // retried attempt (found reconciling against live billing). We can't know
+      // the billed token count, so record a ZERO-usage marker (never a
+      // fabricated estimate): the ledger stays a truthful floor, and these rows
+      // show exactly where and how long unrecorded billed generation happened.
+      void recordUsage({
+        op: "failed-stream-attempt",
+        model: MODELS.codingAgent,
+        url: `${label} attempt ${i}/${attempts} died after ${elapsedS}s (billed by z.ai, tokens unreported)`,
+        usage: EMPTY_USAGE,
+        failed: true,
+      });
       if (i === attempts || !transient) throw err;
     }
   }

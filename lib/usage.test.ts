@@ -126,6 +126,16 @@ check("GLM-5V-Turbo base rate: 1M in = $1.2, 1M out = $4.0 (not Sonnet fallback)
   ok(near(costUsd("glm-5v-turbo", U(0, 1_000_000)), 4.0));
 });
 
+check("GLM cache READ bills at z.ai's real cached-input price ($0.26/M), not the Anthropic 10%", () => {
+  // 1M cache-read tokens on glm-5.2 → $0.26 (was mispriced at $0.14; found
+  // reconciling the ledger against live z.ai billing).
+  ok(near(costUsd("glm-5.2", { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 1_000_000 }), 0.26));
+});
+
+check("GLM cache WRITE bills at plain input rate (no documented z.ai premium)", () => {
+  ok(near(costUsd("glm-5.2", { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 1_000_000, cache_read_input_tokens: 0 }), 1.4));
+});
+
 check("cache READ bills at 10% of input rate (Opus)", () => {
   // 1M cache-read tokens on Opus = 0.10 × $5 = $0.50
   ok(near(costUsd("claude-opus-4-8", U(0, 0, 0, 1_000_000)), 0.5));

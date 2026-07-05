@@ -13,6 +13,8 @@ import {
 } from "../../../../lib/agents/pipeline";
 import { decomposeGenDir } from "../../../../lib/agents/lego-store";
 import { withGenDirLock } from "../../../../lib/edit/gendir-lock";
+import { recordUsage } from "../../../../lib/usage";
+import { MODELS } from "../../../../lib/anthropic";
 
 /**
  * Per-scene regenerate endpoint backing the /preview/[id] page's
@@ -104,6 +106,18 @@ export async function POST(request: Request) {
     sceneIndex,
     instruction,
   );
+
+  // Every scene regen lands in the cost ledger — billed whether or not it
+  // succeeded (editor regens were previously invisible to .data/usage.jsonl).
+  if (result.usage) {
+    void recordUsage({
+      op: "regen-scene",
+      model: MODELS.codingAgent,
+      scriptId,
+      usage: result.usage,
+      ...(result.ok ? {} : { failed: true }),
+    });
+  }
 
   if (!result.ok) {
     return NextResponse.json(

@@ -66,32 +66,38 @@ export const addUsage = (a: Usage, b: Usage): Usage => ({
  * .data/usage.jsonl and the build report. Claude rows are kept for reference /
  * any future re-route.
  */
-const RATES: Record<string, { input: number; output: number }> = {
+// Optional per-model cache multipliers (× the base input rate). Defaults are
+// Anthropic-calibrated (write 1.25x, read 0.10x). GLM rows carry z.ai's REAL
+// cached-input price — $0.26/M against $1.40 base = 0.1857x (docs.z.ai pricing,
+// re-verified 2026-07-05 after a live-billing reconciliation showed the 0.10x
+// approximation under-recording) — and no documented cache-WRITE premium
+// (storage currently waived), so GLM write bills at the plain input rate.
+const RATES: Record<
+  string,
+  { input: number; output: number; cacheRead?: number; cacheWrite?: number }
+> = {
   // z.ai GLM — the live build substrate
-  "glm-5.2": { input: 1.4, output: 4.4 }, // all text/build/QA stages (MODELS.*)
-  "glm-5v-turbo": { input: 1.2, output: 4.0 }, // vision gate (VISION_MODEL)
+  "glm-5.2": { input: 1.4, output: 4.4, cacheRead: 0.26 / 1.4, cacheWrite: 1 }, // all text/build/QA stages
+  "glm-5v-turbo": { input: 1.2, output: 4.0, cacheRead: 0.26 / 1.4, cacheWrite: 1 }, // vision gate
   // Anthropic — reference / fallback
   "claude-fable-5": { input: 10, output: 50 },
   "claude-opus-4-8": { input: 5, output: 25 },
   "claude-sonnet-4-5": { input: 3, output: 15 },
   "claude-haiku-4-5": { input: 1, output: 5 },
 };
-// Prompt-cache pricing, as multiples of the base input rate. These are
-// Anthropic-calibrated (write 1.25x, read 0.10x). They are an APPROXIMATION for
-// GLM — z.ai's cache-read discount is ~0.20x and its write premium differs —
-// but the imprecision is small: the vision path reports zero cache tokens, and
-// cache is a minor fraction of build spend. Revisit if GLM cache cost matters.
 const CACHE_WRITE_MULT = 1.25;
 const CACHE_READ_MULT = 0.1;
 
 /** Cost in USD for a usage bundle on a given model. Unknown model → Sonnet rate. */
 export const costUsd = (model: string, u: Usage): number => {
   const r = RATES[model] ?? RATES["claude-sonnet-4-5"];
+  const readMult = r.cacheRead ?? CACHE_READ_MULT;
+  const writeMult = r.cacheWrite ?? CACHE_WRITE_MULT;
   return (
     (u.input_tokens * r.input +
       u.output_tokens * r.output +
-      u.cache_creation_input_tokens * r.input * CACHE_WRITE_MULT +
-      u.cache_read_input_tokens * r.input * CACHE_READ_MULT) /
+      u.cache_creation_input_tokens * r.input * writeMult +
+      u.cache_read_input_tokens * r.input * readMult) /
     1_000_000
   );
 };

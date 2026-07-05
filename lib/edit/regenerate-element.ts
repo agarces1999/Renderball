@@ -21,7 +21,8 @@ import { verifyCompilable } from "../agents/code-extraction";
 import { withGenDirLock } from "./gendir-lock";
 import { findChildInScene, spliceChildBody, blockAsPiece } from "./nested-piece";
 import type { DecomposedPiece } from "../agents/lego-decompose";
-import type { Usage } from "../usage";
+import { recordUsage, type Usage } from "../usage";
+import { MODELS } from "../anthropic";
 
 export interface RegenerateElementInput {
   genDir: string;
@@ -41,6 +42,21 @@ export const regenerateElement = async (
   input: RegenerateElementInput,
 ): Promise<RegenerateElementResult> => {
   const { genDir, sceneIndex, pieceId, instruction } = input;
+  const scriptId = path.basename(genDir);
+
+  // Every LLM regen lands in .data/usage.jsonl — editor regens were previously
+  // invisible to the cost ledger (found reconciling against live z.ai billing).
+  const logUsage = (usage: Usage | undefined, failed: boolean) => {
+    if (usage) {
+      void recordUsage({
+        op: "regen-element",
+        model: MODELS.codingAgentBuild,
+        scriptId,
+        usage,
+        ...(failed ? { failed: true } : {}),
+      });
+    }
+  };
 
   // Serialize with any other edit to the same video (move/delete/regen) so their
   // read-modify-write of manifest + Composition.tsx cannot interleave.
@@ -81,6 +97,7 @@ export const regenerateElement = async (
     instruction,
   });
   if (!regen.ok || !regen.body) {
+    logUsage(regen.usage, true); // failed attempts are still billed
     return { ok: false, usage: regen.usage, error: regen.error || "regeneration failed" };
   }
   const newBody = makeBody(regen.body);
@@ -100,6 +117,7 @@ export const regenerateElement = async (
 
   const compileError = await verifyCompilable(candidate);
   if (compileError) {
+    logUsage(regen.usage, true); // failed attempts are still billed
     return { ok: false, usage: regen.usage, error: `regenerated element does not compile: ${compileError}` };
   }
 
@@ -110,6 +128,7 @@ export const regenerateElement = async (
   await writePieceBody(genDir, writeId, newBody);
   await fs.writeFile(path.join(genDir, "Composition.tsx"), candidate, "utf8");
 
+  logUsage(regen.usage, false);
   return { ok: true, code: candidate, body: regen.body, usage: regen.usage };
   });
 };
