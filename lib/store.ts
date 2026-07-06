@@ -116,6 +116,25 @@ export const saveBrief = async (brief: StoredBrief): Promise<void> => {
   );
 };
 
+/**
+ * Owner id used by the dev-only routes (app/api/dev/*), which run without a
+ * Clerk session and are 404'd in production. Keeps their data partitioned from
+ * real users in the shared store. (Defined here, re-exported by lib/auth.ts,
+ * so store consumers don't drag Clerk into their module graph.)
+ */
+export const DEV_OWNER_ID = "dev-local";
+
+/**
+ * Ownership match with a DEV-ONLY read fallback: in development, briefs owned
+ * by the dev-local partition (headless harness/dogfood builds) are readable by
+ * any signed-in local user — otherwise every /preview/<id> link for a harness
+ * build 404s under multi-tenancy. Never applies in production, where the dev
+ * routes are 404'd and no dev-local data should exist.
+ */
+const ownerMatches = (briefOwner: string, requester: string): boolean =>
+  briefOwner === requester ||
+  (process.env.NODE_ENV !== "production" && briefOwner === DEV_OWNER_ID);
+
 export const loadBrief = async (
   id: string,
   ownerId: string,
@@ -128,7 +147,7 @@ export const loadBrief = async (
     );
     const brief = JSON.parse(raw) as StoredBrief;
     // Ownership gate: a brief you don't own reads as "not found".
-    if (brief.owner_id !== ownerId) return null;
+    if (!ownerMatches(brief.owner_id, ownerId)) return null;
     return brief;
   } catch (err: unknown) {
     if (
@@ -199,7 +218,7 @@ export const loadBriefByScriptId = async (
 ): Promise<StoredBrief | null> => {
   const all = await listAllBriefs();
   return (
-    all.find((b) => b.script_id === scriptId && b.owner_id === ownerId) ?? null
+    all.find((b) => b.script_id === scriptId && ownerMatches(b.owner_id, ownerId)) ?? null
   );
 };
 

@@ -42,7 +42,8 @@ export const getCurrentUser = cache(async (): Promise<User | null> => {
 
 /**
  * Owner id used by the dev-only routes (app/api/dev/*), which run without a
- * Clerk session and are 404'd in production. Keeps their data partitioned from
- * real users in the shared store.
+ * Clerk session and are 404'd in production. Defined in lib/store.ts (so store
+ * consumers don't pull Clerk into their module graph); re-exported here for
+ * the existing auth-side imports.
  */
-export const DEV_OWNER_ID = "dev-local";
+export { DEV_OWNER_ID } from "./store";
