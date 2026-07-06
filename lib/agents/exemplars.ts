@@ -59,10 +59,25 @@ export const selectExemplars = (
   return out;
 };
 
+/** Structurally generic exemplars used when a script carries no registers at
+ *  all (GLM omits them sporadically) — injection must not silently no-op. */
+const FALLBACK_IDS = ["centered-hero", "split-editor"];
+
 /** The prompt block. Empty string when disabled or nothing matched. */
 export const exemplarPromptBlock = (registers: (string | undefined)[]): string => {
   if (process.env.RB_EXEMPLARS === "off") return "";
-  const picked = selectExemplars(registers);
+  let picked = selectExemplars(registers);
+  if (picked.length === 0) {
+    const pool = loadExemplars();
+    picked = FALLBACK_IDS.map((id) => pool.find((e) => e.id === id)).filter(
+      (e): e is Exemplar => !!e,
+    );
+    if (picked.length > 0) {
+      console.warn(
+        `[exemplars] script has no matching registers (${JSON.stringify(registers)}) — falling back to ${picked.map((e) => e.id).join(", ")}`,
+      );
+    }
+  }
   if (picked.length === 0) return "";
   const parts: string[] = [
     "## Worked exemplars (structure reference ONLY)",

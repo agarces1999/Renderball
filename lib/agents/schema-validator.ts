@@ -352,6 +352,67 @@ export const normalizeScriptContent = (input: unknown): unknown => {
   return { ...root, scenes };
 };
 
+const SCENE_REGISTERS = ["stat", "quote", "full-bleed", "split", "list", "centered"] as const;
+
+/**
+ * Backfill missing/invalid scene registers. GLM sometimes omits `register`
+ * wholesale (Duolingo shipped 5×null while Loom got all five) and everything
+ * downstream keyed on it then silently no-ops: exemplar selection injects
+ * nothing, the Design Agent loses its per-scene layout archetype, and
+ * register-variety reads 0 distinct. Deterministic content heuristic, then a
+ * no-two-adjacent-same nudge — same rule the script prompt states.
+ */
+export const backfillSceneRegisters = (input: unknown): unknown => {
+  if (!input || typeof input !== "object") return input;
+  const root = input as Record<string, unknown>;
+  if (!Array.isArray(root.scenes)) return input;
+  const sceneList: unknown[] = root.scenes;
+  const isValid = (r: unknown): r is (typeof SCENE_REGISTERS)[number] =>
+    typeof r === "string" && (SCENE_REGISTERS as readonly string[]).includes(r);
+  const missing = sceneList.filter(
+    (sc) => sc && typeof sc === "object" && !isValid((sc as Record<string, unknown>).register),
+  ).length;
+  if (missing === 0) return input;
+
+  const infer = (scene: Record<string, unknown>, index: number, last: number): string => {
+    const c = (scene.content ?? {}) as Record<string, unknown>;
+    const headline = typeof c.headline === "string" ? c.headline : "";
+    const meta = Array.isArray(c.meta) ? c.meta : [];
+    const bullets = Array.isArray(c.bullets) ? c.bullets : [];
+    const numericMeta = meta.some(
+      (m) => m && typeof m === "object" && /\d/.test(String((m as Record<string, unknown>).value ?? "")),
+    );
+    if (bullets.length >= 3) return "list";
+    if (numericMeta && /\d/.test(headline)) return "stat";
+    if (/^["'“].*["'”]$/.test(headline.trim())) return "quote";
+    if (index === 0) return "full-bleed";
+    if (index === last) return "centered";
+    return "split";
+  };
+
+  const registers: string[] = sceneList.map((sc, i) => {
+    const scene = (sc ?? {}) as Record<string, unknown>;
+    return isValid(scene.register) ? scene.register : infer(scene, i, sceneList.length - 1);
+  });
+  // No two adjacent the same: nudge later duplicates to a register unused by
+  // either neighbor (prefer one not yet used anywhere for variety).
+  for (let i = 1; i < registers.length; i++) {
+    if (registers[i] !== registers[i - 1]) continue;
+    const next = registers[i + 1];
+    const candidate =
+      SCENE_REGISTERS.find((r) => !registers.includes(r) && r !== registers[i - 1] && r !== next) ??
+      SCENE_REGISTERS.find((r) => r !== registers[i - 1] && r !== next);
+    if (candidate) registers[i] = candidate;
+  }
+  console.warn(`[script] backfilled register for ${missing}/${registers.length} scene(s): ${registers.join(", ")}`);
+  return {
+    ...root,
+    scenes: sceneList.map((sc, i) =>
+      sc && typeof sc === "object" ? { ...(sc as Record<string, unknown>), register: registers[i] } : sc,
+    ),
+  };
+};
+
 export const validateScript = (input: unknown): ValidationResult => {
   if (typeof input !== "object" || input === null) {
     return { ok: false, error: "Output is not a JSON object." };

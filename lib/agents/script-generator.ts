@@ -4,6 +4,7 @@ import { SCRIPT_GENERATOR_SYSTEM_PROMPT } from "./prompts/script-generator";
 import {
   validateScript,
   normalizeScriptContent,
+  backfillSceneRegisters,
   findUngroundedClaims,
   findUngroundedStageLabels,
   findTypeOnlyScenes,
@@ -325,8 +326,10 @@ export const generateScript = async (
     const withIdentity = injectIdentity(parsed, brief, briefId);
     const withAssets = mergePreallocatedAssets(withIdentity, brief);
     // Strip prose-as-value KPI meta entries before validation so a value-less
-    // stat tile (blank number slot) never reaches the design pass.
-    const normalized = normalizeScriptContent(withAssets);
+    // stat tile (blank number slot) never reaches the design pass. Then
+    // backfill any missing scene registers (GLM omits them sporadically, and
+    // exemplar selection + the Design Agent's layout archetypes key on them).
+    const normalized = backfillSceneRegisters(normalizeScriptContent(withAssets));
     const validation = validateScript(normalized);
     if (validation.ok) {
       // Duration guard: the requested duration is authoritative. If the

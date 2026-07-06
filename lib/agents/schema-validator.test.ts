@@ -10,6 +10,7 @@ import {
   validateScript,
   findTypeOnlyScenes,
   normalizeScriptContent,
+  backfillSceneRegisters,
 } from "./schema-validator";
 
 let passed = 0;
@@ -332,6 +333,51 @@ check("normalizeScriptContent leaves malformed shapes for the validator", () => 
   assert(normalizeScriptContent({ nope: 1 }) !== undefined, "non-script object passes through");
   const bad = { scenes: [{ content: { headline: "x", meta: [{ label: "a" }] } }] };
   assert(normalizeScriptContent(bad) === bad, "malformed meta entry (no value) is left for validateScript");
+});
+
+// ── backfillSceneRegisters (GLM sporadically omits register wholesale) ──────
+
+const regScenes = (scenes: Record<string, unknown>[]) => ({ scenes });
+const regsOf = (out: unknown): (string | undefined)[] =>
+  ((out as { scenes: { register?: string }[] }).scenes ?? []).map((s) => s.register);
+
+check("backfill is a no-op when every register is valid (same ref)", () => {
+  const s = regScenes([{ register: "stat" }, { register: "quote" }]);
+  assert(backfillSceneRegisters(s) === s, "should return same reference");
+});
+
+check("backfill fills all-null registers with a varied, adjacent-distinct sequence", () => {
+  const out = regsOf(
+    backfillSceneRegisters(
+      regScenes([
+        { content: { headline: "Your calendar is full" } },
+        { content: { headline: "22M+ learners", meta: [{ label: "PEOPLE", value: "22M+" }] } },
+        { content: { headline: "How it works", bullets: ["a", "b", "c"] } },
+        { content: { headline: "One more thing" } },
+        { content: { headline: "Get started free" } },
+      ]),
+    ),
+  );
+  assert(out.every((r) => typeof r === "string" && r.length > 0), `all assigned: ${out}`);
+  for (let i = 1; i < out.length; i++) assert(out[i] !== out[i - 1], `adjacent dup at ${i}: ${out}`);
+  assert(out[1] === "stat", `numeric meta+headline → stat, got ${out[1]}`);
+  assert(out[2] === "list", `3 bullets → list, got ${out[2]}`);
+});
+
+check("backfill preserves valid registers and only fills the gaps", () => {
+  const out = regsOf(
+    backfillSceneRegisters(
+      regScenes([{ register: "split" }, { content: { headline: "x" } }, { register: "centered" }]),
+    ),
+  );
+  assert(out[0] === "split" && out[2] === "centered", `kept: ${out}`);
+  assert(!!out[1] && out[1] !== "split" && out[1] !== "centered", `gap filled distinct: ${out}`);
+});
+
+check("backfill rejects invalid register strings (not in vocabulary)", () => {
+  const out = regsOf(backfillSceneRegisters(regScenes([{ register: "hero-banner" }, { register: "quote" }])));
+  assert(out[0] !== "hero-banner" && !!out[0], `invalid replaced: ${out}`);
+  assert(out[1] === "quote", "valid kept");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

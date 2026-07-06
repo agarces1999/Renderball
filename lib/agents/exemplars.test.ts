@@ -54,6 +54,12 @@ check("prompt block contains code fences + the never-copy injunction", () => {
   assert(block.includes('register "stat"'), "missing stat exemplar");
 });
 
+check("prompt block falls back to default exemplars when registers are all missing", () => {
+  const block = exemplarPromptBlock([undefined, undefined, undefined]);
+  assert(block.includes("```tsx"), "fallback should still inject code");
+  assert(block.includes('register "centered"') || block.includes('register "split"'), "uses generic structures");
+});
+
 check("RB_EXEMPLARS=off disables the block", () => {
   const prev = process.env.RB_EXEMPLARS;
   process.env.RB_EXEMPLARS = "off";

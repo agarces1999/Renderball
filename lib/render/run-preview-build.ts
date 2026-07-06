@@ -264,6 +264,11 @@ export async function runPreviewBuild(
   // images, so vision MUST use callZaiVision). Disable with RB_VISION_GATE=off.
   let visionFindings: VisionFinding[] = [];
   let visionCostUsd = 0;
+  // Ran-vs-found-nothing must be distinguishable downstream: a swallowed vision
+  // failure used to look identical to a clean pass (no ledger row, no findings
+  // key — the Duolingo build shipped an invisible-logo scene that way).
+  let visionRan = false;
+  let visionUsage = { ...EMPTY_USAGE };
   const VISION_GATE_ENABLED = process.env.RB_VISION_GATE !== "off";
   try {
     // Reuse the screenshots from repair's FINAL measure instead of launching
@@ -289,7 +294,6 @@ export async function runPreviewBuild(
         (f): f is string => !!f,
       ),
     };
-    let visionUsage = { ...EMPTY_USAGE };
     const judge = makeVisionJudge(async (imageBase64, rubric) => {
       const { text, usage } = await callZaiVision(imageBase64, rubric);
       visionUsage = addUsage(visionUsage, usage);
@@ -302,6 +306,7 @@ export async function runPreviewBuild(
           judge,
         )
       : [];
+    if (VISION_GATE_ENABLED && measured.length > 0) visionRan = true;
     // Brand-color fidelity backstop — TEXT-ONLY (brand name + extracted palette,
     // NO image) so the model's color recall can't anchor to a wrong frame.
     if (VISION_GATE_ENABLED && brandTruth.name) {
@@ -343,6 +348,17 @@ export async function runPreviewBuild(
     }
   } catch (err) {
     console.warn("[preview/build] vision gate (advisory) skipped:", err);
+    // The ledger must show the gate DIDN'T run — absence of a vision-qa row
+    // previously read as "ran clean". Records whatever partial usage the
+    // failed pass accumulated (z.ai bills it either way).
+    await recordUsage({
+      op: "vision-qa",
+      model: VISION_MODEL,
+      scriptId,
+      url: brief?.brand_kit_url,
+      usage: visionUsage,
+      failed: true,
+    }).catch(() => {});
   }
 
   // VISION-IN-THE-LOOP (flag-gated: RB_VISION_LOOP=1 — docs/QUALITY-ARCHITECTURE.md #2).
@@ -400,8 +416,9 @@ export async function runPreviewBuild(
 
   // Persist vision findings beside the other warnings so the dashboard/report and
   // the calibration telemetry see them (they previously lived only in the HTTP
-  // response + console — calibration data evaporated).
-  if (visionFindings.length) {
+  // response + console — calibration data evaporated). An empty array is written
+  // when the gate RAN and found nothing — key absent means it never ran.
+  if (visionRan) {
     try {
       const warnPath = path.join(genDir, "warnings.json");
       const existing = JSON.parse(await (await import("fs")).promises.readFile(warnPath, "utf8").catch(() => "{}"));

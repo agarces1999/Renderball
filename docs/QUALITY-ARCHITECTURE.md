@@ -127,3 +127,34 @@ First live build with QA-1/2/3 landed. One data point — direction, not verdict
   than baseline (2 warnings vs 3–6 + 3 user-reported defects across the
   baseline trio). Keep exemplars on; accumulate telemetry rows before any
   stronger claim.
+
+## Validation runs #2–3 — Duolingo + Klarna, 2026-07-05/06
+
+Deliberate stress test: every exemplar came from a dark tech brand; these two
+are bright-consumer (Duolingo) and pink fintech (Klarna).
+
+- **Both first-pass clean** — 0 repair steps, no blocking findings. With Loom
+  that's 2/3 clean builds since exemplars landed vs ~0 first-pass-clean
+  expectation from the baseline era (Framer/Superhuman shipped user-visible
+  defects even AFTER repairs).
+- **Duolingo** ($1.49 build / 82 min): fires dead-region×1 (residual — the CTA
+  scene's near-empty app card) + 4 warn families. **Caveat: got ZERO exemplars**
+  — GLM omitted `register` on all 5 scenes, so selection silently no-oped.
+  Its clean pass is evidence about the baseline pipeline, not exemplars.
+- **Klarna** ($1.48 build / 82 min): exemplars fullbleed-product +
+  split-editor injected; fires text-overlap×1 (residual, advisory) + 3 warn
+  families; stills flawless on eyeball review; vision gate ran, 0 findings.
+- **Style-leak check passed**: Duolingo (no exemplars) also chose a dark
+  canvas — the dark tendency is the Design Agent's own bias, not exemplar
+  leakage. Composition variety stayed brand-true in both.
+- **Three defects the batch exposed, fixed same-night**: (1) vision gate
+  failure was silent — Duolingo's gate died unnoticed and the ledger read as
+  "ran clean"; failures now record a failed vision-qa row and `vision: []`
+  is written when the gate genuinely ran. (2) exemplar selection no-oped
+  silently on register-less scripts — now falls back to two generic
+  exemplars with a loud warn. (3) missing registers now backfilled
+  deterministically at generation (`backfillSceneRegisters`) so the whole
+  register-keyed machinery can't silently disengage.
+- **Score after 3 telemetry rows**: firstPassClean 2/3; barbell, overflow,
+  cross-piece-overlap: 0 fires in 15 scenes; text-overlap 6 fires (5 repaired
+  in Loom, 1 advisory residual); dead-region 1. Too early to demote anything.
