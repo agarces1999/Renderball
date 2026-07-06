@@ -3,6 +3,7 @@ import { DESIGN_AGENT_SYSTEM_PROMPT } from "./prompts/design-agent";
 import { ANIMATION_AGENT_SYSTEM_PROMPT } from "./prompts/animation-agent";
 import { stripCodeFence, verifyCompilable, repairCompile, elideDataUrisOutsideSection } from "./code-extraction";
 import { extractSection, replaceSection, sectionRange } from "./section-splice";
+import { exemplarPromptBlock } from "./exemplars";
 import {
   densityFailuresByScene,
   overflowFailuresByScene,
@@ -2412,6 +2413,16 @@ const buildDesignUserMessage = (input: BuildInput): string => {
     lines.push("");
   }
   appendBrandContext(lines, input);
+  // Golden-scene exemplars (QUALITY-ARCHITECTURE.md #1): 1-2 gate-clean worked
+  // examples keyed to this script's dominant registers — imitation beats prose
+  // rules for structural quality. Placed BEFORE the machine contract so the
+  // contract stays the last, most salient thing. RB_EXEMPLARS=off kills it.
+  const exemplarBlock = exemplarPromptBlock(input.script.scenes.map((s) => s.register));
+  if (exemplarBlock) {
+    lines.push("");
+    lines.push(exemplarBlock);
+  }
+
   // The machine contract LAST so it's the most salient thing before emission —
   // a compact restatement, as data, of exactly what the static gates reject.
   // Models comply far better with local, checkable constraints than with the

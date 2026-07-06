@@ -21,6 +21,7 @@ import {
 import { MODELS, VISION_MODEL } from "../anthropic";
 import { callZaiVision, callZaiText } from "./zai-vision";
 import { recordUsage, costUsd, addUsage, EMPTY_USAGE } from "../usage";
+import { tallyGateFires, recordGateTelemetry } from "./gate-telemetry";
 
 export type BuildRouteResult = {
   status: number;
@@ -46,6 +47,7 @@ export async function runPreviewBuild(
   scriptId: string,
   ownerId: string,
 ): Promise<BuildRouteResult> {
+  const buildT0 = Date.now();
   const script = await loadScript(scriptId, ownerId);
   if (!script) {
     return { status: 404, body: { error: "script not found" } };
@@ -233,6 +235,13 @@ export async function runPreviewBuild(
       JSON.stringify(repair.blocking),
     );
     await recordUsage({ op: "build", model, scriptId, url: brief?.brand_kit_url, usage: currentUsage, failed: true });
+    await recordGateTelemetry({
+      scriptId,
+      fires: tallyGateFires({ findings: repair.findings, warnings: currentWarnings }),
+      repairSteps: repair.steps.length,
+      firstPassClean: false,
+      buildWallMs: Date.now() - buildT0,
+    });
     return {
       status: 422,
       body: {
@@ -335,9 +344,86 @@ export async function runPreviewBuild(
     console.warn("[preview/build] vision gate (advisory) skipped:", err);
   }
 
+  // VISION-IN-THE-LOOP (flag-gated: RB_VISION_LOOP=1 — docs/QUALITY-ARCHITECTURE.md #2).
+  // One BOUNDED act on the vision findings: the single worst scene with SEVERE
+  // issues gets one scoped regen carrying the vision reasons, verified against the
+  // blocking render-truth gates before adoption (rollback on regression). Default
+  // OFF while the always-on advisory findings accumulate calibration telemetry.
+  let visionLoopActed: string | null = null;
+  const SEVERE_RX = /unreadable|clipped|cut ?off|overlap|invisible|missing|broken|empty|flat|illegible/i;
+  if (process.env.RB_VISION_LOOP === "1" && visionFindings.length > 0) {
+    const severe = visionFindings.filter((f) => SEVERE_RX.test(f.issue));
+    if (severe.length > 0) {
+      const byScene = new Map<number, string[]>();
+      for (const f of severe) byScene.set(f.scene, [...(byScene.get(f.scene) ?? []), f.issue]);
+      const [worstScene, issues] = [...byScene.entries()].sort((a, b) => b[1].length - a[1].length)[0];
+      console.warn(`[preview/build] vision-loop: regenerating scene ${worstScene} for ${issues.length} severe issue(s)`);
+      const before = { code: currentCode, design: currentDesign, warnings: currentWarnings };
+      const r = await regenerateScene(
+        buildAgentInputFromBrief(brief, currentScript),
+        currentCode!,
+        worstScene,
+        `A visual review of the rendered scene found these problems — fix them:\n- ${issues.join("\n- ")}`,
+      );
+      if (r.usage) currentUsage = addUsage(currentUsage, r.usage);
+      if (r.ok) {
+        currentCode = r.code;
+        currentDesign = r.designCode;
+        currentWarnings = r.warnings;
+        await writeCurrent(r.warnings, r.asset_manifest);
+        // Verify-before-keep: the vision fix must not regress the blocking gates.
+        const ms = await measureScenes(genDir, currentScript, measureOutDir(genDir));
+        const regate = await findRenderTruthFailures(ms, {
+          brandBackground: brief?.brand_extract?.background_color,
+          blockingKinds: ["overflow", "measure-error", "barbell", "cross-piece-overlap"],
+        });
+        if (regate.blocking.length > 0) {
+          console.warn(
+            `[preview/build] vision-loop: regen regressed blocking gates (${regate.blocking.map((f) => f.kind).join(", ")}) — rolled back`,
+          );
+          currentCode = before.code;
+          currentDesign = before.design;
+          currentWarnings = before.warnings;
+          // manifest untouched: scene regens don't produce one (leave disk as-is)
+          await writeCurrent(before.warnings, undefined);
+          visionLoopActed = `scene ${worstScene}: rolled back (regression)`;
+        } else {
+          visionLoopActed = `scene ${worstScene}: regenerated for ${issues.length} vision issue(s)`;
+        }
+      } else {
+        console.warn(`[preview/build] vision-loop: regen failed — ${r.error}`);
+        visionLoopActed = `scene ${worstScene}: regen failed`;
+      }
+    }
+  }
+
+  // Persist vision findings beside the other warnings so the dashboard/report and
+  // the calibration telemetry see them (they previously lived only in the HTTP
+  // response + console — calibration data evaporated).
+  if (visionFindings.length) {
+    try {
+      const warnPath = path.join(genDir, "warnings.json");
+      const existing = JSON.parse(await (await import("fs")).promises.readFile(warnPath, "utf8").catch(() => "{}"));
+      existing.vision = visionFindings.map((f) => `scene ${f.scene}: ${f.issue}`);
+      await (await import("fs")).promises.writeFile(warnPath, JSON.stringify(existing, null, 2));
+    } catch {
+      /* best-effort */
+    }
+  }
+
   // The build shipped — record the full build-model spend (initial + every
   // repair regen/rewrite) as ONE successful row.
   await recordUsage({ op: "build", model, scriptId, url: brief?.brand_kit_url, usage: currentUsage });
+
+  // Gate fire-rate telemetry — the deletion criterion (QUALITY-ARCHITECTURE.md).
+  // firstPassClean = no blocking finding fired AND the ladder took zero steps.
+  await recordGateTelemetry({
+    scriptId,
+    fires: tallyGateFires({ findings: repair.findings, warnings: currentWarnings, visionFindings }),
+    repairSteps: repair.steps.length,
+    firstPassClean: repair.blocking.length === 0 && repair.steps.length === 0,
+    buildWallMs: Date.now() - buildT0,
+  });
 
   // LEGO engine: split the shipped composition into editable per-piece artifacts
   // under genDir/lego/ for the visual editor. Best-effort + byte-identity-guarded —
