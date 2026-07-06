@@ -158,3 +158,34 @@ are bright-consumer (Duolingo) and pink fintech (Klarna).
 - **Score after 3 telemetry rows**: firstPassClean 2/3; barbell, overflow,
   cross-piece-overlap: 0 fires in 15 scenes; text-overlap 6 fires (5 repaired
   in Loom, 1 advisory residual); dead-region 1. Too early to demote anything.
+
+## First-pass contracts (FP) — the sustainable fix for the 2026-07-06 QA
+
+The QA's five failure classes traced to sensors that were DISARMED or blind,
+not missing. The fix arms the whole chain from one derivation and adds only
+cheap checks inside existing loops — no new gate machinery:
+
+1. **Canvas plan, always derived** (`resolveCanvasPlan`): crawl background →
+   palette-extremity inference → white. One source of truth feeding (a) the
+   machine contract's CANVAS BACKGROUND line (previously silently absent when
+   the crawl missed bg — the Duolingo inversion), (b) the canvas-brightness
+   gate (same disarm), now **blocking**, (c) the vision rubric. Plus a
+   DOMINANT ACCENT contract line (signature owns CTAs/kickers).
+2. **Placeholder lint** (`findPlaceholderData`): masked prices ("$•••.00"),
+   "$—", standalone "Loading"/"TBD" → structural failure in the existing
+   design-pass sweep. Replayed on the shipped Klarna build: 6 hits.
+3. **Dead-air gate fixed + extended**: the old regex only parsed QUOTED inline
+   animations — `<style>`-block choreography was invisible, so sections were
+   skipped as "all-infinite" (how 10/10 frozen tails passed). Now parses both,
+   checks the last finite beat's END ≥75% of duration, exempts only genuinely
+   ambient sections; animation prompt gains an ambient-layer HARD RULE.
+   Residual class (ambient present but imperceptible) is pixel-measured in the
+   dogfood harness (`tailMotion`: p70-vs-p97 frame diff — free, MP4 exists).
+4. **Web chrome ban**: pagination dots REMOVED from the provided BrandChrome
+   (they made every scene read as a carousel screenshot); design prompt gains
+   a film-frame-not-web-page HARD RULE + contract line.
+5. **Vision rubric v2 + loop ON**: judges per-scene plan fidelity (the
+   visual_concept), placeholder/blank-asset detection, web chrome, accent
+   dominance — and RB_VISION_LOOP now defaults ON (RB_VISION_LOOP=0 disables);
+   the exact defects it repairs shipped while it sat behind an opt-in flag.
+   Asset ingest also rejects near-uniform (blank-box) images.

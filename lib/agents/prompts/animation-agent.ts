@@ -332,6 +332,14 @@ Concretely:
 - "Caption fades in at the bottom" at late_delay
 - "CTA pill scales in from below" at late_delay (especially good for CTA / closer sections)
 
+## Ambient layer — HARD RULE (machine-checked)
+
+**Every section must carry at least ONE infinite ambient animation that runs its entire duration** — a breathing glow behind the hero, a slow float on the device mock, drifting atmosphere particles, a shimmering accent. QA on rendered MP4s (2026-07-06) measured 10/10 scenes pixel-frozen for their final 2-3 seconds: every finite beat had finished and NOTHING was alive on screen. A frame where literally no pixel moves reads as a stuck render, not a video.
+
+- The ambient motion is SUBTLE (2-6s period, small amplitude — a 1-3% scale breathe, a 6-12px drift, an opacity shimmer between 0.7 and 1.0). It carries life, not information.
+- Attach it to a substantial element (hero mock, glow field, illustration) — a 2px dot breathing in a corner does not keep the frame alive.
+- This COMPLEMENTS the dead-air rule: finite beats still spread to ≥60% depth AND the last finite beat's END (delay + duration) must reach ≥75% of the section — the ambient loop then owns whatever tail remains. A machine check rejects sections with no infinite animation whose last finite beat ends early.
+
 These DON'T contradict the visual_concept — they enrich it. The brief gives you the SPINE of the section; you flesh out the late beats so the timeline doesn't go dead.
 
 **Self-check before finalizing each section:** look at every \`animation-delay\` you wrote, find the latest one with \`forwards\`, and confirm it's ≥60% of section duration. If not, add 1-3 more beats clustered around the late portion.

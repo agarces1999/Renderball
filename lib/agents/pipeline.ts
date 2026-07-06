@@ -33,6 +33,7 @@ import {
   hasCornerLogoSuppression,
   findUndersizedText,
   findUndwelledText,
+  findPlaceholderData,
   countAccentBorders,
   TEXT_FLOOR_P,
   TEXT_FLOOR_LI,
@@ -46,7 +47,7 @@ import {
   type AspectRatio,
 } from "./quality-gates";
 import { buildDesignConstraints } from "./design-constraints";
-import { resolveBrandIdentity, genericFor, type BrandIdentity } from "../crawl/brand-identity";
+import { resolveBrandIdentity, resolveCanvasPlan, genericFor, type BrandIdentity } from "../crawl/brand-identity";
 import { formatDesignLanguage } from "../crawl/design-language";
 import { makeFontFetcher, inlineFontFaces } from "../render/font-inline";
 import { makeImageProbe, repairBrokenImages } from "../render/image-integrity";
@@ -2428,12 +2429,16 @@ const buildDesignUserMessage = (input: BuildInput): string => {
   // Models comply far better with local, checkable constraints than with the
   // same rules as prose mid-system-prompt (measured ~50% retry rate without).
   lines.push("");
+  // Canvas plan is ALWAYS derived (crawl bg → palette inference → white): the
+  // old `background_color`-only wiring silently disarmed the constraint AND the
+  // brightness gate whenever the crawl missed it (the Duolingo inversion).
+  const canvasPlan = resolveCanvasPlan(input.brand_extract);
   lines.push(
     buildDesignConstraints(aspect, {
       hasLogo: !!input.brand_identity?.logo,
-      // The brand's real canvas background, sampled at crawl — emitted as a HARD
-      // constraint so the scene background is the brand color, not near-black.
-      backgroundColor: input.brand_extract?.background_color,
+      backgroundColor: canvasPlan.background,
+      backgroundInferred: canvasPlan.source !== "crawl",
+      signatureAccent: input.brand_identity?.signature,
     }),
   );
   lines.push("");
@@ -2706,7 +2711,8 @@ interface StructuralFailure {
     | "duplicate_logo"
     | "fabricated_logo"
     | "logo_not_rendered"
-    | "provided_component_redefined";
+    | "provided_component_redefined"
+    | "placeholder_data";
   message: string;
   summary: string;
 }
@@ -2734,6 +2740,21 @@ const assessStructuralGates = (
       key: "provided_component_redefined",
       message: `${redefined.join(", ")} is a PROVIDED component — \`import { BrandChrome } from "./BrandChrome"\` and configure it via props (variant/logoSrc/wordmark/ink/accent/fonts). DELETE your own definition; re-creating provided components is rejected.`,
       summary: redefined.join(", "),
+    });
+  }
+
+  // Placeholder data (QA 2026-07-06): masked prices ("$•••.00"), "$—" values,
+  // bare "Loading"/"TBD" labels read as a broken, half-loaded product on a
+  // rendered frame. STRUCTURAL — a viewer instantly clocks it.
+  const placeholders = findPlaceholderData(code);
+  if (placeholders.length > 0) {
+    failures.push({
+      key: "placeholder_data",
+      message: `Placeholder/unresolved data found on screen — every price, stat, and label must be a CONCRETE literal: ${placeholders
+        .slice(0, 6)
+        .map((p) => `${p.section >= 0 ? `Section${p.section} ` : ""}${p.token} (…${p.context}…)`)
+        .join("; ")}${placeholders.length > 6 ? "; …" : ""}. Replace each masked/stub value with a specific diegetic literal (e.g. "$•••.00" → "$128.00", "Loading" → the actual resolved content).`,
+      summary: placeholders.slice(0, 4).map((p) => p.token).join(", "),
     });
   }
 
@@ -3046,7 +3067,7 @@ const assessDesignDensity = (
  * Returns ok:true if all sections have ≥60% delay coverage. Returns
  * ok:false with a per-section breakdown otherwise.
  */
-const assessDeadAir = (
+export const assessDeadAir = (
   code: string,
   script: Script,
 ):
@@ -3070,43 +3091,48 @@ const assessDeadAir = (
     const sectionMatch = code.match(sectionPattern);
     const sectionCode = sectionMatch ? sectionMatch[0] : code;
 
-    // Find all `animation: "..."` declarations and pull out their delay+forwards.
-    // CSS animation shorthand: "name duration timing-function delay iteration-count direction fill-mode play-state".
-    // We're looking for the LAST numeric value before `forwards`.
-    // Patterns we match:
-    //   animation: "fadeRise 0.7s cubic-bezier(...) 2.4s forwards"
-    //   animation: "name 0.5s ease 1.2s forwards, breathe 4s ease-in-out 1.7s infinite"
-    const animDeclRx = /animation:\s*["`]([^"`]+)["`]/g;
-    let maxFiniteDelay = 0;
+    // Find EVERY `animation:` shorthand — quoted inline JSX styles AND unquoted
+    // declarations inside <style> CSS blocks. The original quoted-only regex was
+    // blind to className-based choreography, so `finiteCount === 0` silently
+    // skipped those sections as "all-infinite" — 10/10 scenes in the
+    // Duolingo/Klarna QA shipped 2-3s pixel-frozen tails through that hole.
+    // Shorthand grammar: name duration [timing] [delay] [count] [fill].
+    const animDeclRx = /animation:\s*(?:["`]([^"`]+)["`]|([^;"`\n}]+))/g;
+    let latestFiniteEnd = 0; // delay + duration of the LAST-ending finite beat
     let finiteCount = 0;
+    let hasAmbient = false; // any infinite animation = the frame is never frozen
     let match;
     while ((match = animDeclRx.exec(sectionCode)) !== null) {
-      const decls = match[1].split(",");
+      const decls = (match[1] ?? match[2] ?? "").split(",");
       for (const decl of decls) {
+        if (/\binfinite\b/.test(decl)) {
+          hasAmbient = true;
+          continue;
+        }
         if (!/\bforwards\b/.test(decl)) continue;
-        // Find all "<num>s" tokens; the LAST one before `forwards` is the delay.
         const beforeForwards = decl.split(/\bforwards\b/)[0];
-        const timeTokens = [
-          ...beforeForwards.matchAll(/(\d+(?:\.\d+)?)s\b/g),
-        ];
+        const timeTokens = [...beforeForwards.matchAll(/(\d+(?:\.\d+)?)s\b/g)];
         if (timeTokens.length === 0) continue;
-        // 1 token = duration only (delay 0). 2+ tokens = delay is the last.
-        const delay =
-          timeTokens.length >= 2
-            ? parseFloat(timeTokens[timeTokens.length - 1][1])
-            : 0;
-        if (delay > maxFiniteDelay) maxFiniteDelay = delay;
+        // 1 token = duration only (delay 0). 2+ tokens = duration first, delay last.
+        const dur = parseFloat(timeTokens[0][1]);
+        const delay = timeTokens.length >= 2 ? parseFloat(timeTokens[timeTokens.length - 1][1]) : 0;
+        latestFiniteEnd = Math.max(latestFiniteEnd, delay + dur);
         finiteCount += 1;
       }
     }
 
-    if (finiteCount === 0) continue; // Skip — section is all-infinite (rare)
-
-    const requiredDelay = duration * 0.6;
-    if (maxFiniteDelay < requiredDelay) {
+    // A section with ambient (infinite) motion is never a frozen frame — the
+    // failure mode is NO ambient AND every finite beat finished early. Judge
+    // the latest beat's END against 75% of the duration: entrances front-load
+    // (correct, text must land early per the dwell gate) but then SOMETHING
+    // must carry the tail — an ambient loop or a late decorative beat.
+    if (hasAmbient) continue;
+    const requiredEnd = duration * 0.75;
+    if (finiteCount === 0 || latestFiniteEnd < requiredEnd) {
+      const observed = finiteCount === 0 ? "no parseable animation beats" : `last beat ends at ${latestFiniteEnd.toFixed(2)}s`;
       failures.push({
         scene: i,
-        message: `Section${i} ("${scene.label}", ${duration.toFixed(1)}s): latest finite animation-delay is ${maxFiniteDelay.toFixed(2)}s — need ≥${requiredDelay.toFixed(2)}s (60% of duration). Add ${Math.max(2, Math.round(duration / 3))} more finite beats distributed across the back half of the section.`,
+        message: `Section${i} ("${scene.label}", ${duration.toFixed(1)}s): ${observed} and there is NO ambient (infinite) animation — the scene renders as a frozen still for its tail (need coverage to ≥${requiredEnd.toFixed(2)}s). Fix BOTH ways: (1) add at least one subtle infinite ambient loop that runs the whole scene (a breathing glow, drifting atmosphere, a slow float on the hero mock); (2) land a late DECORATIVE finite beat (accent bar draw, chart fill, gradient deepen) in the final third. Keep text beats early — decoration carries the tail.`,
       });
     }
   }

@@ -68,7 +68,17 @@ const CANVAS: Record<AspectRatio, { w: number; h: number; safe: number }> = {
  */
 export const buildDesignConstraints = (
   aspect: AspectRatio,
-  opts: { hasLogo: boolean; backgroundColor?: string },
+  opts: {
+    hasLogo: boolean;
+    backgroundColor?: string;
+    /** True when backgroundColor was inferred from the palette (resolveCanvasPlan)
+     *  rather than sampled from the live page — phrased accordingly, still HARD. */
+    backgroundInferred?: boolean;
+    /** The brand's signature hue — contracted as the DOMINANT accent so a
+     *  secondary palette color (Duolingo's streak orange) can't carry every
+     *  kicker/CTA while the signature is demoted to 4px dots. */
+    signatureAccent?: string | null;
+  },
 ): string => {
   const c = CANVAS[aspect];
   const logoTable = opts.hasLogo
@@ -84,13 +94,23 @@ export const buildDesignConstraints = (
         "  every scene          → the brand mark is the WORDMARK TEXT rendered by BrandChrome (omit logoSrc). NEVER invent/draw a mark — geometric stand-ins are REJECTED.",
       ];
 
-  // The brand's real homepage canvas color, sampled at crawl — emitted only when
-  // confidently read. HARD so the agent paints the brand's actual background
-  // rather than defaulting to black/near-black and demoting the brand color to a
-  // faint glow. The canvas color is SEPARATE from the signature accent.
+  // The brand's canvas color — ALWAYS present (resolveCanvasPlan derives one
+  // even when the crawl extracted nothing; the silent-disarm case shipped a
+  // white-canvas brand as 5/5 near-black scenes). HARD so the agent paints the
+  // brand's actual background rather than defaulting to black/near-black and
+  // demoting the brand color to a faint glow. Distinct from the accent.
+  const bgProvenance = opts.backgroundInferred
+    ? "the brand's canvas, inferred from its site palette"
+    : "the brand's real homepage background, sampled at crawl";
   const canvasBgLine = opts.backgroundColor
     ? [
-        `CANVAS BACKGROUND — HARD: the scene background MUST be ${opts.backgroundColor} (the brand's real homepage background, sampled at crawl). Do NOT default to black/near-black/navy/charcoal. The signature accent is separate and is for CTAs/emphasis only.`,
+        `CANVAS BACKGROUND — HARD, measured on the rendered frame: the scene background MUST be ${opts.backgroundColor} (${bgProvenance}). Do NOT invert the brand's luminance — a light brand is NEVER rendered on a black/near-black/navy/charcoal canvas (at most ONE deliberate dark contrast scene per video, and only when the concept demands it). The signature accent is separate and is for CTAs/emphasis only.`,
+        "",
+      ]
+    : [];
+  const accentLine = opts.signatureAccent
+    ? [
+        `DOMINANT ACCENT — HARD: ${opts.signatureAccent} is the brand's signature color and must be the LEAD accent — it owns the CTA fill, the emphasized headline word, and the hero highlight in every scene. Other palette colors are SUPPORTING accents only (small icons, secondary chips); a supporting color carrying the kickers/CTAs while ${opts.signatureAccent} is reduced to dots/hairlines is a violation.`,
         "",
       ]
     : [];
@@ -101,6 +121,11 @@ export const buildDesignConstraints = (
     `CANVAS: ${c.w}x${c.h} (${aspect}). Primary content elements ≤ ${c.safe}px wide; a left-anchored element must satisfy left+width ≤ ${c.w}. Anchor real content (CTA row, meta footer, chart base) into the lower third (top ≥ ${Math.round(c.h * 0.62)}px) — an empty lower band is flagged.`,
     "",
     ...canvasBgLine,
+    ...accentLine,
+    "NO PLACEHOLDER DATA — machine-checked: every price, stat, metric, and label must be a CONCRETE literal value (from the script content or an invented-but-specific diegetic detail like \"$128.00\"). Masked or unresolved values — \"$•••.00\", \"$—\", bullet-run prices, \"Loading\", \"TBD\", \"XX%\", lorem — are REJECTED; they render as a broken, half-loaded product.",
+    "",
+    "NO WEB CHROME — this is a FILM frame, not a web page: never render website navigation (nav bars with links, a top-right CTA link), pagination/carousel dots, scroll indicators, cookie/app-store install chrome, or bulleted marketing feature lists floating on the canvas. Browser/phone chrome is allowed ONLY inside an explicit device mockup that the scene stages as a diegetic prop. The provided BrandChrome is the only canvas-level chrome.",
+    "",
     ...logoTable,
     "",
     "BRANDCHROME: provided at ./BrandChrome — import { BrandChrome } from \"./BrandChrome\". Defining your own BrandChrome (const/function/class) is REJECTED by a static check.",

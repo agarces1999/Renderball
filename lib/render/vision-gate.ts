@@ -44,20 +44,30 @@ export type VisionJudge = (
   rubric: string,
 ) => Promise<VisionVerdict>;
 
-export const buildRubric = (brand: BrandTruth): string => {
+export const buildRubric = (brand: BrandTruth, sceneConcept?: string): string => {
   const lines = [
-    "You are a brutally honest brand-video QA reviewer. This is ONE rendered scene of a 1920×1080 brand video.",
+    "You are a brutally honest brand-video QA reviewer. This is ONE rendered scene of a 1920×1080 brand video a customer PAID for.",
     "Judge ONLY what you can see. Report concrete, visible problems a viewer would notice — not nitpicks.",
     "Check:",
     brand.backgroundColor
-      ? `- Canvas/background: the brand's real background is ${brand.backgroundColor}. Flag if the canvas is a clearly different color (e.g. near-black/navy when the brand is burgundy).`
+      ? `- Canvas/background: the brand's real background is ${brand.backgroundColor}. Flag if the canvas is a clearly different color OR the opposite luminance (near-black canvas for a light brand, or vice versa).`
       : "- Canvas/background: flag a generic dark/black canvas if it clearly clashes with the brand.",
-    "- Readability: flag any text or logo that is washed out, low-contrast, or hard to read against its surface.",
+    brand.accent
+      ? `- Accent hierarchy: ${brand.accent} is the brand's signature color and should visibly LEAD (CTA, emphasis, hero highlight). Flag if a different color dominates every accent while ${brand.accent} is nearly absent.`
+      : "- Accent hierarchy: flag when the dominant accent color clearly isn't the brand's.",
+    '- Placeholder/broken data: flag ANY masked or unresolved value — prices like "$•••.00" or "$—", a "Loading" label, an empty white box where a logo/image should be, tofu/□ glyphs, obviously truncated text. These read as a broken render.',
+    "- Web-page chrome: this must look like a FILM frame. Flag website navigation bars, link-styled corner text, pagination/carousel dots, scroll indicators, or a composition that reads as a landing-page screenshot rather than a staged scene. (A corner wordmark + small context pill is the sanctioned chrome — do not flag those.)",
+    "- Readability: flag any text or logo that is washed out, low-contrast, or hard to read against its surface — including a hero illustration so dim it reads as an indistinct blob.",
     "- Wall-of-type: flag a scene that is essentially just large text with no substantial non-text/diegetic element.",
     brand.fonts && brand.fonts.length
       ? `- Fonts: the brand uses ${brand.fonts.join(", ")}. Flag if the type looks like a generic default that ignores the brand's faces (esp. a missing serif).`
       : "- Fonts: flag obviously off-brand/default typography.",
     "- Clipping/overflow: flag any element cut off at an edge (a deterministic gate also checks this; report if you still see it).",
+    ...(sceneConcept
+      ? [
+          `- Plan fidelity: the scene was designed to this concept: "${sceneConcept.slice(0, 500)}". Flag a DEGRADED delivery — a planned hero element missing/blank/unrecognizably small, a specified interaction that looks broken, the concept's emotional beat visibly inverted.`,
+        ]
+      : []),
     'Return ONLY JSON: {"ok": boolean, "issues": ["short, specific problem", ...]}. ok=true and issues:[] when the scene looks correct and on-brand. No prose.',
   ];
   return lines.join("\n");
@@ -69,18 +79,21 @@ export const buildRubric = (brand: BrandTruth): string => {
  * never break a build). Reuses one rubric across scenes.
  */
 export const runVisionGate = async (
-  scenes: { scene: number; screenshotPath?: string }[],
+  scenes: { scene: number; screenshotPath?: string; concept?: string }[],
   brand: BrandTruth,
   judge: VisionJudge,
 ): Promise<VisionFinding[]> => {
-  const rubric = buildRubric(brand);
-  // The judge calls are fully independent (same rubric, different image) — run
-  // them CONCURRENTLY. Serially this was 5 sequential vision round-trips (each
-  // with a 60s abort ceiling); parallel is one round-trip of wall-clock.
+  // The judge calls are fully independent — run them CONCURRENTLY. Serially
+  // this was 5 sequential vision round-trips (each with a 60s abort ceiling);
+  // parallel is one round-trip of wall-clock. Rubric is per-scene now (plan
+  // fidelity judges the frame against ITS concept).
   const judged = await Promise.allSettled(
     scenes
-      .filter((s): s is { scene: number; screenshotPath: string } => !!s.screenshotPath)
-      .map(async (s) => ({ scene: s.scene, verdict: await judge(s.screenshotPath, s.scene, rubric) })),
+      .filter((s): s is { scene: number; screenshotPath: string; concept?: string } => !!s.screenshotPath)
+      .map(async (s) => ({
+        scene: s.scene,
+        verdict: await judge(s.screenshotPath, s.scene, buildRubric(brand, s.concept)),
+      })),
   );
   const out: VisionFinding[] = [];
   for (const r of judged) {

@@ -1456,3 +1456,61 @@ export const repairInvalidLucideImports = (
     },
   );
 };
+
+// ── placeholder-data lint (QA 2026-07-06: Klarna shipped "$•••.00" / "Loading") ──
+//
+// The design agent sometimes emits masked or unresolved values instead of
+// concrete diegetic data — masked prices ("$•••.00"), value-less dashes
+// ("$—"), a bare "Loading" label, "TBD"/"lorem" stubs. On a rendered frame
+// these read as a broken, half-loaded product, not design. STRUCTURAL: a
+// viewer instantly clocks it. Precision notes: a single "•"/"·" is a legal
+// separator (kept); an ellipsis in copy is fine; "Loading" only fires as a
+// standalone rendered word (JSX text or a quoted string value), not as a
+// substring (e.g. "LoadingScreen" identifier).
+
+export interface PlaceholderHit {
+  /** 0-based Section index the hit sits in (-1 when unattributable). */
+  section: number;
+  token: string;
+  /** Short surrounding excerpt for the retry message. */
+  context: string;
+}
+
+const PLACEHOLDER_PATTERNS: { rx: RegExp; label: string }[] = [
+  { rx: /[•●]{2,}/g, label: "masked value (bullet run)" },
+  { rx: /\$\s*[—–]/g, label: "value-less price ($—)" },
+  { rx: /(?:\d\s*\/\s*\d\s*·\s*)?\$\s*[—–xX]{1,3}(?![\w])/g, label: "masked installment ($—)" },
+  { rx: />\s*(Loading|Loading\.{3}|TBD|lorem ipsum|N\/A)\s*</gi, label: "unresolved label" },
+  { rx: /["'`](Loading|TBD)["'`]\s*[,}\]]/g, label: "unresolved value literal" },
+  { rx: /\bXX%|\b\?\?\?/g, label: "stub metric" },
+];
+
+/** 0-based section index for a character offset, from Section{N} markers. */
+const sectionAt = (code: string, offset: number): number => {
+  let section = -1;
+  const rx = /export\s+const\s+Section(\d+)\b/g;
+  let m: RegExpExecArray | null;
+  while ((m = rx.exec(code)) !== null) {
+    if (m.index > offset) break;
+    section = parseInt(m[1], 10);
+  }
+  return section;
+};
+
+export const findPlaceholderData = (code: string): PlaceholderHit[] => {
+  const hits: PlaceholderHit[] = [];
+  for (const { rx, label } of PLACEHOLDER_PATTERNS) {
+    rx.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = rx.exec(code)) !== null) {
+      const start = Math.max(0, m.index - 28);
+      hits.push({
+        section: sectionAt(code, m.index),
+        token: `${label}: "${m[0].trim()}"`,
+        context: code.slice(start, m.index + m[0].length + 20).replace(/\s+/g, " "),
+      });
+      if (hits.length >= 24) return hits; // cap — enough to fail loudly
+    }
+  }
+  return hits;
+};

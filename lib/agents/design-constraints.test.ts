@@ -122,7 +122,7 @@ check("canvas background line appears as HARD when backgroundColor is given", ()
   assert(s.includes("CANVAS BACKGROUND — HARD"), "canvas background block present");
   assert(s.includes("#440b12"), "the sampled background hex is stated");
   assert(/MUST be #440b12/.test(s), "background stated as a must");
-  assert(/Do NOT default to black\/near-black/.test(s), "near-black default forbidden");
+  assert(/Do NOT invert the brand's luminance/.test(s), "luminance inversion forbidden");
   assert(/signature accent is separate/i.test(s), "accent kept distinct from canvas");
 });
 

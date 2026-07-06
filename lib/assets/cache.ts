@@ -29,6 +29,26 @@ const extFor = (url: string, type: AssetCandidate["type"]): string => {
   return m ? `.${m[1].toLowerCase()}` : EXT_BY_TYPE[type];
 };
 
+/**
+ * Reject near-uniform raster images at INGEST (QA 2026-07-06: a blank white
+ * tile composited as "the logo" in 3 of 5 scenes). A real photo/logo has
+ * luminance variance; a solid or near-solid rectangle is a dead asset that
+ * will render as an empty box. Best-effort: no sharp / decode failure →
+ * accept (never block ingestion on the checker itself). Photos only — video
+ * and lottie buffers aren't rasters.
+ */
+const isNearUniformImage = async (buf: Buffer): Promise<boolean> => {
+  const sharpMod = await import("sharp").catch(() => null);
+  if (!sharpMod) return false;
+  try {
+    const stats = await sharpMod.default(buf).stats();
+    // Every channel's stdev tiny → visually a solid block.
+    return stats.channels.every((c) => c.stdev < 4);
+  } catch {
+    return false;
+  }
+};
+
 export const cacheAsset = async (
   destDir: string,
   candidate: AssetCandidate,
@@ -41,6 +61,10 @@ export const cacheAsset = async (
     if (!res.ok) return null;
     const buf = Buffer.from(await res.arrayBuffer());
     if (buf.byteLength === 0) return null;
+    if (candidate.type === "photo" && (await isNearUniformImage(buf))) {
+      console.warn(`[assets] rejected near-uniform image (reads as a blank box): ${candidate.fullUrl.slice(0, 90)}`);
+      return null;
+    }
 
     const sha = createHash("sha256").update(buf).digest("hex").slice(0, 16);
     const ext = extFor(candidate.fullUrl, candidate.type);

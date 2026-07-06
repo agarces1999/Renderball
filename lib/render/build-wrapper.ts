@@ -542,22 +542,13 @@ export const BrandChrome: React.FC<BrandChromeProps> = ({
     </div>
   ) : null;
 
-  const dots = (
-    <div style={{ display: "flex", gap: 6 }}>
-      {Array.from({ length: totalScenes }).map((_, i) => (
-        <span
-          key={i}
-          style={{
-            width: i === sceneIndex ? 22 : 6,
-            height: 4,
-            borderRadius: 2,
-            background: i === sceneIndex ? dot : idle,
-            transition: "width 0.5s ease",
-          }}
-        />
-      ))}
-    </div>
-  );
+  // Pagination dots REMOVED (QA 2026-07-06): scene-progress dots at the bottom
+  // of every frame read as website carousel chrome and made rendered scenes
+  // look like landing-page screenshots. A brand film shows no progress UI.
+  // sceneIndex/totalScenes stay in the props contract (compat + future use).
+  void sceneIndex;
+  void totalScenes;
+  void idle;
 
   if (variant === "footer") {
     return (
@@ -577,7 +568,6 @@ export const BrandChrome: React.FC<BrandChromeProps> = ({
         }}
       >
         {mark}
-        {dots}
         {pill ?? <div />}
       </div>
     );
@@ -600,10 +590,7 @@ export const BrandChrome: React.FC<BrandChromeProps> = ({
         }}
       >
         {mark}
-        <div style={{ display: "flex", alignItems: "center", gap: 24 }}>
-          {pill}
-          {dots}
-        </div>
+        {pill ?? <div />}
       </div>
     );
   }
@@ -617,19 +604,6 @@ export const BrandChrome: React.FC<BrandChromeProps> = ({
       {pill && (
         <div style={{ position: "absolute", top: 36, right: 40, zIndex: 20 }}>{pill}</div>
       )}
-      <div
-        style={{
-          position: "absolute",
-          bottom: 32,
-          left: 0,
-          right: 0,
-          display: "flex",
-          justifyContent: "center",
-          zIndex: 20,
-        }}
-      >
-        {dots}
-      </div>
     </>
   );
 };

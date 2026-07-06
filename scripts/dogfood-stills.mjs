@@ -148,6 +148,41 @@ for (let i = 0; i < scenes.length; i++) {
 // Score every candidate; per-scene verdicts come from the max-ink frame.
 const paint = await verifyPaintedScenes(sceneCandidates.map((c) => c.map((x) => x.file)));
 
+// Frozen-tail pixel truth (QA 2026-07-06): 10/10 scenes shipped visually dead
+// final seconds — ambient loops existed in code but at imperceptible
+// amplitude, which no static check can judge. Diff the p70 candidate against
+// p97: mean absolute pixel delta ≈ 0 means the scene's tail is a still image.
+// Runs here (the MP4 already exists) so it costs the build path nothing.
+const FROZEN_TAIL_FLOOR = 0.75; // mean |Δ| per channel (0-255) below ⇒ frozen
+const tailMotion = [];
+{
+  const sharp = (await import("sharp")).default;
+  for (let i = 0; i < sceneCandidates.length; i++) {
+    const cands = sceneCandidates[i];
+    const a = cands.find((c) => c.percent === 0.7);
+    const b = cands.find((c) => c.percent === 0.97);
+    if (!a || !b) { tailMotion.push(null); continue; }
+    try {
+      const opts = { width: 240, height: 135, fit: "fill" };
+      const [ra, rb] = await Promise.all([
+        sharp(a.file).resize(opts).raw().toBuffer(),
+        sharp(b.file).resize(opts).raw().toBuffer(),
+      ]);
+      let sum = 0;
+      const n = Math.min(ra.length, rb.length);
+      for (let k = 0; k < n; k++) sum += Math.abs(ra[k] - rb[k]);
+      const meanDelta = n > 0 ? sum / n : 0;
+      tailMotion.push({
+        scene: i,
+        meanDelta: Number(meanDelta.toFixed(3)),
+        frozenTail: meanDelta < FROZEN_TAIL_FLOOR,
+      });
+    } catch {
+      tailMotion.push(null); // best-effort — a decode failure never kills the run
+    }
+  }
+}
+
 // Keep the best frame as the scene's still (the loop's critique input).
 const stills = [];
 for (let i = 0; i < scenes.length; i++) {
@@ -188,6 +223,9 @@ console.log(
       aspect,
       outDir,
       stills,
+      // Frozen-tail pixel truth (p70 vs p97 per scene): meanDelta ≈ 0 means
+      // the scene ends as a still image regardless of what the code declares.
+      tailMotion,
       // Paint report — pixel truth per scene. "low-ink" here means the scene's
       // BEST frame is near-blank in the actual export: the invisible-content
       // bug, not a sampling artifact. "empty-quadrant" is the pixel version of

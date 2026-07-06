@@ -462,6 +462,52 @@ const recolorMonochromeLogo = (
   return { url, onLight: true, onDark: false };
 };
 
+// ── canvas plan (the brand's page background, ALWAYS derived) ────────────────
+//
+// Root cause of the Duolingo inversion (QA 2026-07-06): both the machine
+// contract's CANVAS BACKGROUND line and the canvas-brightness gate keyed on
+// `brand_extract.background_color` and silently DISARMED when the crawl didn't
+// extract one — so the design agent's dark prior shipped 5/5 near-black scenes
+// for a white-canvas brand. This derivation never returns undefined: crawl
+// background when present, else the most background-like palette entry (the
+// extreme-luminance member — pages are near-white or near-black, not mid-tone),
+// else white. One source of truth for the contract, the gate, and vision QA.
+
+export interface CanvasPlan {
+  /** The canvas background scenes MUST paint. Never undefined. */
+  background: string;
+  /** Where it came from — "crawl" is authoritative, "palette" inferred, "default" last resort. */
+  source: "crawl" | "palette" | "default";
+  /** Light vs dark canvas — drives ink defaults and the brightness gate. */
+  mode: "light" | "dark";
+}
+
+export const resolveCanvasPlan = (
+  extract: Partial<BrandExtract> | undefined,
+): CanvasPlan => {
+  const e = extract ?? {};
+  const modeOf = (hex: string): "light" | "dark" =>
+    (luminanceOf(hex) ?? 1) >= 0.5 ? "light" : "dark";
+  if (isHex6(e.background_color)) {
+    const bg = normHex(e.background_color);
+    return { background: bg, source: "crawl", mode: modeOf(bg) };
+  }
+  // Most background-like palette entry: pages sit at the luminance extremes.
+  // Ties break toward the EARLIER entry (palette is prominence-ordered).
+  const scored = (e.palette ?? [])
+    .filter(isHex6)
+    .map((h, i) => {
+      const lum = luminanceOf(h);
+      return lum == null ? null : { h: normHex(h), extremity: Math.abs(lum - 0.5), i };
+    })
+    .filter((x): x is { h: string; extremity: number; i: number } => x !== null)
+    .sort((a, b) => b.extremity - a.extremity || a.i - b.i);
+  if (scored.length > 0 && scored[0].extremity >= 0.3) {
+    return { background: scored[0].h, source: "palette", mode: modeOf(scored[0].h) };
+  }
+  return { background: "#ffffff", source: "default", mode: "light" };
+};
+
 export const resolveBrandIdentity = (
   extract: Partial<BrandExtract> | undefined,
   opts?: { brandName?: string },

@@ -11,6 +11,7 @@ import { decomposeGenDir } from "../agents/lego-store";
 import { verifyScenesRender } from "./ssr-render";
 import { measureScenes } from "./measure-scene";
 import { findRenderTruthFailures, measureOutDir } from "./render-truth-gates";
+import { resolveCanvasPlan } from "../crawl/brand-identity";
 import { repairRenderTruth } from "./render-truth-repair";
 import {
   runVisionGate,
@@ -166,13 +167,17 @@ export async function runPreviewBuild(
         // sharp) — it MUST be awaited. brandBackground enables the
         // canvas-brightness check (light brand shipped on a dark canvas).
         const gate = await findRenderTruthFailures(measurements, {
-          brandBackground: brief?.brand_extract?.background_color,
-          // Barbell (a >30% empty horizontal band) and cross-piece overlap (a
+          // ALWAYS-derived canvas (crawl bg → palette inference → white): the
+          // raw background_color disarmed the brightness gate whenever the
+          // crawl missed it — exactly how the Duolingo inversion shipped.
+          brandBackground: resolveCanvasPlan(brief?.brand_extract).background,
+          // Barbell (a >30% empty horizontal band), cross-piece overlap (a
           // title colliding with a diegetic mock — shipped in 2 of 3 brands in
-          // one batch) are measured, high-precision composition failures — block
-          // on the build path so the repair ladder regenerates the scene with
-          // the concrete reason, rather than shipping with an advisory warning.
-          blockingKinds: ["overflow", "measure-error", "barbell", "cross-piece-overlap"],
+          // one batch), and canvas-brightness (a light brand shipped on dark
+          // canvases — 5/5 scenes in the Duolingo QA) are measured,
+          // high-precision failures — block on the build path so the repair
+          // ladder regenerates the scene with the concrete reason.
+          blockingKinds: ["overflow", "measure-error", "barbell", "cross-piece-overlap", "canvas-brightness"],
         });
         return { ...gate, measurements };
       },
@@ -288,7 +293,9 @@ export async function runPreviewBuild(
     const be = brief?.brand_extract;
     const brandTruth = {
       name: be?.title,
-      backgroundColor: be?.background_color,
+      // Derived, never-undefined canvas — the raw background_color left the
+      // rubric's canvas check toothless whenever the crawl missed it.
+      backgroundColor: resolveCanvasPlan(be).background,
       accent: be?.logo_color ?? be?.palette?.[0],
       fonts: [be?.font_roles?.display, be?.font_roles?.body].filter(
         (f): f is string => !!f,
@@ -301,7 +308,14 @@ export async function runPreviewBuild(
     });
     visionFindings = VISION_GATE_ENABLED
       ? await runVisionGate(
-          measured.map((m) => ({ scene: m.scene, screenshotPath: m.screenshotPath })),
+          measured.map((m) => ({
+            scene: m.scene,
+            screenshotPath: m.screenshotPath,
+            // Plan-fidelity: the rubric judges each frame against ITS concept —
+            // degraded deliveries (blank hero card, inverted emotional beat)
+            // shipped invisibly when the frame was only judged in isolation.
+            concept: currentScript?.scenes?.[m.scene]?.visual_concept,
+          })),
           brandTruth,
           judge,
         )
@@ -361,14 +375,16 @@ export async function runPreviewBuild(
     }).catch(() => {});
   }
 
-  // VISION-IN-THE-LOOP (flag-gated: RB_VISION_LOOP=1 — docs/QUALITY-ARCHITECTURE.md #2).
-  // One BOUNDED act on the vision findings: the single worst scene with SEVERE
-  // issues gets one scoped regen carrying the vision reasons, verified against the
-  // blocking render-truth gates before adoption (rollback on regression). Default
-  // OFF while the always-on advisory findings accumulate calibration telemetry.
+  // VISION-IN-THE-LOOP (docs/QUALITY-ARCHITECTURE.md #2). One BOUNDED act on
+  // the vision findings: the single worst scene with SEVERE issues gets one
+  // scoped regen carrying the vision reasons, verified against the blocking
+  // render-truth gates before adoption (rollback on regression). Default ON
+  // since the 2026-07-06 QA — the exact defects it repairs (blank hero card,
+  // invisible logo, placeholder prices) shipped to a customer while it sat
+  // behind an opt-in flag. RB_VISION_LOOP=0 disables.
   let visionLoopActed: string | null = null;
-  const SEVERE_RX = /unreadable|clipped|cut ?off|overlap|invisible|missing|broken|empty|flat|illegible/i;
-  if (process.env.RB_VISION_LOOP === "1" && visionFindings.length > 0) {
+  const SEVERE_RX = /unreadable|clipped|cut ?off|overlap|invisible|missing|broken|empty|flat|illegible|placeholder|masked|blank|loading|frozen|nav bar|pagination/i;
+  if (process.env.RB_VISION_LOOP !== "0" && visionFindings.length > 0) {
     const severe = visionFindings.filter((f) => SEVERE_RX.test(f.issue));
     if (severe.length > 0) {
       const byScene = new Map<number, string[]>();
@@ -391,8 +407,8 @@ export async function runPreviewBuild(
         // Verify-before-keep: the vision fix must not regress the blocking gates.
         const ms = await measureScenes(genDir, currentScript, measureOutDir(genDir));
         const regate = await findRenderTruthFailures(ms, {
-          brandBackground: brief?.brand_extract?.background_color,
-          blockingKinds: ["overflow", "measure-error", "barbell", "cross-piece-overlap"],
+          brandBackground: resolveCanvasPlan(brief?.brand_extract).background,
+          blockingKinds: ["overflow", "measure-error", "barbell", "cross-piece-overlap", "canvas-brightness"],
         });
         if (regate.blocking.length > 0) {
           console.warn(
