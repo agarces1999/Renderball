@@ -151,7 +151,7 @@ if (!(await serverUp())) {
     process.exit(1);
   }
   // Warm the heavy routes so the first POST doesn't compile-while-running.
-  for (const r of ["/api/preview/build", "/api/dev/generate"]) {
+  for (const r of ["/api/dev/build", "/api/dev/generate"]) {
     try { await fetch(base + r, { method: "GET", signal: AbortSignal.timeout(120_000) }); } catch { /* best-effort */ }
   }
 }
@@ -184,10 +184,12 @@ if (!gen?.ok) {
 }
 const scriptId = gen.scriptId;
 
-// 4. Build (design + choreography + gates).
+// 4. Build (design + choreography + gates). Clerk protects /api/preview/*
+// since the launch foundation, so headless runs go through the dev-only
+// route (NODE_ENV-gated, sessionless — same runPreviewBuild underneath).
 let build;
 try {
-  build = await postJson("/api/preview/build", { scriptId }, 560_000);
+  build = await postJson("/api/dev/build", { scriptId }, 560_000);
 } catch (e) {
   out({ ok: false, stage: "build", url: brand.url, scriptId, error: String(e) });
   process.exit(1);

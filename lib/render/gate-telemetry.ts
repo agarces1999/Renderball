@@ -16,8 +16,12 @@ import type { RenderTruthFinding } from "./render-truth-gates";
 export interface GateTelemetry {
   ts: string;
   scriptId: string;
-  /** fires per check key: render-truth kinds, static-warning keys, "vision" */
+  /** fires per check key: render-truth kinds, static-warning keys, "vision".
+   *  Tallied from the FIRST measure — includes findings the ladder repaired. */
   fires: Record<string, number>;
+  /** render-truth findings still present in the FINAL (shipped) composition —
+   *  the advisory tail that survived repair. Absent when nothing remained. */
+  residual?: Record<string, number>;
   /** repair-ladder steps taken (0 = clean first pass through the measured gates) */
   repairSteps: number;
   /** true when NO blocking finding fired and NO repair step ran — the yield metric */

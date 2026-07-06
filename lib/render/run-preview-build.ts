@@ -237,7 +237,8 @@ export async function runPreviewBuild(
     await recordUsage({ op: "build", model, scriptId, url: brief?.brand_kit_url, usage: currentUsage, failed: true });
     await recordGateTelemetry({
       scriptId,
-      fires: tallyGateFires({ findings: repair.findings, warnings: currentWarnings }),
+      fires: tallyGateFires({ findings: repair.initialFindings, warnings: currentWarnings }),
+      residual: tallyGateFires({ findings: repair.findings }),
       repairSteps: repair.steps.length,
       firstPassClean: false,
       buildWallMs: Date.now() - buildT0,
@@ -416,10 +417,14 @@ export async function runPreviewBuild(
   await recordUsage({ op: "build", model, scriptId, url: brief?.brand_kit_url, usage: currentUsage });
 
   // Gate fire-rate telemetry — the deletion criterion (QUALITY-ARCHITECTURE.md).
-  // firstPassClean = no blocking finding fired AND the ladder took zero steps.
+  // `fires` tallies the FIRST measure (what the gates caught — repaired findings
+  // must still count or the deletion criterion undercounts); `residual` tallies
+  // the final measure (advisory findings that shipped). firstPassClean = no
+  // blocking finding fired AND the ladder took zero steps.
   await recordGateTelemetry({
     scriptId,
-    fires: tallyGateFires({ findings: repair.findings, warnings: currentWarnings, visionFindings }),
+    fires: tallyGateFires({ findings: repair.initialFindings, warnings: currentWarnings, visionFindings }),
+    residual: tallyGateFires({ findings: repair.findings }),
     repairSteps: repair.steps.length,
     firstPassClean: repair.blocking.length === 0 && repair.steps.length === 0,
     buildWallMs: Date.now() - buildT0,

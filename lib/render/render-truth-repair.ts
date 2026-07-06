@@ -67,6 +67,10 @@ export interface RepairResult {
   spentUsd: number;
   findings: RenderTruthFinding[];
   blocking: RenderTruthFinding[];
+  /** Findings from the FIRST measure pass — what the gates caught before any
+   *  repair. Telemetry tallies these (the deletion criterion needs pre-repair
+   *  fires; `findings` is the final measure, where repaired findings vanish). */
+  initialFindings: RenderTruthFinding[];
   /** Measurements from the LAST measure pass (final composition). The caller
    *  feeds these to the advisory vision gate instead of measuring a second time. */
   measurements?: SceneMeasurement[];
@@ -112,8 +116,9 @@ export const repairRenderTruth = async (
       "repairRenderTruth: measure() returned a malformed GateResult (findings/blocking must be arrays) — did an async gate fn get spread without await?",
     );
   }
+  const initialFindings = gate.findings;
   if (gate.blocking.length === 0) {
-    return { ok: true, reason: "passed", steps, spentUsd: spent, findings: gate.findings, blocking: [], measurements: gate.measurements };
+    return { ok: true, reason: "passed", steps, spentUsd: spent, findings: gate.findings, blocking: [], initialFindings, measurements: gate.measurements };
   }
 
   // A measure-error means the scene couldn't be measured at all (missing
@@ -129,7 +134,7 @@ export const repairRenderTruth = async (
         .map((f) => f.detail)
         .join("; ")}`,
     );
-    return { ok: false, reason: "measure-error", steps, spentUsd: spent, findings: gate.findings, blocking: gate.blocking, measurements: gate.measurements };
+    return { ok: false, reason: "measure-error", steps, spentUsd: spent, findings: gate.findings, blocking: gate.blocking, initialFindings, measurements: gate.measurements };
   }
   log(`measured ${gate.blocking.length} blocking finding(s) on scene(s) ${scenesOf(gate.blocking).join(", ")}`);
 
@@ -142,7 +147,7 @@ export const repairRenderTruth = async (
   for (let attempt = 1; attempt <= MAX_DESIGN_RETRIES; attempt++) {
     if (overBudget()) {
       log(`cost ceiling $${ceiling} reached ($${spent.toFixed(2)} spent) — stopping before L${attempt} design retry`);
-      return { ok: false, reason: "cost-ceiling", steps, spentUsd: spent, findings: gate.findings, blocking: gate.blocking, measurements: gate.measurements };
+      return { ok: false, reason: "cost-ceiling", steps, spentUsd: spent, findings: gate.findings, blocking: gate.blocking, initialFindings, measurements: gate.measurements };
     }
     const failing = scenesOf(gate.blocking);
     log(`L${attempt}: regenerating design for scene(s) ${failing.join(", ")}`);
@@ -154,14 +159,14 @@ export const repairRenderTruth = async (
     }
     gate = await cb.measure();
     if (gate.blocking.length === 0) {
-      return { ok: true, reason: "repaired", steps: [...steps, `passed after L${attempt}`], spentUsd: spent, findings: gate.findings, blocking: [], measurements: gate.measurements };
+      return { ok: true, reason: "repaired", steps: [...steps, `passed after L${attempt}`], spentUsd: spent, findings: gate.findings, blocking: [], initialFindings, measurements: gate.measurements };
     }
   }
 
   // ── L3: rewrite the failing scenes' script (lighter concept) + rebuild ────
   if (overBudget()) {
     log(`cost ceiling $${ceiling} reached ($${spent.toFixed(2)} spent) — stopping before L3 script rewrite`);
-    return { ok: false, reason: "cost-ceiling", steps, spentUsd: spent, findings: gate.findings, blocking: gate.blocking, measurements: gate.measurements };
+    return { ok: false, reason: "cost-ceiling", steps, spentUsd: spent, findings: gate.findings, blocking: gate.blocking, initialFindings, measurements: gate.measurements };
   }
   const failing = scenesOf(gate.blocking);
   log(`L3: rewriting script for scene(s) ${failing.join(", ")} (concept too dense to fit) + rebuild`);
@@ -172,14 +177,14 @@ export const repairRenderTruth = async (
   if (rw.usage) spent += costOf(rw.usage);
   if (!rw.ok) {
     log(`L3 rewrite/rebuild error: ${rw.error ?? "unknown"}`);
-    return { ok: false, reason: "error", steps, spentUsd: spent, findings: gate.findings, blocking: gate.blocking, measurements: gate.measurements };
+    return { ok: false, reason: "error", steps, spentUsd: spent, findings: gate.findings, blocking: gate.blocking, initialFindings, measurements: gate.measurements };
   }
   gate = await cb.measure();
   if (gate.blocking.length === 0) {
-    return { ok: true, reason: "repaired", steps: [...steps, "passed after L3"], spentUsd: spent, findings: gate.findings, blocking: [], measurements: gate.measurements };
+    return { ok: true, reason: "repaired", steps: [...steps, "passed after L3"], spentUsd: spent, findings: gate.findings, blocking: [], initialFindings, measurements: gate.measurements };
   }
 
   // ── L4: ladder exhausted — caller hard-fails ─────────────────────────────
   log(`ladder exhausted — ${gate.blocking.length} blocking finding(s) remain on scene(s) ${scenesOf(gate.blocking).join(", ")}`);
-  return { ok: false, reason: "ladder-exhausted", steps, spentUsd: spent, findings: gate.findings, blocking: gate.blocking, measurements: gate.measurements };
+  return { ok: false, reason: "ladder-exhausted", steps, spentUsd: spent, findings: gate.findings, blocking: gate.blocking, initialFindings, measurements: gate.measurements };
 };

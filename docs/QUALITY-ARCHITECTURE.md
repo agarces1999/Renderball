@@ -100,3 +100,30 @@ individual gates only after N clean builds each.
   parallel-animation lever compounds).
 - Gate fire-rate per 100 scenes, per gate — published in the build report; the
   deletion criterion.
+
+## Validation run #1 — Loom, 2026-07-05 (exemplars ON, vision-loop OFF)
+
+First live build with QA-1/2/3 landed. One data point — direction, not verdict.
+
+- **Setup**: loom.com, never-crawled brand, 5 scenes (all five registers
+  distinct). Exemplars injected: `fullbleed-product` + `quote-manifesto`
+  (12.1KB). RB_VISION_LOOP off to isolate the exemplar variable.
+- **Result**: shipped clean of blocking findings. `firstPassClean: false` —
+  the ladder took one L1 pass (3 step-log entries) before passing. Final
+  composition: `undwelled_text: 2` warnings, text-overlap advisory tail in the
+  final measure. Zero user-visible defects of the Framer class (titles vs
+  mocks) on eyeball review of all 5 settled stills; compositions visibly
+  echo exemplar structure (s1 mirrors quote-manifesto, s0 full-bleed
+  mock-as-canvas).
+- **Cost/wall**: build $1.86 (+ crawl/generate/vision ≈ $2.00 total), 74.9 min
+  wall. Both at the top of the 3-brand baseline range (builds $0.77–$1.37,
+  46–81 min) — the repair pass, not the exemplar tokens, is the cost driver.
+- **Telemetry fix shipped off the back of it**: the first recorded row tallied
+  the FINAL measure, so repaired findings vanished from `fires` — undercounting
+  exactly what the deletion criterion must count. `RepairResult.initialFindings`
+  now feeds `fires`; the shipped advisory tail lands in `residual`.
+- **Read**: n=1 says exemplars don't eliminate the retry tax by themselves
+  (blocking findings still fired), but the shipped-quality tail looks better
+  than baseline (2 warnings vs 3–6 + 3 user-reported defects across the
+  baseline trio). Keep exemplars on; accumulate telemetry rows before any
+  stronger claim.
