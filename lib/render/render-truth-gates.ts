@@ -83,23 +83,38 @@ export const findOverflow = (m: SceneMeasurement): RenderTruthFinding[] => {
 //   - the other element must be a substantive opaque panel (real surface, not
 //     atmosphere glow — gradients report transparent backgroundColor),
 //   - same-piece overlap is by-design (labels inside their own mock).
-const XP_MIN_TEXT_PX = 24; // headline/lede class, not micro-labels
+const XP_MIN_TEXT_PX = 24; // headline/lede class, not micro-labels (covered case)
 const XP_MIN_TEXT_LEN = 8;
 const XP_MIN_PANEL_AREA = 40_000; // ≥ ~200×200 — a real panel
 const XP_MIN_PANEL_ALPHA = 0.5;
 const XP_MIN_FRAC = 0.2; // ≥20% of the text box intersected ⇒ a collision
+// Straddle case (QA: Fuse s3 annotation bullets crossing the panel grid): text
+// PARTIALLY intersecting a panel reads as a collision regardless of z-order —
+// half the line sits on the canvas, half on the panel, breaking contrast and
+// crossing the panel's edge/labels. FULL containment stays the sanctioned
+// overlay pattern (Loom s0: headline entirely over the dimmed mock).
+const XP_STRADDLE_MIN_PX = 14; // catches 18px annotation bullets
+const XP_STRADDLE_MIN_FRAC = 0.12; // below: grazing contact (descenders touching an edge)
+const XP_STRADDLE_MAX_FRAC = 0.9; // above: effectively contained = overlay
+// Cross-piece TEXT-ON-TEXT for ANNOTATION-class type on BOTH sides: an 18px
+// bullet printed across a mock's 13px internal label is a defect (Fuse s3).
+// Larger copy over dimmed mock labels is the sanctioned overlay — replayed on
+// 4 live builds, the ≤20px-both-sides rule fires on the Fuse collision and on
+// nothing else (Loom's dimmed-calendar overlay pairs always involve ≥24px copy).
+const XP_TT_MAX_PX = 20;
+const XP_TT_MIN_PX = 11;
+const XP_TT_MIN_FRAC = 0.25; // of the smaller text box
 
-/** Free-standing text from piece A intersecting an opaque panel from piece B. */
+/** Free-standing text from piece A colliding with piece B: covered-under-panel,
+ *  straddling a panel edge, or printed across another piece's text. */
 export const findCrossPieceOverlap = (m: SceneMeasurement): RenderTruthFinding[] => {
   if (m.error) return [];
-  const texts = m.elements.filter(
+  const canvasTexts = m.elements.filter(
     (e) =>
       !e.isImg &&
       e.piece &&
       !e.onOpaqueSurface &&
-      e.coveredAtCenter && // something IS stacked on top of it — the clip signal
       e.text.trim().length >= XP_MIN_TEXT_LEN &&
-      e.fontSize >= XP_MIN_TEXT_PX &&
       e.opacity > 0.1 &&
       cssAlpha(e.bg) < 0.15,
   );
@@ -112,27 +127,79 @@ export const findCrossPieceOverlap = (m: SceneMeasurement): RenderTruthFinding[]
       // full-bleed backgrounds are the canvas, not a panel
       !(e.w >= m.width * 0.97 && e.h >= m.height * 0.97),
   );
+  const otherTexts = m.elements.filter(
+    (e) =>
+      !e.isImg &&
+      e.piece &&
+      e.text.trim().length >= 4 &&
+      e.fontSize >= XP_TT_MIN_PX &&
+      e.fontSize <= XP_TT_MAX_PX &&
+      e.opacity > 0.3,
+  );
   const out: RenderTruthFinding[] = [];
   const seen = new Set<string>();
-  for (const t of texts) {
+  const push = (key: string, finding: RenderTruthFinding) => {
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(finding);
+  };
+  for (const t of canvasTexts) {
     for (const p of panels) {
       if (t.piece === p.piece) continue; // same piece = by design
       const ix = Math.min(t.x + t.w, p.x + p.w) - Math.max(t.x, p.x);
       const iy = Math.min(t.y + t.h, p.y + p.h) - Math.max(t.y, p.y);
       if (ix <= 0 || iy <= 0) continue;
       const frac = (ix * iy) / Math.max(1, t.w * t.h);
-      if (frac < XP_MIN_FRAC) continue;
-      const key = `${t.piece}|${p.piece}|${t.text.slice(0, 20)}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      out.push({
+      // Case A — text CLIPPED UNDER the panel (Framer class): stacking truth.
+      if (t.coveredAtCenter && t.fontSize >= XP_MIN_TEXT_PX && frac >= XP_MIN_FRAC) {
+        push(`${t.piece}|${p.piece}|${t.text.slice(0, 20)}`, {
+          scene: m.scene,
+          kind: "cross-piece-overlap",
+          detail:
+            `text "${t.text.slice(0, 36)}" (piece ${t.piece}) collides with the opaque panel of piece ` +
+            `${p.piece} — ${Math.round(frac * 100)}% of the text box is covered ` +
+            `(text @${t.x},${t.y} ${t.w}×${t.h} ∩ panel @${p.x},${p.y} ${p.w}×${p.h}). ` +
+            `Move or shrink one so the copy clears the mock, or give the text its own opaque surface/scrim.`,
+        });
+        continue;
+      }
+      // Case B — text STRADDLING the panel edge (Fuse s3 class): partial
+      // intersection is a collision at any stacking order; full containment
+      // is the sanctioned overlay and stays allowed.
+      if (
+        t.fontSize >= XP_STRADDLE_MIN_PX &&
+        frac >= XP_STRADDLE_MIN_FRAC &&
+        frac <= XP_STRADDLE_MAX_FRAC
+      ) {
+        push(`straddle|${t.piece}|${p.piece}|${t.text.slice(0, 20)}`, {
+          scene: m.scene,
+          kind: "cross-piece-overlap",
+          detail:
+            `text "${t.text.slice(0, 36)}" (piece ${t.piece}) STRADDLES the edge of piece ${p.piece}'s ` +
+            `panel — ${Math.round(frac * 100)}% inside, the rest on the canvas (text @${t.x},${t.y} ` +
+            `${t.w}×${t.h} ∩ panel @${p.x},${p.y} ${p.w}×${p.h}). Text must sit fully clear of the ` +
+            `panel or fully inside it on a readable surface — never across its boundary.`,
+        });
+      }
+    }
+    // Case C — BODY-size text printed across ANOTHER piece's text (annotation
+    // bullets over a mock's internal labels). Display-size overlays are exempt.
+    if (t.fontSize > XP_TT_MAX_PX) continue;
+    for (const o of otherTexts) {
+      if (o.piece === t.piece) continue;
+      const ix = Math.min(t.x + t.w, o.x + o.w) - Math.max(t.x, o.x);
+      const iy = Math.min(t.y + t.h, o.y + o.h) - Math.max(t.y, o.y);
+      if (ix <= 0 || iy <= 0) continue;
+      const minArea = Math.max(1, Math.min(t.w * t.h, o.w * o.h));
+      const frac = (ix * iy) / minArea;
+      if (frac < XP_TT_MIN_FRAC) continue;
+      push(`tt|${t.piece}|${o.piece}|${t.text.slice(0, 14)}|${o.text.slice(0, 14)}`, {
         scene: m.scene,
         kind: "cross-piece-overlap",
         detail:
-          `text "${t.text.slice(0, 36)}" (piece ${t.piece}) collides with the opaque panel of piece ` +
-          `${p.piece} — ${Math.round(frac * 100)}% of the text box is covered ` +
-          `(text @${t.x},${t.y} ${t.w}×${t.h} ∩ panel @${p.x},${p.y} ${p.w}×${p.h}). ` +
-          `Move or shrink one so the copy clears the mock, or give the text its own opaque surface/scrim.`,
+          `body text "${t.text.slice(0, 32)}" (piece ${t.piece}, ${t.fontSize}px) is printed across ` +
+          `"${o.text.slice(0, 32)}" from piece ${o.piece} — ${Math.round(frac * 100)}% of the smaller ` +
+          `box overlaps. Move the annotation clear of the mock, or move its content INTO the mock.`,
       });
     }
   }

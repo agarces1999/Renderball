@@ -235,11 +235,49 @@ await check("does NOT flag tiny (<20%) grazing intersections", () => {
   assert(findCrossPieceOverlap(m).length === 0, "grazing contact must not flag");
 });
 
-await check("does NOT flag text stacked visibly ON TOP of a foreign panel (z-order truth)", () => {
-  // geometric overlap but the text is the top element at its center — a deliberate
-  // over-panel composition, not a clip (the Arc false-positive class).
+await check("text ON TOP but FULLY inside a foreign panel does not flag (sanctioned overlay)", () => {
+  // The Loom-s0 pattern: a headline composed entirely over a dimmed mock. Fully
+  // contained (>92%) + visibly on top = deliberate overlay, never a collision.
+  const m = scene(1, [
+    el({ ...HEADLINE, coveredAtCenter: false, y: 300, h: 60 }), // panel spans 150..780 → fully inside
+    el(MOCK_PANEL),
+  ]);
+  assert(findCrossPieceOverlap(m).length === 0, "contained overlay must not flag");
+});
+
+await check("text ON TOP that STRADDLES a foreign panel edge DOES flag (the Fuse-s3 class)", () => {
+  // 27% of the headline crosses into the panel while the rest sits on the
+  // canvas — a contrast-breaking collision at any stacking order.
   const m = scene(1, [el({ ...HEADLINE, coveredAtCenter: false }), el(MOCK_PANEL)]);
-  assert(findCrossPieceOverlap(m).length === 0, "text on top must not flag");
+  const r = findCrossPieceOverlap(m);
+  assert(r.length === 1 && /STRADDLES/.test(r[0].detail), JSON.stringify(r));
+});
+
+await check("body text printed across another piece's label DOES flag (cross-piece text-on-text)", () => {
+  const bullet = { tag: "li", text: "AI Agents: document reading, fraud checks", fontSize: 18, x: 460, y: 230, w: 480, h: 24, piece: "s3.copy", coveredAtCenter: false };
+  const label = { tag: "span", text: "AI AGENTS", fontSize: 12, x: 500, y: 236, w: 90, h: 16, piece: "s3.panel2", bg: "rgba(0,0,0,0)", onOpaqueSurface: true };
+  const m = scene(3, [el(bullet), el(label)]);
+  const r = findCrossPieceOverlap(m);
+  assert(r.length === 1 && /printed across/.test(r[0].detail), JSON.stringify(r));
+});
+
+await check("display-size text over a mock's tiny labels stays exempt (Loom overlay)", () => {
+  const label = { tag: "span", text: "Sprint Planning", fontSize: 12, x: 200, y: 320, w: 120, h: 16, piece: "s0.mock", onOpaqueSurface: true };
+  const m = scene(0, [
+    el({ ...HEADLINE, coveredAtCenter: false, fontSize: 96, y: 300, h: 90 }), // display class, fully over the mock area
+    el({ ...MOCK_PANEL, piece: "s0.mock" }),
+    el(label),
+  ]);
+  assert(findCrossPieceOverlap(m).length === 0, JSON.stringify(findCrossPieceOverlap(m)));
+});
+
+await check("24px lede over a dimmed mock label stays exempt (annotation rule is both-sides ≤20px)", () => {
+  // Loom-s0 replay FP class: body lede composed over the dimmed calendar's
+  // small labels — sanctioned. Only annotation-vs-annotation collides.
+  const label = { tag: "span", text: "Budget Sync", fontSize: 15, x: 300, y: 306, w: 110, h: 18, piece: "s0.atmos", onOpaqueSurface: true };
+  const lede = { tag: "p", text: "Back-to-back syncs, status updates, and quick calls", fontSize: 24, x: 260, y: 300, w: 700, h: 30, piece: "s0.copy", coveredAtCenter: false };
+  const m = scene(0, [el(lede), el(label)]);
+  assert(findCrossPieceOverlap(m).length === 0, JSON.stringify(findCrossPieceOverlap(m)));
 });
 
 await check("does NOT flag full-bleed backgrounds as panels", () => {
