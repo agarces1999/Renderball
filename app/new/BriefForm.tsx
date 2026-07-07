@@ -62,12 +62,18 @@ export function BriefForm({
   const [brandFiles] = useState<File[]>([]);
   const [brandKitUrl, setBrandKitUrl] = useState(initialUrl);
   /**
-   * Single-file slot for the user-uploaded brand logo. Shown when the
-   * crawl's logo-discovery agent returned NONE. Separate from brandFiles
-   * because it has a dedicated UI prompt and gets the is_logo flag
-   * server-side.
+   * Brand kit (approved gate, 2026-07-07): the logo is REQUIRED — either an
+   * upload here or a one-click confirmation of the crawled mark. The scanned
+   * palette must be confirmed (editable first). Font upload is optional and
+   * carries a license attestation. Identity is locked by the user, never
+   * silently guessed from the crawl.
    */
-  const [logoFile] = useState<File | null>(null);
+  const [logoFile, setLogoFile] = useState<File | null>(null);
+  const [logoPreview, setLogoPreview] = useState<string | null>(null);
+  const [crawledLogoAccepted, setCrawledLogoAccepted] = useState(false);
+  const [fontFile, setFontFile] = useState<File | null>(null);
+  const [fontLicensed, setFontLicensed] = useState(false);
+  const [colorsConfirmed, setColorsConfirmed] = useState(false);
   const [verifiedClaims, setVerifiedClaims] = useState("");
   const [paletteRoles, setPaletteRoles] = useState<{
     primary?: string;
@@ -178,6 +184,14 @@ export function BriefForm({
     if (extract) fd.append("brand_extract", JSON.stringify(extract));
     brandFiles.forEach((f, i) => fd.append(`file_${i}`, f));
     if (logoFile) fd.append("file_logo", logoFile);
+    // Brand-kit gate fields — mirrored server-side in submitBrief.
+    if (logoFile) fd.append("logo_source", "upload");
+    else if (crawledLogoAccepted) fd.append("logo_source", "crawl_confirmed");
+    if (colorsConfirmed) fd.append("colors_confirmed", "1");
+    if (fontFile) {
+      fd.append("file_font", fontFile);
+      if (fontLicensed) fd.append("font_licensed", "1");
+    }
 
     const result = await submitBrief(fd);
     if (!result.ok) {
@@ -189,9 +203,31 @@ export function BriefForm({
     setAgentDone(true);
   };
 
+  // ─── Brand-kit gate state (mirrors lib/brand-kit.ts server predicate) ────
+  const crawledLogo = brandExtract?.ok ? brandExtract.logo_hd : undefined;
+  const logoLocked = !!logoFile || (crawledLogoAccepted && !!crawledLogo);
+  const hasScannedPalette = !!brandExtract?.ok && (brandExtract.palette?.length ?? 0) > 0;
+  const colorsSatisfied = !hasScannedPalette || colorsConfirmed;
+
   const handleAutoGenerate = () => {
     if (!introPrompt.trim()) {
       setError("Write what video you want before generating.");
+      return;
+    }
+    if (!logoLocked) {
+      setError(
+        crawledLogo
+          ? "Lock in your logo — upload one, or confirm the logo we found on your site."
+          : "Upload your logo (SVG or PNG) — it's required so the video is unmistakably yours.",
+      );
+      return;
+    }
+    if (!colorsSatisfied) {
+      setError("Confirm your brand colors — check the scanned palette below (edit if needed), then confirm.");
+      return;
+    }
+    if (fontFile && !fontLicensed) {
+      setError("Confirm you hold the license for the uploaded font (or remove it to use the scanned fonts).");
       return;
     }
     const cap = maxMomentsForDuration(duration);
@@ -265,6 +301,9 @@ export function BriefForm({
                   setBrandKitUrl(e.target.value);
                   if (crawledUrlRef.current !== e.target.value.trim()) {
                     setBrandExtract(null);
+                    // New site = new identity: prior confirmations don't carry.
+                    setCrawledLogoAccepted(false);
+                    setColorsConfirmed(false);
                   }
                 }}
                 onBlur={() => {
@@ -309,6 +348,188 @@ export function BriefForm({
           )}
         </div>
 
+        {/* Brand kit — identity is LOCKED BY THE USER before anything renders.
+            Approved deviation from "config is never a gate" (2026-07-07):
+            logo required, colors confirm-from-scan, font optional. */}
+        <div className="glass mt-4 rounded-md p-4">
+          <div className="mb-4 flex items-baseline justify-between">
+            <span className="text-[13.5px] font-medium text-ink">Brand kit</span>
+            <span className="font-mono text-[11px] text-muted">
+              locked by you — never guessed
+            </span>
+          </div>
+
+          {/* Logo — required */}
+          <div className="mb-5">
+            <div className="mb-2 flex items-center gap-2 text-[13px] text-ink-soft">
+              Logo
+              <span
+                className={cn(
+                  "rounded-full border px-1.5 py-0.5 font-mono text-[10px]",
+                  logoLocked
+                    ? "border-accent-line bg-accent-soft text-accent-text"
+                    : "border-hairline-strong text-muted",
+                )}
+              >
+                {logoLocked ? "✓ locked" : "required"}
+              </span>
+            </div>
+            <div className="flex flex-wrap items-center gap-3">
+              {(logoPreview || crawledLogo) && (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={logoPreview ?? crawledLogo}
+                  alt="brand logo"
+                  className={cn(
+                    "h-10 max-w-[140px] rounded-md border bg-surface-2 object-contain px-2 py-1",
+                    logoLocked ? "border-accent-line" : "border-hairline opacity-75",
+                  )}
+                />
+              )}
+              <label className="cursor-pointer rounded-md border border-hairline-strong px-3 py-1.5 text-[12.5px] text-ink-soft transition-colors hover:border-accent-line hover:text-ink">
+                {logoFile ? logoFile.name : "Upload logo (SVG / PNG)"}
+                <input
+                  type="file"
+                  accept=".svg,.png,image/svg+xml,image/png"
+                  className="hidden"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0] ?? null;
+                    setLogoFile(f);
+                    setCrawledLogoAccepted(false);
+                    setLogoPreview((prev) => {
+                      if (prev) URL.revokeObjectURL(prev);
+                      return f ? URL.createObjectURL(f) : null;
+                    });
+                  }}
+                />
+              </label>
+              {!logoFile && crawledLogo && (
+                <button
+                  type="button"
+                  onClick={() => setCrawledLogoAccepted((v) => !v)}
+                  className={cn(
+                    "rounded-md border px-3 py-1.5 text-[12.5px] transition-colors",
+                    crawledLogoAccepted
+                      ? "border-accent-line bg-accent-soft text-ink"
+                      : "border-hairline-strong text-ink-soft hover:border-accent-line hover:text-ink",
+                  )}
+                >
+                  {crawledLogoAccepted ? "✓ Using the logo from your site" : "Use the logo from your site"}
+                </button>
+              )}
+            </div>
+            {!crawledLogo && !logoFile && (
+              <p className="mt-2 font-mono text-[11.5px] text-muted">
+                {brandKitUrl.trim()
+                  ? "no usable logo found on your site — upload yours"
+                  : "add your site above to scan for a logo, or upload one"}
+              </p>
+            )}
+          </div>
+
+          {/* Colors — scanned palette, confirm or edit */}
+          <div className="mb-5">
+            <div className="mb-2 flex items-center gap-2 text-[13px] text-ink-soft">
+              Colors
+              <span
+                className={cn(
+                  "rounded-full border px-1.5 py-0.5 font-mono text-[10px]",
+                  colorsSatisfied
+                    ? "border-accent-line bg-accent-soft text-accent-text"
+                    : "border-hairline-strong text-muted",
+                )}
+              >
+                {hasScannedPalette ? (colorsConfirmed ? "✓ confirmed" : "confirm the scan") : "from your site"}
+              </span>
+            </div>
+            {hasScannedPalette ? (
+              <>
+                <StepColors
+                  palette={brandExtract?.palette ?? []}
+                  themeColor={brandExtract?.theme_color}
+                  value={paletteRoles}
+                  onChange={(v) => {
+                    setPaletteRoles(v);
+                    // Any edit re-opens the confirmation — the user signs off
+                    // on exactly what will render.
+                    setColorsConfirmed(false);
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={() => setColorsConfirmed((v) => !v)}
+                  className={cn(
+                    "mt-3 rounded-md border px-3 py-1.5 text-[12.5px] transition-colors",
+                    colorsConfirmed
+                      ? "border-accent-line bg-accent-soft text-ink"
+                      : "border-hairline-strong text-ink-soft hover:border-accent-line hover:text-ink",
+                  )}
+                >
+                  {colorsConfirmed ? "✓ Colors confirmed" : "These are my brand colors →"}
+                </button>
+              </>
+            ) : (
+              <p className="font-mono text-[11.5px] text-muted">
+                {brandKitUrl.trim()
+                  ? "scanning your site for colors…"
+                  : "add your site above and we'll scan your palette for you to confirm"}
+              </p>
+            )}
+          </div>
+
+          {/* Font — optional upload with license attestation */}
+          <div>
+            <div className="mb-2 flex items-center gap-2 text-[13px] text-ink-soft">
+              Font
+              <span className="rounded-full border border-hairline-strong px-1.5 py-0.5 font-mono text-[10px] text-muted">
+                optional
+              </span>
+            </div>
+            <div className="flex flex-wrap items-center gap-3">
+              <label className="cursor-pointer rounded-md border border-hairline-strong px-3 py-1.5 text-[12.5px] text-ink-soft transition-colors hover:border-accent-line hover:text-ink">
+                {fontFile ? fontFile.name : "Upload font (woff2 / ttf / otf)"}
+                <input
+                  type="file"
+                  accept=".woff2,.woff,.ttf,.otf"
+                  className="hidden"
+                  onChange={(e) => {
+                    setFontFile(e.target.files?.[0] ?? null);
+                    setFontLicensed(false);
+                  }}
+                />
+              </label>
+              {fontFile && (
+                <>
+                  <label className="flex cursor-pointer items-center gap-2 text-[12px] text-ink-soft">
+                    <input
+                      type="checkbox"
+                      checked={fontLicensed}
+                      onChange={(e) => setFontLicensed(e.target.checked)}
+                      className="accent-[var(--accent,#00c28a)]"
+                    />
+                    I hold the license for this font
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setFontFile(null);
+                      setFontLicensed(false);
+                    }}
+                    className="font-mono text-[11.5px] text-muted hover:text-ink"
+                  >
+                    remove
+                  </button>
+                </>
+              )}
+              {!fontFile && (
+                <span className="font-mono text-[11.5px] text-muted">
+                  otherwise we use the fonts found on your site
+                </span>
+              )}
+            </div>
+          </div>
+        </div>
+
         {/* Format — visual screen-ratio picker */}
         <FormatPicker
           value={distributionFormat}
@@ -329,36 +550,25 @@ export function BriefForm({
           ))}
         </div>
 
-        {/* Advanced: colors + verified claims (optional, crawl-defaulted) */}
+        {/* Advanced: verified claims (optional). Colors moved up into the
+            Brand kit — they're confirm-gated now, not buried refinement. */}
         <details className="group mt-6 glass rounded-md">
           <summary className="flex cursor-pointer list-none items-center justify-between px-4 py-3 text-[13px] text-ink-soft hover:text-ink">
             <span>
-              Brand colors &amp; details{" "}
-              <span className="text-muted">(optional — auto-filled from your site)</span>
+              Verified claims{" "}
+              <span className="text-muted">(optional — real stats the agent may quote)</span>
             </span>
             <span className="text-faint transition-transform group-open:rotate-180">⌄</span>
           </summary>
-          <div className="space-y-7 border-t border-hairline px-4 py-5">
-            <StepColors
-              palette={brandExtract?.palette ?? []}
-              themeColor={brandExtract?.theme_color}
-              value={paletteRoles}
-              onChange={setPaletteRoles}
+          <div className="border-t border-hairline px-4 py-5">
+            <textarea
+              id="vc"
+              value={verifiedClaims}
+              onChange={(e) => setVerifiedClaims(e.target.value)}
+              rows={3}
+              placeholder={"$25M Series B\n100+ financial institutions\nLive in 90 days"}
+              className="w-full resize-y rounded-md border border-hairline bg-surface-2 px-3 py-2 font-mono text-[13px] text-ink placeholder:text-muted focus:border-accent-line focus:outline-none"
             />
-            <div>
-              <label htmlFor="vc" className="mb-2 block text-[13px] text-ink-soft">
-                Verified claims{" "}
-                <span className="text-faint">(one per line — real stats the agent may quote)</span>
-              </label>
-              <textarea
-                id="vc"
-                value={verifiedClaims}
-                onChange={(e) => setVerifiedClaims(e.target.value)}
-                rows={3}
-                placeholder={"$25M Series B\n100+ financial institutions\nLive in 90 days"}
-                className="w-full resize-y rounded-md border border-hairline bg-surface-2 px-3 py-2 font-mono text-[13px] text-ink placeholder:text-muted focus:border-accent-line focus:outline-none"
-              />
-            </div>
           </div>
         </details>
 

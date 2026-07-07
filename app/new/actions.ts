@@ -5,7 +5,19 @@ import { getCurrentUser } from "../../lib/auth";
 import { saveBrief, saveScript, type StoredBrief } from "../../lib/store";
 import { generateScript } from "../../lib/agents/script-generator";
 import { saveBriefFiles } from "../../lib/uploads";
+import { brandKitStatus } from "../../lib/brand-kit";
 import { extractBrand } from "../../lib/crawl/extract-brand";
+
+/** "NeueMontreal-Medium.woff2" → "Neue Montreal Medium" — a readable family
+ *  name when the user didn't type one. */
+const fontFamilyFromFilename = (name: string): string =>
+  name
+    .replace(/\.(woff2?|ttf|otf)$/i, "")
+    .replace(/[-_]+/g, " ")
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 80) || "Brand Font";
 import type {
   BrandExtract,
   BriefInput,
@@ -86,17 +98,23 @@ export async function submitBrief(
   const validation = validateBrief(briefParsed);
   if (validation) return { ok: false, error: validation };
 
-  // Two upload tracks:
+  // Three upload tracks:
   //   - file_0..N: generic brand files (logos, color refs, screenshots)
-  //   - file_logo: the user-uploaded brand logo from the dedicated
-  //     "Upload your logo" prompt (when the discovery agent returned NONE).
-  //     Tagged with is_logo: true so the pipeline uses it as logo_hd.
+  //   - file_logo: the user-uploaded brand logo (brand-kit gate — required
+  //     unless the crawled logo was explicitly confirmed). Tagged is_logo so
+  //     the pipeline uses it as logo_hd.
+  //   - file_font: the optional user-uploaded brand webfont. Tagged is_font +
+  //     font_family + font_licensed; overrides crawled font roles downstream.
   const files: File[] = [];
   let logoIndex = -1;
+  let fontIndex = -1;
   for (const [key, value] of formData.entries()) {
     if (value instanceof File && value.size > 0) {
       if (key === "file_logo") {
         logoIndex = files.length;
+        files.push(value);
+      } else if (key === "file_font") {
+        fontIndex = files.length;
         files.push(value);
       } else if (key.startsWith("file_")) {
         files.push(value);
@@ -106,11 +124,31 @@ export async function submitBrief(
 
   const brief_id = ulid();
 
+  const fontFamilyRaw = formData.get("font_family");
+  const fontLicensed = formData.get("font_licensed") === "1";
+  const logoSourceRaw = formData.get("logo_source");
+  const logoSource =
+    logoSourceRaw === "upload" || logoSourceRaw === "crawl_confirmed"
+      ? logoSourceRaw
+      : undefined;
+  const colorsConfirmed = formData.get("colors_confirmed") === "1";
+
   let savedFiles: UploadedFileRef[] = [];
   try {
     savedFiles = await saveBriefFiles(brief_id, files);
     if (logoIndex >= 0 && savedFiles[logoIndex]) {
       savedFiles[logoIndex] = { ...savedFiles[logoIndex], is_logo: true };
+    }
+    if (fontIndex >= 0 && savedFiles[fontIndex]) {
+      savedFiles[fontIndex] = {
+        ...savedFiles[fontIndex],
+        is_font: true,
+        font_family:
+          typeof fontFamilyRaw === "string" && fontFamilyRaw.trim()
+            ? fontFamilyRaw.trim().slice(0, 80)
+            : fontFamilyFromFilename(savedFiles[fontIndex].name),
+        font_licensed: fontLicensed,
+      };
     }
   } catch (err) {
     return {
@@ -127,6 +165,21 @@ export async function submitBrief(
     } catch {
       // ignore
     }
+  }
+
+  // Brand-kit gate (approved DESIGN.md deviation, 2026-07-07): the identity
+  // must be USER-LOCKED before we spend on generation. The form disables
+  // submit on the same predicate; this is the server truth.
+  const kit = brandKitStatus({
+    brand_files: savedFiles,
+    logo_source: logoSource,
+    colors_confirmed: colorsConfirmed,
+    brand_extract: brandExtract?.ok
+      ? { ok: true, logo_hd: brandExtract.logo_hd, palette: brandExtract.palette }
+      : undefined,
+  });
+  if (!kit.ready) {
+    return { ok: false, error: `Brand kit incomplete — missing: ${kit.missing.join("; ")}.` };
   }
 
   const preallocated = buildPreallocatedAssets(savedFiles, brandExtract);
@@ -162,6 +215,8 @@ export async function submitBrief(
       ? briefParsed.palette_roles
       : undefined,
     brand_extract: brandExtract?.ok ? brandExtract : undefined,
+    logo_source: logoSource,
+    colors_confirmed: colorsConfirmed || undefined,
     created_at: new Date().toISOString(),
     status: "awaiting_agent_1",
   };

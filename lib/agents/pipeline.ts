@@ -123,7 +123,14 @@ export interface BuildInput {
  */
 export type BriefForBuild = {
   brand_kit_url?: string;
-  brand_files?: { name: string; url: string; mime: string; is_logo?: boolean }[];
+  brand_files?: {
+    name: string;
+    url: string;
+    mime: string;
+    is_logo?: boolean;
+    is_font?: boolean;
+    font_family?: string;
+  }[];
   verified_claims?: string;
   palette_roles?: {
     primary?: string;
@@ -160,6 +167,21 @@ export const buildAgentInputFromBrief = (
     : undefined;
   const effectiveLogoHd = userLogo?.url ?? crawledLogo;
 
+  // User-uploaded brand font (brand-kit gate, optional): overrides the crawled
+  // faces entirely — the user's licensed file is the identity truth, and using
+  // it also stops us re-hosting a licensed webfont the crawl merely found.
+  const userFont = brief?.brand_files?.find((f) => f.is_font && f.font_family);
+  const effectiveFonts = userFont
+    ? [{ family: userFont.font_family as string, src: userFont.url, weight: "400" }]
+    : brief?.brand_extract?.ok
+      ? brief.brand_extract.fonts
+      : undefined;
+  const effectiveFontRoles = userFont
+    ? { display: userFont.font_family, body: userFont.font_family }
+    : brief?.brand_extract?.ok
+      ? brief.brand_extract.font_roles
+      : undefined;
+
   // Resolve brand_extract once, then derive the LOCKED brand identity from
   // the SAME data the agent will see (one logo or wordmark + validated fonts).
   const be: AgentBrandExtract | undefined = brief?.brand_extract?.ok
@@ -183,8 +205,8 @@ export const buildAgentInputFromBrief = (
         headlines: brief.brand_extract.headlines,
         body_excerpts: brief.brand_extract.body_excerpts,
         page_images: brief.brand_extract.page_images,
-        fonts: brief.brand_extract.fonts,
-        font_roles: brief.brand_extract.font_roles,
+        fonts: effectiveFonts,
+        font_roles: effectiveFontRoles,
         palette: brief.brand_extract.palette,
         // The brand's real canvas background (Fuse burgundy) — a hard constraint
         // for the Design Agent so it doesn't infer the canvas and default to

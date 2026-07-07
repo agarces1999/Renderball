@@ -43,6 +43,12 @@ export interface StoredFileRef {
   size: number;
   /** Set when the user uploaded this as their brand logo (logo agent NONE'd). */
   is_logo?: boolean;
+  /** Set when the user uploaded this as their brand webfont (brand-kit gate). */
+  is_font?: boolean;
+  /** Display name for the uploaded font family (derived from filename or user input). */
+  font_family?: string;
+  /** User attested they hold the webfont license (required for is_font files). */
+  font_licensed?: boolean;
 }
 
 export interface StoredBrief {
@@ -86,6 +92,14 @@ export interface StoredBrief {
   };
   /** Cached output of extractBrand() — kept on the brief so Agent 2 can use it at render time without re-crawling. */
   brand_extract?: BrandExtract;
+  /**
+   * Brand-kit gate (approved DESIGN.md deviation, 2026-07-07): how the logo
+   * was locked — user upload, or explicit confirmation of the crawled mark.
+   * Absent on legacy briefs (created before the gate).
+   */
+  logo_source?: "upload" | "crawl_confirmed";
+  /** User confirmed (or edited then confirmed) the scanned brand palette. */
+  colors_confirmed?: boolean;
   created_at: string;
   status: BriefStatus;
   script_id?: string; // populated after Agent 1 runs

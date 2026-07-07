@@ -121,6 +121,13 @@ The old 5-step upfront wizard (site → format → colors → shape → prompt, 
 
 ### Flow principles
 - **Config is refinement, not a gate.** Format, colors, duration are crawl-defaulted side controls, never upfront steps.
+  - **Approved exception — brand identity (Alfonso, 2026-07-07):** the brand
+    kit IS a gate. The logo is required (upload, or one-click confirmation of
+    the crawled mark); the scanned palette must be user-confirmed (editable
+    first); font upload is optional with a license attestation. Rationale:
+    dead/blank logo assets were the #1 shipped-defect class (QA 2026-07-06),
+    and identity must be locked by the user, never silently guessed. Enforced
+    in lib/brand-kit.ts (form + submitBrief + /api/preview/build).
 - **Story before render.** Always show and let the user approve the narrative before spending expensive compute.
 - **The chrome recedes.** When a brand-color preview is on screen, the app UI goes quiet so the work is the loudest thing.
 

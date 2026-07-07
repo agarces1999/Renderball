@@ -79,6 +79,12 @@ export interface UploadedFileRef {
    * the auto-discovery agent found no good candidate.
    */
   is_logo?: boolean;
+  /** True when the user uploaded this as their brand webfont (brand-kit gate). */
+  is_font?: boolean;
+  /** Display name for the uploaded font family. */
+  font_family?: string;
+  /** User attested they hold the webfont license. */
+  font_licensed?: boolean;
 }
 
 /**

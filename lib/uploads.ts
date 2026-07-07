@@ -53,6 +53,11 @@ const detectUploadMime = (buf: Buffer): string | null => {
   )
     return "image/webp";
   if (startsWith(0x25, 0x50, 0x44, 0x46)) return "application/pdf"; // %PDF
+  // Webfonts (brand-kit font upload): fixed magic numbers, no script risk.
+  if (startsWith(0x77, 0x4f, 0x46, 0x32)) return "font/woff2"; // wOF2
+  if (startsWith(0x77, 0x4f, 0x46, 0x46)) return "font/woff"; // wOFF
+  if (startsWith(0x00, 0x01, 0x00, 0x00)) return "font/ttf"; // TrueType sfnt
+  if (startsWith(0x4f, 0x54, 0x54, 0x4f)) return "font/otf"; // OTTO
   // Text formats: sniff the first non-whitespace characters.
   const head = buf.slice(0, 512).toString("utf8").replace(/^﻿/, "").trimStart().toLowerCase();
   if (head.startsWith("<svg") || (head.startsWith("<?xml") && head.includes("<svg"))) {

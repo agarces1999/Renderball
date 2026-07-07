@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "../../../../lib/auth";
+import { loadBriefByScriptId } from "../../../../lib/store";
+import { brandKitStatus } from "../../../../lib/brand-kit";
 import { runPreviewBuild } from "../../../../lib/render/run-preview-build";
 
 /**
@@ -30,6 +32,26 @@ export async function POST(request: Request) {
   const { scriptId } = body;
   if (!scriptId || typeof scriptId !== "string") {
     return NextResponse.json({ error: "scriptId required" }, { status: 400 });
+  }
+
+  // Brand-kit gate (defense in depth — submitBrief enforces this at creation;
+  // this re-check covers legacy briefs and any future path that skips /new).
+  // Legacy briefs (created before the gate: no logo_source, no colors flag,
+  // no is_logo file) are exempt so existing projects keep building.
+  const brief = await loadBriefByScriptId(scriptId, user.id);
+  const isLegacyBrief =
+    !!brief &&
+    brief.logo_source === undefined &&
+    brief.colors_confirmed === undefined &&
+    !(brief.brand_files ?? []).some((f) => f.is_logo);
+  if (brief && !isLegacyBrief) {
+    const kit = brandKitStatus(brief);
+    if (!kit.ready) {
+      return NextResponse.json(
+        { error: `brand kit incomplete — missing: ${kit.missing.join("; ")}` },
+        { status: 422 },
+      );
+    }
   }
 
   const result = await runPreviewBuild(scriptId, user.id);
