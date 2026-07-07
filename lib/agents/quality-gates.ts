@@ -1072,6 +1072,13 @@ const boundWordCount = (
   return words;
 };
 
+/** A late-beat finding is only actionable when re-timing has real headroom.
+ *  When the reading budget alone consumes more than this fraction of the
+ *  scene, no meaningful earlier landing exists (the element is already at or
+ *  near the floor) — that is a COPY-LENGTH condition owned by the script
+ *  agent's lede caps, not a choreography defect the animation retry can fix. */
+export const MAX_READ_FRACTION = 0.85;
+
 export const findUndwelledText = (
   code: string,
   script: { scenes?: SceneTiming[] },
@@ -1116,6 +1123,13 @@ export const findUndwelledText = (
       const readTime = Math.max(1.2, words * 0.3);
       const landsAt = delay + duration;
       if (landsAt + readTime <= T) continue;
+      // Only a fixable-by-timing miss is a LATE-BEAT problem. When the reading
+      // budget alone eats >85% of the scene (a 25-word lede in a 5s scene:
+      // readTime 7.5s), "move this beat earlier" is unactionable — the
+      // Duolingo FP rebuild fired on ledes already landing at 0.5s and would
+      // have burned retries for nothing. Long copy is the script agent's
+      // lede-length territory, not choreography's.
+      if (readTime > T * MAX_READ_FRACTION) continue;
       out.push({
         section: i,
         tag,

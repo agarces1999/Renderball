@@ -582,6 +582,29 @@ check("very short scenes are skipped", () => {
   assert(r.length === 0, "short scene flagged");
 });
 
+check("an unfixable reading budget does NOT flag (copy length ≠ late beat)", () => {
+  // Duolingo FP-rebuild regression: a 25-word lede in a 5s scene (readTime
+  // 7.5s > 85% of 5s) already landing at 0.5s — no earlier landing can
+  // satisfy the budget, so the late-beat retry instruction is unactionable.
+  const words = Array.from({ length: 25 }, (_, i) => `w${i}`).join(" ");
+  const code = `export const Section0 = () => (<div>
+    <p style={{ fontSize: 26, opacity: 0, animation: "fadeRise 0.4s ease 0.1s forwards" }}>${words}</p>
+  </div>);`;
+  const r = findUndwelledText(code, { scenes: [{ start_seconds: 0, end_seconds: 5 }] });
+  assert(r.length === 0, `unfixable budget flagged: ${JSON.stringify(r)}`);
+});
+
+check("a knife-edge budget (>85% of scene) does NOT flag either", () => {
+  // 20 words → readTime 6s = 92% of a 6.5s scene: the only 'fix' is shaving
+  // ~0.1s off the entrance — not a meaningful quality signal.
+  const words = Array.from({ length: 20 }, (_, i) => `w${i}`).join(" ");
+  const code = `export const Section0 = () => (<div>
+    <p style={{ fontSize: 26, opacity: 0, animation: "fadeRise 0.4s ease 0.2s forwards" }}>${words}</p>
+  </div>);`;
+  const r = findUndwelledText(code, { scenes: [{ start_seconds: 0, end_seconds: 6.5 }] });
+  assert(r.length === 0, `knife-edge budget flagged: ${JSON.stringify(r)}`);
+});
+
 check("infinite/atmosphere animations never flag", () => {
   const code = `export const Section0 = () => (<h1 style={{ animation: "pulse 2s ease-in-out 7s infinite" }}>Glowing headline</h1>);`;
   assert(findUndwelledText(code, dwellScript).length === 0, "infinite loop flagged");
@@ -615,15 +638,18 @@ check("falls back to frame-based scene timing", () => {
 });
 
 check("a `both`-filled lede that lands late is flagged (fill-mode parity)", () => {
-  // The Ramp scene-0 specimen: ~18-word lede, fill-mode `both`, lands ~2.5s
-  // into a 5s scene — needs ~5.4s to read. Before the fix the gate matched
-  // only `forwards` and skipped every `both` entrance, so this passed blind.
+  // Fill-mode parity specimen: a 7-word lede (readTime 2.1s — comfortably
+  // fixable, 42% of the scene) with fill-mode `both` landing at 3.2s of a 5s
+  // scene. Before the fix the gate matched only `forwards` and skipped every
+  // `both` entrance, so this passed blind. (The original Ramp 18-word
+  // specimen moved under the copy-length exemption — readTime 5.4s can't fit
+  // a 5s scene at ANY landing, which is now correctly not a late-beat fire.)
   const code = `export const Section0 = () => (<div>
-    <p style={{ fontSize: 26, opacity: 0, animation: "fadeRise 0.4s cubic-bezier(.2,.8,.2,1) 2.1s both" }}>finance teams at fast growing companies spend weeks manually processing expenses chasing receipts and reconciling cards every month</p>
+    <p style={{ fontSize: 26, opacity: 0, animation: "fadeRise 0.4s cubic-bezier(.2,.8,.2,1) 2.8s both" }}>finance teams spend weeks manually processing expenses</p>
   </div>);`;
   const r = findUndwelledText(code, { scenes: [{ start_seconds: 0, end_seconds: 5 }] });
   assert(
-    r.length === 1 && r[0].section === 0 && r[0].landsAt === 2.5 && r[0].readTime === 5.4,
+    r.length === 1 && r[0].section === 0 && r[0].landsAt === 3.2 && r[0].readTime === 2.1,
     `got ${JSON.stringify(r)}`,
   );
 });
