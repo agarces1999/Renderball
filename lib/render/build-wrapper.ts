@@ -419,6 +419,28 @@ import { Img } from "./Img";
 export const isWideLockup = (naturalWidth: number, naturalHeight: number): boolean =>
   naturalHeight > 0 && naturalWidth / naturalHeight > ${WIDE_LOCKUP_RATIO};
 
+/** True when a CSS color reads as LIGHT (luminance > 0.5). Parses #hex and
+ *  rgb()/rgba(); anything unparseable counts as light, preserving the legacy
+ *  white-silhouette behavior. Drives the logo filter below: light ink means a
+ *  dark canvas (silhouette the mark white); dark ink means a light canvas
+ *  (render the mark's NATURAL colors — a white silhouette on a light canvas
+ *  is invisible, the FP-rebuild top-left logo bug). */
+export const isLightColor = (c: string): boolean => {
+  let r: number, g: number, b: number;
+  const hex = /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.exec(c.trim());
+  if (hex) {
+    let h = hex[1];
+    if (h.length === 3) h = h.split("").map((x) => x + x).join("");
+    const n = parseInt(h, 16);
+    r = (n >> 16) & 255; g = (n >> 8) & 255; b = n & 255;
+  } else {
+    const m = /rgba?\\(\\s*(\\d+)[\\s,]+(\\d+)[\\s,]+(\\d+)/.exec(c);
+    if (!m) return true;
+    r = +m[1]; g = +m[2]; b = +m[3];
+  }
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b > 127;
+};
+
 export interface BrandChromeProps {
   sceneIndex: number;
   totalScenes: number;
@@ -469,6 +491,11 @@ export const BrandChrome: React.FC<BrandChromeProps> = ({
   const fg = onBrandColorBg ? "#ffffff" : ink;
   const dot = onBrandColorBg ? "#ffffff" : accent;
   const idle = onBrandColorBg ? "rgba(255,255,255,0.45)" : "rgba(255,255,255,0.25)";
+  // Logo treatment follows the canvas: on a dark canvas (light ink) the mark
+  // is silhouetted white; on a light canvas (dark ink) it keeps its natural
+  // brand colors — forcing white there rendered it invisible.
+  const logoFilter =
+    onBrandColorBg || isLightColor(ink) ? "brightness(0) invert(1)" : "none";
 
   // Until the logo loads — and in SSR, where it never does — the wordmark
   // renders as always; measurement can only SUPPRESS it. The MP4 renderer
@@ -485,7 +512,7 @@ export const BrandChrome: React.FC<BrandChromeProps> = ({
           <Img
             src={logoSrc}
             data-rb-brand-logo=""
-            style={{ height: 24, width: "auto", filter: "brightness(0) invert(1)" }}
+            style={{ height: 24, width: "auto", filter: logoFilter }}
             onLoad={(e: React.SyntheticEvent<HTMLImageElement>) => {
               const el = e.currentTarget;
               if (isWideLockup(el.naturalWidth, el.naturalHeight)) setLogoIsLockup(true);
