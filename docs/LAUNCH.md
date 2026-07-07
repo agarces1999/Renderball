@@ -71,9 +71,15 @@ not yet migrated (needs `DATABASE_URL`).
      data) should be purged before go-live.
 3b. **Store → Postgres.** Swap `lib/store.ts` internals to the Prisma `Project` table
    (no call-site changes). Migrate or archive the legacy `.data` briefs.
-4. **Metering gate.** A fail-closed entitlement check *before* any Opus/render spend:
-   resolve user → plan → remaining entitlement; reject anonymous/over-quota. Persist
-   usage per `ownerId` (extend [lib/usage.ts](../lib/usage.ts)).
+4. ✅ **Metering gate.** [lib/entitlement.ts](../lib/entitlement.ts): fail-closed
+   entitlement check BEFORE any spend — submitBrief gates "generate", the build
+   route gates "build" (402 with a user-facing reason); counts come from Prisma
+   UsageRecord per ownerId per UTC month; limits are env-tunable
+   (FREE_GENERATES_PER_MONTH=3 / FREE_BUILDS_PER_MONTH=1 / SUB_*=60/30); any
+   metering error DENIES; DEV_OWNER_ID exempt. Successful + failed builds write
+   UsageRecord rows (failed excluded from counts). *Done 2026-07-07.*
+   Also done same day: **brand-kit gate** (required logo, confirm-from-scan
+   colors, optional licensed font — lib/brand-kit.ts, three-layer enforcement).
 5. **Object storage (R2/S3).** Move renders + uploads + generated code off local disk;
    serve MP4s from the CDN base.
 6. **Payments (Stripe).** Checkout for the subscription, Billing Portal, and the webhook

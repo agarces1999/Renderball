@@ -63,7 +63,9 @@ const stillsStep = async (scriptId, runFields = {}) => {
     stillsDir,
     stills,
     // Pixel truth from dogfood-stills — absent only if its stdout was unparseable.
-    ...(report ? { sceneStills: report.stills, paint: report.paint } : {}),
+    ...(report
+      ? { sceneStills: report.stills, paint: report.paint, tailMotion: report.tailMotion }
+      : {}),
   };
   // A failed disk write degrades to stdout-only (today's behavior), never a crash.
   try {

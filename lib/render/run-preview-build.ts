@@ -23,6 +23,7 @@ import { MODELS, VISION_MODEL } from "../anthropic";
 import { callZaiVision, callZaiText } from "./zai-vision";
 import { recordUsage, costUsd, addUsage, EMPTY_USAGE } from "../usage";
 import { tallyGateFires, recordGateTelemetry } from "./gate-telemetry";
+import { recordMeteredUsage } from "../entitlement";
 
 export type BuildRouteResult = {
   status: number;
@@ -128,6 +129,15 @@ export async function runPreviewBuild(
     }
     if (!renderCheck.ok) {
       await recordUsage({ op: "build", model, scriptId, url: brief?.brand_kit_url, usage: currentUsage, failed: true });
+    await recordMeteredUsage({
+      ownerId,
+      operation: "build",
+      model,
+      costUsd: costUsd(model, currentUsage),
+      inputTokens: currentUsage.input_tokens,
+      outputTokens: currentUsage.output_tokens,
+      failed: true,
+    });
       return {
         status: 500,
         body: {
@@ -240,6 +250,15 @@ export async function runPreviewBuild(
       JSON.stringify(repair.blocking),
     );
     await recordUsage({ op: "build", model, scriptId, url: brief?.brand_kit_url, usage: currentUsage, failed: true });
+    await recordMeteredUsage({
+      ownerId,
+      operation: "build",
+      model,
+      costUsd: costUsd(model, currentUsage),
+      inputTokens: currentUsage.input_tokens,
+      outputTokens: currentUsage.output_tokens,
+      failed: true,
+    });
     await recordGateTelemetry({
       scriptId,
       fires: tallyGateFires({ findings: repair.initialFindings, warnings: currentWarnings }),
@@ -448,6 +467,16 @@ export async function runPreviewBuild(
   // The build shipped — record the full build-model spend (initial + every
   // repair regen/rewrite) as ONE successful row.
   await recordUsage({ op: "build", model, scriptId, url: brief?.brand_kit_url, usage: currentUsage });
+  // Entitlement counter (no-op for DEV_OWNER_ID) — the quota that the
+  // metering gate checks BEFORE the next build's spend.
+  await recordMeteredUsage({
+    ownerId,
+    operation: "build",
+    model,
+    costUsd: costUsd(model, currentUsage),
+    inputTokens: currentUsage.input_tokens,
+    outputTokens: currentUsage.output_tokens,
+  });
 
   // Gate fire-rate telemetry — the deletion criterion (QUALITY-ARCHITECTURE.md).
   // `fires` tallies the FIRST measure (what the gates caught — repaired findings

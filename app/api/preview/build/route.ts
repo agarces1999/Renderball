@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getCurrentUser } from "../../../../lib/auth";
 import { loadBriefByScriptId } from "../../../../lib/store";
 import { brandKitStatus } from "../../../../lib/brand-kit";
+import { checkEntitlement } from "../../../../lib/entitlement";
 import { runPreviewBuild } from "../../../../lib/render/run-preview-build";
 
 /**
@@ -52,6 +53,16 @@ export async function POST(request: Request) {
         { status: 422 },
       );
     }
+  }
+
+  // Metering gate (LAUNCH.md #4) — fail-closed entitlement check BEFORE the
+  // ~$1-2 of build spend. 402 carries a user-facing reason.
+  const ent = await checkEntitlement(user.id, "build");
+  if (!ent.allowed) {
+    return NextResponse.json(
+      { error: ent.reason ?? "plan limit reached", plan: ent.plan, used: ent.used, limit: ent.limit },
+      { status: 402 },
+    );
   }
 
   const result = await runPreviewBuild(scriptId, user.id);

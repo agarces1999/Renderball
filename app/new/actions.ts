@@ -6,6 +6,7 @@ import { saveBrief, saveScript, type StoredBrief } from "../../lib/store";
 import { generateScript } from "../../lib/agents/script-generator";
 import { saveBriefFiles } from "../../lib/uploads";
 import { brandKitStatus } from "../../lib/brand-kit";
+import { checkEntitlement, recordMeteredUsage } from "../../lib/entitlement";
 import { extractBrand } from "../../lib/crawl/extract-brand";
 
 /** "NeueMontreal-Medium.woff2" → "Neue Montreal Medium" — a readable family
@@ -93,6 +94,12 @@ export async function submitBrief(
   const user = await getCurrentUser();
   if (!user) {
     return { ok: false, error: "Please sign in to create a video." };
+  }
+
+  // Metering gate (LAUNCH.md #4) — fail-closed BEFORE the crawl/script spend.
+  const ent = await checkEntitlement(user.id, "generate");
+  if (!ent.allowed) {
+    return { ok: false, error: ent.reason ?? "Plan limit reached." };
   }
 
   const validation = validateBrief(briefParsed);
@@ -253,6 +260,16 @@ export async function submitBrief(
   }
 
   await saveScript(result.script);
+
+  // Entitlement counter for the generate op (no-op for DEV_OWNER_ID; the
+  // detailed token cost lives in the usage ledger — the counter needs the row).
+  await recordMeteredUsage({
+    ownerId: user.id,
+    operation: "generate",
+    model: "glm-5.2",
+    costUsd: 0,
+    projectId: brief_id,
+  });
 
   // In auto mode, hydrate the stored brief with what the agent
   // produced so the gallery / future agents see a populated brief.
