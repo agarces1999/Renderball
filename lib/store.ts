@@ -1,24 +1,44 @@
 import { promises as fs } from "fs";
 import path from "path";
+import type { Prisma } from "@prisma/client";
+import { prisma } from "./db";
 import type { Script } from "../src/schema";
 import type { BrandExtract } from "../app/new/schema";
 
 /**
- * Persistence layer — V0 minimum.
+ * Persistence layer — dual backend (LAUNCH.md critical-path 3b).
  *
- * SQLite was the plan, but for the first agentless cycle a plain JSON
- * file in `.data/` does the job and keeps the surface area zero. We can
- * swap to better-sqlite3 once we have concurrent writes (read: once the
- * agents come online and start writing renders in parallel).
+ * Backends:
+ *   file — the V0 JSON files under `.data/` (briefs/, scripts/). The original
+ *          implementation, kept verbatim as the fallback and for offline work.
+ *   pg   — Prisma against Postgres (Neon): Project rows carry the FULL
+ *          StoredBrief as a Json column (plus denormalized ownerId/status/
+ *          scriptId for indexed lookups); script bytes live in ScriptDoc
+ *          keyed by script ULID. Ownership is resolved exclusively through
+ *          Project (scriptId is @unique + indexed — the file backend's O(n)
+ *          scan becomes one lookup).
  *
- * Schema:
- *   .data/briefs/<id>.json      Stage 0 input + status
- *   .data/scripts/<id>.json     Stage 1+ generated/edited script
- *   .data/renders/<id>.json     Stage 9 render metadata
+ * Selection: RB_STORE_BACKEND=pg|file overrides; otherwise DEFAULT_BACKEND.
+ * The default stays "file" until the one-shot migration
+ * (scripts/migrate-store-to-pg.ts) has imported the legacy data — then the
+ * default flips to "pg" in a follow-up commit. Every exported signature is
+ * IDENTICAL across backends; no call site changes.
+ *
+ * Scripts carry no owner of their own in either backend — a script is
+ * reachable only through a brief/Project the requester owns. saveScript is
+ * deliberately link-independent (upsert by script id) because the product
+ * flow writes the script BEFORE the brief learns its script_id.
  */
 const DATA_DIR = path.join(process.cwd(), ".data");
 const BRIEFS_DIR = path.join(DATA_DIR, "briefs");
 const SCRIPTS_DIR = path.join(DATA_DIR, "scripts");
+
+const DEFAULT_BACKEND: "file" | "pg" = "file";
+const backend = (): "file" | "pg" => {
+  const env = process.env.RB_STORE_BACKEND;
+  if (env === "pg" || env === "file") return env;
+  return DEFAULT_BACKEND;
+};
 
 export type BriefStatus =
   | "awaiting_agent_1"
@@ -121,15 +141,6 @@ const ensureDir = async (dir: string): Promise<void> => {
 const VALID_ID = /^[0-9A-HJKMNP-TV-Z]{26}$/i;
 export const isValidId = (id: string): boolean => VALID_ID.test(id);
 
-export const saveBrief = async (brief: StoredBrief): Promise<void> => {
-  await ensureDir(BRIEFS_DIR);
-  await fs.writeFile(
-    path.join(BRIEFS_DIR, `${brief.id}.json`),
-    JSON.stringify(brief, null, 2),
-    "utf-8",
-  );
-};
-
 /**
  * Owner id used by the dev-only routes (app/api/dev/*), which run without a
  * Clerk session and are 404'd in production. Keeps their data partitioned from
@@ -149,16 +160,109 @@ const ownerMatches = (briefOwner: string, requester: string): boolean =>
   briefOwner === requester ||
   (process.env.NODE_ENV !== "production" && briefOwner === DEV_OWNER_ID);
 
-export const loadBrief = async (
-  id: string,
+/** The Prisma OR-clause form of ownerMatches, for indexed WHERE queries. */
+const ownerWhere = (ownerId: string): Prisma.ProjectWhereInput =>
+  process.env.NODE_ENV !== "production"
+    ? { OR: [{ ownerId }, { ownerId: DEV_OWNER_ID }] }
+    : { ownerId };
+
+// ── pg backend internals ──────────────────────────────────────────────────────
+
+/**
+ * Project/UsageRecord rows FK to User; the dev partition has no Clerk-created
+ * row, so the pg backend lazily upserts a synthetic one. Memoized per process.
+ */
+let devUserEnsured = false;
+const ensureDevUser = async (): Promise<void> => {
+  if (devUserEnsured) return;
+  await prisma.user.upsert({
+    where: { id: DEV_OWNER_ID },
+    update: {},
+    create: {
+      id: DEV_OWNER_ID,
+      clerkId: DEV_OWNER_ID,
+      email: "dev@renderball.local",
+    },
+  });
+  devUserEnsured = true;
+};
+
+const pgSaveBrief = async (brief: StoredBrief): Promise<void> => {
+  if (brief.owner_id === DEV_OWNER_ID) await ensureDevUser();
+  const data = {
+    ownerId: brief.owner_id,
+    purpose: brief.purpose,
+    status: brief.status,
+    brief: brief as unknown as Prisma.InputJsonValue,
+    brandExtract: (brief.brand_extract ?? undefined) as Prisma.InputJsonValue | undefined,
+    scriptId: brief.script_id ?? null,
+    error: brief.error ?? null,
+  };
+  await prisma.project.upsert({
+    where: { id: brief.id },
+    update: data,
+    create: { id: brief.id, ...data, createdAt: new Date(brief.created_at) },
+  });
+};
+
+const pgLoadBrief = async (id: string, ownerId: string): Promise<StoredBrief | null> => {
+  const row = await prisma.project.findUnique({ where: { id }, select: { ownerId: true, brief: true } });
+  if (!row || !ownerMatches(row.ownerId, ownerId)) return null;
+  return row.brief as unknown as StoredBrief;
+};
+
+const pgListBriefsByOwner = async (ownerId: string): Promise<StoredBrief[]> => {
+  const rows = await prisma.project.findMany({
+    where: { ownerId }, // strict — the dev fallback is a read-by-id affordance, not a listing one
+    orderBy: { createdAt: "desc" },
+    select: { brief: true },
+  });
+  return rows.map((r) => r.brief as unknown as StoredBrief);
+};
+
+const pgLoadBriefByScriptId = async (
+  scriptId: string,
   ownerId: string,
 ): Promise<StoredBrief | null> => {
-  if (!isValidId(id)) return null;
+  const row = await prisma.project.findFirst({
+    where: { AND: [{ scriptId }, ownerWhere(ownerId)] },
+    select: { brief: true },
+  });
+  return row ? (row.brief as unknown as StoredBrief) : null;
+};
+
+const pgSaveScript = async (script: Script): Promise<void> => {
+  const json = script as unknown as Prisma.InputJsonValue;
+  await prisma.scriptDoc.upsert({
+    where: { id: script.id },
+    update: { json },
+    create: { id: script.id, json },
+  });
+};
+
+const pgLoadScript = async (id: string, ownerId: string): Promise<Script | null> => {
+  // Ownership hop first (indexed unique scriptId) — a ScriptDoc is never
+  // served without a Project the requester can read.
+  const owning = await pgLoadBriefByScriptId(id, ownerId);
+  if (!owning) return null;
+  const doc = await prisma.scriptDoc.findUnique({ where: { id } });
+  return doc ? (doc.json as unknown as Script) : null;
+};
+
+// ── file backend internals (the original V0 implementation, verbatim) ────────
+
+const fileSaveBrief = async (brief: StoredBrief): Promise<void> => {
+  await ensureDir(BRIEFS_DIR);
+  await fs.writeFile(
+    path.join(BRIEFS_DIR, `${brief.id}.json`),
+    JSON.stringify(brief, null, 2),
+    "utf-8",
+  );
+};
+
+const fileLoadBrief = async (id: string, ownerId: string): Promise<StoredBrief | null> => {
   try {
-    const raw = await fs.readFile(
-      path.join(BRIEFS_DIR, `${id}.json`),
-      "utf-8",
-    );
+    const raw = await fs.readFile(path.join(BRIEFS_DIR, `${id}.json`), "utf-8");
     const brief = JSON.parse(raw) as StoredBrief;
     // Ownership gate: a brief you don't own reads as "not found".
     if (!ownerMatches(brief.owner_id, ownerId)) return null;
@@ -181,7 +285,7 @@ export const loadBrief = async (
  * request. Callers must filter by owner (see listBriefsByOwner /
  * loadBriefByScriptId).
  */
-const listAllBriefs = async (): Promise<StoredBrief[]> => {
+const listAllBriefsFile = async (): Promise<StoredBrief[]> => {
   try {
     await ensureDir(BRIEFS_DIR);
     const files = await fs.readdir(BRIEFS_DIR);
@@ -189,28 +293,16 @@ const listAllBriefs = async (): Promise<StoredBrief[]> => {
       files
         .filter((f) => f.endsWith(".json"))
         .map(async (f) =>
-          JSON.parse(
-            await fs.readFile(path.join(BRIEFS_DIR, f), "utf-8"),
-          ) as StoredBrief,
+          JSON.parse(await fs.readFile(path.join(BRIEFS_DIR, f), "utf-8")) as StoredBrief,
         ),
     );
-    return briefs.sort((a, b) =>
-      b.created_at.localeCompare(a.created_at),
-    );
+    return briefs.sort((a, b) => b.created_at.localeCompare(a.created_at));
   } catch {
     return [];
   }
 };
 
-/** Briefs owned by `ownerId`, newest first. The only public list path. */
-export const listBriefsByOwner = async (
-  ownerId: string,
-): Promise<StoredBrief[]> => {
-  const all = await listAllBriefs();
-  return all.filter((b) => b.owner_id === ownerId);
-};
-
-export const saveScript = async (script: Script): Promise<void> => {
+const fileSaveScript = async (script: Script): Promise<void> => {
   await ensureDir(SCRIPTS_DIR);
   await fs.writeFile(
     path.join(SCRIPTS_DIR, `${script.id}.json`),
@@ -219,28 +311,7 @@ export const saveScript = async (script: Script): Promise<void> => {
   );
 };
 
-/**
- * Find the StoredBrief whose script_id matches the given scriptId.
- * Used by the preview-page regenerate flow to recover brand context
- * (extract, files, kit URL) from a scriptId alone.
- *
- * Returns null when no brief points at this script.
- */
-export const loadBriefByScriptId = async (
-  scriptId: string,
-  ownerId: string,
-): Promise<StoredBrief | null> => {
-  const all = await listAllBriefs();
-  return (
-    all.find((b) => b.script_id === scriptId && ownerMatches(b.owner_id, ownerId)) ?? null
-  );
-};
-
-export const loadScript = async (
-  id: string,
-  ownerId: string,
-): Promise<Script | null> => {
-  if (!isValidId(id)) return null;
+const fileLoadScript = async (id: string, ownerId: string): Promise<Script | null> => {
   // A script is reachable only through a brief the requester owns — scripts
   // carry no owner of their own, so we resolve ownership via the linking brief.
   const owningBrief = await loadBriefByScriptId(id, ownerId);
@@ -264,10 +335,54 @@ export const loadScript = async (
   } catch {
     // Corrupt/truncated on-disk script (a crash mid non-atomic write leaves a
     // partial file). Treat as unusable → null, honoring loadScript's
-    // resolve-or-null contract that every caller assumes. The build route maps
-    // null → a clean 404, rather than letting a SyntaxError escape uncaught and
-    // 500 the endpoint on a corrupt-input edge case.
+    // resolve-or-null contract that every caller assumes.
     console.warn(`[store] loadScript(${id}): corrupt JSON on disk — treating as missing`);
     return null;
   }
+};
+
+// ── public API (backend-dispatched; signatures unchanged) ─────────────────────
+
+export const saveBrief = async (brief: StoredBrief): Promise<void> =>
+  backend() === "pg" ? pgSaveBrief(brief) : fileSaveBrief(brief);
+
+export const loadBrief = async (
+  id: string,
+  ownerId: string,
+): Promise<StoredBrief | null> => {
+  if (!isValidId(id)) return null;
+  return backend() === "pg" ? pgLoadBrief(id, ownerId) : fileLoadBrief(id, ownerId);
+};
+
+/** Briefs owned by `ownerId`, newest first. The only public list path. */
+export const listBriefsByOwner = async (ownerId: string): Promise<StoredBrief[]> => {
+  if (backend() === "pg") return pgListBriefsByOwner(ownerId);
+  const all = await listAllBriefsFile();
+  return all.filter((b) => b.owner_id === ownerId);
+};
+
+export const saveScript = async (script: Script): Promise<void> =>
+  backend() === "pg" ? pgSaveScript(script) : fileSaveScript(script);
+
+/**
+ * Find the StoredBrief whose script_id matches the given scriptId.
+ * Used by the preview-page regenerate flow to recover brand context
+ * (extract, files, kit URL) from a scriptId alone.
+ *
+ * Returns null when no brief points at this script.
+ */
+export const loadBriefByScriptId = async (
+  scriptId: string,
+  ownerId: string,
+): Promise<StoredBrief | null> => {
+  if (backend() === "pg") return pgLoadBriefByScriptId(scriptId, ownerId);
+  const all = await listAllBriefsFile();
+  return (
+    all.find((b) => b.script_id === scriptId && ownerMatches(b.owner_id, ownerId)) ?? null
+  );
+};
+
+export const loadScript = async (id: string, ownerId: string): Promise<Script | null> => {
+  if (!isValidId(id)) return null;
+  return backend() === "pg" ? pgLoadScript(id, ownerId) : fileLoadScript(id, ownerId);
 };

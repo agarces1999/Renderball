@@ -145,3 +145,16 @@ model FreeTierSignup {
   @@index([ip])
   @@index([fingerprint])
 }
+
+// Script JSON bytes, keyed by script ULID. Separate from Project.script
+// because the write ORDER is decoupled in the product flow: submitBrief
+// saves the script FIRST, then updates the brief/Project with script_id —
+// so saveScript(script) has nothing to join on at initial-save time.
+// Ownership is still resolved exclusively through Project.scriptId (indexed,
+// unique); ScriptDoc is never queried without that ownership hop.
+model ScriptDoc {
+  id        String   @id // script ULID
+  json      Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
