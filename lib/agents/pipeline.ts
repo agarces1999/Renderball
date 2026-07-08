@@ -398,12 +398,39 @@ const errChain = (err: unknown): string => {
   }
   return out.join(" <- ") || String(err);
 };
+// Stall ceiling: a stream whose connection dies SILENTLY (no data, no error)
+// hangs `await fn()` forever — the Oura build sat 63 minutes with zero bytes
+// written while z.ai answered fresh probes in 1.3s. The retry ladder only sees
+// THROWN errors, so convert a stall into one: race the call against a ceiling
+// comfortably above the slowest healthy pass (~25 min) and word the error to
+// match TRANSIENT_NET_RX so the existing retry logic re-attempts it. The
+// orphaned underlying promise is abandoned (its socket is already dead).
+const STREAM_CEILING_MS =
+  Math.max(5, Number(process.env.RB_STREAM_CEILING_MIN) || 35) * 60_000;
+const withStallCeiling = <T>(label: string, p: Promise<T>): Promise<T> =>
+  Promise.race([
+    p,
+    new Promise<never>((_, reject) => {
+      const t = setTimeout(
+        () =>
+          reject(
+            new Error(
+              `${label}: stream stalled — no completion after ${Math.round(STREAM_CEILING_MS / 60_000)}min (silent network drop, treated as transient)`,
+            ),
+          ),
+        STREAM_CEILING_MS,
+      );
+      // Never keep the process alive just for the watchdog.
+      (t as unknown as { unref?: () => void }).unref?.();
+    }),
+  ]);
+
 async function streamBuildCall<T>(label: string, fn: () => Promise<T>, attempts = 3): Promise<T> {
   let lastErr: unknown;
   for (let i = 1; i <= attempts; i++) {
     const t0 = Date.now();
     try {
-      return await fn();
+      return await withStallCeiling(label, fn());
     } catch (err) {
       lastErr = err;
       const elapsedS = Math.round((Date.now() - t0) / 1000);
