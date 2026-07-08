@@ -56,7 +56,7 @@ export const buildRubric = (brand: BrandTruth, sceneConcept?: string): string =>
       ? `- Accent hierarchy: ${brand.accent} is the brand's signature color and should visibly LEAD (CTA, emphasis, hero highlight). Flag if a different color dominates every accent while ${brand.accent} is nearly absent.`
       : "- Accent hierarchy: flag when the dominant accent color clearly isn't the brand's.",
     '- Placeholder/broken data: flag ANY masked or unresolved value — prices like "$•••.00" or "$—", a "Loading" label, an empty white box where a logo/image should be, tofu/□ glyphs, obviously truncated text. These read as a broken render.',
-    "- Web-page chrome: this must look like a FILM frame. Flag website navigation bars, link-styled corner text, pagination/carousel dots, scroll indicators, or a composition that reads as a landing-page screenshot rather than a staged scene. (A corner wordmark + small context pill is the sanctioned chrome — do not flag those.)",
+    "- Web-page chrome: this must look like a FILM frame. Flag website navigation bars with LINKS, pagination/carousel dots, scroll indicators, or a composition that reads as a landing-page screenshot rather than a staged scene. SANCTIONED EXEMPTION — every scene deliberately carries the video's own brand chrome: a small brand wordmark/logo in the TOP-LEFT corner and a small uppercase context pill in the TOP-RIGHT (e.g. \"● OURA RING\"). These are the film's watermark, present BY DESIGN. Never report them — alone or together, in any wording. Only flag corner elements that are something ELSE (a clickable-looking nav menu, multiple links, a button row).",
     "- Readability: flag any text or logo that is washed out, low-contrast, or hard to read against its surface — including a hero illustration so dim it reads as an indistinct blob.",
     "- Wall-of-type: flag a scene that is essentially just large text with no substantial non-text/diegetic element.",
     brand.fonts && brand.fonts.length
@@ -71,6 +71,25 @@ export const buildRubric = (brand: BrandTruth, sceneConcept?: string): string =>
     'Return ONLY JSON: {"ok": boolean, "issues": ["short, specific problem", ...]}. ok=true and issues:[] when the scene looks correct and on-brand. No prose.',
   ];
   return lines.join("\n");
+};
+
+/**
+ * The judge model (GLM-4.5V) keeps flagging the sanctioned BrandChrome — the
+ * corner wordmark + context pill every scene carries by design — as "web-page
+ * chrome" no matter how loudly the rubric exempts it (observed verbatim on the
+ * Oura build). Prompt-side exemption alone is unreliable, so findings that are
+ * ONLY about those corner marks are dropped post-hoc. A finding that also names
+ * a real defect (overlap, unreadable, clipped, missing…) always survives.
+ */
+export const isSanctionedChromeFinding = (issue: string): boolean => {
+  const mentionsChrome =
+    /wordmark|nav(igation)?\s+pill|context pill|corner (logo|mark)|brand (mark|chrome)|watermark/i.test(issue);
+  const mentionsCorner = /top[- ](left|right)|corner/i.test(issue);
+  const realDefect =
+    /overlap|collid|unread|illegib|clipped|cut ?off|missing|broken|invisible|obscur|washed[- ]out|low[- ]contrast/i.test(
+      issue,
+    );
+  return mentionsChrome && mentionsCorner && !realDefect;
 };
 
 /**
@@ -100,7 +119,9 @@ export const runVisionGate = async (
     // advisory — a scene whose judge call failed is skipped (never breaks a build)
     if (r.status !== "fulfilled") continue;
     const { scene, verdict } = r.value;
-    if (!verdict.ok) for (const issue of verdict.issues) out.push({ scene, issue });
+    if (!verdict.ok)
+      for (const issue of verdict.issues)
+        if (!isSanctionedChromeFinding(issue)) out.push({ scene, issue });
   }
   return out;
 };

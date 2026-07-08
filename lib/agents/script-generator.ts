@@ -9,7 +9,7 @@ import {
   findUngroundedStageLabels,
   findTypeOnlyScenes,
 } from "./schema-validator";
-import { signatureWithLogoFallback } from "../crawl/brand-identity";
+import { signatureWithLogoFallback, resolveCanvasPlan } from "../crawl/brand-identity";
 import { formatDesignLanguage } from "../crawl/design-language";
 import { ulid } from "../ulid";
 import { type Usage, EMPTY_USAGE, usageOf, addUsage } from "../usage";
@@ -496,7 +496,7 @@ const formatToViewingContext = (
   return null;
 };
 
-const buildUserMessage = (brief: AgentBrief): string => {
+export const buildUserMessage = (brief: AgentBrief): string => {
   const momentCount = brief.moment_count;
   const isFreeform = !!brief.freeform_prompt && !brief.moments;
   const userAspect = formatToAspect(brief.distribution_format);
@@ -690,6 +690,17 @@ const buildUserMessage = (brief: AgentBrief): string => {
           lines.push("    Design language (from the homepage — match this feel):");
           lines.push(dl);
         }
+      }
+      // Canvas plan (QA 2026-07-08): the design pass ENFORCES this canvas via
+      // its machine contract. A visual_concept that specifies a conflicting
+      // backdrop ("dark ultra-premium" on a light brand — the Oura build) gets
+      // overridden at design time and then reads as plan-infidelity to the
+      // vision gate. Tell the storyteller the ground it is painting on.
+      {
+        const plan = resolveCanvasPlan(b);
+        lines.push(
+          `    Canvas (ENFORCED at design time — not a suggestion): every scene's background WILL be ${plan.background} (a ${plan.mode} canvas${plan.source === "crawl" ? ", sampled from the brand's site" : ", derived from the brand palette"}). Write every visual_concept to live on that canvas — never specify a conflicting backdrop. At most ONE deliberate contrast scene may invert it, and only when the concept demands it.`,
+        );
       }
       // The script agent writes COPY + visual concepts; it references assets by
       // intent/id, never by raw URL (the design agent resolves URLs from the

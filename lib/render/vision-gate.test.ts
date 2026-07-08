@@ -9,6 +9,7 @@ import {
   buildBrandColorPrompt,
   parseBrandFidelity,
   checkBrandColorFidelity,
+  isSanctionedChromeFinding,
   type VisionJudge,
   type VisionVerdict,
 } from "./vision-gate";
@@ -87,6 +88,56 @@ await check("runVisionGate: a judge error on one scene is skipped (advisory)", a
 await check("buildRubric: names the brand background color when provided", () => {
   const r = buildRubric({ backgroundColor: "#440b12", fonts: ["Merriweather"] });
   assert(r.includes("#440b12") && /Merriweather/.test(r), "rubric should cite brand truth");
+});
+
+// ── sanctioned BrandChrome post-filter ──────────────────────────────
+// GLM-4.5V flags the by-design corner wordmark + context pill as "web-page
+// chrome" despite the rubric's explicit exemption (verbatim Oura FP below).
+await check("isSanctionedChromeFinding: the real Oura FP is filtered", () => {
+  const oura =
+    "Visible web-page chrome: 'Oura' wordmark in top-left and 'OURA RING' navigation pill in top-right read as website UI, not a film frame";
+  assert(isSanctionedChromeFinding(oura), "verbatim Oura finding must be sanctioned");
+});
+
+await check("isSanctionedChromeFinding: wordmark-only phrasing is filtered", () => {
+  assert(
+    isSanctionedChromeFinding("Brand wordmark in the top-left corner looks like website navigation"),
+    "wordmark + corner, no defect → sanctioned",
+  );
+});
+
+await check("isSanctionedChromeFinding: chrome finding WITH a real defect survives", () => {
+  assert(
+    !isSanctionedChromeFinding("Wordmark in top-left overlaps the headline text"),
+    "overlap is a real defect",
+  );
+  assert(
+    !isSanctionedChromeFinding("Context pill in the top-right corner is unreadable against the photo"),
+    "unreadable is a real defect",
+  );
+  assert(
+    !isSanctionedChromeFinding("Corner logo in top-left is clipped at the frame edge"),
+    "clipped is a real defect",
+  );
+});
+
+await check("isSanctionedChromeFinding: non-chrome findings survive", () => {
+  assert(!isSanctionedChromeFinding("Pagination dots at the bottom read as a carousel"), "dots are not sanctioned");
+  assert(!isSanctionedChromeFinding("Navigation bar with links across the top"), "a nav bar is not the corner marks");
+  assert(!isSanctionedChromeFinding("wall of type"), "unrelated finding untouched");
+});
+
+await check("runVisionGate: sanctioned-chrome findings are dropped, real ones kept", async () => {
+  const judge: VisionJudge = async () => ({
+    ok: false,
+    issues: [
+      "Visible web-page chrome: 'Oura' wordmark in top-left and 'OURA RING' navigation pill in top-right read as website UI, not a film frame",
+      "hero illustration too dim to read",
+    ],
+  });
+  const findings = await runVisionGate([{ scene: 0, screenshotPath: "a.png" }], { name: "Oura" }, judge);
+  assert(findings.length === 1, `expected 1 surviving finding, got ${findings.length}: ${JSON.stringify(findings)}`);
+  assert(/too dim/.test(findings[0].issue), "the real finding survives");
 });
 
 // ── brand-color fidelity backstop (text-only) ──────────────────────
