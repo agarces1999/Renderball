@@ -69,8 +69,11 @@ not yet migrated (needs `DATABASE_URL`).
    - Residuals: Clerk→DB **user-sync webhook** (email updates/deletes) still TODO;
      `loadScript` is O(n) over briefs until 3b; legacy `public/renders/*.mp4` (dev test
      data) should be purged before go-live.
-3b. **Store → Postgres.** Swap `lib/store.ts` internals to the Prisma `Project` table
-   (no call-site changes). Migrate or archive the legacy `.data` briefs.
+3b. ✅ **Store → Postgres.** `lib/store.ts` is a dual backend (`RB_STORE_BACKEND=pg|file`,
+   default **pg** since 2026-07-08) over Prisma `Project` + `ScriptDoc` — no call-site
+   changes; `loadScript` O(n) fixed via `scriptId @unique`. Legacy `.data` imported by
+   the idempotent `scripts/migrate-store-to-pg.ts` (297 briefs / 292 scripts; re-run
+   against the production `DATABASE_URL` at deploy time). *Done 2026-07-08.*
 4. ✅ **Metering gate.** [lib/entitlement.ts](../lib/entitlement.ts): fail-closed
    entitlement check BEFORE any spend — submitBrief gates "generate", the build
    route gates "build" (402 with a user-facing reason); counts come from Prisma

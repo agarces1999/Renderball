@@ -19,10 +19,10 @@ import type { BrandExtract } from "../app/new/schema";
  *          scan becomes one lookup).
  *
  * Selection: RB_STORE_BACKEND=pg|file overrides; otherwise DEFAULT_BACKEND.
- * The default stays "file" until the one-shot migration
- * (scripts/migrate-store-to-pg.ts) has imported the legacy data — then the
- * default flips to "pg" in a follow-up commit. Every exported signature is
- * IDENTICAL across backends; no call site changes.
+ * The default is "pg" (flipped 2026-07-08 after scripts/migrate-store-to-pg.ts
+ * imported the legacy .data — 297 briefs / 292 scripts). RB_STORE_BACKEND=file
+ * remains as an escape hatch for offline work against the legacy .data JSON.
+ * Every exported signature is IDENTICAL across backends; no call site changes.
  *
  * Scripts carry no owner of their own in either backend — a script is
  * reachable only through a brief/Project the requester owns. saveScript is
@@ -33,7 +33,7 @@ const DATA_DIR = path.join(process.cwd(), ".data");
 const BRIEFS_DIR = path.join(DATA_DIR, "briefs");
 const SCRIPTS_DIR = path.join(DATA_DIR, "scripts");
 
-const DEFAULT_BACKEND: "file" | "pg" = "file";
+const DEFAULT_BACKEND: "file" | "pg" = "pg";
 const backend = (): "file" | "pg" => {
   const env = process.env.RB_STORE_BACKEND;
   if (env === "pg" || env === "file") return env;
