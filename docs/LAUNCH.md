@@ -111,6 +111,14 @@ real GDPR deletion call.
 
 ## Residual risks to close before taking money (from the completeness audit)
 
+- **Upstream balance is a single point of failure (learned 2026-07-08).** The
+  z.ai account ran dry mid-batch and every build died with a 429 [1113]
+  Insufficient balance — in production this takes ALL customer builds down at
+  once. Before launch: balance alerting (z.ai dashboard/webhook or a daily
+  ledger-burn check) + a circuit breaker that detects the 1113 error and
+  returns a friendly "we're at capacity, retry shortly" instead of burning
+  the user's quota on doomed attempts.
+
 - **Legal is a hard gate.** Stripe won't activate a live account without a public ToS
   + Privacy Policy. The crawl re-hosts third-party logos/fonts in a hosted MP4 — needs a
   brand-ownership attestation, a registered DMCA agent, and a takedown path.
