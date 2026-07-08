@@ -399,14 +399,15 @@ const errChain = (err: unknown): string => {
   return out.join(" <- ") || String(err);
 };
 // Stall ceiling: a stream whose connection dies SILENTLY (no data, no error)
-// hangs `await fn()` forever — the Oura build sat 63 minutes with zero bytes
-// written while z.ai answered fresh probes in 1.3s. The retry ladder only sees
-// THROWN errors, so convert a stall into one: race the call against a ceiling
-// comfortably above the slowest healthy pass (~25 min) and word the error to
-// match TRANSIENT_NET_RX so the existing retry logic re-attempts it. The
-// orphaned underlying promise is abandoned (its socket is already dead).
+// hangs `await fn()` forever. The retry ladder only sees THROWN errors, so
+// convert a stall into one: race the call against a ceiling and word the error
+// to match TRANSIENT_NET_RX so the existing retry logic re-attempts it. The
+// ceiling is a SAFETY NET for infinite hangs, not a performance bound —
+// healthy passes have been measured up to ~58 min under z.ai throttling, so
+// the default sits well above that (a too-low ceiling kills a slow-but-alive
+// stream and re-pays the whole pass). The orphaned promise is abandoned.
 const STREAM_CEILING_MS =
-  Math.max(5, Number(process.env.RB_STREAM_CEILING_MIN) || 35) * 60_000;
+  Math.max(5, Number(process.env.RB_STREAM_CEILING_MIN) || 75) * 60_000;
 const withStallCeiling = <T>(label: string, p: Promise<T>): Promise<T> =>
   Promise.race([
     p,
