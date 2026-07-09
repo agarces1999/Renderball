@@ -3,6 +3,7 @@ import { DESIGN_AGENT_SYSTEM_PROMPT } from "./prompts/design-agent";
 import { ANIMATION_AGENT_SYSTEM_PROMPT } from "./prompts/animation-agent";
 import { stripCodeFence, verifyCompilable, repairCompile, elideDataUrisOutsideSection } from "./code-extraction";
 import { extractSection, replaceSection, sectionRange } from "./section-splice";
+import { applyChoreography } from "./choreograph";
 import { exemplarPromptBlock } from "./exemplars";
 import {
   densityFailuresByScene,
@@ -1908,70 +1909,79 @@ export const buildAnimatedSections = async (
     }
   }
 
-  // ─── Pass 2 — Animation Agent ──────────────────────────────────────
-  const animationUserMessage = buildAnimationUserMessage(input, designCode);
+  // ─── Pass 2 — Motion ───────────────────────────────────────────────
+  // Monolithic: an Animation Agent LLM pass re-emits the WHOLE file with CSS
+  // motion (~18k tokens, serial). Parallel: the deterministic choreographer
+  // (lib/agents/choreograph) adds motion as a COMPILE STEP — zero tokens, pacing
+  // correct by construction (it solves the dead-air / reading-time / dwell
+  // inequalities forward), deleting the serial whole-file re-emit that ate the
+  // parallel win. Both produce `finalCode` (animated) + `animationUsage`.
+  let finalCode: string;
+  let animationUsage: Usage;
 
-  let animationResponse;
-  try {
-    animationResponse = await streamBuildCall("animation pass", () => client.messages.stream(
-      {
-        // Choreography Pass 2 on the build path. Opus for animation
-        // taste + dead-air pacing. Streaming required (Opus + 32k tokens).
-        model: MODELS.codingAgentBuild,
-        max_tokens: BUILD_MAX_TOKENS,
-        // GLM (z.ai) reasoning control — NOT Anthropic's adaptive (which z.ai
-        // ignores → empty/truncated output). thinking.type ∈ enabled|disabled;
-        // depth via reasoning_effort. "max" per z.ai's coding recommendation.
-        ...BUILD_REASONING, // GLM thinking:enabled + reasoning_effort (lib/anthropic)
-        system: [
-          {
-            type: "text",
-            text: ANIMATION_AGENT_SYSTEM_PROMPT,
-            cache_control: { type: "ephemeral" },
-          },
-        ],
-        messages: [{ role: "user", content: animationUserMessage }],
-      },
-      { timeout: COMPOSITION_REQUEST_TIMEOUT_MS },
-    ).finalMessage());
-  } catch (err) {
-    return {
-      ok: false,
-      stage: "animation",
-      error: `Animation Agent API error: ${formatAnthropicError(err)}`,
-      // The design pass already spent real tokens — surface them.
-      // extraDesignUsage holds the parallel path's N per-scene fills; omitting
-      // it here would under-bill the whole design stage on a parallel build.
-      usage: addUsage(usageOf(designResponse.usage), extraDesignUsage),
-    };
-  }
-
-  const animationText = animationResponse.content.find(
-    (c: { type: string }) => c.type === "text",
-  );
-  if (!animationText || animationText.type !== "text") {
-    return {
-      ok: false,
-      stage: "animation",
-      error: "Animation Agent returned no text content.",
-      usage: addUsage(
-        addUsage(usageOf(designResponse.usage), extraDesignUsage),
-        usageOf(animationResponse.usage),
-      ),
-    };
-  }
-  let finalCode = stripCodeFence(animationText.text.trim());
-
-  if (!finalCode.includes("import") || !finalCode.includes("export")) {
-    return {
-      ok: false,
-      stage: "animation",
-      error: `Animation Agent output doesn't look like a TS file. First 300 chars: ${finalCode.slice(0, 300)}`,
-      usage: addUsage(
-        addUsage(usageOf(designResponse.usage), extraDesignUsage),
-        usageOf(animationResponse.usage),
-      ),
-    };
+  if (buildMode === "monolithic") {
+    const animationUserMessage = buildAnimationUserMessage(input, designCode);
+    let animationResponse;
+    try {
+      animationResponse = await streamBuildCall("animation pass", () => client.messages.stream(
+        {
+          // Choreography Pass 2 on the build path. Streaming required (32k tokens).
+          model: MODELS.codingAgentBuild,
+          max_tokens: BUILD_MAX_TOKENS,
+          // GLM (z.ai) reasoning control — NOT Anthropic's adaptive (which z.ai
+          // ignores → empty/truncated output). thinking.type ∈ enabled|disabled;
+          // depth via reasoning_effort. "max" per z.ai's coding recommendation.
+          ...BUILD_REASONING, // GLM thinking:enabled + reasoning_effort (lib/anthropic)
+          system: [
+            {
+              type: "text",
+              text: ANIMATION_AGENT_SYSTEM_PROMPT,
+              cache_control: { type: "ephemeral" },
+            },
+          ],
+          messages: [{ role: "user", content: animationUserMessage }],
+        },
+        { timeout: COMPOSITION_REQUEST_TIMEOUT_MS },
+      ).finalMessage());
+    } catch (err) {
+      return {
+        ok: false,
+        stage: "animation",
+        error: `Animation Agent API error: ${formatAnthropicError(err)}`,
+        usage: addUsage(usageOf(designResponse.usage), extraDesignUsage),
+      };
+    }
+    const animationText = animationResponse.content.find((c: { type: string }) => c.type === "text");
+    if (!animationText || animationText.type !== "text") {
+      return {
+        ok: false,
+        stage: "animation",
+        error: "Animation Agent returned no text content.",
+        usage: addUsage(addUsage(usageOf(designResponse.usage), extraDesignUsage), usageOf(animationResponse.usage)),
+      };
+    }
+    const code = stripCodeFence(animationText.text.trim());
+    if (!code.includes("import") || !code.includes("export")) {
+      return {
+        ok: false,
+        stage: "animation",
+        error: `Animation Agent output doesn't look like a TS file. First 300 chars: ${code.slice(0, 300)}`,
+        usage: addUsage(addUsage(usageOf(designResponse.usage), extraDesignUsage), usageOf(animationResponse.usage)),
+      };
+    }
+    finalCode = code;
+    animationUsage = usageOf(animationResponse.usage);
+  } else {
+    // Parallel: deterministic choreographer — no LLM call, no serial re-emit.
+    // The static assembled file's role tags (data-content-path / data-throughline)
+    // drive gate-safe entrance timing + a guaranteed ambient. Best-effort: on an
+    // odd shape it returns the static code unchanged rather than break the build.
+    const motionSignal = input.brand_extract?.motion_signal ?? "medium";
+    finalCode = applyChoreography(designCode, input.script, motionSignal);
+    animationUsage = EMPTY_USAGE;
+    console.warn(
+      "[pipeline] parallel: deterministic choreographer applied (skipped the whole-file animation pass)",
+    );
   }
 
   // Dead-air quality gate: scan finite (forwards) animations per section.
@@ -2011,7 +2021,9 @@ export const buildAnimatedSections = async (
             "; ",
           )}. Every text element must finish entering with its reading time left: animation-delay + duration + max(1.2s, words × 0.3s) must fit inside the scene. Move these text beats earlier, and let DECORATIVE elements (accent bars, glows, chart draws, background shifts) carry the late beats the dead-air rule asks for.`
       : null;
-  let animationUsage = usageOf(animationResponse.usage);
+  // animationUsage + finalCode are set above (monolithic: the LLM pass;
+  // parallel: the deterministic choreographer). The scoped animation retry below
+  // reads finalCode and accumulates into animationUsage in both modes.
 
   // ─── SCOPED animation retry fast-path (#1) ─────────────────────────────
   // Dead-air and late-beat dwell are per-scene problems. When those are the
@@ -2133,7 +2145,11 @@ export const buildAnimatedSections = async (
               },
             ],
             messages: [
-              { role: "user", content: animationUserMessage },
+              // Recomputed inline: animationUserMessage now lives inside the
+              // monolithic branch. This whole-comp dead-air retry is monolithic-
+              // only in practice (the parallel choreographer guarantees dead-air,
+              // so the enclosing condition is false in parallel mode).
+              { role: "user", content: buildAnimationUserMessage(input, designCode) },
               { role: "assistant", content: finalCode },
               { role: "user", content: retryMessage },
             ],
