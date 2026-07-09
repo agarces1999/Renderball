@@ -1451,7 +1451,12 @@ export const buildAnimatedSections = async (
         throughlineSlug: slugify(narr?.throughline ?? ""),
         anchor: throughlineAnchorFor(input.script.config?.aspect_ratio ?? "16:9"),
       };
-      const cap = Math.max(1, Number(process.env.RB_SCENE_CONCURRENCY) || 5);
+      // Default 3, not N: firing 5 concurrent max-reasoning GLM streams tripped
+      // z.ai's overloaded_error (500) in validation. 3 keeps most of the
+      // parallelism while staying under z.ai's concurrent-heavy-request ceiling;
+      // RB_SCENE_CONCURRENCY overrides. Combined with the fill retry ladder,
+      // transient overloads recover instead of blanking a scene.
+      const cap = Math.max(1, Number(process.env.RB_SCENE_CONCURRENCY) || 3);
       const sceneIndices = input.script.scenes.map((_, i) => i);
       const settled = await mapWithConcurrency(sceneIndices, cap, (i) =>
         fillSectionBlock(client, MODELS.codingAgentBuild, input, scaffoldCode, i, fillCtx),
@@ -2800,31 +2805,37 @@ const fillSectionBlock = async (
     .join("\n");
 
   try {
-    const resp = await client.messages
-      .stream(
-        {
-          model,
-          max_tokens: BUILD_MAX_TOKENS,
-          ...BUILD_REASONING, // GLM thinking:enabled + reasoning_effort (lib/anthropic)
-          system: [
-            {
-              type: "text",
-              text: DESIGN_AGENT_SYSTEM_PROMPT,
-              cache_control: { type: "ephemeral" },
-            },
-          ],
-          messages: [{ role: "user", content: userMessage }],
-        },
-        { timeout: COMPOSITION_REQUEST_TIMEOUT_MS },
-      )
-      .finalMessage();
+    // Wrapped in streamBuildCall so a transient z.ai drop/overload (the 500
+    // overloaded_error class) on ONE scene retries the ladder instead of
+    // blanking that scene — the primary parallel path can't afford an
+    // unretried single-scene failure the way a scoped fallback could.
+    const resp = await streamBuildCall(`scene fill ${sectionName}`, () =>
+      client.messages
+        .stream(
+          {
+            model,
+            max_tokens: BUILD_MAX_TOKENS,
+            ...BUILD_REASONING, // GLM thinking:enabled + reasoning_effort (lib/anthropic)
+            system: [
+              {
+                type: "text",
+                text: DESIGN_AGENT_SYSTEM_PROMPT,
+                cache_control: { type: "ephemeral" },
+              },
+            ],
+            messages: [{ role: "user", content: userMessage }],
+          },
+          { timeout: COMPOSITION_REQUEST_TIMEOUT_MS },
+        )
+        .finalMessage(),
+    );
     const text = resp.content.find((c: { type: string }) => c.type === "text");
     const raw = text && text.type === "text" ? stripCodeFence(text.text.trim()) : "";
     const block = raw ? extractSection(raw, sceneIndex) : null;
     return { block, usage: usageOf(resp.usage) };
   } catch (err) {
     console.warn(
-      `[pipeline] fillSectionBlock(${sectionName}) failed:`,
+      `[pipeline] fillSectionBlock(${sectionName}) failed after retries:`,
       err instanceof Error ? err.message : err,
     );
     return { block: null, usage: EMPTY_USAGE };
