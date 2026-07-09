@@ -25,6 +25,7 @@
 import { promises as fs } from "fs";
 import path from "path";
 import type { Script } from "../../src/schema";
+import { throughlineAnchorFor } from "../agents/choreograph";
 
 /** Frames-per-second for capture. Fixed at the rendering boundary. */
 export const RENDER_FPS = 30 as const;
@@ -125,6 +126,8 @@ export const buildIndexTsx = (script: Script): string => {
   const dims = dimensionsForScript(script);
   const totalFrames = totalFramesForScript(script);
   const lastScene = script.scenes.length - 1;
+  const anchor = throughlineAnchorFor(script.config?.aspect_ratio ?? "16:9");
+  const pushOrigin = `${anchor.left}px ${anchor.top}px`;
 
   const sceneSequences = script.scenes
     .map((scene, i) => {
@@ -239,6 +242,11 @@ const SectionClock: React.FC<{ children: React.ReactNode }> = ({ children }) => 
 // base for a filmic open. Pure frame math; works identically in the Player
 // preview and the frame-clocked render.
 const TRANSITION_FRAMES = ${TRANSITION_FRAMES};
+// The outgoing push scales toward the throughline motif's pinned anchor — the
+// one object that survives every cut (its entrance only plays in scene 0) —
+// so each cut reads as the camera pushing toward the surviving object while
+// everything else exits and the next scene assembles around it.
+const PUSH_ORIGIN = "${pushOrigin}";
 const SceneTransition: React.FC<{
   scripted: number;
   isFirst: boolean;
@@ -246,18 +254,22 @@ const SceneTransition: React.FC<{
   children: React.ReactNode;
 }> = ({ scripted, isFirst, isLast, children }) => {
   const frame = useCurrentFrame(); // scene-relative inside the Sequence
-  const style: React.CSSProperties = { position: "absolute", inset: 0 };
+  // data-rb-film gates the FILM-ONLY choreography (element exits): the
+  // measurement harness and the per-scene editor iframe never mount this
+  // wrapper, so they see the settled mid-scene frame; the composed Player
+  // preview and the MP4 do, so elements leave the frame before each cut.
+  const style: React.CSSProperties = { position: "absolute", inset: 0, transformOrigin: PUSH_ORIGIN };
   // Fade IN over the first window: crossfade over the extended predecessor
   // (or from black for the opening scene).
   const fadeIn = isFirst ? Math.round(TRANSITION_FRAMES * 1.5) : TRANSITION_FRAMES;
   if (frame < fadeIn) style.opacity = Math.max(0, Math.min(1, frame / fadeIn));
   // Outgoing push: past the scripted end (the overlap window), scale up gently
-  // beneath the incoming scene for cut momentum.
+  // beneath the incoming scene for cut momentum, centered on the motif anchor.
   if (!isLast && frame > scripted) {
     const p = Math.min(1, (frame - scripted) / TRANSITION_FRAMES);
     style.transform = \`scale(\${1 + 0.02 * p})\`;
   }
-  return <div style={style}>{children}</div>;
+  return <div data-rb-film="" style={style}>{children}</div>;
 };
 
 const Composed: React.FC<{ script: typeof script }> = ({ script }) => (

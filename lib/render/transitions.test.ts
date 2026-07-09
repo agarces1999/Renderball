@@ -52,6 +52,12 @@ check("first/last flags mark the opening fade and the no-push tail", () => {
   assert(/scripted=\{150\} isFirst=\{false\} isLast=\{true\}/.test(index), "scene 2 flags");
 });
 
+check("film gate + anchor push: data-rb-film emitted, push origin at the motif anchor", () => {
+  assert(index.includes('data-rb-film=""'), "SceneTransition carries the film gate attribute");
+  assert(index.includes('const PUSH_ORIGIN = "1360px 540px"'), "16:9 push origin = throughline anchor");
+  assert(index.includes("transformOrigin: PUSH_ORIGIN"), "outgoing push centered on the anchor");
+});
+
 check("single-scene script: no extension, still fades from black", () => {
   const solo = buildIndexTsx({
     config: { aspect_ratio: "16:9", fps: 30, duration_seconds: 5 },

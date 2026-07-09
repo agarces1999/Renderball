@@ -3,7 +3,7 @@ import { DESIGN_AGENT_SYSTEM_PROMPT } from "./prompts/design-agent";
 import { ANIMATION_AGENT_SYSTEM_PROMPT } from "./prompts/animation-agent";
 import { stripCodeFence, verifyCompilable, repairCompile, elideDataUrisOutsideSection } from "./code-extraction";
 import { extractSection, replaceSection, sectionRange } from "./section-splice";
-import { applyChoreography } from "./choreograph";
+import { applyChoreography, throughlineAnchorFor } from "./choreograph";
 import { exemplarPromptBlock } from "./exemplars";
 import {
   densityFailuresByScene,
@@ -2703,15 +2703,10 @@ export const slugify = (s: string): string =>
     .replace(/^-+|-+$/g, "")
     .slice(0, 48);
 
-// A canonical on-canvas anchor for the recurring throughline motif. Every
-// isolated fill pins its motif near this point so the cross-scene drift gate
-// (SEVERE_DRIFT_PX=280) passes even though scenes are generated blind to each
-// other. Right-of-center, vertically centered — clear of left-aligned headlines.
-export const throughlineAnchorFor = (aspect: string): { left: number; top: number } => {
-  if (aspect === "9:16") return { left: 540, top: 1280 };
-  if (aspect === "1:1") return { left: 620, top: 600 };
-  return { left: 1360, top: 540 };
-};
+// Canonical throughline anchor — moved to choreograph.ts so the render wrapper
+// (build-wrapper.ts) can center the outgoing camera push on it without a
+// pipeline↔wrapper import cycle. Re-exported here for existing callers/tests.
+export { throughlineAnchorFor };
 
 export const buildScaffoldUserMessage = (input: BuildInput): string => {
   const sectionsInSeconds = input.script.scenes.map((s, i) => ({

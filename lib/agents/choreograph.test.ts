@@ -218,17 +218,32 @@ check("exits: skipped (ride the crossfade) when reading lands too late", () => {
   else assert(lede.exitAtS !== null && lede.exitAtS >= readDone, "exit after reading");
 });
 
-check("applyChoreography: exits chained for non-last scenes, absent on the last", () => {
+check("applyChoreography: exits are FILM-GATED — never in the base rules", () => {
   const out = applyChoreography(STATIC, SCRIPT, "medium");
-  const scene0Rules = out
-    .split("\n")
-    .filter((l) => l.includes('[data-scene="0"] [data-content-path='));
-  const scene1Rules = out
-    .split("\n")
-    .filter((l) => l.includes('[data-scene="1"] [data-content-path='));
-  assert(scene0Rules.some((l) => l.includes("choreoExitUp")), "scene 0 (non-last) has exits");
-  assert(scene0Rules.every((l) => (l.match(/animation:/g) || []).length === 1), "exit chained into ONE animation decl");
-  assert(scene1Rules.every((l) => !l.includes("choreoExitUp")), "last scene holds for the CTA — no exits");
+  const lines = out.split("\n");
+  const base0 = lines.filter((l) => l.trimStart().startsWith('[data-scene="0"] [data-content-path='));
+  const film0 = lines.filter((l) => l.includes('[data-rb-film] [data-scene="0"] [data-content-path='));
+  const film1 = lines.filter((l) => l.includes('[data-rb-film] [data-scene="1"]'));
+  // The P0 the architecture review caught: ungated exits get settled to their
+  // END state by measure-scene's animation-delay override → gates measured
+  // post-exit (invisible-text) frames, and the editor iframe watched copy
+  // vanish. Base rules must NEVER carry an exit.
+  assert(base0.every((l) => !l.includes("choreoExitUp")), "base rules exit-free (measurement + editor safe)");
+  assert(film0.length > 0 && film0.every((l) => l.includes("choreoExitUp")), "film rules carry the exits");
+  assert(
+    film0.every((l) => l.includes("both, choreoExitUp")),
+    "film rule re-declares the FULL chain (animation overrides wholesale)",
+  );
+  assert(film1.length === 0, "last scene holds for the CTA — no film exits");
+});
+
+check("match cut: throughline enters ONLY in scene 0, breathe-only after", () => {
+  const out = applyChoreography(STATIC, SCRIPT, "medium");
+  const rules = out.split("\n").filter((l) => l.includes("[data-throughline]"));
+  const s0 = rules.find((l) => l.includes('[data-scene="0"]'))!;
+  const s1 = rules.find((l) => l.includes('[data-scene="1"]'))!;
+  assert(/choreoScaleIn/.test(s0), "scene 0: the motif ENTERS once");
+  assert(!/choreoScaleIn/.test(s1) && /choreoBreathe/.test(s1), "scene 1+: visible at t=0, breathe only — survives the cut");
 });
 
 // ── the self-closing blank-stub regression (real failure 2026-07-09) ──

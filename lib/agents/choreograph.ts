@@ -65,6 +65,19 @@ export const CHOREO_KEYFRAMES = `
 @keyframes choreoBreathe { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.02); } }
 @keyframes choreoExitUp { to { opacity: 0; transform: translateY(-14px); } }`.trim();
 
+// A canonical on-canvas anchor for the recurring throughline motif. Every
+// isolated fill pins its motif near this point so the cross-scene drift gate
+// (SEVERE_DRIFT_PX=280) passes even though scenes are generated blind to each
+// other — and the film wrapper centers its outgoing camera push here, so every
+// cut pushes toward the one object that survives it (the match cut).
+// Right-of-center, vertically centered — clear of left-aligned headlines.
+// Lives here (not pipeline.ts) so build-wrapper can import it without a cycle.
+export const throughlineAnchorFor = (aspect: string): { left: number; top: number } => {
+  if (aspect === "9:16") return { left: 540, top: 1280 };
+  if (aspect === "1:1") return { left: 620, top: 600 };
+  return { left: 1360, top: 540 };
+};
+
 const roleOf = (path: string): Role => {
   if (path === "eyebrow") return "eyebrow";
   if (path === "headline") return "headline";
@@ -185,15 +198,23 @@ export const buildSceneCss = (
   for (const s of scheduled) {
     // `both` fill-mode holds the from-state during the delay (hidden) and the
     // to-state after — so the element is never visible before its beat and
-    // stays settled to be read. The EXIT (when scheduled) is comma-chained into
-    // the SAME declaration — a second CSS rule would override `animation`
-    // entirely, and the gates parse the FIRST decl as the entrance (dwell/slow-
-    // text stay accurate) while assessDeadAir counts the exit as a late finite
-    // beat (helps, never hurts).
-    const exit = s.exitAtS != null ? `, choreoExitUp ${EXIT_DURATION_S}s ease-in ${s.exitAtS}s forwards` : "";
-    rules.push(
-      `${sel} [data-content-path="${s.path}"] { animation: ${s.keyframe} ${s.durationS}s ${EASE} ${s.delayS}s both${exit}; }`,
-    );
+    // stays settled to be read.
+    const entrance = `${s.keyframe} ${s.durationS}s ${EASE} ${s.delayS}s both`;
+    rules.push(`${sel} [data-content-path="${s.path}"] { animation: ${entrance}; }`);
+    // EXITS are FILM-ONLY: gated behind a [data-rb-film] ancestor that only the
+    // generated film wrapper (SceneTransition) carries. Ungated exits shipped
+    // (b8446b9) and the architecture review caught the defect: measure-scene's
+    // settle override (animation-delay:-100000s + finish()) jumps `forwards`
+    // animations to their END state, so the render-truth gates measured a
+    // POST-EXIT frame (text at opacity 0 → overlap/contrast gates blinded,
+    // barbell false-fires) and the per-scene editor iframe watched copy vanish
+    // at T−0.4s. The film rule re-declares the FULL chain (entrance + exit)
+    // because `animation` overrides wholesale.
+    if (s.exitAtS != null) {
+      rules.push(
+        `[data-rb-film] ${sel} [data-content-path="${s.path}"] { animation: ${entrance}, choreoExitUp ${EXIT_DURATION_S}s ease-in ${s.exitAtS}s forwards; }`,
+      );
+    }
   }
   const amb = AMBIENT_S_FOR[signal];
   // NOTE: the section-root ambient is injected INLINE on the root div (see
@@ -201,10 +222,18 @@ export const buildSceneCss = (
   // code slice for `infinite`, and a rule in the module-scope CHOREO_CSS const
   // lives outside that slice, so it must be inline on the root to be seen + to
   // guarantee the dead-air pass.
-  // The recurring throughline motif gets a slightly bolder entrance + its own
-  // sustained loop (no-op when a scene has no data-throughline element).
+  // THE MATCH CUT. The throughline motif is the one object guaranteed to exist
+  // in every scene (HARD fill requirement, pinned anchor). Re-running its
+  // entrance every scene announced "new slide" at every boundary — so it only
+  // ENTERS in scene 0; from scene 1 on it is visible at t=0 with just its
+  // sustained breathe, and it never exits. Through the crossfade the outgoing
+  // and incoming instances overlap at the same anchor → the cut reads as one
+  // object surviving while everything else disassembles (exits) and
+  // reassembles (entrances). No-op when a scene has no data-throughline.
   rules.push(
-    `${sel} [data-throughline] { animation: choreoScaleIn 0.6s ${EASE} 0.15s both, choreoBreathe ${amb}s ease-in-out 0.6s infinite; }`,
+    sceneIndex === 0
+      ? `${sel} [data-throughline] { animation: choreoScaleIn 0.6s ${EASE} 0.15s both, choreoBreathe ${amb}s ease-in-out 0.6s infinite; }`
+      : `${sel} [data-throughline] { animation: choreoBreathe ${amb}s ease-in-out infinite; }`,
   );
   return rules.join("\n");
 };
