@@ -1352,43 +1352,135 @@ export const buildAnimatedSections = async (
     return lastResp; // always assigned — the loop runs >= 1 iteration before here
   };
 
-  let designResponse;
-  try {
-    designResponse = await runDesign([
-      { role: "user", content: firstUserContent },
-    ]);
-  } catch (err) {
-    return {
-      ok: false,
-      stage: "design",
-      error: `Design Agent API error: ${formatAnthropicError(err)}`,
-    };
-  }
-
-  const designText = designResponse.content.find((c: { type: string }) => c.type === "text");
-  if (!designText || designText.type !== "text") {
-    return {
-      ok: false,
-      stage: "design",
-      error: "Design Agent returned no text content.",
-      usage: usageOf(designResponse.usage),
-    };
-  }
-  let designCode = stripCodeFence(designText.text.trim());
-
-  if (!designCode.includes("import") || !designCode.includes("export")) {
-    return {
-      ok: false,
-      stage: "design",
-      error: `Design Agent output doesn't look like a TS file. First 300 chars: ${designCode.slice(0, 300)}`,
-      usage: usageOf(designResponse.usage),
-    };
-  }
-
-  // Tokens spent by retries that DON'T replace `designResponse` (the scoped
-  // per-scene regens splice into designCode rather than swapping the response),
-  // accumulated here and folded into the build's billed usage at return.
+  // Tokens spent by work that DOESN'T replace `designResponse` (the scoped
+  // per-scene regens + every parallel per-scene fill splice into designCode
+  // rather than swapping the response), accumulated here and folded into the
+  // build's billed usage at return.
   let extraDesignUsage: Usage = EMPTY_USAGE;
+
+  // ─── Design content: monolithic whole-file pass, or parallel scaffold+fills ─
+  // Default is parallel (the 5× win); RB_BUILD_MODE=monolithic is the fallback.
+  // Both paths produce the SAME two things — `designResponse` (usage anchor) and
+  // a validated whole-file `designCode` — then hand off to the gate loop below
+  // UNCHANGED. The assembled parallel file is byte-structurally identical to a
+  // monolithic one ([imports+consts] + Section0..N-1 + Generated).
+  const buildMode: "monolithic" | "parallel" =
+    process.env.RB_BUILD_MODE === "monolithic" ? "monolithic" : "parallel";
+  let designResponse: Awaited<ReturnType<typeof runDesign>>;
+  let designCode: string;
+
+  const runMonolithicDesign = async (): Promise<
+    | { ok: true; response: Awaited<ReturnType<typeof runDesign>>; code: string }
+    | { ok: false; result: BuildResult }
+  > => {
+    let response: Awaited<ReturnType<typeof runDesign>>;
+    try {
+      response = await runDesign([{ role: "user", content: firstUserContent }]);
+    } catch (err) {
+      return {
+        ok: false,
+        result: { ok: false, stage: "design", error: `Design Agent API error: ${formatAnthropicError(err)}` },
+      };
+    }
+    const text = response.content.find((c: { type: string }) => c.type === "text");
+    if (!text || text.type !== "text") {
+      return {
+        ok: false,
+        result: { ok: false, stage: "design", error: "Design Agent returned no text content.", usage: usageOf(response.usage) },
+      };
+    }
+    const code = stripCodeFence(text.text.trim());
+    if (!code.includes("import") || !code.includes("export")) {
+      return {
+        ok: false,
+        result: {
+          ok: false,
+          stage: "design",
+          error: `Design Agent output doesn't look like a TS file. First 300 chars: ${code.slice(0, 300)}`,
+          usage: usageOf(response.usage),
+        },
+      };
+    }
+    return { ok: true, response, code };
+  };
+
+  if (buildMode === "monolithic") {
+    const mono = await runMonolithicDesign();
+    if (!mono.ok) return mono.result;
+    designResponse = mono.response;
+    designCode = mono.code;
+  } else {
+    // Parallel: one scaffold pass (shared design system + stub Sections), then
+    // N concurrent per-scene fills spliced in. Falls back to a whole-file
+    // monolithic pass in-process if the scaffold isn't spliceable — never ships
+    // stubs.
+    const sceneCount = input.script.scenes.length;
+    let scaffoldResponse: Awaited<ReturnType<typeof runDesign>>;
+    try {
+      scaffoldResponse = await runDesign([
+        {
+          role: "user",
+          content: [...referenceImages, { type: "text", text: buildScaffoldUserMessage(input) }],
+        },
+      ]);
+    } catch (err) {
+      return { ok: false, stage: "design", error: `Scaffold pass API error: ${formatAnthropicError(err)}` };
+    }
+    const scaffoldText = scaffoldResponse.content.find((c: { type: string }) => c.type === "text");
+    const scaffoldCode =
+      scaffoldText && scaffoldText.type === "text" ? stripCodeFence(scaffoldText.text.trim()) : "";
+    const scaffoldSpliceable =
+      scaffoldCode.includes("import") &&
+      scaffoldCode.includes("export") &&
+      sectionsAreSpliceable(scaffoldCode, sceneCount);
+
+    if (!scaffoldSpliceable) {
+      // Don't ship stubs — degrade explicitly to a whole-file monolithic pass.
+      console.warn(
+        `[pipeline] parallel scaffold not spliceable (need contiguous Section0..${sceneCount - 1} + Generated) — falling back to monolithic design pass`,
+      );
+      const mono = await runMonolithicDesign();
+      if (!mono.ok) return mono.result;
+      designResponse = mono.response;
+      designCode = mono.code;
+      extraDesignUsage = addUsage(extraDesignUsage, usageOf(scaffoldResponse.usage)); // bank the wasted scaffold tokens
+    } else {
+      designResponse = scaffoldResponse; // usage anchor = the scaffold call
+      const narr = input.script.narrative;
+      const fillCtx = {
+        throughlineSlug: slugify(narr?.throughline ?? ""),
+        anchor: throughlineAnchorFor(input.script.config?.aspect_ratio ?? "16:9"),
+      };
+      const cap = Math.max(1, Number(process.env.RB_SCENE_CONCURRENCY) || 5);
+      const sceneIndices = input.script.scenes.map((_, i) => i);
+      const settled = await mapWithConcurrency(sceneIndices, cap, (i) =>
+        fillSectionBlock(client, MODELS.codingAgentBuild, input, scaffoldCode, i, fillCtx),
+      );
+      let assembled = scaffoldCode;
+      const fillWarnings: string[] = [];
+      for (let i = 0; i < settled.length; i++) {
+        const r = settled[i];
+        if (r.status === "fulfilled") {
+          extraDesignUsage = addUsage(extraDesignUsage, r.value.usage);
+          if (r.value.block) {
+            const next = replaceSection(assembled, i, r.value.block);
+            if (next) assembled = next;
+            else fillWarnings.push(`scene ${i}: fill produced but did not splice — kept blank stub`);
+          } else {
+            fillWarnings.push(`scene ${i}: fill returned no section — kept blank stub`);
+          }
+        } else {
+          fillWarnings.push(`scene ${i}: fill threw — kept blank stub`);
+        }
+      }
+      designCode = assembled;
+      if (fillWarnings.length > 0) {
+        // Blank stubs will trip density/fill gates → the scoped design retry
+        // (STAGE 5) regenerates them, so this is a soft signal, not a failure.
+        console.warn(`[pipeline] parallel fills incomplete: ${fillWarnings.join("; ")}`);
+      }
+    }
+  }
 
   // Quality gate: count headlines / paragraphs / SVGs per section. If
   // the output is sparse, retry once with a specific failure message.
@@ -1835,7 +1927,9 @@ export const buildAnimatedSections = async (
       stage: "animation",
       error: `Animation Agent API error: ${formatAnthropicError(err)}`,
       // The design pass already spent real tokens — surface them.
-      usage: usageOf(designResponse.usage),
+      // extraDesignUsage holds the parallel path's N per-scene fills; omitting
+      // it here would under-bill the whole design stage on a parallel build.
+      usage: addUsage(usageOf(designResponse.usage), extraDesignUsage),
     };
   }
 
@@ -1847,7 +1941,10 @@ export const buildAnimatedSections = async (
       ok: false,
       stage: "animation",
       error: "Animation Agent returned no text content.",
-      usage: addUsage(usageOf(designResponse.usage), usageOf(animationResponse.usage)),
+      usage: addUsage(
+        addUsage(usageOf(designResponse.usage), extraDesignUsage),
+        usageOf(animationResponse.usage),
+      ),
     };
   }
   let finalCode = stripCodeFence(animationText.text.trim());
@@ -1857,7 +1954,10 @@ export const buildAnimatedSections = async (
       ok: false,
       stage: "animation",
       error: `Animation Agent output doesn't look like a TS file. First 300 chars: ${finalCode.slice(0, 300)}`,
-      usage: addUsage(usageOf(designResponse.usage), usageOf(animationResponse.usage)),
+      usage: addUsage(
+        addUsage(usageOf(designResponse.usage), extraDesignUsage),
+        usageOf(animationResponse.usage),
+      ),
     };
   }
 
@@ -2321,6 +2421,44 @@ const buildDesignReferenceImages = (
   return blocks;
 };
 
+// Structured copy → named render slots. Extracted so the monolithic design
+// brief AND each parallel per-scene fill (fillSectionBlock) emit byte-identical
+// copy instructions — one source of truth for how a scene's content is framed.
+export const buildSceneCopyLines = (
+  content: Script["scenes"][number]["content"],
+): string[] => {
+  const c = content ?? {};
+  const lines: string[] = [];
+  lines.push("Copy to render (use the exact strings, render each field as its own visual slot):");
+  if (c.eyebrow) lines.push(`  • eyebrow:    "${c.eyebrow}"  → small uppercase label, brand-accent color, top of content`);
+  if (c.headline) lines.push(`  • headline:   "${c.headline}"  → hero text, large display weight, central`);
+  if (c.lede) lines.push(`  • lede:        "${c.lede}"  → supporting paragraph beneath the headline, body-text size, opacity ~0.85`);
+  if (c.bullets && c.bullets.length > 0) {
+    lines.push(`  • bullets (${c.bullets.length}): render as a list with brand-accent markers`);
+    for (const b of c.bullets) lines.push(`      - "${b}"`);
+  }
+  if (c.caption) lines.push(`  • caption:     "${c.caption}"  → small support text under primary content`);
+  if (c.meta && c.meta.length > 0) {
+    lines.push(`  • meta (${c.meta.length}): render as a key-value footer grid with hairline rule on top`);
+    for (const m of c.meta) lines.push(`      - ${m.label}: ${m.value}`);
+  }
+  if (c.cta) {
+    lines.push(`  • cta.primary:  "${c.cta.primary}"  → prominent call-to-action`);
+    if (c.cta.secondary) lines.push(`  • cta.secondary: "${c.cta.secondary}"  → smaller, beneath the primary`);
+  }
+  if (c.illustration) {
+    lines.push(`  • illustration: "${c.illustration}"  → render an inline SVG matching this intent (see the SVG Illustration Library in your system prompt)`);
+  }
+  // Back-compat: if a legacy texts[] array is present without headline, surface it as a hint.
+  if (!c.headline && c.texts && c.texts.length > 0) {
+    lines.push(`  • (legacy) texts: ${JSON.stringify(c.texts)}`);
+  }
+  if (c.asset_ids && c.asset_ids.length > 0) {
+    lines.push(`  • asset_ids (mount via <Img>): ${JSON.stringify(c.asset_ids)}`);
+  }
+  return lines;
+};
+
 const buildDesignUserMessage = (input: BuildInput): string => {
   // Surface the script in a web-vocabulary form: per-section briefs in
   // seconds. Pass 1 builds a static React section per entry.
@@ -2403,34 +2541,7 @@ const buildDesignUserMessage = (input: BuildInput): string => {
       lines.push(`> ${s.visual_concept}`);
     }
     // Structured copy — render each field as a named slot the agent must place.
-    const c = s.content ?? {};
-    lines.push("Copy to render (use the exact strings, render each field as its own visual slot):");
-    if (c.eyebrow) lines.push(`  • eyebrow:    "${c.eyebrow}"  → small uppercase label, brand-accent color, top of content`);
-    if (c.headline) lines.push(`  • headline:   "${c.headline}"  → hero text, large display weight, central`);
-    if (c.lede) lines.push(`  • lede:        "${c.lede}"  → supporting paragraph beneath the headline, body-text size, opacity ~0.85`);
-    if (c.bullets && c.bullets.length > 0) {
-      lines.push(`  • bullets (${c.bullets.length}): render as a list with brand-accent markers`);
-      for (const b of c.bullets) lines.push(`      - "${b}"`);
-    }
-    if (c.caption) lines.push(`  • caption:     "${c.caption}"  → small support text under primary content`);
-    if (c.meta && c.meta.length > 0) {
-      lines.push(`  • meta (${c.meta.length}): render as a key-value footer grid with hairline rule on top`);
-      for (const m of c.meta) lines.push(`      - ${m.label}: ${m.value}`);
-    }
-    if (c.cta) {
-      lines.push(`  • cta.primary:  "${c.cta.primary}"  → prominent call-to-action`);
-      if (c.cta.secondary) lines.push(`  • cta.secondary: "${c.cta.secondary}"  → smaller, beneath the primary`);
-    }
-    if (c.illustration) {
-      lines.push(`  • illustration: "${c.illustration}"  → render an inline SVG matching this intent (see the SVG Illustration Library in your system prompt)`);
-    }
-    // Back-compat: if a legacy texts[] array is present without headline, surface it as a hint.
-    if (!c.headline && c.texts && c.texts.length > 0) {
-      lines.push(`  • (legacy) texts: ${JSON.stringify(c.texts)}`);
-    }
-    if (c.asset_ids && c.asset_ids.length > 0) {
-      lines.push(`  • asset_ids (mount via <Img>): ${JSON.stringify(c.asset_ids)}`);
-    }
+    lines.push(...buildSceneCopyLines(s.content));
     lines.push("");
   }
   // Flat, agent-facing view of the asset manifest. We deliberately
@@ -2496,6 +2607,228 @@ const buildDesignUserMessage = (input: BuildInput): string => {
     "Output the complete static Composition.tsx file. Export one `Section{N}` named component per section above (numbering matches the input). Each Section is self-contained with its own `<style>` block for brand fonts. Top-level `export const Generated` lists them as siblings — used for preview only. Every element at its settled position. Density: 6-10 distinct visual elements per section minimum.",
   );
   return lines.join("\n");
+};
+
+// ─── Parallel per-scene build (RB_BUILD_MODE=parallel) ──────────────────────
+//
+// The monolithic path has ONE design call emit the whole Composition.tsx. The
+// parallel path splits that: a SCAFFOLD call establishes the shared design
+// system ONCE with full cross-scene context (module consts + storyboard + stub
+// Sections), then N concurrent fills each write one real Section against the
+// scaffold as read-only context. Wall-time collapses from (design+animation
+// over the whole file) to (scaffold + slowest single scene). Cross-scene
+// coherence survives because the scaffold PINS palette/fonts/chrome + the
+// throughline slug & anchor, and every fill is told them.
+
+// Bounded-concurrency map: at most `cap` calls of `fn` in flight. A throwing
+// item settles to {status:"rejected"} — it never rejects the batch, so one bad
+// scene can't kill a parallel build. Order-preserving (results[i]).
+export const mapWithConcurrency = async <T, R>(
+  items: readonly T[],
+  cap: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<PromiseSettledResult<R>[]> => {
+  const results: PromiseSettledResult<R>[] = new Array(items.length);
+  let cursor = 0;
+  const runner = async (): Promise<void> => {
+    for (;;) {
+      const i = cursor++;
+      if (i >= items.length) return;
+      try {
+        results[i] = { status: "fulfilled", value: await fn(items[i], i) };
+      } catch (reason) {
+        results[i] = { status: "rejected", reason };
+      }
+    }
+  };
+  const width = Math.max(1, Math.min(cap, items.length));
+  await Promise.all(Array.from({ length: width }, () => runner()));
+  return results;
+};
+
+export const slugify = (s: string): string =>
+  s
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 48);
+
+// A canonical on-canvas anchor for the recurring throughline motif. Every
+// isolated fill pins its motif near this point so the cross-scene drift gate
+// (SEVERE_DRIFT_PX=280) passes even though scenes are generated blind to each
+// other. Right-of-center, vertically centered — clear of left-aligned headlines.
+export const throughlineAnchorFor = (aspect: string): { left: number; top: number } => {
+  if (aspect === "9:16") return { left: 540, top: 1280 };
+  if (aspect === "1:1") return { left: 620, top: 600 };
+  return { left: 1360, top: 540 };
+};
+
+export const buildScaffoldUserMessage = (input: BuildInput): string => {
+  const sectionsInSeconds = input.script.scenes.map((s, i) => ({
+    index: i,
+    label: s.label,
+    description: s.description,
+    register: s.register,
+    duration_seconds: roundTo(sceneDurationSeconds(s), 2),
+    visual_concept: s.visual_concept ?? "",
+  }));
+  const dims = dimensionsForScript(input.script);
+  const aspect = input.script.config?.aspect_ratio ?? "16:9";
+  const orientation =
+    aspect === "9:16" ? "PORTRAIT (vertical)" : aspect === "1:1" ? "SQUARE" : "LANDSCAPE";
+  const n = sectionsInSeconds.length;
+  const narr = input.script.narrative;
+  const throughlineSlug = slugify(narr?.throughline ?? "");
+  const anchor = throughlineAnchorFor(aspect);
+
+  const lines: string[] = [
+    "Build the SCAFFOLD for a static Composition.tsx — the SHARED FOUNDATION every scene sits on, NOT the scene bodies. Another step fills each scene in separately.",
+    "",
+    "## Canvas",
+    `- Aspect ratio: **${aspect} ${orientation}**, surface **${dims.width}×${dims.height} pixels**.`,
+    "",
+  ];
+  if (narr) {
+    lines.push(
+      "## Narrative (these sections tell ONE story — design the shared system to serve the whole arc)",
+    );
+    if (narr.logline) lines.push(`- Story: ${narr.logline}`);
+    if (narr.arc) lines.push(`- Arc: ${narr.arc}`);
+    if (narr.throughline) {
+      lines.push(`- Throughline (REQUIRED connective tissue): ${narr.throughline}`);
+      lines.push(
+        `  → Instantiate it as ONE concrete recurring visual motif. Every scene renders it wrapped in \`<div data-throughline="${throughlineSlug}">\` (this exact slug), anchored near (left ${anchor.left}px, top ${anchor.top}px). Define shared \`@keyframes\` for it HERE so all scenes animate it consistently.`,
+      );
+    }
+    lines.push("");
+  }
+  // Storyboard — enough per-scene info to plan the shared type/color system and
+  // any real-photo asset searches; NOT the copy (that goes to each fill).
+  lines.push(
+    "## Storyboard (plan the shared system to serve ALL of these — do NOT write their bodies)",
+  );
+  for (const s of sectionsInSeconds) {
+    lines.push(
+      `### Section${s.index} — "${s.label}" (${s.duration_seconds}s)${s.register ? ` · ${s.register}` : ""}`,
+    );
+    if (s.description) lines.push(`Intent: ${s.description}`);
+    if (s.visual_concept) lines.push(`Beat: ${s.visual_concept}`);
+  }
+  lines.push("");
+  appendBrandContext(lines, input);
+  lines.push("");
+  const canvasPlan = resolveCanvasPlan(input.brand_extract);
+  lines.push(
+    buildDesignConstraints(aspect, {
+      hasLogo: !!input.brand_identity?.logo,
+      backgroundColor: canvasPlan.background,
+      backgroundInferred: canvasPlan.source !== "crawl",
+      signatureAccent: input.brand_identity?.signature,
+    }),
+  );
+  lines.push("");
+  lines.push(
+    [
+      "Output the complete SCAFFOLD Composition.tsx now — the shared foundation ONLY:",
+      "1. All `import`s, the `interface Script`, and EVERY module-scope const the sections share: PALETTE, FONT_DISPLAY/FONT_BODY/FONT_MONO, the brand `@font-face` CSS, shared `@keyframes` (incl. the throughline motif's), SECTION_FRAME, shared helper components, and the configured BrandChrome wrapper. This is the ONLY place module scope may be declared.",
+      '2. If a scene\'s beat needs a REAL stock photo (not a CSS shape), call search_assets NOW and declare the chosen URL as a module const (e.g. `const S2_PHOTO = "https://...";`) so that scene\'s fill can place it.',
+      `3. A STUB for EVERY section, numbered contiguously 0..${n - 1}, EXACTLY: \`export const Section{N}: React.FC<{ script: Script }> = () => <div style={{ ...SECTION_FRAME }} />;\` — no real content; each is filled in separately.`,
+      "4. End with `export const Generated` listing every Section as siblings (required as the final block boundary).",
+      `Emit ONLY the .tsx source. All ${n} numbered stubs (Section0..Section${n - 1}) AND the trailing \`export const Generated\` MUST be present, or the build cannot assemble.`,
+    ].join("\n"),
+  );
+  return lines.join("\n");
+};
+
+// Fill ONE section into the scaffold. Mirrors regenerateSectionBlock's stream +
+// splice, but the prompt CREATES the section from the scene brief (rather than
+// fixing an existing one). The scaffold rides along as read-only context so the
+// fill reuses its module consts; the fill declares every new local INSIDE the
+// Section body (anything above `export const Section{N}` is dropped on splice).
+const fillSectionBlock = async (
+  client: ReturnType<typeof getAnthropic>,
+  model: string,
+  input: BuildInput,
+  scaffoldCode: string,
+  sceneIndex: number,
+  ctx: { throughlineSlug: string; anchor: { left: number; top: number } },
+): Promise<{ block: string | null; usage: Usage }> => {
+  const scene = input.script.scenes[sceneIndex];
+  if (!scene) return { block: null, usage: EMPTY_USAGE };
+  const sectionName = `Section${sceneIndex}`;
+  const dims = dimensionsForScript(input.script);
+  const aspect = input.script.config?.aspect_ratio ?? "16:9";
+  const viewingContext: "mobile" | "desktop" = aspect === "16:9" ? "desktop" : "mobile";
+  const baseContext = elideDataUrisOutsideSection(scaffoldCode, sectionRange, sceneIndex);
+  const canvasPlan = resolveCanvasPlan(input.brand_extract);
+  const constraints = buildDesignConstraints(aspect, {
+    hasLogo: !!input.brand_identity?.logo,
+    backgroundColor: canvasPlan.background,
+    backgroundInferred: canvasPlan.source !== "crawl",
+    signatureAccent: input.brand_identity?.signature,
+  });
+  const exemplar = exemplarPromptBlock(scene.register ? [scene.register] : []);
+  const userMessage = [
+    `You are writing ONE section of a static Composition.tsx whose shared foundation (imports, PALETTE, FONT_*, @keyframes, BrandChrome, helper components) ALREADY EXISTS below. Replace the placeholder stub for ${sectionName} with the real, richly-designed section. STATIC — no animation code; layout, typography, and decorative chrome only.`,
+    ``,
+    `## Scene brief`,
+    `Label: "${scene.label}" — runs ${roundTo(sceneDurationSeconds(scene), 2)}s`,
+    scene.description ? `Story role: ${scene.description}` : "",
+    scene.visual_concept ? `Visual concept:\n> ${scene.visual_concept}` : "",
+    ``,
+    ...buildSceneCopyLines(scene.content),
+    ``,
+    `## Continuity`,
+    ctx.throughlineSlug
+      ? `Render the story's recurring motif wrapped in \`<div data-throughline="${ctx.throughlineSlug}">\`, its center anchored near (left ${ctx.anchor.left}px, top ${ctx.anchor.top}px) so it reads continuous with the other scenes. Reuse the shared @keyframes the scaffold defined for it.`
+      : `Keep composition, palette, and type consistent with the shared design system.`,
+    ``,
+    `## Canvas + rules`,
+    `- Aspect ${aspect} (${viewingContext}), surface ${dims.width}×${dims.height}. Density: 6-10 distinct visual elements minimum.`,
+    `- REUSE the file's module consts + helpers (PALETTE, FONT_*, @keyframes, BrandChrome, SECTION_FRAME). Define every NEW local — data arrays, sub-components, scene-only @keyframes in a local <style> — INSIDE the ${sectionName} body. Do NOT declare any module-scope symbol: everything above \`export const ${sectionName}\` is discarded when your section is spliced in.`,
+    constraints,
+    exemplar ?? "",
+    ``,
+    `## Full scaffold Composition.tsx (READ-ONLY context — emit ONLY ${sectionName})`,
+    "```tsx",
+    baseContext,
+    "```",
+    ``,
+    `Output ONLY the \`export const ${sectionName} = …\` component. No imports, no module consts, no other sections, no prose.`,
+  ]
+    .filter((l) => l.length > 0)
+    .join("\n");
+
+  try {
+    const resp = await client.messages
+      .stream(
+        {
+          model,
+          max_tokens: BUILD_MAX_TOKENS,
+          ...BUILD_REASONING, // GLM thinking:enabled + reasoning_effort (lib/anthropic)
+          system: [
+            {
+              type: "text",
+              text: DESIGN_AGENT_SYSTEM_PROMPT,
+              cache_control: { type: "ephemeral" },
+            },
+          ],
+          messages: [{ role: "user", content: userMessage }],
+        },
+        { timeout: COMPOSITION_REQUEST_TIMEOUT_MS },
+      )
+      .finalMessage();
+    const text = resp.content.find((c: { type: string }) => c.type === "text");
+    const raw = text && text.type === "text" ? stripCodeFence(text.text.trim()) : "";
+    const block = raw ? extractSection(raw, sceneIndex) : null;
+    return { block, usage: usageOf(resp.usage) };
+  } catch (err) {
+    console.warn(
+      `[pipeline] fillSectionBlock(${sectionName}) failed:`,
+      err instanceof Error ? err.message : err,
+    );
+    return { block: null, usage: EMPTY_USAGE };
+  }
 };
 
 const buildAnimationUserMessage = (
