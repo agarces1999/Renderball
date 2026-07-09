@@ -173,5 +173,53 @@ check("CHOREO_KEYFRAMES: is a non-empty CSS string with the core vocabulary", ()
   assert(CHOREO_KEYFRAMES.includes("choreoFadeRise") && CHOREO_KEYFRAMES.includes("choreoScaleIn"), "core keyframes");
 });
 
+// ── the self-closing blank-stub regression (real failure 2026-07-09) ──
+// A network-dead fill ships its scaffold stub: `() => <div style={{...}} />`.
+// Injecting a <style> SIBLING after that self-closing root makes the arrow
+// body two expressions — the whole build died at the hard compile gate with
+// "Expected ';' but found 'dangerouslySetInnerHTML'". The choreographer must
+// leave stub sections structurally intact.
+const STATIC_WITH_STUB = `import React from "react";
+const SECTION_FRAME = { position: "absolute", inset: 0 } as const;
+const BRAND_FONTS_CSS = "@font-face{font-family:Geist;src:local(Geist);}";
+
+export const Section0: React.FC<{ script: Script }> = ({ script }) => {
+  const c = script.scenes[0].content;
+  return (
+    <div style={{ ...SECTION_FRAME, background: "#fff" }}>
+      <style dangerouslySetInnerHTML={{ __html: BRAND_FONTS_CSS }} />
+      <h1 data-content-path="headline">{c.headline}</h1>
+    </div>
+  );
+};
+
+export const Section1: React.FC<{ script: Script }> = () => <div style={{ ...SECTION_FRAME }} />;
+
+export const Generated = () => (<><Section0 /><Section1 /></>);
+`;
+
+const STUB_SCRIPT = {
+  config: { aspect_ratio: "16:9", fps: 30 },
+  scenes: [
+    { label: "A", start_seconds: 0, end_seconds: 6, content: { headline: "Hello there" } },
+    { label: "B", start_seconds: 6, end_seconds: 11, content: { headline: "Unfilled" } },
+  ],
+} as never;
+
+await check("blank-stub regression: choreographed output with a stub COMPILES", async () => {
+  const { verifyCompilable } = await import("./code-extraction");
+  const out = applyChoreography(STATIC_WITH_STUB, STUB_SCRIPT, "medium");
+  assert(out !== STATIC_WITH_STUB, "choreography applied (real section changed)");
+  const err = await verifyCompilable(out);
+  assert(err === null, `must compile — got: ${String(err).slice(0, 200)}`);
+});
+
+await check("blank-stub regression: stub root stays self-closing, no sibling <style>", () => {
+  const out = applyChoreography(STATIC_WITH_STUB, STUB_SCRIPT, "medium");
+  const stub = out.slice(out.indexOf("export const Section1"), out.indexOf("export const Generated"));
+  assert(!/dangerouslySetInnerHTML/.test(stub), "no <style> injected into the stub");
+  assert(/data-scene=\{1\}/.test(stub), "stub root still tagged (inert ambient is fine)");
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exitCode = 1;

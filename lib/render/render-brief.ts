@@ -24,6 +24,7 @@ import { renderMedia, selectComposition } from "@remotion/renderer";
 import type { StoredBrief } from "../store";
 import type { Script } from "../../src/schema";
 import { isStorageConfigured, putObject, renderKey } from "../storage/r2";
+import { scriptsEquivalent } from "./script-equal";
 import {
   buildAnimatedSections,
   buildAgentInputFromBrief,
@@ -73,10 +74,11 @@ const tryReuseGenerated = async (
       fs.access(path.join(genDir, "index.tsx")),
       fs.access(path.join(genDir, "Img.tsx")),
     ]);
-    if (
-      JSON.stringify(JSON.parse(storedScriptRaw)) !== JSON.stringify(script)
-    ) {
-      return null; // script / config changed since the preview → rebuild
+    // Order-insensitive compare (script-equal.ts): the pg store's Json
+    // round-trip reorders keys, so raw-stringify equality rebuilt EVERY render
+    // after the 2026-07-09 backend flip — a silent ~45-min/~$2 rebuild per MP4.
+    if (!scriptsEquivalent(JSON.parse(storedScriptRaw), script)) {
+      return null; // script / config actually changed since the preview → rebuild
     }
     let warnings: BuildWarnings | undefined;
     try {

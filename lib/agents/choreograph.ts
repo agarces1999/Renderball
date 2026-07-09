@@ -194,9 +194,16 @@ const wireSectionStyle = (slice: string, i: number): string => {
   if (/dangerouslySetInnerHTML=\{\{\s*__html:\s*/.test(slice)) {
     return slice.replace(/dangerouslySetInnerHTML=\{\{\s*__html:\s*/, (m) => `${m}CHOREO_CSS + `);
   }
-  // No <style> — inject after the (already tagged) root div's opening `>`.
-  const m = slice.match(/<div\s+data-scene=\{\d+\}[\s\S]*?>/);
-  if (m && m.index != null) {
+  // No <style> — inject as the FIRST CHILD of the (already tagged) root div.
+  // Only possible when the root actually has children: a SELF-CLOSING root
+  // (`<div … />` — the blank-stub shape) cannot take a child, and appending a
+  // sibling after it makes the arrow body two expressions → "Expected ';' but
+  // found 'dangerouslySetInnerHTML'" at the hard compile gate (real failure,
+  // 2026-07-09: a network-dead fill shipped its stub and the whole build died
+  // here). A stub has nothing to animate — skip it; its inline ambient's
+  // unresolved keyframe name is inert.
+  const m = slice.match(/<div\s+data-scene=\{\d+\}[^>]*>/);
+  if (m && m.index != null && !m[0].endsWith("/>")) {
     const at = m.index + m[0].length;
     return (
       slice.slice(0, at) +
@@ -204,7 +211,9 @@ const wireSectionStyle = (slice: string, i: number): string => {
       slice.slice(at)
     );
   }
-  console.warn(`[choreograph] Section${i}: no <style> and no taggable root — motion not mounted`);
+  console.warn(
+    `[choreograph] Section${i}: no <style> and no wrappable root (blank stub?) — motion not mounted for this scene`,
+  );
   return slice;
 };
 
