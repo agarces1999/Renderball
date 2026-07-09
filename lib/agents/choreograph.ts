@@ -44,6 +44,13 @@ export interface ScheduledField extends SceneField {
   durationS: number;
   /** Entrance delay (s) — chosen so delay+duration+readTime ≤ T (dwell gate). */
   delayS: number;
+  /**
+   * Exit start (s) — the element leaves the frame at the scene's tail so the
+   * cut lands while the frame is in motion (film, not slides). null = element
+   * rides the crossfade instead (last scene, or reading time ran too late).
+   * NEVER earlier than delay+duration+readTime: legibility owns priority.
+   */
+  exitAtS: number | null;
 }
 
 const EASE = "cubic-bezier(.2,.8,.2,1)";
@@ -55,7 +62,8 @@ export const CHOREO_KEYFRAMES = `
 @keyframes choreoScaleIn { 0% { opacity: 0; transform: scale(0.85); } 60% { opacity: 1; transform: scale(1.04); } 100% { opacity: 1; transform: scale(1); } }
 @keyframes choreoFadeIn { from { opacity: 0; } to { opacity: 1; } }
 @keyframes choreoAmbient { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.006); } }
-@keyframes choreoBreathe { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.02); } }`.trim();
+@keyframes choreoBreathe { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.02); } }
+@keyframes choreoExitUp { to { opacity: 0; transform: translateY(-14px); } }`.trim();
 
 const roleOf = (path: string): Role => {
   if (path === "eyebrow") return "eyebrow";
@@ -123,23 +131,45 @@ export const fieldsOf = (content: unknown): SceneField[] => {
  * over-long copy (readTime alone eats the scene — the gate's MAX_READ_FRACTION
  * carve-out) lands as early as possible.
  */
+// Exit window at the scene tail (matches the wrapper's crossfade overlap): the
+// frame is already in motion when the cut lands, so scenes hand off instead of
+// swapping — the founder's "elements come in the frame and out" doctrine.
+const EXIT_WINDOW_S = 0.4;
+const EXIT_DURATION_S = 0.3;
+const EXIT_STAGGER_S = 0.05;
+
 export const scheduleScene = (
   fields: SceneField[],
   sceneDurationS: number,
   signal: MotionSignal,
+  opts?: { exits?: boolean },
 ): ScheduledField[] => {
   const step = STEP_FOR[signal];
   const T = sceneDurationS;
   const ordered = [...fields].sort(
     (a, b) => READING_ORDER.indexOf(a.role) - READING_ORDER.indexOf(b.role),
   );
+  const n = ordered.length;
   return ordered.map((f, k) => {
     const duration = durationFor(f.role);
     const readTime = Math.max(1.2, f.words * 0.3);
     const desired = k * step + 0.1; // small initial offset so nothing pops at t=0
     const maxDelay = T - duration - readTime; // latest start that still leaves reading time
     const delay = maxDelay < 0 ? 0 : clamp(desired, 0, maxDelay);
-    return { ...f, keyframe: keyframeFor(f.role), durationS: duration, delayS: round2(delay) };
+    // Exit: reverse reading order — supporting content clears first, the
+    // headline lingers closest to the cut. An element only exits AFTER its
+    // reading time is served; if that lands too late, it skips the exit and
+    // rides the crossfade instead (never trade legibility for motion).
+    let exitAtS: number | null = null;
+    if (opts?.exits) {
+      const reverseIndex = n - 1 - k; // later-read roles leave earlier
+      const desiredExit = T - EXIT_WINDOW_S + reverseIndex * EXIT_STAGGER_S;
+      const earliestAllowed = delay + duration + readTime;
+      const start = Math.max(desiredExit, earliestAllowed);
+      // Must still visibly move before the overlap ends (T + crossfade ≈ T+0.4).
+      if (start <= T + 0.1) exitAtS = round2(start);
+    }
+    return { ...f, keyframe: keyframeFor(f.role), durationS: duration, delayS: round2(delay), exitAtS };
   });
 };
 
@@ -155,9 +185,14 @@ export const buildSceneCss = (
   for (const s of scheduled) {
     // `both` fill-mode holds the from-state during the delay (hidden) and the
     // to-state after — so the element is never visible before its beat and
-    // stays settled to be read.
+    // stays settled to be read. The EXIT (when scheduled) is comma-chained into
+    // the SAME declaration — a second CSS rule would override `animation`
+    // entirely, and the gates parse the FIRST decl as the entrance (dwell/slow-
+    // text stay accurate) while assessDeadAir counts the exit as a late finite
+    // beat (helps, never hurts).
+    const exit = s.exitAtS != null ? `, choreoExitUp ${EXIT_DURATION_S}s ease-in ${s.exitAtS}s forwards` : "";
     rules.push(
-      `${sel} [data-content-path="${s.path}"] { animation: ${s.keyframe} ${s.durationS}s ${EASE} ${s.delayS}s both; }`,
+      `${sel} [data-content-path="${s.path}"] { animation: ${s.keyframe} ${s.durationS}s ${EASE} ${s.delayS}s both${exit}; }`,
     );
   }
   const amb = AMBIENT_S_FOR[signal];
@@ -230,10 +265,16 @@ export const applyChoreography = (
 ): string => {
   try {
     // 1. Build the full CHOREO_CSS from the SCRIPT (no code parsing for discovery).
+    //    Every scene except the LAST gets exit choreography — its elements leave
+    //    the frame into the crossfade window, so cuts land mid-motion (film, not
+    //    slides). The closing scene settles and holds for the CTA.
+    const lastScene = script.scenes.length - 1;
     const cssParts: string[] = [CHOREO_KEYFRAMES];
     for (let i = 0; i < script.scenes.length; i += 1) {
       const T = sceneSeconds(script.scenes[i]);
-      const scheduled = scheduleScene(fieldsOf(script.scenes[i].content), T, signal);
+      const scheduled = scheduleScene(fieldsOf(script.scenes[i].content), T, signal, {
+        exits: i < lastScene,
+      });
       cssParts.push(buildSceneCss(i, scheduled, signal));
     }
     const choreoCssValue = cssParts.join("\n");

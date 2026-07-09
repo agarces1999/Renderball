@@ -173,6 +173,64 @@ check("CHOREO_KEYFRAMES: is a non-empty CSS string with the core vocabulary", ()
   assert(CHOREO_KEYFRAMES.includes("choreoFadeRise") && CHOREO_KEYFRAMES.includes("choreoScaleIn"), "core keyframes");
 });
 
+// ── exit choreography (film-not-slides: elements leave before the cut) ──
+check("exits: scheduled only when requested, never before reading completes", () => {
+  const fields = fieldsOf({
+    eyebrow: "Live",
+    headline: "One number tells you everything",
+    lede: "Your readiness score distills twenty signals into one clear answer.",
+  });
+  const noExits = scheduleScene(fields, 6, "medium");
+  assert(noExits.every((s) => s.exitAtS === null), "no exits unless opted in");
+  const withExits = scheduleScene(fields, 6, "medium", { exits: true });
+  for (const s of withExits) {
+    if (s.exitAtS === null) continue;
+    const readDone = s.delayS + s.durationS + Math.max(1.2, s.words * 0.3);
+    assert(s.exitAtS >= readDone - 1e-9, `${s.path}: exit ${s.exitAtS} before reading done ${readDone}`);
+    assert(s.exitAtS <= 6 + 0.1, `${s.path}: exit ${s.exitAtS} past the overlap window`);
+  }
+});
+
+check("exits: reverse reading order — headline lingers closest to the cut", () => {
+  const sched = scheduleScene(
+    fieldsOf({ eyebrow: "A", headline: "Big idea", cta: { primary: "Go" } }),
+    8,
+    "medium",
+    { exits: true },
+  );
+  const at = Object.fromEntries(sched.map((s) => [s.path, s.exitAtS]));
+  assert(at["headline"] != null && at["cta.primary"] != null, "both exit");
+  assert(at["headline"]! >= at["cta.primary"]!, "headline exits after (or with) the cta");
+});
+
+check("exits: skipped (ride the crossfade) when reading lands too late", () => {
+  // 12 words → readTime 3.6s in a 4s scene: reading barely fits; exit would
+  // land past the overlap → element keeps its dignity and skips the exit.
+  const sched = scheduleScene(
+    fieldsOf({ lede: Array.from({ length: 12 }, () => "word").join(" ") }),
+    4,
+    "medium",
+    { exits: true },
+  );
+  const lede = sched.find((s) => s.path === "lede")!;
+  const readDone = lede.delayS + lede.durationS + Math.max(1.2, lede.words * 0.3);
+  if (readDone > 4 + 0.1) assert(lede.exitAtS === null, "too-late exit must be skipped");
+  else assert(lede.exitAtS !== null && lede.exitAtS >= readDone, "exit after reading");
+});
+
+check("applyChoreography: exits chained for non-last scenes, absent on the last", () => {
+  const out = applyChoreography(STATIC, SCRIPT, "medium");
+  const scene0Rules = out
+    .split("\n")
+    .filter((l) => l.includes('[data-scene="0"] [data-content-path='));
+  const scene1Rules = out
+    .split("\n")
+    .filter((l) => l.includes('[data-scene="1"] [data-content-path='));
+  assert(scene0Rules.some((l) => l.includes("choreoExitUp")), "scene 0 (non-last) has exits");
+  assert(scene0Rules.every((l) => (l.match(/animation:/g) || []).length === 1), "exit chained into ONE animation decl");
+  assert(scene1Rules.every((l) => !l.includes("choreoExitUp")), "last scene holds for the CTA — no exits");
+});
+
 // ── the self-closing blank-stub regression (real failure 2026-07-09) ──
 // A network-dead fill ships its scaffold stub: `() => <div style={{...}} />`.
 // Injecting a <style> SIBLING after that self-closing root makes the arrow
