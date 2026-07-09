@@ -1359,13 +1359,21 @@ export const buildAnimatedSections = async (
   let extraDesignUsage: Usage = EMPTY_USAGE;
 
   // ─── Design content: monolithic whole-file pass, or parallel scaffold+fills ─
-  // Default is parallel (the 5× win); RB_BUILD_MODE=monolithic is the fallback.
   // Both paths produce the SAME two things — `designResponse` (usage anchor) and
   // a validated whole-file `designCode` — then hand off to the gate loop below
   // UNCHANGED. The assembled parallel file is byte-structurally identical to a
   // monolithic one ([imports+consts] + Section0..N-1 + Generated).
+  //
+  // Default is MONOLITHIC until parallel demonstrably wins. Live validation
+  // (2026-07-08) showed design-only parallelization ≈ monolithic wall-time:
+  // parallelizing the DESIGN pass is eaten by the still-serial whole-file
+  // ANIMATION pass. The real time-to-first-scene win needs the animation half
+  // parallelized too (single-pass animated fills, skipping the whole-file
+  // animation stage) — until that lands and beats the baseline, parallel stays
+  // OPT-IN (RB_BUILD_MODE=parallel) so production isn't defaulted onto a path
+  // with no speed benefit and more failure modes.
   const buildMode: "monolithic" | "parallel" =
-    process.env.RB_BUILD_MODE === "monolithic" ? "monolithic" : "parallel";
+    process.env.RB_BUILD_MODE === "parallel" ? "parallel" : "monolithic";
   let designResponse: Awaited<ReturnType<typeof runDesign>>;
   let designCode: string;
 
