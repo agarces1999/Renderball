@@ -1458,6 +1458,7 @@ export const buildAnimatedSections = async (
       const narr = input.script.narrative;
       const fillCtx = {
         throughlineSlug: slugify(narr?.throughline ?? ""),
+        throughline: narr?.throughline ?? "",
         anchor: throughlineAnchorFor(input.script.config?.aspect_ratio ?? "16:9"),
       };
       // Default 3, not N: firing 5 concurrent max-reasoning GLM streams tripped
@@ -2780,7 +2781,7 @@ const fillSectionBlock = async (
   input: BuildInput,
   scaffoldCode: string,
   sceneIndex: number,
-  ctx: { throughlineSlug: string; anchor: { left: number; top: number } },
+  ctx: { throughlineSlug: string; throughline: string; anchor: { left: number; top: number } },
 ): Promise<{ block: string | null; usage: Usage }> => {
   const scene = input.script.scenes[sceneIndex];
   if (!scene) return { block: null, usage: EMPTY_USAGE };
@@ -2808,13 +2809,27 @@ const fillSectionBlock = async (
     ...buildSceneCopyLines(scene.content),
     ``,
     `## Continuity`,
+    // Live validation 2026-07-09: with the soft phrasing only 1/5 isolated fills
+    // rendered the motif → throughline_absent warning. Each fill is generated
+    // blind to its siblings, so this must be a HARD requirement with the motif's
+    // story definition — the scaffold's pinned slug + anchor is what keeps five
+    // independently-generated scenes reading as ONE film.
     ctx.throughlineSlug
-      ? `Render the story's recurring motif wrapped in \`<div data-throughline="${ctx.throughlineSlug}">\`, its center anchored near (left ${ctx.anchor.left}px, top ${ctx.anchor.top}px) so it reads continuous with the other scenes. Reuse the shared @keyframes the scaffold defined for it.`
+      ? [
+          `THROUGHLINE — HARD REQUIREMENT (every scene renders it; a scene without it fails review):`,
+          `The story's recurring motif: ${ctx.throughline}`,
+          `Instantiate that motif as a CONCRETE visual element in THIS scene, evolved to fit this beat (it transforms/progresses along the story — never a reset copy). Wrap it in \`<div data-throughline="${ctx.throughlineSlug}">\` (this exact slug), its center anchored near (left ${ctx.anchor.left}px, top ${ctx.anchor.top}px) so it reads continuous with the other scenes. Reuse the shared @keyframes the scaffold defined for it.`,
+        ].join("\n")
       : `Keep composition, palette, and type consistent with the shared design system.`,
     ``,
     `## Canvas + rules`,
     `- Aspect ${aspect} (${viewingContext}), surface ${dims.width}×${dims.height}. Density: 6-10 distinct visual elements minimum.`,
     `- REUSE the file's module consts + helpers (PALETTE, FONT_*, @keyframes, BrandChrome, SECTION_FRAME). Define every NEW local — data arrays, sub-components, scene-only @keyframes in a local <style> — INSIDE the ${sectionName} body. Do NOT declare any module-scope symbol: everything above \`export const ${sectionName}\` is discarded when your section is spliced in.`,
+    // Fill-path claims grounding (live validation 2026-07-09: an isolated fill
+    // invented "$72" → invented_claims structural failure). The monolithic
+    // design brief carries this implicitly via the full-script context; each
+    // isolated fill must be told explicitly.
+    `- HARD RULE — NO INVENTED NUMBERS: every numeric value you render (price, stat, percentage, count, date) must appear VERBATIM in the copy slots above. If a diegetic mock (dashboard, receipt, form) needs filler figures beyond the copy, keep them clearly decorative and generic — never a specific-looking business claim (no invented "$72", "38%", "2.4M"). When in doubt, use qualitative copy instead of a number.`,
     constraints,
     exemplar ?? "",
     ``,
