@@ -113,9 +113,18 @@ export const dimensionsForScript = (
  * Resilient to naming drift: tries Section{i} / Scene{i}Slide /
  * Scene{i} / Slide{i} in that order to find the per-section component.
  */
+/** Scene-transition overlap: consecutive scenes crossfade over this many
+ *  frames instead of hard-cutting. The OUTGOING scene's Sequence is extended
+ *  by this much (its ambient keeps breathing, plus a subtle cinematic push);
+ *  the INCOMING scene mounts on top and fades in. Deterministic — pure frame
+ *  math in the wrapper, zero tokens, applies identically in the Player preview
+ *  and the MP4 (same generated index.tsx). */
+export const TRANSITION_FRAMES = Math.round(0.4 * RENDER_FPS);
+
 export const buildIndexTsx = (script: Script): string => {
   const dims = dimensionsForScript(script);
   const totalFrames = totalFramesForScript(script);
+  const lastScene = script.scenes.length - 1;
 
   const sceneSequences = script.scenes
     .map((scene, i) => {
@@ -126,13 +135,18 @@ export const buildIndexTsx = (script: Script): string => {
         (sceneEndSeconds(scene) ?? 0) * RENDER_FPS,
       );
       const duration = endFrame - startFrame;
+      // Every scene except the last plays TRANSITION_FRAMES into its successor
+      // (the crossfade window). JSX order stacks the incoming scene on top.
+      const mounted = i < lastScene ? duration + TRANSITION_FRAMES : duration;
       return `        {(() => {
           const C = pickSection(Sections, ${i});
           return C ? (
-            <Sequence from={${startFrame}} durationInFrames={${duration}} layout="none">
-              <SectionClock>
-                <C script={script} />
-              </SectionClock>
+            <Sequence from={${startFrame}} durationInFrames={${mounted}} layout="none">
+              <SceneTransition scripted={${duration}} isFirst={${i === 0}} isLast={${i === lastScene}}>
+                <SectionClock>
+                  <C script={script} />
+                </SectionClock>
+              </SceneTransition>
             </Sequence>
           ) : null;
         })()}`;
@@ -215,6 +229,35 @@ const SectionClock: React.FC<{ children: React.ReactNode }> = ({ children }) => 
       {children}
     </div>
   );
+};
+
+// ── Deterministic scene transitions ──────────────────────────────────────────
+// Scenes used to hard-cut. Each non-last scene's Sequence is extended by
+// TRANSITION_FRAMES so it keeps playing (ambient loops breathing, plus a subtle
+// cinematic push) while the NEXT scene — mounted on top by JSX order — fades in
+// over the same window. The first scene fades up from the black composition
+// base for a filmic open. Pure frame math; works identically in the Player
+// preview and the frame-clocked render.
+const TRANSITION_FRAMES = ${TRANSITION_FRAMES};
+const SceneTransition: React.FC<{
+  scripted: number;
+  isFirst: boolean;
+  isLast: boolean;
+  children: React.ReactNode;
+}> = ({ scripted, isFirst, isLast, children }) => {
+  const frame = useCurrentFrame(); // scene-relative inside the Sequence
+  const style: React.CSSProperties = { position: "absolute", inset: 0 };
+  // Fade IN over the first window: crossfade over the extended predecessor
+  // (or from black for the opening scene).
+  const fadeIn = isFirst ? Math.round(TRANSITION_FRAMES * 1.5) : TRANSITION_FRAMES;
+  if (frame < fadeIn) style.opacity = Math.max(0, Math.min(1, frame / fadeIn));
+  // Outgoing push: past the scripted end (the overlap window), scale up gently
+  // beneath the incoming scene for cut momentum.
+  if (!isLast && frame > scripted) {
+    const p = Math.min(1, (frame - scripted) / TRANSITION_FRAMES);
+    style.transform = \`scale(\${1 + 0.02 * p})\`;
+  }
+  return <div style={style}>{children}</div>;
 };
 
 const Composed: React.FC<{ script: typeof script }> = ({ script }) => (
