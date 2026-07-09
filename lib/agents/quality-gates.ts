@@ -346,14 +346,19 @@ export const assessContinuity = (
   // Match each opening tag that carries data-throughline; capture the slug.
   // `[^>]` can't cross a `>`, so each match is exactly one opening tag (even
   // multi-line). Defined inside the fn so its `g`-flag lastIndex never bleeds
-  // across calls.
+  // across calls. Accepts BOTH attr forms the agents actually emit: the quoted
+  // literal (data-throughline="slug") and the JSX expression referencing a
+  // module const or template (data-throughline={THROUGHLINE_SLUG} /
+  // ={`slug`}) — the parallel fills use the const form, which the old
+  // literal-only regex silently missed (validation 2026-07-09: 4/4 scenes
+  // tagged, counter reported 0).
   const tagRe =
-    /<[a-zA-Z][\w.]*\b[^>]*?\bdata-throughline\s*=\s*["']([\w-]+)["'][^>]*>/g;
+    /<[a-zA-Z][\w.]*\b[^>]*?\bdata-throughline\s*=\s*(?:["']([\w-]+)["']|\{\s*(?:["'`]([\w-]+)["'`]|([A-Za-z_$][\w$]*))\s*\})[^>]*>/g;
 
   const groups = new Map<string, { left: number | null; top: number | null }[]>();
   let m: RegExpExecArray | null;
   while ((m = tagRe.exec(code)) !== null) {
-    const slug = m[1];
+    const slug = m[1] ?? m[2] ?? m[3]; // quoted attr | quoted-in-braces | const identifier
     const tag = m[0];
     const arr = groups.get(slug) || [];
     arr.push({ left: pxAnchor(tag, "left"), top: pxAnchor(tag, "top") });
@@ -402,11 +407,18 @@ export const assessContinuity = (
 // Count occurrences of each data-throughline slug across the whole file.
 // Fresh regex per call (no shared lastIndex). Tolerant of attribute order.
 const countThroughlineSlugs = (code: string): Map<string, number> => {
-  const re = /\bdata-throughline\s*=\s*["']([\w-]+)["']/g;
+  // Both attr forms count: the quoted literal (data-throughline="slug") AND
+  // the JSX expression referencing a module const or template literal
+  // (data-throughline={THROUGHLINE_SLUG} / ={`slug`}). The parallel fills emit
+  // the const form; the old literal-only regex reported tagged:0 on a build
+  // whose every real scene carried the motif (validation 2026-07-09).
+  const re =
+    /\bdata-throughline\s*=\s*(?:["']([\w-]+)["']|\{\s*(?:["'`]([\w-]+)["'`]|([A-Za-z_$][\w$]*))\s*\})/g;
   const counts = new Map<string, number>();
   let m: RegExpExecArray | null;
   while ((m = re.exec(code)) !== null) {
-    counts.set(m[1], (counts.get(m[1]) || 0) + 1);
+    const slug = m[1] ?? m[2] ?? m[3];
+    counts.set(slug, (counts.get(slug) || 0) + 1);
   }
   return counts;
 };

@@ -1365,16 +1365,17 @@ export const buildAnimatedSections = async (
   // UNCHANGED. The assembled parallel file is byte-structurally identical to a
   // monolithic one ([imports+consts] + Section0..N-1 + Generated).
   //
-  // Default is MONOLITHIC until parallel demonstrably wins. Live validation
-  // (2026-07-08) showed design-only parallelization ≈ monolithic wall-time:
-  // parallelizing the DESIGN pass is eaten by the still-serial whole-file
-  // ANIMATION pass. The real time-to-first-scene win needs the animation half
-  // parallelized too (single-pass animated fills, skipping the whole-file
-  // animation stage) — until that lands and beats the baseline, parallel stays
-  // OPT-IN (RB_BUILD_MODE=parallel) so production isn't defaulted onto a path
-  // with no speed benefit and more failure modes.
+  // Default is PARALLEL (flipped 2026-07-09 after the acceptance criteria
+  // cleared on a live build): the deterministic choreographer deletes the
+  // serial whole-file animation pass (0 motion tokens, dead-air/dwell/slow-text
+  // green by construction), fills run concurrently against the scaffold, and
+  // the validation clocked 40.2min WITH a ~17-min network outage inside it
+  // (~23min clean) vs the 45-min monolithic baseline — with 4/4 real scenes
+  // carrying the throughline motif and zero invented claims after the fill
+  // hardening. RB_BUILD_MODE=monolithic remains the instant-revert escape
+  // hatch (the original two-pass whole-file path, unchanged).
   const buildMode: "monolithic" | "parallel" =
-    process.env.RB_BUILD_MODE === "parallel" ? "parallel" : "monolithic";
+    process.env.RB_BUILD_MODE === "monolithic" ? "monolithic" : "parallel";
   let designResponse: Awaited<ReturnType<typeof runDesign>>;
   let designCode: string;
 
@@ -1471,22 +1472,41 @@ export const buildAnimatedSections = async (
       const settled = await mapWithConcurrency(sceneIndices, cap, (i) =>
         fillSectionBlock(client, MODELS.codingAgentBuild, input, scaffoldCode, i, fillCtx),
       );
-      let assembled = scaffoldCode;
-      const fillWarnings: string[] = [];
-      for (let i = 0; i < settled.length; i++) {
-        const r = settled[i];
+      // Collect blocks; note scenes whose fill produced nothing.
+      const blocks: (string | null)[] = settled.map((r, i) => {
         if (r.status === "fulfilled") {
           extraDesignUsage = addUsage(extraDesignUsage, r.value.usage);
-          if (r.value.block) {
-            const next = replaceSection(assembled, i, r.value.block);
-            if (next) assembled = next;
-            else fillWarnings.push(`scene ${i}: fill produced but did not splice — kept blank stub`);
-          } else {
-            fillWarnings.push(`scene ${i}: fill returned no section — kept blank stub`);
-          }
-        } else {
-          fillWarnings.push(`scene ${i}: fill threw — kept blank stub`);
+          return r.value.block;
         }
+        console.warn(`[pipeline] scene ${i} fill settled rejected (should not happen — fillSectionBlock never throws)`);
+        return null;
+      });
+
+      // BACKFILL pass (validation 2026-07-09): a ~17-min network outage killed
+      // one fill through its whole 3-attempt ladder and the blank stub SHIPPED
+      // as a silent blank scene. By the time every other fill has finished the
+      // blip has usually passed — so any scene that came back empty gets ONE
+      // more sequential attempt before assembly. Still-degrading to the stub
+      // (never crashing) if the retry fails too.
+      for (let i = 0; i < blocks.length; i++) {
+        if (blocks[i]) continue;
+        console.warn(`[pipeline] backfilling scene ${i} (fill returned no section on the first round)`);
+        const retry = await fillSectionBlock(client, MODELS.codingAgentBuild, input, scaffoldCode, i, fillCtx);
+        extraDesignUsage = addUsage(extraDesignUsage, retry.usage);
+        if (retry.block) blocks[i] = retry.block;
+      }
+
+      let assembled = scaffoldCode;
+      const fillWarnings: string[] = [];
+      for (let i = 0; i < blocks.length; i++) {
+        const block = blocks[i];
+        if (!block) {
+          fillWarnings.push(`scene ${i}: fill returned no section after backfill — kept blank stub`);
+          continue;
+        }
+        const next = replaceSection(assembled, i, block);
+        if (next) assembled = next;
+        else fillWarnings.push(`scene ${i}: fill produced but did not splice — kept blank stub`);
       }
       designCode = assembled;
       if (fillWarnings.length > 0) {

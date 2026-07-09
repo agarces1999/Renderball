@@ -27,6 +27,7 @@ import {
   findUndwelledText,
   countAccentBorders,
   findUnboundCopy,
+  assessThroughlinePresence,
 } from "./quality-gates";
 
 let passed = 0;
@@ -1000,6 +1001,33 @@ check("no-op when nothing is missing", () => {
   const code = `import { Zap } from "lucide-react";\nexport const S = () => <Zap/>;`;
   const r = addMissingLucideImports(code, isMockIcon);
   assert(r.added.length === 0 && r.code === code, "unchanged when all icons resolve");
+});
+
+// ── throughline presence: counts BOTH attr forms ─────────────────────
+// Validation 2026-07-09: parallel fills emit data-throughline={THROUGHLINE_SLUG}
+// (a JSX expression referencing a scaffold const); the literal-only regex
+// reported tagged:0 on a build whose every real scene carried the motif.
+check("assessThroughlinePresence: JSX-expression form counts (const identifier)", () => {
+  const script = { narrative: { throughline: "a ticket travels" }, scenes: [{}, {}, {}, {}, {}] };
+  const code = Array.from({ length: 4 }, () => `<div data-throughline={THROUGHLINE_SLUG} style={{}} />`).join("\n");
+  const r = assessThroughlinePresence(code, script);
+  assert(r === null, `4/5 const-identifier tags should clear the bar, got ${JSON.stringify(r)}`);
+});
+
+check("assessThroughlinePresence: quoted + template-in-braces forms still count", () => {
+  const script = { narrative: { throughline: "a ticket travels" }, scenes: [{}, {}, {}] };
+  const code = [
+    `<div data-throughline="order-ticket" />`,
+    "<div data-throughline={`order-ticket`} />",
+  ].join("\n");
+  const r = assessThroughlinePresence(code, script);
+  assert(r === null, `mixed quoted+template forms (2/3, bar 2) should pass, got ${JSON.stringify(r)}`);
+});
+
+check("assessThroughlinePresence: still fires when the motif is genuinely absent", () => {
+  const script = { narrative: { throughline: "a ticket travels" }, scenes: [{}, {}, {}, {}, {}] };
+  const r = assessThroughlinePresence(`<div data-throughline="x" />`, script);
+  assert(r !== null && r.tagged === 1, `1/5 must still fire, got ${JSON.stringify(r)}`);
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);
