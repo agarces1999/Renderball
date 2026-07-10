@@ -1,7 +1,8 @@
-import Link from "next/link";
 import { AppShellServer } from "../../components/AppShellServer";
 import { getCurrentUser } from "../../lib/auth";
 import { getUsageSummary } from "../../lib/entitlement";
+import { isStripeConfigured } from "../../lib/stripe";
+import { SubscribeButton, ManageBillingButton } from "./CheckoutButtons";
 
 /** One meter row: label + used/limit + a quiet progress bar. */
 function MeterRow({ label, used, limit }: { label: string; used: number; limit: number }) {
@@ -85,17 +86,19 @@ export default async function BillingPage() {
           <p className="mb-4 text-[13px] text-muted">
             Unlimited videos. 1080p. No watermark. Cancel anytime.
           </p>
-          <p className="mb-4 text-[13.5px] leading-relaxed text-ink-soft">
-            Checkout opens shortly through our payment processor. You will be
-            able to manage your subscription from this page once it&rsquo;s
-            live.
-          </p>
-          <Link
-            href="/#pricing"
-            className="inline-block rounded-md bg-accent px-4 py-2 text-[13.5px] font-semibold text-accent-ink transition-all hover:brightness-110"
-          >
-            See plan details
-          </Link>
+          {isStripeConfigured() ? (
+            usage?.plan === "subscription" ? (
+              <ManageBillingButton />
+            ) : (
+              <SubscribeButton />
+            )
+          ) : (
+            <p className="mb-1 text-[13.5px] leading-relaxed text-ink-soft">
+              Checkout opens shortly through our payment processor. You will be
+              able to manage your subscription from this page once it&rsquo;s
+              live.
+            </p>
+          )}
         </div>
       </div>
     </AppShellServer>
