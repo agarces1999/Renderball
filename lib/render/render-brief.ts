@@ -23,6 +23,7 @@ import { bundle } from "@remotion/bundler";
 import { renderMedia, selectComposition } from "@remotion/renderer";
 import type { StoredBrief } from "../store";
 import type { Script } from "../../src/schema";
+import { prisma } from "../db";
 import { isStorageConfigured, putObject, renderKey } from "../storage/r2";
 import { scriptsEquivalent } from "./script-equal";
 import {
@@ -235,6 +236,7 @@ export const renderBriefToMp4 = async (
     // must not lose a render the user just spent compute on — it stays on local
     // disk and /api/renders falls back to it. On a stateless container the local
     // copy is ephemeral, so R2 is the real source of truth.
+    let durable = false;
     if (isStorageConfigured() && brief.script_id) {
       try {
         await putObject(
@@ -242,9 +244,29 @@ export const renderBriefToMp4 = async (
           await fs.readFile(outPath),
           "video/mp4",
         );
+        durable = true;
       } catch (err) {
         console.error("[render] R2 upload failed, keeping local copy:", err);
       }
+    }
+
+    // Record the completed render (the Render model was schema-only until now
+    // — nothing ever wrote a row, so nothing could enumerate finished MP4s
+    // without stat()ing an ephemeral disk). Best-effort: a DB hiccup must not
+    // fail a render the user already paid the compute for.
+    try {
+      await prisma.render.create({
+        data: {
+          projectId: brief.id,
+          ownerId: brief.owner_id,
+          status: "complete",
+          durationSeconds: totalFrames / RENDER_FPS,
+          outputUrl: durable ? renderKey(brief.script_id!) : null,
+          completedAt: new Date(),
+        },
+      });
+    } catch (err) {
+      console.warn("[render] could not record Render row (render is fine):", err);
     }
 
     return {

@@ -27,11 +27,20 @@ MP4. What does **not** exist is the entire commercialization layer. A verified
 **Bottom line:** "launch now" is not a single session. This is the build sprint
 PRODUCT.md/GTM.md scoped for Days 15–34. The path below is real and ordered.
 
-## Locked decisions (2026-06-17)
+## Locked decisions (2026-06-17, amended 2026-07-10)
 
 - **Auth:** Clerk (Google + email + more). Supersedes the spec's email-magic-link.
-- **Payments:** Stripe **subscription ($29.99/mo) + free tier** first; PAYG/credits as a fast-follow.
-- **Render:** Remotion **Lambda** (AWS).
+- **Payments:** Stripe **subscription + free tier** first; PAYG/credits as a fast-follow.
+  - ⚠️ **OPEN — price contradiction (founder decision needed):** this doc says
+    **$29.99/mo**, but the shipped `/billing` page and landing copy say
+    **$49.99/mo**. Whichever is chosen must match the Stripe Price object
+    (`STRIPE_PRICE_SUBSCRIPTION`) before checkout goes live.
+- **Render:** ~~Remotion Lambda (AWS)~~ → **in-container `renderMedia`** for
+  launch (amended 2026-07-10). The deploy is a long-running Docker container,
+  not a serverless function, so the original "can't render in-request" blocker
+  doesn't apply; concurrency is bounded by the build/render locks
+  (`RB_MAX_CONCURRENT_BUILDS`) and renders persist to R2. Lambda remains the
+  scale-out path when a single container's CPU becomes the bottleneck.
 
 ## Shipped this session (no credentials required)
 
@@ -66,9 +75,11 @@ not yet migrated (needs `DATABASE_URL`).
 3. ✅ **Multi-tenant scoping.** `listBriefsByOwner()`; required-`ownerId` reads; auth on
    every page/action/preview route. Adversarially reviewed — fixed a real IDOR (renders
    moved out of `public/` to a gated `/api/renders/<id>` route). *Done.*
-   - Residuals: Clerk→DB **user-sync webhook** (email updates/deletes) still TODO;
-     `loadScript` is O(n) over briefs until 3b; legacy `public/renders/*.mp4` (dev test
-     data) should be purged before go-live.
+   - Residuals: ✅ Clerk→DB **user-sync webhook** built 2026-07-10
+     (`/api/webhooks/clerk`: user.updated email refresh; user.deleted runs the
+     same deletion core as the GDPR CLI — needs `CLERK_WEBHOOK_SIGNING_SECRET`
+     to activate); `loadScript` O(n) fixed in 3b; legacy `public/renders/*.mp4`
+     purged in the deploy-correctness pass.
 3b. ✅ **Store → Postgres.** `lib/store.ts` is a dual backend (`RB_STORE_BACKEND=pg|file`,
    default **pg** since 2026-07-08) over Prisma `Project` + `ScriptDoc` — no call-site
    changes; `loadScript` O(n) fixed via `scriptId @unique`. Legacy `.data` imported by
@@ -83,13 +94,23 @@ not yet migrated (needs `DATABASE_URL`).
    UsageRecord rows (failed excluded from counts). *Done 2026-07-07.*
    Also done same day: **brand-kit gate** (required logo, confirm-from-scan
    colors, optional licensed font — lib/brand-kit.ts, three-layer enforcement).
-5. **Object storage (R2/S3).** Move renders + uploads + generated code off local disk;
-   serve MP4s from the CDN base.
-6. **Payments (Stripe).** Checkout for the subscription, Billing Portal, and the webhook
-   handler (`checkout.session.completed`, `subscription.updated/deleted`,
-   `invoice.payment_failed`, `charge.dispute.created`) → flips `User.plan`.
-7. **Render infra (Remotion Lambda).** Deploy the Lambda + serve-url; swap the in-request
-   `renderMedia` for a Lambda dispatch + progress polling.
+5. ✅ **Object storage (R2/S3).** Code-complete, env-gated on `STORAGE_*`:
+   renders upload to R2 on completion (local disk = warm cache), uploads go to
+   the bucket, `/api/renders/<id>` 302s to a short-lived signed URL when the
+   local copy is gone (no full-file proxying), `/videos` checks R2 so a fresh
+   container still shows every finished MP4, completed renders write a
+   `Render` row. *Needs: the R2 bucket + keys.*
+6. ✅ **Payments (Stripe).** Code-complete 2026-07-10, env-gated on the three
+   `STRIPE_*` keys: Checkout session route, Billing Portal route, webhook
+   (`checkout.session.completed`, `customer.subscription.updated/deleted`) as
+   the ONLY writer of `User.plan`, `/billing` swaps its honest "not live"
+   copy for real Subscribe/Manage buttons the moment the keys exist.
+   *Needs: the Stripe account, one Product/Price, the three keys.*
+   (`invoice.payment_failed` is covered via `past_due` status mapping;
+   `charge.dispute.created` alerting is post-launch.)
+7. ~~Render infra (Remotion Lambda)~~ — superseded by the container decision
+   (see Locked decisions): in-container `renderMedia` + locks + R2 persistence
+   for launch; Lambda is the scale-out path.
 8. **Legal + email + observability + rate limiting** (can parallelize with 5–7): ToS,
    Privacy, DMCA agent + `abuse@`; Resend for receipts; Sentry + PostHog; Upstash rate
    limits on expensive routes.
@@ -98,11 +119,11 @@ not yet migrated (needs `DATABASE_URL`).
 
 Fill in [.env.example](../.env.example) → `.env.local`. Create these accounts; I wire them:
 
-- [x] **Clerk** app — Google + Email enabled; publishable + secret keys wired (`@clerk/nextjs@6`, middleware + ClerkProvider + header controls). Webhook signing secret still TODO (for the Clerk→DB user-sync, built in the scoping step).
+- [x] **Clerk** app — Google + Email enabled; publishable + secret keys wired (`@clerk/nextjs@6`, middleware + ClerkProvider + header controls). Remaining: **production instance + domain**, and the **webhook signing secret** (`CLERK_WEBHOOK_SIGNING_SECRET` — the sync webhook itself is built and waiting).
 - [x] **Postgres** — Neon connected; Prisma schema migrated (6 tables live), client singleton in `lib/db.ts`.
-- [ ] **Stripe** (test mode) — secret + publishable + webhook secret; one $29.99/mo Product → price id.
-- [ ] **AWS** — IAM user for Remotion Lambda (lambda + s3 + cloudwatch); region.
-- [ ] **Cloudflare R2** (or S3) — bucket + API token + public/CDN base URL.
+- [ ] **Stripe** (test mode) — secret + webhook secret + Price id (`STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` / `STRIPE_PRICE_SUBSCRIPTION`); one Product at the CHOSEN price (see the $29.99-vs-$49.99 decision above). All code is live-on-config.
+- [ ] ~~AWS (Remotion Lambda)~~ — not needed for launch (container render decision).
+- [ ] **Cloudflare R2** (or S3) — bucket + API token (`STORAGE_*` env). All code is live-on-config; without it, renders/uploads fall back to container-local disk (lost on redeploy).
 - [ ] **Resend** — API key + verified sending domain.
 - [ ] **Upstash Redis** — REST url + token.
 - [ ] **Sentry + PostHog** — DSN + project key.
@@ -114,13 +135,12 @@ real GDPR deletion call.
 
 ## Residual risks to close before taking money (from the completeness audit)
 
-- **Upstream balance is a single point of failure (learned 2026-07-08).** The
-  z.ai account ran dry mid-batch and every build died with a 429 [1113]
-  Insufficient balance — in production this takes ALL customer builds down at
-  once. Before launch: balance alerting (z.ai dashboard/webhook or a daily
-  ledger-burn check) + a circuit breaker that detects the 1113 error and
-  returns a friendly "we're at capacity, retry shortly" instead of burning
-  the user's quota on doomed attempts.
+- ✅ **Upstream balance SPOF (learned 2026-07-08) — breaker shipped 2026-07-10.**
+  `lib/zai-breaker.ts`: the [1113] Insufficient-balance error trips a circuit
+  that fails every spend entrypoint fast with a friendly message BEFORE any
+  quota burns, self-probes every 10 min, and drops an alert marker
+  (`.data/zai-balance-tripped.json` + console.error). Residual: wire the
+  marker to a real alert channel (email/Slack) — currently log-only.
 
 - **Legal is a hard gate.** Stripe won't activate a live account without a public ToS
   + Privacy Policy. The crawl re-hosts third-party logos/fonts in a hosted MP4 — needs a

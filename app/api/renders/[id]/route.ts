@@ -3,7 +3,12 @@ import path from "path";
 import { promises as fs } from "fs";
 import { getCurrentUser } from "../../../../lib/auth";
 import { loadScript, isValidId } from "../../../../lib/store";
-import { getObjectBytes, renderKey } from "../../../../lib/storage/r2";
+import {
+  getSignedDownloadUrl,
+  isStorageConfigured,
+  objectExists,
+  renderKey,
+} from "../../../../lib/storage/r2";
 
 /**
  * Owner-gated MP4 delivery.
@@ -46,7 +51,18 @@ export async function GET(
   try {
     file = await fs.readFile(filePath);
   } catch {
-    file = await getObjectBytes(renderKey(scriptId));
+    // R2 path: 302 to a short-lived signed URL instead of buffering the whole
+    // MP4 through this process (a 60s 1080p file is tens of MB per viewer —
+    // proxying it was the ONLY remaining full-file buffer in the app). The
+    // ownership check above already ran; the signed URL carries its own
+    // time-limited auth, so the redirect leaks nothing durable.
+    if (isStorageConfigured() && (await objectExists(renderKey(scriptId)))) {
+      const url = await getSignedDownloadUrl(renderKey(scriptId), 600);
+      return NextResponse.redirect(url, {
+        status: 302,
+        headers: { "Cache-Control": "private, no-store" },
+      });
+    }
   }
   if (!file) {
     return new NextResponse("not found", { status: 404 });

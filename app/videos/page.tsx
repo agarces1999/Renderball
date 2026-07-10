@@ -4,6 +4,7 @@ import { promises as fs } from "fs";
 import path from "path";
 import { getCurrentUser } from "../../lib/auth";
 import { listBriefsByOwner, type BriefStatus, type StoredBrief } from "../../lib/store";
+import { objectExists, renderKey } from "../../lib/storage/r2";
 import { AppShellServer } from "../../components/AppShellServer";
 import { ProjectThumb } from "../../components/ProjectThumb";
 
@@ -67,12 +68,19 @@ export default async function VideosPage() {
         "16:9";
       const sid = brief.script_id;
       if (!sid) return { brief, aspect, mp4Url: null, previewUrl: null };
-      const [hasMp4, hasComp] = await Promise.all([
+      const [hasLocalMp4, hasComp] = await Promise.all([
         exists(path.join(process.cwd(), ".data", "renders", `${sid}.mp4`)),
         exists(
           path.join(process.cwd(), "src", "generated", sid, "Composition.tsx"),
         ),
       ]);
+      // Local disk is a warm cache; R2 is the durable truth. On a fresh
+      // container the disk is empty but the user's MP4s are all in R2 — the
+      // gallery must still show them (HEAD only runs when the disk misses,
+      // and only for rendered briefs, so a cold gallery costs a few HEADs).
+      const hasMp4 =
+        hasLocalMp4 ||
+        (brief.status === "rendered" && (await objectExists(renderKey(sid))));
       return {
         brief,
         aspect,

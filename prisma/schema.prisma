@@ -1,10 +1,8 @@
-// Renderball data model — the multi-tenant store that replaces .data/*.json.
+// Renderball data model — the multi-tenant store that replaced .data/*.json.
 //
-// Status: DESIGN OF RECORD, not yet wired. To activate:
-//   npm i -D prisma && npm i @prisma/client
-//   npx prisma generate && npx prisma migrate dev --name init
-// Then port lib/store.ts to a thin Prisma adapter (read/write the JSON columns;
-// the existing StoredBrief / Script TypeScript types map straight onto them).
+// Status: LIVE (migrated on Neon; lib/store.ts defaults to the pg backend
+// since 2026-07-08, RB_STORE_BACKEND=file is the escape hatch). Deploys run
+// `prisma migrate deploy` on boot (Dockerfile CMD).
 //
 // Design choices:
 //  - Every owned row carries ownerId; nothing is ever queried without it. This

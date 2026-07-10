@@ -2,6 +2,7 @@ import {
   S3Client,
   PutObjectCommand,
   GetObjectCommand,
+  HeadObjectCommand,
   ListObjectsV2Command,
   DeleteObjectsCommand,
 } from "@aws-sdk/client-s3";
@@ -70,6 +71,17 @@ export const getObjectBytes = async (key: string): Promise<Buffer | null> => {
     return Buffer.from(bytes);
   } catch {
     return null;
+  }
+};
+
+/** Cheap presence check (HEAD, no body). False when unconfigured or missing. */
+export const objectExists = async (key: string): Promise<boolean> => {
+  if (!isStorageConfigured()) return false;
+  try {
+    await client().send(new HeadObjectCommand({ Bucket: bucket, Key: key }));
+    return true;
+  } catch {
+    return false;
   }
 };
 
