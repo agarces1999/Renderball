@@ -79,13 +79,27 @@ export interface RepairResult {
 const scenesOf = (findings: RenderTruthFinding[]): number[] =>
   [...new Set(findings.map((f) => f.scene))].sort((a, b) => a - b);
 
-const overflowInstruction = (sceneFindings: RenderTruthFinding[]): string => {
-  const detail = sceneFindings.map((f) => f.detail).join("; ");
-  return (
-    `This scene has content rendered OUTSIDE the 1920×1080 canvas (it gets clipped): ${detail}. ` +
-    `Fix the LAYOUT so every element fits within the canvas with a safe margin: narrow or wrap wide rows, ` +
-    `reduce fixed widths, re-anchor off-canvas elements, shrink horizontal flows. Keep the copy and the brand; just make it fit.`
-  );
+const repairInstruction = (sceneFindings: RenderTruthFinding[]): string => {
+  const parts: string[] = [];
+  const of = sceneFindings.filter((f) => f.kind !== "stranded-hero");
+  const sh = sceneFindings.filter((f) => f.kind === "stranded-hero");
+  if (of.length > 0) {
+    const detail = of.map((f) => f.detail).join("; ");
+    parts.push(
+      `This scene has content rendered OUTSIDE the 1920×1080 canvas (it gets clipped): ${detail}. ` +
+        `Fix the LAYOUT so every element fits within the canvas with a safe margin: narrow or wrap wide rows, ` +
+        `reduce fixed widths, re-anchor off-canvas elements, shrink horizontal flows. Keep the copy and the brand; just make it fit.`,
+    );
+  }
+  if (sh.length > 0) {
+    // The gate's detail strings already carry the concrete numeric fix
+    // (measured box + the contract numbers) — pass them through verbatim.
+    parts.push(
+      `This scene FAILS the layout composer contract (measured on the real render): ${sh.map((f) => f.detail).join(" | ")} ` +
+        `Recompose the scene around its hero visual — the diegetic object is the anchor of the frame, never an afterthought at an edge.`,
+    );
+  }
+  return parts.join("\n\n");
 };
 
 /**
@@ -153,7 +167,7 @@ export const repairRenderTruth = async (
     log(`L${attempt}: regenerating design for scene(s) ${failing.join(", ")}`);
     for (const s of failing) {
       const sceneFindings = gate.blocking.filter((f) => f.scene === s);
-      const r = await cb.regenScene(s, overflowInstruction(sceneFindings));
+      const r = await cb.regenScene(s, repairInstruction(sceneFindings));
       if (r.usage) spent += costOf(r.usage);
       if (!r.ok) log(`  scene ${s} regen error: ${r.error ?? "unknown"}`);
     }

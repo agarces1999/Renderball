@@ -28,6 +28,7 @@ export type RenderTruthKind =
   | "contrast"
   | "dead-region"
   | "canvas-brightness"
+  | "stranded-hero"
   | "measure-error";
 
 export interface RenderTruthFinding {
@@ -560,12 +561,164 @@ export const findCanvasBrightness = async (
   return assessCanvasBrightness(brandBackground, sceneLumas);
 };
 
+// ── stranded hero (the layout composer contract) ─────────────────────────────
+// The founder-doctrine defect (Fuse scene 1): a SMALL diegetic UI piece sitting
+// alone in a CORNER of the frame — "we should never build a scene with a small
+// UI element cornered on an edge". Plus the numeric split-register contract:
+// on a `split` scene the hero visual must be a real column (≥30% of canvas
+// width, vertically centered, opposite the text column). Both are pure
+// geometry on the measured LEGO pieces (data-piece + data-kind), so they hold
+// for every fill with zero taste-judgement — prevention by construction.
+const HERO_KINDS = new Set(["diegetic", "image"]);
+const SH_MIN_W_FRAC = 0.3; // a hero narrower than this fraction of W is "small"
+const SH_MIN_H_FRAC = 0.4; // …and shorter than this fraction of H
+const SH_CORNER_FRAC = 0.25; // centroid this far off BOTH center axes ⇒ a corner
+const SH_MIN_AREA = 40_000; // ≥ ~200×200 — a content object, not a badge/accent
+const SH_VCENTER_FRAC = 0.25; // split: hero centroid within this frac of H/2
+const SH_SAME_SIDE_FRAC = 0.1; // split: both centroids this far onto ONE half ⇒ same-side
+
+interface PieceBox {
+  id: string;
+  kind: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/** Bounding box per LEGO piece, from the measured element rects. */
+const pieceBoxes = (m: SceneMeasurement): PieceBox[] => {
+  const byId = new Map<string, { kind: string; x1: number; y1: number; x2: number; y2: number }>();
+  for (const e of m.elements) {
+    if (!e.piece || e.opacity <= 0.05) continue;
+    const b = byId.get(e.piece);
+    if (!b) {
+      byId.set(e.piece, { kind: e.pieceKind ?? "", x1: e.x, y1: e.y, x2: e.x + e.w, y2: e.y + e.h });
+    } else {
+      b.x1 = Math.min(b.x1, e.x);
+      b.y1 = Math.min(b.y1, e.y);
+      b.x2 = Math.max(b.x2, e.x + e.w);
+      b.y2 = Math.max(b.y2, e.y + e.h);
+      if (!b.kind && e.pieceKind) b.kind = e.pieceKind;
+    }
+  }
+  return [...byId.entries()].map(([id, b]) => ({
+    id,
+    kind: b.kind,
+    x: b.x1,
+    y: b.y1,
+    w: b.x2 - b.x1,
+    h: b.y2 - b.y1,
+  }));
+};
+
+/** Area-weighted centroid-x of the scene's text pieces (undefined if none). */
+const textCentroidX = (boxes: PieceBox[]): number | undefined => {
+  const texts = boxes.filter((b) => b.kind === "text" && b.w > 0 && b.h > 0);
+  if (texts.length === 0) return undefined;
+  let area = 0;
+  let acc = 0;
+  for (const t of texts) {
+    const a = t.w * t.h;
+    area += a;
+    acc += (t.x + t.w / 2) * a;
+  }
+  return area > 0 ? acc / area : undefined;
+};
+
+/**
+ * The stranded-hero + split-contract gate. Register-aware: pass the scene's
+ * script register (undefined ⇒ corner rule only). Skips scenes without LEGO
+ * piece tagging (nothing to measure against — older builds fail open here and
+ * are covered by dead-region/vision instead).
+ */
+export const findStrandedHero = (
+  m: SceneMeasurement,
+  register?: string,
+): RenderTruthFinding[] => {
+  if (m.error) return [];
+  const boxes = pieceBoxes(m);
+  const heroes = boxes.filter(
+    (b) =>
+      HERO_KINDS.has(b.kind) &&
+      b.w * b.h >= SH_MIN_AREA &&
+      // a full-bleed visual is a canvas treatment, not a placeable hero
+      b.w * b.h < 0.85 * m.width * m.height,
+  );
+  if (heroes.length === 0) return [];
+  const hero = heroes.reduce((a, b) => (b.w * b.h > a.w * a.h ? b : a));
+  const cx = hero.x + hero.w / 2;
+  const cy = hero.y + hero.h / 2;
+  const out: RenderTruthFinding[] = [];
+
+  // Universal rule (every register): a small hero stranded in a corner.
+  const small = hero.w < SH_MIN_W_FRAC * m.width && hero.h < SH_MIN_H_FRAC * m.height;
+  const cornered =
+    Math.abs(cx - m.width / 2) > SH_CORNER_FRAC * m.width &&
+    Math.abs(cy - m.height / 2) > SH_CORNER_FRAC * m.height;
+  if (small && cornered) {
+    out.push({
+      scene: m.scene,
+      kind: "stranded-hero",
+      detail:
+        `main visual piece "${hero.id}" (${hero.w}×${hero.h} at ${hero.x},${hero.y}) is SMALL and stranded in a corner of the ${m.width}×${m.height} frame. ` +
+        `Make it a real hero: span at least ${Math.round(SH_MIN_W_FRAC * 100)}% of the canvas width, center it vertically in its column — never leave a small UI element alone at a frame edge.`,
+    });
+    return out; // the corner fix subsumes the split contract — one instruction at a time
+  }
+
+  // Numeric split contract: hero ≥30% W, vertically centered, opposite the text column.
+  if (register === "split") {
+    if (hero.w < SH_MIN_W_FRAC * m.width) {
+      out.push({
+        scene: m.scene,
+        kind: "stranded-hero",
+        detail:
+          `split scene: hero visual "${hero.id}" is ${hero.w}px wide — below the ${Math.round(SH_MIN_W_FRAC * 100)}% column contract (${Math.round(SH_MIN_W_FRAC * m.width)}px of ${m.width}). ` +
+          `Scale the visual up to fill its column.`,
+      });
+    }
+    if (Math.abs(cy - m.height / 2) > SH_VCENTER_FRAC * m.height) {
+      out.push({
+        scene: m.scene,
+        kind: "stranded-hero",
+        detail:
+          `split scene: hero visual "${hero.id}" centers at y=${Math.round(cy)} — outside the vertically-centered band (${Math.round(m.height / 2 - SH_VCENTER_FRAC * m.height)}–${Math.round(m.height / 2 + SH_VCENTER_FRAC * m.height)}px). ` +
+          `Center the visual vertically in its column.`,
+      });
+    }
+    const tx = textCentroidX(boxes);
+    if (tx !== undefined) {
+      const heroOff = cx - m.width / 2;
+      const textOff = tx - m.width / 2;
+      const sameSide =
+        heroOff * textOff > 0 &&
+        Math.abs(heroOff) > SH_SAME_SIDE_FRAC * m.width &&
+        Math.abs(textOff) > SH_SAME_SIDE_FRAC * m.width;
+      if (sameSide) {
+        out.push({
+          scene: m.scene,
+          kind: "stranded-hero",
+          detail:
+            `split scene: hero visual "${hero.id}" (center x=${Math.round(cx)}) and the text column (center x=${Math.round(tx)}) sit on the SAME half of the frame. ` +
+            `Put the text column and the hero visual in OPPOSITE columns.`,
+        });
+      }
+    }
+  }
+  return out;
+};
+
 export interface RenderTruthOptions {
   /** Which checks block. dead-region defaults to advisory (composition taste). */
   blockingKinds?: RenderTruthKind[];
   /** Brand's real background color (#rrggbb) — enables the canvas-brightness
    *  check (light brand shipped dark). Omitted ⇒ check skipped. */
   brandBackground?: string;
+  /** Per-scene script registers (script.scenes[i].register) — enables the
+   *  register-aware layout contracts (split hero placement). Omitted ⇒ only
+   *  the universal stranded-corner rule runs. */
+  registers?: (string | undefined)[];
 }
 
 /**
@@ -588,6 +741,7 @@ export const findRenderTruthFailures = async (
     findings.push(...findOverflow(m));
     findings.push(...findTextOverlap(m));
     findings.push(...findCrossPieceOverlap(m));
+    findings.push(...findStrandedHero(m, opts.registers?.[m.scene]));
     findings.push(...(await findEmptyBand(m)));
     findings.push(...(await findContrast(m)));
     findings.push(...(await findDeadRegion(m)));

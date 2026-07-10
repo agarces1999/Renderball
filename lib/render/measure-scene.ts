@@ -82,6 +82,9 @@ export interface MeasuredElement {
   opacity: number;
   /** Enclosing LEGO piece id (closest [data-piece]), "" when outside any piece. */
   piece: string;
+  /** The enclosing piece's kind (data-kind: text/diegetic/image/atmosphere/chrome),
+   *  "" when outside any piece. Optional so hand-built test fixtures stay small. */
+  pieceKind?: string;
   /** True when an ancestor WITHIN the same piece paints an opaque background or
    *  gradient under this element (text on its own card/scrim — intentional). */
   onOpaqueSurface: boolean;
@@ -134,6 +137,7 @@ const PAGE_WALK = `(() => {
     // gradient-backed card is every bit a surface (Arc's overlay card).
     const pieceEl = el.closest ? el.closest("[data-piece]") : null;
     const piece = pieceEl ? pieceEl.getAttribute("data-piece") || "" : "";
+    const pieceKind = pieceEl ? pieceEl.getAttribute("data-kind") || "" : "";
     let onOpaqueSurface = false;
     for (let a = el.parentElement; a && pieceEl && pieceEl.contains(a); a = a.parentElement) {
       const acs = getComputedStyle(a);
@@ -166,6 +170,7 @@ const PAGE_WALK = `(() => {
       fontSize: parseFloat(cs.fontSize) || 0,
       opacity: parseFloat(cs.opacity),
       piece,
+      pieceKind,
       onOpaqueSurface,
       coveredAtCenter,
     });

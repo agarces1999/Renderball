@@ -2830,6 +2830,28 @@ export const buildScaffoldUserMessage = (input: BuildInput): string => {
   return lines.join("\n");
 };
 
+// The numeric hero-placement contract, mirrored 1:1 by the blocking
+// stranded-hero gate (lib/render/render-truth-gates.ts findStrandedHero). The
+// prompt states the numbers the gate measures, so a compliant fill passes by
+// construction — prevention, not patching.
+const layoutContractLines = (
+  register: string | undefined,
+  dims: { width: number; height: number },
+): string => {
+  const minW = Math.round(0.3 * dims.width);
+  const midLo = Math.round(dims.height / 2 - 0.25 * dims.height);
+  const midHi = Math.round(dims.height / 2 + 0.25 * dims.height);
+  const lines = [
+    `- HARD RULE — HERO PLACEMENT (measured + enforced on the rendered frame): the scene's main diegetic visual (mock/chart/KPI cluster/image) is the ANCHOR of the composition, never an afterthought. NEVER leave a visual smaller than ${minW}px wide alone near a corner or edge of the ${dims.width}×${dims.height} frame — either scale it into a real hero or compose it into a cluster with the copy.`,
+  ];
+  if (register === "split") {
+    lines.push(
+      `- SPLIT CONTRACT (this scene's register): the hero visual spans ≥${minW}px of width (≥30% of the canvas), its vertical center falls between y=${midLo} and y=${midHi}, and it occupies the OPPOSITE horizontal half from the text column. Text column on one side, hero visual filling the other.`,
+    );
+  }
+  return lines.join("\n");
+};
+
 // Fill ONE section into the scaffold. Mirrors regenerateSectionBlock's stream +
 // splice, but the prompt CREATES the section from the scene brief (rather than
 // fixing an existing one). The scaffold rides along as read-only context so the
@@ -2896,6 +2918,11 @@ const fillSectionBlock = async (
     // design brief carries this implicitly via the full-script context; each
     // isolated fill must be told explicitly.
     `- HARD RULE — NO INVENTED NUMBERS: every numeric value you render (price, stat, percentage, count, date) must appear VERBATIM in the copy slots above. If a diegetic mock (dashboard, receipt, form) needs filler figures beyond the copy, keep them clearly decorative and generic — never a specific-looking business claim (no invented "$72", "38%", "2.4M"). When in doubt, use qualitative copy instead of a number.`,
+    // LAYOUT CONTRACT (founder doctrine after Fuse scene 1 shipped a small UI
+    // piece alone in the bottom-right corner): these numbers are MEASURED on
+    // the real render by a blocking gate — a violation costs a full regen, so
+    // the fill must satisfy them the first time.
+    layoutContractLines(scene.register, dims),
     constraints,
     exemplar ?? "",
     ``,

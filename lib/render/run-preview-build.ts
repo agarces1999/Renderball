@@ -181,6 +181,22 @@ export async function runPreviewBuild(
       assetManifest,
     });
 
+  // Barbell (a >30% empty horizontal band), cross-piece overlap (a title
+  // colliding with a diegetic mock — shipped in 2 of 3 brands in one batch),
+  // canvas-brightness (a light brand shipped on dark canvases — 5/5 scenes in
+  // the Duolingo QA), and stranded-hero (the layout composer contract: a small
+  // diegetic hero alone in a corner is unshippable — Fuse scene-1 doctrine;
+  // split scenes must honor the numeric column contract) are measured,
+  // high-precision failures — block on the build path so the repair ladder
+  // regenerates the scene with the concrete reason. Shared by the repair gate
+  // AND the vision-loop verify below so the two can't drift.
+  const BLOCKING_KINDS: import("./render-truth-gates").RenderTruthKind[] = [
+    "overflow", "measure-error", "barbell", "cross-piece-overlap", "canvas-brightness", "stranded-hero",
+  ];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const registersOf = (s: any): (string | undefined)[] =>
+    (s?.scenes ?? []).map((sc: { register?: string }) => sc?.register);
+
   const repair = await repairRenderTruth(
     {
       measure: async () => {
@@ -193,13 +209,8 @@ export async function runPreviewBuild(
           // raw background_color disarmed the brightness gate whenever the
           // crawl missed it — exactly how the Duolingo inversion shipped.
           brandBackground: resolveCanvasPlan(brief?.brand_extract).background,
-          // Barbell (a >30% empty horizontal band), cross-piece overlap (a
-          // title colliding with a diegetic mock — shipped in 2 of 3 brands in
-          // one batch), and canvas-brightness (a light brand shipped on dark
-          // canvases — 5/5 scenes in the Duolingo QA) are measured,
-          // high-precision failures — block on the build path so the repair
-          // ladder regenerates the scene with the concrete reason.
-          blockingKinds: ["overflow", "measure-error", "barbell", "cross-piece-overlap", "canvas-brightness"],
+          blockingKinds: BLOCKING_KINDS,
+          registers: registersOf(currentScript),
         });
         return { ...gate, measurements };
       },
@@ -439,7 +450,8 @@ export async function runPreviewBuild(
         const ms = await measureScenes(genDir, currentScript, measureOutDir(genDir));
         const regate = await findRenderTruthFailures(ms, {
           brandBackground: resolveCanvasPlan(brief?.brand_extract).background,
-          blockingKinds: ["overflow", "measure-error", "barbell", "cross-piece-overlap", "canvas-brightness"],
+          blockingKinds: BLOCKING_KINDS,
+          registers: registersOf(currentScript),
         });
         if (regate.blocking.length > 0) {
           console.warn(
