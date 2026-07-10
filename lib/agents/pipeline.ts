@@ -4,6 +4,7 @@ import { ANIMATION_AGENT_SYSTEM_PROMPT } from "./prompts/animation-agent";
 import { stripCodeFence, verifyCompilable, repairCompile, elideDataUrisOutsideSection } from "./code-extraction";
 import { extractSection, replaceSection, sectionRange } from "./section-splice";
 import { applyChoreography, throughlineAnchorFor } from "./choreograph";
+import { AdaptiveGate, mapWithGate, isOverloadSignal } from "./adaptive-gate";
 import { exemplarPromptBlock } from "./exemplars";
 import {
   densityFailuresByScene,
@@ -427,7 +428,15 @@ const withStallCeiling = <T>(label: string, p: Promise<T>): Promise<T> =>
     }),
   ]);
 
-async function streamBuildCall<T>(label: string, fn: () => Promise<T>, attempts = 3): Promise<T> {
+async function streamBuildCall<T>(
+  label: string,
+  fn: () => Promise<T>,
+  attempts = 3,
+  // Fires on EVERY failed attempt (before the retry decision) so callers can
+  // react to load signals in real time — the adaptive concurrency gate shrinks
+  // its window on the FIRST overloaded_error, not after a ladder exhausts.
+  onAttemptError?: (err: unknown) => void,
+): Promise<T> {
   let lastErr: unknown;
   for (let i = 1; i <= attempts; i++) {
     const t0 = Date.now();
@@ -435,6 +444,11 @@ async function streamBuildCall<T>(label: string, fn: () => Promise<T>, attempts 
       return await withStallCeiling(label, fn());
     } catch (err) {
       lastErr = err;
+      try {
+        onAttemptError?.(err);
+      } catch {
+        /* a listener must never break the retry ladder */
+      }
       const elapsedS = Math.round((Date.now() - t0) / 1000);
       const transient = isTransientNetErr(err);
       // Always log the full cause chain + elapsed so we can correlate drops with
@@ -1462,16 +1476,32 @@ export const buildAnimatedSections = async (
         throughline: narr?.throughline ?? "",
         anchor: throughlineAnchorFor(input.script.config?.aspect_ratio ?? "16:9"),
       };
-      // Default 3, not N: firing 5 concurrent max-reasoning GLM streams tripped
-      // z.ai's overloaded_error (500) in validation. 3 keeps most of the
-      // parallelism while staying under z.ai's concurrent-heavy-request ceiling;
-      // RB_SCENE_CONCURRENCY overrides. Combined with the fill retry ladder,
-      // transient overloads recover instead of blanking a scene.
-      const cap = Math.max(1, Number(process.env.RB_SCENE_CONCURRENCY) || 3);
+      // AIM FOR MAXIMUM simultaneous scenes (founder directive): start with ALL
+      // scenes in flight and let the adaptive gate discover the real ceiling —
+      // the old hardcoded 3 was a defensive guess from one overloaded_error
+      // that forensics later showed also fired at concurrency 3 (z.ai-side
+      // capacity, weakly coupled to our width). The gate HALVES its window the
+      // moment any in-flight call reports an overload signal and recovers +1
+      // per completed fill, so a blip costs a wave, never the build.
+      // RB_SCENE_CONCURRENCY (when set) becomes the fixed maximum.
       const sceneIndices = input.script.scenes.map((_, i) => i);
-      const settled = await mapWithConcurrency(sceneIndices, cap, (i) =>
-        fillSectionBlock(client, MODELS.codingAgentBuild, input, scaffoldCode, i, fillCtx),
+      const envCap = Number(process.env.RB_SCENE_CONCURRENCY);
+      const gate = new AdaptiveGate(
+        Number.isFinite(envCap) && envCap >= 1 ? Math.floor(envCap) : sceneIndices.length,
       );
+      const settled = await mapWithGate(sceneIndices, gate, (i) =>
+        fillSectionBlock(client, MODELS.codingAgentBuild, input, scaffoldCode, i, {
+          ...fillCtx,
+          onAttemptError: (err) => {
+            if (isOverloadSignal(err)) gate.overload();
+          },
+        }),
+      );
+      if (gate.overloads > 0) {
+        console.warn(
+          `[pipeline] adaptive gate shrank ${gate.overloads}x during fills (final window ${gate.width}/${gate.max})`,
+        );
+      }
       // Collect blocks; note scenes whose fill produced nothing.
       const blocks: (string | null)[] = settled.map((r, i) => {
         if (r.status === "fulfilled") {
@@ -2796,7 +2826,13 @@ const fillSectionBlock = async (
   input: BuildInput,
   scaffoldCode: string,
   sceneIndex: number,
-  ctx: { throughlineSlug: string; throughline: string; anchor: { left: number; top: number } },
+  ctx: {
+    throughlineSlug: string;
+    throughline: string;
+    anchor: { left: number; top: number };
+    /** Real-time load signal for the adaptive concurrency gate. */
+    onAttemptError?: (err: unknown) => void;
+  },
 ): Promise<{ block: string | null; usage: Usage }> => {
   const scene = input.script.scenes[sceneIndex];
   if (!scene) return { block: null, usage: EMPTY_USAGE };
@@ -2863,7 +2899,9 @@ const fillSectionBlock = async (
     // overloaded_error class) on ONE scene retries the ladder instead of
     // blanking that scene — the primary parallel path can't afford an
     // unretried single-scene failure the way a scoped fallback could.
-    const resp = await streamBuildCall(`scene fill ${sectionName}`, () =>
+    const resp = await streamBuildCall(
+      `scene fill ${sectionName}`,
+      () =>
       client.messages
         .stream(
           {
@@ -2882,6 +2920,8 @@ const fillSectionBlock = async (
           { timeout: COMPOSITION_REQUEST_TIMEOUT_MS },
         )
         .finalMessage(),
+      3,
+      ctx.onAttemptError,
     );
     const text = resp.content.find((c: { type: string }) => c.type === "text");
     const raw = text && text.type === "text" ? stripCodeFence(text.text.trim()) : "";
