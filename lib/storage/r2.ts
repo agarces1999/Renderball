@@ -2,6 +2,8 @@ import {
   S3Client,
   PutObjectCommand,
   GetObjectCommand,
+  ListObjectsV2Command,
+  DeleteObjectsCommand,
 } from "@aws-sdk/client-s3";
 
 /**
@@ -90,6 +92,32 @@ export const getSignedDownloadUrl = async (
 };
 
 /** Canonical key layout. */
+/**
+ * Delete every object under `prefix` (GDPR delete-user path: a user's
+ * uploads/<briefId>/* and renders/<scriptId>*). Returns how many objects were
+ * removed. No-op (0) when storage isn't configured.
+ */
+export const deletePrefix = async (prefix: string): Promise<number> => {
+  if (!isStorageConfigured()) return 0;
+  const c = client();
+  let deleted = 0;
+  let token: string | undefined;
+  do {
+    const page = await c.send(
+      new ListObjectsV2Command({ Bucket: bucket, Prefix: prefix, ContinuationToken: token }),
+    );
+    const keys = (page.Contents ?? []).map((o) => ({ Key: o.Key as string }));
+    if (keys.length > 0) {
+      await c.send(
+        new DeleteObjectsCommand({ Bucket: bucket, Delete: { Objects: keys } }),
+      );
+      deleted += keys.length;
+    }
+    token = page.IsTruncated ? page.NextContinuationToken : undefined;
+  } while (token);
+  return deleted;
+};
+
 export const renderKey = (scriptId: string): string =>
   `renders/${scriptId}.mp4`;
 export const uploadKey = (briefId: string, filename: string): string =>

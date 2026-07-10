@@ -3,9 +3,17 @@ import { ClerkProvider } from "@clerk/nextjs";
 import "./globals.css";
 
 export const metadata: Metadata = {
+  metadataBase: new URL(process.env.NEXT_PUBLIC_APP_URL || "https://renderball.com"),
   title: "Renderball — render your business story",
   description:
     "AI-native video generation. A brief becomes a story-driven, on-brand animated video. Render your business story.",
+  openGraph: {
+    title: "Renderball — render your business story",
+    description:
+      "AI-native video generation. A brief becomes a story-driven, on-brand animated video.",
+    siteName: "Renderball",
+    type: "website",
+  },
 };
 
 export default function RootLayout({

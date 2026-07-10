@@ -1,0 +1,43 @@
+# Minimal CI (launch audit): prove the code type-checks, the 600+ assertion
+# suite passes, and `next build` actually succeeds — the production build had
+# never been verifiably run before deploy. No deploy from here; Railway builds
+# the Docker image on push.
+name: ci
+
+on:
+  push:
+    branches: [main, launch-deploy]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npx prisma generate
+      - run: npx tsc --noEmit
+      - run: node scripts/run-tests.mjs
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npx prisma generate
+      # Build-time-only placeholders: pages are dynamic (no DB access at build),
+      # and Clerk needs a format-valid publishable key present to compile.
+      - run: npm run build
+        env:
+          NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: pk_test_Y2xlcmsuZXhhbXBsZS5jb20k
+          CLERK_SECRET_KEY: sk_test_placeholder
+          DATABASE_URL: postgresql://placeholder:placeholder@localhost:5432/placeholder
+          ANTHROPIC_BASE_URL: https://api.z.ai/api/anthropic

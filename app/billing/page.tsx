@@ -1,5 +1,28 @@
 import Link from "next/link";
 import { AppShellServer } from "../../components/AppShellServer";
+import { getCurrentUser } from "../../lib/auth";
+import { getUsageSummary } from "../../lib/entitlement";
+
+/** One meter row: label + used/limit + a quiet progress bar. */
+function MeterRow({ label, used, limit }: { label: string; used: number; limit: number }) {
+  const pct = limit > 0 ? Math.min(100, Math.round((used / limit) * 100)) : 0;
+  return (
+    <div>
+      <div className="mb-1 flex items-baseline justify-between">
+        <span className="text-[13px] text-ink-soft">{label}</span>
+        <span className="font-mono text-[12px] text-muted">
+          {used} / {limit} this month
+        </span>
+      </div>
+      <div className="h-1.5 w-full overflow-hidden rounded-full bg-surface-3">
+        <div
+          className={pct >= 100 ? "h-full rounded-full bg-red-400" : "h-full rounded-full bg-accent"}
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+    </div>
+  );
+}
 
 /**
  * Billing — current plan + subscription state. Checkout is not wired yet (lands
@@ -9,7 +32,12 @@ import { AppShellServer } from "../../components/AppShellServer";
  */
 export const dynamic = "force-dynamic";
 
-export default function BillingPage() {
+export default async function BillingPage() {
+  // The meter reads the SAME counts the metering gate enforces — the user sees
+  // exactly the numbers that gate their next generate/build (previously the
+  // cap was only discoverable by slamming into it).
+  const user = await getCurrentUser();
+  const usage = user ? await getUsageSummary(user.id) : null;
   return (
     <AppShellServer>
       <div className="mx-auto max-w-3xl px-6 py-10">
@@ -26,12 +54,19 @@ export default function BillingPage() {
           </div>
           <div className="flex items-baseline gap-2">
             <span className="font-display text-[26px] font-semibold tracking-tight text-ink">
-              No subscription
+              {usage?.plan === "subscription" ? "Subscription" : "Free"}
             </span>
           </div>
-          <p className="mt-2 text-[13px] text-muted">
-            Subscribe to start creating videos.
-          </p>
+          {usage ? (
+            <div className="mt-5 space-y-4">
+              <MeterRow label="Stories generated" used={usage.generate.used} limit={usage.generate.limit} />
+              <MeterRow label="Videos built" used={usage.build.used} limit={usage.build.limit} />
+            </div>
+          ) : (
+            <p className="mt-2 text-[13px] text-muted">
+              Sign in to see your usage.
+            </p>
+          )}
         </div>
 
         <div className="mt-5 rounded-lg border border-accent-line bg-surface p-6">

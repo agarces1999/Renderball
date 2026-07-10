@@ -113,6 +113,41 @@ export const checkEntitlement = async (
 };
 
 /**
+ * Read-only usage summary for the billing page's meter — the SAME plan lookup
+ * and UTC-month window checkEntitlement enforces, so what the user sees is
+ * exactly what the gate counts. Best-effort: on error return null (the meter
+ * hides rather than blocking the page).
+ */
+export const getUsageSummary = async (
+  ownerId: string,
+): Promise<{
+  plan: PlanName;
+  generate: { used: number; limit: number };
+  build: { used: number; limit: number };
+} | null> => {
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: ownerId },
+      select: { plan: true },
+    });
+    const plan: PlanName = user?.plan === "subscription" ? "subscription" : "free";
+    const count = (op: MeteredOp) =>
+      prisma.usageRecord.count({
+        where: { ownerId, operation: op, failed: false, createdAt: { gte: monthStartUtc() } },
+      });
+    const [gen, build] = await Promise.all([count("generate"), count("build")]);
+    return {
+      plan,
+      generate: { used: gen, limit: planLimit(plan, "generate") },
+      build: { used: build, limit: planLimit(plan, "build") },
+    };
+  } catch (err) {
+    console.warn("[entitlement] usage summary failed:", err);
+    return null;
+  }
+};
+
+/**
  * Record one metered operation against the owner (the entitlement counter).
  * Best-effort — a write failure must never break a finished build — but it is
  * logged loudly because a silent miss under-counts the very quota that
