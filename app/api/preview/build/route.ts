@@ -4,6 +4,7 @@ import { loadBriefByScriptId } from "../../../../lib/store";
 import { brandKitStatus } from "../../../../lib/brand-kit";
 import { checkEntitlement } from "../../../../lib/entitlement";
 import { runPreviewBuild } from "../../../../lib/render/run-preview-build";
+import { runBuildLocked } from "../../../../lib/render/build-lock";
 
 /**
  * Preview-only build endpoint. Runs the Design + Choreography agents and the
@@ -55,16 +56,29 @@ export async function POST(request: Request) {
     }
   }
 
-  // Metering gate (LAUNCH.md #4) — fail-closed entitlement check BEFORE the
-  // ~$1-2 of build spend. 402 carries a user-facing reason.
-  const ent = await checkEntitlement(user.id, "build");
-  if (!ent.allowed) {
+  // Build lock (launch audit P0): dedup same-script requests (a page refresh
+  // ATTACHES to the in-flight build instead of double-building), one build per
+  // owner (closes the entitlement TOCTOU — usage rows land only at build end),
+  // and a global per-container semaphore. The entitlement check runs INSIDE
+  // the lock so parallel requests can't all pass the quota gate first.
+  const locked = await runBuildLocked(scriptId, user.id, async () => {
+    // Metering gate (LAUNCH.md #4) — fail-closed entitlement check BEFORE the
+    // ~$1-2 of build spend. 402 carries a user-facing reason.
+    const ent = await checkEntitlement(user.id, "build");
+    if (!ent.allowed) {
+      return {
+        status: 402,
+        body: { error: ent.reason ?? "plan limit reached", plan: ent.plan, used: ent.used, limit: ent.limit },
+      } as const;
+    }
+    return runPreviewBuild(scriptId, user.id);
+  });
+  if (locked.kind === "owner-busy") {
     return NextResponse.json(
-      { error: ent.reason ?? "plan limit reached", plan: ent.plan, used: ent.used, limit: ent.limit },
-      { status: 402 },
+      { error: "You already have a build running — it will finish in a few minutes. One build runs at a time per account." },
+      { status: 409 },
     );
   }
-
-  const result = await runPreviewBuild(scriptId, user.id);
+  const result = locked.result;
   return NextResponse.json(result.body, { status: result.status });
 }
