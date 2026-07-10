@@ -33,11 +33,29 @@ export const getCurrentUser = cache(async (): Promise<User | null> => {
   // upsert (not create) so two concurrent first-requests can't collide;
   // refresh email on the update branch so a races-in first-sight can't pin a
   // stale address.
-  return prisma.user.upsert({
-    where: { clerkId },
-    update: { email },
-    create: { clerkId, email },
-  });
+  try {
+    return await prisma.user.upsert({
+      where: { clerkId },
+      update: { email },
+      create: { clerkId, email },
+    });
+  } catch (err) {
+    // RECYCLED EMAIL (launch audit): User.email is @unique and there is no
+    // Clerk-deletion webhook yet — a user who deletes their Clerk account and
+    // signs up again with the SAME email arrives with a NEW clerkId, the
+    // create branch hits the old row's unique email, and P2002 500s them on
+    // every page forever. Clerk owns email verification, so the right move is
+    // to RE-LINK the existing row (projects, usage, and — later — the Stripe
+    // customer follow the person, keyed by their verified email).
+    if (
+      typeof err === "object" &&
+      err !== null &&
+      (err as { code?: string }).code === "P2002"
+    ) {
+      return prisma.user.update({ where: { email }, data: { clerkId } });
+    }
+    throw err;
+  }
 });
 
 /**

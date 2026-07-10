@@ -14,7 +14,14 @@ import { cn } from "../../../lib/cn";
  * story, design each scene, choreograph, compile. The last step holds with a
  * spinner until the build resolves, then the page reloads into the preview.
  */
-type Phase = { kind: "building" } | { kind: "error"; message: string };
+type Phase =
+  | { kind: "building" }
+  | { kind: "error"; message: string }
+  // 402 from the metering gate — a plan limit, not a failure. Retrying
+  // re-hits the same 402 forever; the way forward is /billing.
+  | { kind: "limit"; message: string }
+  // 409 from the build lock — the account already has a build running.
+  | { kind: "busy"; message: string };
 type Status = "done" | "active" | "pending";
 
 export function BuildPreviewClient({
@@ -54,7 +61,27 @@ export function BuildPreviewClient({
         });
         if (!res.ok) {
           const txt = await res.text();
-          throw new Error(`build failed (${res.status}): ${txt}`);
+          let friendly: string | null = null;
+          try {
+            friendly = (JSON.parse(txt) as { error?: string }).error ?? null;
+          } catch {
+            /* non-JSON body — fall through to the raw text */
+          }
+          if (res.status === 402) {
+            setPhase({ kind: "limit", message: friendly ?? "Monthly build limit reached." });
+            return;
+          }
+          if (res.status === 409) {
+            setPhase({ kind: "busy", message: friendly ?? "You already have a build running." });
+            return;
+          }
+          // 503 (provider circuit breaker) carries a human-written message —
+          // surface it directly instead of the raw dump.
+          if (res.status === 503 && friendly) {
+            setPhase({ kind: "error", message: friendly });
+            return;
+          }
+          throw new Error(`build failed (${res.status}): ${friendly ?? txt}`);
         }
         setAgentDone(true);
       } catch (e) {
@@ -89,6 +116,52 @@ export function BuildPreviewClient({
     setAgentDone(false);
     setBuildKey((k) => k + 1);
   };
+
+  if (phase.kind === "limit") {
+    return (
+      <main className="mx-auto flex min-h-[70vh] max-w-[560px] flex-col items-center justify-center px-6 py-16 text-center">
+        <div className="orb mx-auto mb-6 h-14 w-14" aria-hidden />
+        <div className="mb-2 font-mono text-[11px] uppercase tracking-[0.18em] text-accent-text">
+          Plan limit
+        </div>
+        <h1 className="font-display text-[24px] font-semibold tracking-tight text-ink">
+          You&apos;ve used this month&apos;s builds
+        </h1>
+        <p className="mt-3 max-w-[46ch] text-[14px] leading-relaxed text-muted">{phase.message}</p>
+        <a
+          href="/billing"
+          className="mt-6 rounded-md bg-accent px-5 py-2.5 text-[14px] font-semibold text-accent-ink transition-all hover:brightness-110"
+        >
+          See plans →
+        </a>
+      </main>
+    );
+  }
+
+  if (phase.kind === "busy") {
+    return (
+      <main className="mx-auto flex min-h-[70vh] max-w-[560px] flex-col items-center justify-center px-6 py-16 text-center">
+        <div className="orb orb-spin mx-auto mb-6 h-14 w-14" aria-hidden />
+        <div className="mb-2 font-mono text-[11px] uppercase tracking-[0.18em] text-accent-text">
+          Build in progress
+        </div>
+        <h1 className="font-display text-[24px] font-semibold tracking-tight text-ink">
+          Another build is already running
+        </h1>
+        <p className="mt-3 max-w-[46ch] text-[14px] leading-relaxed text-muted">
+          {phase.message} One build runs at a time per account — this one starts
+          the moment it finishes.
+        </p>
+        <button
+          type="button"
+          onClick={retry}
+          className="mt-6 rounded-md bg-accent px-5 py-2.5 text-[14px] font-semibold text-accent-ink transition-all hover:brightness-110"
+        >
+          Check again
+        </button>
+      </main>
+    );
+  }
 
   if (phase.kind === "error") {
     return (
