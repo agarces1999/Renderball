@@ -18,11 +18,31 @@ const nextConfig = {
   async headers() {
     return [
       {
+        // Global security baseline (launch audit): HSTS, no referrer leakage,
+        // clickjacking protection, no MIME sniffing — app-wide.
+        // frame-ancestors 'self' still allows the preview/editor's same-origin
+        // scene iframes. A full CSP is deferred deliberately: the generated
+        // compositions inline styles/fonts/images by design, so a strict
+        // policy needs its own allowlist pass.
+        source: "/:path*",
+        headers: [
+          { key: "Strict-Transport-Security", value: "max-age=63072000; includeSubDomains" },
+          { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+          { key: "X-Content-Type-Options", value: "nosniff" },
+          { key: "Content-Security-Policy", value: "frame-ancestors 'self'" },
+        ],
+      },
+      {
         // User-uploaded brand assets are served straight from public/uploads.
-        // Stop the browser from MIME-sniffing them into an executable type;
-        // pairs with the magic-byte whitelist in lib/uploads.ts.
+        // Stop the browser from MIME-sniffing them into an executable type
+        // (pairs with the magic-byte whitelist in lib/uploads.ts), and sandbox
+        // them — an uploaded SVG can carry inline script; on the app origin
+        // that is stored XSS without this.
         source: "/uploads/:path*",
-        headers: [{ key: "X-Content-Type-Options", value: "nosniff" }],
+        headers: [
+          { key: "X-Content-Type-Options", value: "nosniff" },
+          { key: "Content-Security-Policy", value: "default-src 'none'; style-src 'unsafe-inline'; sandbox" },
+        ],
       },
     ];
   },

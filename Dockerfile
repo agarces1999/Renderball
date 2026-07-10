@@ -48,4 +48,7 @@ RUN npx remotion browser ensure || true
 
 EXPOSE 3000
 ENV PORT=3000
-CMD ["npm", "run", "start"]
+# Run pending Prisma migrations against DATABASE_URL before serving — the
+# image previously only ran `prisma generate`, so schema changes (e.g. the
+# ScriptDoc migration) never reached prod Neon via any automated path.
+CMD ["sh", "-c", "npx prisma migrate deploy && npm run start"]

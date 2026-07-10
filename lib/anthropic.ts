@@ -69,7 +69,19 @@ export const getAnthropic = (): Anthropic => {
     baseURL = v || undefined;
   } catch { /* no .env.local */ }
   if (!baseURL) baseURL = process.env.ANTHROPIC_BASE_URL?.trim() || undefined;
-  console.warn(`[anthropic] client baseURL=${baseURL ?? "(default anthropic)"} keyTail=${apiKey.slice(-4)}`);
+  // Production boot assertion (launch audit): the stack is GLM-only — a
+  // missing ANTHROPIC_BASE_URL makes the SDK silently target api.anthropic.com
+  // with a z.ai key, and every build fails with a confusing upstream auth
+  // error. Fail loudly and instantly instead.
+  if (!baseURL && process.env.NODE_ENV === "production") {
+    throw new Error(
+      "ANTHROPIC_BASE_URL is not set — production requires the z.ai endpoint (the stack is GLM-only). Set it in the deploy environment.",
+    );
+  }
+  // Partial key material does not belong in production stdout/log aggregation.
+  if (process.env.NODE_ENV !== "production") {
+    console.warn(`[anthropic] client baseURL=${baseURL ?? "(default anthropic)"} keyTail=${apiKey.slice(-4)}`);
+  }
   // GLM/z.ai reliability (LOCAL): long client timeout (z.ai recommends ~50min)
   // so a slow max-effort generation isn't aborted by the SDK, and maxRetries so
   // a transient connection abort (undici idle ETIMEDOUT mid-stream) is retried
