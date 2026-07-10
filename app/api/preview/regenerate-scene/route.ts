@@ -7,6 +7,7 @@ import {
   saveScript,
 } from "../../../../lib/store";
 import { getCurrentUser } from "../../../../lib/auth";
+import { assertZaiAvailable, ZaiUnavailableError } from "../../../../lib/zai-breaker";
 import {
   regenerateScene,
   buildAgentInputFromBrief,
@@ -38,6 +39,17 @@ export async function POST(request: Request) {
   const user = await getCurrentUser();
   if (!user) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  }
+
+  // Balance circuit breaker — scene regen is real LLM spend (2 passes); fail
+  // fast and friendly while the z.ai account is dry.
+  try {
+    assertZaiAvailable();
+  } catch (err) {
+    if (err instanceof ZaiUnavailableError) {
+      return NextResponse.json({ error: err.friendly }, { status: 503 });
+    }
+    throw err;
   }
 
   let body: { scriptId?: string; sceneIndex?: number; instruction?: string };

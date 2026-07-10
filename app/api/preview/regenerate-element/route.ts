@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import path from "path";
 import { getCurrentUser } from "../../../../lib/auth";
+import { assertZaiAvailable, ZaiUnavailableError } from "../../../../lib/zai-breaker";
 import { loadScript } from "../../../../lib/store";
 import { regenerateElement } from "../../../../lib/edit/regenerate-element";
 
@@ -20,6 +21,17 @@ export async function POST(request: Request) {
   const user = await getCurrentUser();
   if (!user) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  }
+
+  // Balance circuit breaker — element regen is LLM spend; fail fast and
+  // friendly while the z.ai account is dry.
+  try {
+    assertZaiAvailable();
+  } catch (err) {
+    if (err instanceof ZaiUnavailableError) {
+      return NextResponse.json({ error: err.friendly }, { status: 503 });
+    }
+    throw err;
   }
 
   let body: {

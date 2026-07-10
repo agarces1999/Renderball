@@ -15,6 +15,7 @@ import { ulid } from "../ulid";
 import { type Usage, EMPTY_USAGE, usageOf, addUsage } from "../usage";
 import type { Script } from "../../src/schema";
 import type { DesignLanguage } from "../../app/new/schema";
+import { noteZaiError, noteZaiSuccess } from "../zai-breaker";
 
 /**
  * The agent-facing brief. Mirrors actions.ts BriefInput but doesn't
@@ -283,11 +284,13 @@ export const generateScript = async (
           .finalMessage(),
       );
     } catch (err) {
+      noteZaiError(err); // trips the balance breaker on [1113] — fast-fails later callers
       return {
         ok: false,
         error: `Anthropic API error: ${err instanceof Error ? err.message : String(err)}`,
       };
     }
+    noteZaiSuccess();
 
     totalUsage = addUsage(totalUsage, usageOf(response.usage));
 

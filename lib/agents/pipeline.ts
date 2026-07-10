@@ -5,6 +5,7 @@ import { stripCodeFence, verifyCompilable, repairCompile, elideDataUrisOutsideSe
 import { extractSection, replaceSection, sectionRange } from "./section-splice";
 import { applyChoreography, throughlineAnchorFor } from "./choreograph";
 import { AdaptiveGate, mapWithGate, isOverloadSignal } from "./adaptive-gate";
+import { noteZaiError, noteZaiSuccess } from "../zai-breaker";
 import { exemplarPromptBlock } from "./exemplars";
 import {
   densityFailuresByScene,
@@ -441,7 +442,9 @@ async function streamBuildCall<T>(
   for (let i = 1; i <= attempts; i++) {
     const t0 = Date.now();
     try {
-      return await withStallCeiling(label, fn());
+      const result = await withStallCeiling(label, fn());
+      noteZaiSuccess(); // closes a half-open balance breaker
+      return result;
     } catch (err) {
       lastErr = err;
       try {
@@ -449,6 +452,10 @@ async function streamBuildCall<T>(
       } catch {
         /* a listener must never break the retry ladder */
       }
+      // Balance exhaustion ([1113]) is an ACCOUNT state — retrying is pure
+      // waste and every other in-flight call is about to hit the same wall.
+      // Trip the circuit and abort this ladder immediately.
+      if (noteZaiError(err)) throw err;
       const elapsedS = Math.round((Date.now() - t0) / 1000);
       const transient = isTransientNetErr(err);
       // Always log the full cause chain + elapsed so we can correlate drops with

@@ -24,6 +24,7 @@ import { callZaiVision, callZaiText } from "./zai-vision";
 import { recordUsage, costUsd, addUsage, EMPTY_USAGE } from "../usage";
 import { tallyGateFires, recordGateTelemetry } from "./gate-telemetry";
 import { recordMeteredUsage } from "../entitlement";
+import { assertZaiAvailable, ZaiUnavailableError } from "../zai-breaker";
 
 export type BuildRouteResult = {
   status: number;
@@ -49,6 +50,17 @@ export async function runPreviewBuild(
   scriptId: string,
   ownerId: string,
 ): Promise<BuildRouteResult> {
+  // Balance circuit breaker (the twice-proven [1113] outage): while the z.ai
+  // account is dry, fail fast with a friendly message BEFORE any spend or
+  // quota consumption — never burn a customer's build slot on a dead account.
+  try {
+    assertZaiAvailable();
+  } catch (err) {
+    if (err instanceof ZaiUnavailableError) {
+      return { status: 503, body: { error: err.friendly } };
+    }
+    throw err;
+  }
   const buildT0 = Date.now();
   const script = await loadScript(scriptId, ownerId);
   if (!script) {

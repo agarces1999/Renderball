@@ -7,6 +7,7 @@ import { generateScript } from "../../lib/agents/script-generator";
 import { saveBriefFiles } from "../../lib/uploads";
 import { brandKitStatus } from "../../lib/brand-kit";
 import { checkEntitlement, recordMeteredUsage } from "../../lib/entitlement";
+import { assertZaiAvailable, ZaiUnavailableError } from "../../lib/zai-breaker";
 import { extractBrand } from "../../lib/crawl/extract-brand";
 
 /** "NeueMontreal-Medium.woff2" → "Neue Montreal Medium" — a readable family
@@ -94,6 +95,15 @@ export async function submitBrief(
   const user = await getCurrentUser();
   if (!user) {
     return { ok: false, error: "Please sign in to create a video." };
+  }
+
+  // Balance circuit breaker — while the z.ai account is dry, fail fast and
+  // friendly BEFORE consuming the user's generate slot or starting the crawl.
+  try {
+    assertZaiAvailable();
+  } catch (err) {
+    if (err instanceof ZaiUnavailableError) return { ok: false, error: err.friendly };
+    throw err;
   }
 
   // Metering gate (LAUNCH.md #4) — fail-closed BEFORE the crawl/script spend.
