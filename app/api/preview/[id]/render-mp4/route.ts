@@ -65,11 +65,16 @@ export async function POST(
     // re-run the agents and write a fresh one as part of its pass).
   }
 
-  const result = await renderBriefToMp4(brief, renderScript);
+  // disallowRebuild: exports render exactly the previewed composition. A
+  // reuse miss (script drifted) returns 409 "run a build first" instead of
+  // silently re-running the full Agent-2 pipeline — this route checked auth
+  // but not entitlement, making it an unmetered ~$1-2 LLM spend path.
+  const result = await renderBriefToMp4(brief, renderScript, { disallowRebuild: true });
   if (!result.ok) {
+    const status = result.stage === "stale-preview" ? 409 : 500;
     return NextResponse.json(
       { error: `${result.stage ?? "render"}: ${result.error}` },
-      { status: 500 },
+      { status },
     );
   }
   return NextResponse.json({

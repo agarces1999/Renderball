@@ -8,6 +8,7 @@ import {
 } from "../../../../lib/store";
 import { getCurrentUser } from "../../../../lib/auth";
 import { assertZaiAvailable, ZaiUnavailableError } from "../../../../lib/zai-breaker";
+import { takeRegenSlot } from "../../../../lib/edit/op-cap";
 import {
   regenerateScene,
   buildAgentInputFromBrief,
@@ -50,6 +51,16 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: err.friendly }, { status: 503 });
     }
     throw err;
+  }
+
+  // Per-owner hourly cap — this route checks auth but not entitlement, so a
+  // scripted loop was unbounded GLM spend (launch audit P0).
+  const cap = takeRegenSlot(user.id);
+  if (!cap.allowed) {
+    return NextResponse.json(
+      { error: `Regeneration limit reached for this hour — try again in ~${cap.retryAfterMin} min.` },
+      { status: 429 },
+    );
   }
 
   let body: { scriptId?: string; sceneIndex?: number; instruction?: string };

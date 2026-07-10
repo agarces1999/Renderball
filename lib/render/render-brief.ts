@@ -44,7 +44,7 @@ import {
  * specific error UI per stage (Agent 2 failed vs bundle failed vs
  * renderMedia failed).
  */
-export type RenderStage = "agent2" | "bundle" | "render";
+export type RenderStage = "agent2" | "bundle" | "render" | "stale-preview";
 
 export type RenderBriefResult =
   | { ok: true; url: string; warnings?: BuildWarnings }
@@ -109,6 +109,14 @@ const tryReuseGenerated = async (
 export const renderBriefToMp4 = async (
   brief: StoredBrief,
   script: Script,
+  opts?: {
+    /** When true (the customer render route), a reuse MISS returns a clear
+     *  "run a build first" error instead of silently re-running the full
+     *  Agent-2 pipeline — the render button was an UNMETERED ~$1-2 LLM spend
+     *  path whenever the script had drifted from the previewed composition
+     *  (launch audit P0). Reuse-path renders are encode-only and stay free. */
+    disallowRebuild?: boolean;
+  },
 ): Promise<RenderBriefResult> => {
   if (!brief.script_id) {
     return { ok: false, error: "brief.script_id is required" };
@@ -143,6 +151,14 @@ export const renderBriefToMp4 = async (
       "utf-8",
     );
   } else {
+    if (opts?.disallowRebuild) {
+      return {
+        ok: false,
+        error:
+          "The script has changed since the last preview build — run a new preview build first, then export. (Exports render exactly the composition you previewed.)",
+        stage: "stale-preview",
+      };
+    }
     const agentResult = await buildAnimatedSections(
       buildAgentInputFromBrief(brief, script),
     );
