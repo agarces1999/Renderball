@@ -22,7 +22,7 @@ await check("starts wide open at max", () => {
 });
 
 await check("overload halves; floors at min 1; success recovers +1 to max", () => {
-  const g = new AdaptiveGate(8);
+  const g = new AdaptiveGate(8, 1, 0); // debounce 0: exercise consecutive shrinks
   g.overload();
   assert(g.width === 4, `8→4, got ${g.width}`);
   g.overload();
@@ -83,9 +83,21 @@ await check("mapWithGate: window of 1 still completes everything (no stall)", as
 await check("isOverloadSignal: overload shapes yes; balance + network no", () => {
   assert(isOverloadSignal(new Error('429 {"type":"error","error":{"type":"overloaded_error","code":"500"}}')), "overloaded_error");
   assert(isOverloadSignal(new Error("[1305] 该模型当前访问量过大")), "capacity 1305");
+  // [1302] is z.ai's ACTUAL account-concurrency throttle — the one error that
+  // genuinely means "you personally are sending too much".
+  assert(isOverloadSignal(new Error('429 [1302] Rate limit reached for requests')), "account throttle 1302");
   assert(!isOverloadSignal(new Error("[1113][Insufficient balance or no resource package]")), "balance is NOT load — shrinking cannot fix it");
   assert(!isOverloadSignal(new Error("read ETIMEDOUT")), "network timeout is not an overload signal");
   assert(!isOverloadSignal(new Error("getaddrinfo ENOTFOUND api.z.ai")), "DNS death is not an overload signal");
+});
+
+await check("debounce: a burst of signals from one incident causes ONE halving", () => {
+  const g = new AdaptiveGate(8);
+  g.overload(); // 8 → 4
+  g.overload(); // same incident window — ignored
+  g.overload(); // ignored
+  assert(g.width === 4, `one incident = one halving, got ${g.width}`);
+  assert(g.overloads === 1, `one shrink recorded, got ${g.overloads}`);
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

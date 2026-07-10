@@ -27,6 +27,10 @@ export class AdaptiveGate {
   constructor(
     readonly max: number,
     readonly min = 1,
+    /** Cooldown after a halving before another shrink is allowed (one platform
+     *  incident errors several streams at once — one incident, one halving).
+     *  Tests pass 0 to exercise consecutive shrinks. */
+    private readonly shrinkDebounceMs = AdaptiveGate.SHRINK_DEBOUNCE_MS,
   ) {
     this.capacity = Math.max(min, max);
   }
@@ -48,11 +52,20 @@ export class AdaptiveGate {
     this.wake();
   }
 
+  private lastShrinkAt = 0;
+  /** Debounce window after a halving: one platform blip can error several
+   *  in-flight streams near-simultaneously, and without a cooldown a single
+   *  incident cascades 8→4→2→1 in one breath. */
+  static readonly SHRINK_DEBOUNCE_MS = 15_000;
+
   /** Multiplicative decrease on an overload signal from any in-flight call. */
   overload(): void {
+    const now = Date.now();
+    if (now - this.lastShrinkAt < this.shrinkDebounceMs) return; // same incident
     const next = Math.max(this.min, Math.floor(this.capacity / 2));
     if (next < this.capacity) {
       this.overloads += 1;
+      this.lastShrinkAt = now;
       console.warn(`[adaptive-gate] overload signal — window ${this.capacity} → ${next}`);
       this.capacity = next;
     }
@@ -80,10 +93,15 @@ export class AdaptiveGate {
 }
 
 /** Error shapes that mean "you are sending too much at once" — the only
- *  signals that should shrink the window. Balance ([1113]) excluded. */
+ *  signals that should shrink the window (per the 2026-07-10 z.ai error-code
+ *  research): overloaded_error (platform capacity, any HTTP status — z.ai
+ *  wraps it as 500, Anthropic semantics say 529), 429 [1305] (model
+ *  congestion), and 429 [1302] "Rate limit reached" — z.ai's ACTUAL
+ *  account-concurrency throttle. Balance ([1113]) and local network faults
+ *  (ETIMEDOUT/ENOTFOUND) are excluded: shedding load fixes neither. */
 export const isOverloadSignal = (err: unknown): boolean => {
   const msg = err instanceof Error ? `${err.message} ${String((err as Error & { cause?: unknown }).cause ?? "")}` : String(err);
-  return /overloaded_error|overloaded|\[1305\]|too many concurrent|concurrency limit/i.test(msg);
+  return /overloaded_error|overloaded|\[1305\]|\[1302\]|Rate limit reached|too many concurrent|concurrency limit/i.test(msg);
 };
 
 /**
