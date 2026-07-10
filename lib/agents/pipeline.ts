@@ -5,6 +5,7 @@ import { stripCodeFence, verifyCompilable, repairCompile, elideDataUrisOutsideSe
 import { extractSection, replaceSection, sectionRange } from "./section-splice";
 import { applyChoreography, throughlineAnchorFor } from "./choreograph";
 import { AdaptiveGate, mapWithGate, isOverloadSignal } from "./adaptive-gate";
+import { fillLimiter } from "./account-limiter";
 import { noteZaiError, noteZaiSuccess } from "../zai-breaker";
 import { exemplarPromptBlock } from "./exemplars";
 import {
@@ -1496,13 +1497,18 @@ export const buildAnimatedSections = async (
       const gate = new AdaptiveGate(
         Number.isFinite(envCap) && envCap >= 1 ? Math.floor(envCap) : sceneIndices.length,
       );
+      // Two layers on purpose: the AdaptiveGate reacts to overload signals
+      // WITHIN this build; fillLimiter is the hard process-wide ceiling so
+      // concurrent builds can't jointly exceed the z.ai ACCOUNT throttle.
       const settled = await mapWithGate(sceneIndices, gate, (i) =>
-        fillSectionBlock(client, MODELS.codingAgentBuild, input, scaffoldCode, i, {
-          ...fillCtx,
-          onAttemptError: (err) => {
-            if (isOverloadSignal(err)) gate.overload();
-          },
-        }),
+        fillLimiter.with(() =>
+          fillSectionBlock(client, MODELS.codingAgentBuild, input, scaffoldCode, i, {
+            ...fillCtx,
+            onAttemptError: (err) => {
+              if (isOverloadSignal(err)) gate.overload();
+            },
+          }),
+        ),
       );
       if (gate.overloads > 0) {
         console.warn(
@@ -1528,7 +1534,9 @@ export const buildAnimatedSections = async (
       for (let i = 0; i < blocks.length; i++) {
         if (blocks[i]) continue;
         console.warn(`[pipeline] backfilling scene ${i} (fill returned no section on the first round)`);
-        const retry = await fillSectionBlock(client, MODELS.codingAgentBuild, input, scaffoldCode, i, fillCtx);
+        const retry = await fillLimiter.with(() =>
+          fillSectionBlock(client, MODELS.codingAgentBuild, input, scaffoldCode, i, fillCtx),
+        );
         extraDesignUsage = addUsage(extraDesignUsage, retry.usage);
         if (retry.block) blocks[i] = retry.block;
       }
