@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { DEV_OWNER_ID } from "../../../../lib/auth";
 import { runPreviewBuild } from "../../../../lib/render/run-preview-build";
+import { runBuildLocked } from "../../../../lib/render/build-lock";
 
 /**
  * Dev-only build route — the headless counterpart to /api/preview/build.
@@ -32,6 +33,18 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "scriptId required" }, { status: 400 });
   }
 
-  const result = await runPreviewBuild(scriptId, DEV_OWNER_ID);
+  // Same dedup lock as the product route: a harness whose HTTP client died
+  // (the undici 300s headersTimeout incident) can re-POST and ATTACH to the
+  // in-flight build instead of silently starting a second, double-spending one.
+  const locked = await runBuildLocked(scriptId, DEV_OWNER_ID, () =>
+    runPreviewBuild(scriptId, DEV_OWNER_ID),
+  );
+  if (locked.kind === "owner-busy") {
+    return NextResponse.json(
+      { error: "another dev build is already running for a different script" },
+      { status: 409 },
+    );
+  }
+  const result = locked.result;
   return NextResponse.json(result.body, { status: result.status });
 }

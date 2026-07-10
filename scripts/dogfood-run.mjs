@@ -20,13 +20,20 @@
  */
 import { spawn } from "node:child_process";
 import path from "node:path";
-import { promises as fs } from "node:fs";
+import { promises as fs, openSync } from "node:fs";
+import { Agent } from "undici";
 
 const root = process.cwd();
 const PORT = process.env.PORT || "3000";
 const base = `http://localhost:${PORT}`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const out = (o) => console.log(JSON.stringify(o, null, 2));
+
+// Node's fetch enforces undici's DEFAULT 300s headersTimeout regardless of the
+// AbortSignal you pass — the 2026-07-10 HubSpot timing run died at exactly
+// 300.0s while the build kept running server-side. This dispatcher removes the
+// hidden ceiling; the explicit per-call AbortSignal stays the real timeout.
+const longPollDispatcher = new Agent({ headersTimeout: 0, bodyTimeout: 0 });
 
 // Stills + manifest persistence — shared by the full run and --stills-only.
 // dogfood-stills.mjs prints its manifest (per-scene max-ink frame, candidates,
@@ -139,10 +146,15 @@ const serverUp = async () => {
   }
 };
 if (!(await serverUp())) {
+  // Capture the server's output — with stdio:"ignore" every [pipeline]/[timeline]
+  // log evaporated, which is exactly what made the 57-min HubSpot build
+  // unattributable. Appends so successive runs share one log.
+  await fs.mkdir(path.join(root, ".data"), { recursive: true });
+  const devLog = openSync(path.join(root, ".data", "dev-server.log"), "a");
   const child = spawn("npm", ["run", "dev"], {
     cwd: root,
     detached: true,
-    stdio: "ignore",
+    stdio: ["ignore", devLog, devLog],
     env: process.env,
   });
   child.unref();
@@ -164,6 +176,7 @@ const postJson = async (route, body, timeoutMs) => {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(timeoutMs),
+    dispatcher: longPollDispatcher,
   });
   return res.json();
 };
@@ -191,7 +204,9 @@ const scriptId = gen.scriptId;
 // route (NODE_ENV-gated, sessionless — same runPreviewBuild underneath).
 let build;
 try {
-  build = await postJson("/api/dev/build", { scriptId }, 560_000);
+  // 90-min ceiling: measured builds run up to ~57 min (HubSpot 2026-07-10);
+  // the old 560s cap would abort the harness while the build kept spending.
+  build = await postJson("/api/dev/build", { scriptId }, 5_400_000);
 } catch (e) {
   out({ ok: false, stage: "build", url: brand.url, scriptId, error: String(e) });
   process.exit(1);

@@ -25,6 +25,7 @@ import { recordUsage, costUsd, addUsage, EMPTY_USAGE } from "../usage";
 import { tallyGateFires, recordGateTelemetry } from "./gate-telemetry";
 import { recordMeteredUsage } from "../entitlement";
 import { assertZaiAvailable, ZaiUnavailableError } from "../zai-breaker";
+import { BuildTimeline } from "../agents/build-timeline";
 
 export type BuildRouteResult = {
   status: number;
@@ -70,8 +71,13 @@ export async function runPreviewBuild(
   const brief = await loadBriefByScriptId(scriptId, ownerId);
   // brief is optional — without it the agents fall back to empty brand context.
 
+  // Phase-boundary clock, persisted as <genDir>/build-timeline.json at the
+  // end — the 57-min HubSpot run was unattributable because the only phase
+  // data lived in discarded console logs. Never again.
+  const timeline = new BuildTimeline();
   const result = await buildAnimatedSections(
     buildAgentInputFromBrief(brief, script),
+    { timeline },
   );
 
   if (!result.ok) {
@@ -101,6 +107,17 @@ export async function runPreviewBuild(
   // writer — IDENTICAL layout to the MP4 path, so "Render to MP4" reuses this
   // exact composition rather than rebuilding a different one.
   const genDir = path.join(process.cwd(), "src", "generated", scriptId);
+  // Persist the phase timeline (best-effort, on success AND failure paths) so
+  // wall-clock attribution survives lost consoles and dead HTTP clients.
+  const persistTimeline = async () => {
+    try {
+      const { promises: fsp } = await import("fs");
+      await fsp.writeFile(
+        path.join(genDir, "build-timeline.json"),
+        JSON.stringify(timeline.toJSON(), null, 2),
+      );
+    } catch { /* attribution is never worth failing a build over */ }
+  };
   await writeGeneratedFiles(genDir, {
     designCode: result.designCode,
     code: result.code,
@@ -249,7 +266,7 @@ export async function runPreviewBuild(
               : sc,
           ),
         };
-        const rb = await buildAnimatedSections(buildAgentInputFromBrief(brief, lighter));
+        const rb = await buildAnimatedSections(buildAgentInputFromBrief(brief, lighter), { timeline });
         if (!rb.ok) {
           if (rb.usage) currentUsage = addUsage(currentUsage, rb.usage);
           return { ok: false, usage: rb.usage, error: rb.error };
@@ -267,7 +284,12 @@ export async function runPreviewBuild(
     { spentSoFarUsd: costUsd(model, result.usage), model },
   );
 
+  timeline.mark(
+    `gate:render-truth:${repair.ok ? "passed" : repair.reason} (${repair.steps.length} step(s))`,
+  );
+
   if (!repair.ok) {
+    await persistTimeline();
     console.error(
       `[preview/build] render-truth gate FAILED (${repair.reason}) after $${repair.spentUsd.toFixed(2)}:`,
       JSON.stringify(repair.blocking),
@@ -472,6 +494,9 @@ export async function runPreviewBuild(
       }
     }
   }
+
+  timeline.mark(`gate:vision:${visionRan ? `done (${visionFindings.length} finding(s))` : "skipped"}`);
+  await persistTimeline();
 
   // Persist vision findings beside the other warnings so the dashboard/report and
   // the calibration telemetry see them (they previously lived only in the HTTP

@@ -6,6 +6,7 @@ import { extractSection, replaceSection, sectionRange } from "./section-splice";
 import { applyChoreography, throughlineAnchorFor } from "./choreograph";
 import { AdaptiveGate, mapWithGate, isOverloadSignal } from "./adaptive-gate";
 import { fillLimiter } from "./account-limiter";
+import { BuildTimeline } from "./build-timeline";
 import { noteZaiError, noteZaiSuccess } from "../zai-breaker";
 import { exemplarPromptBlock } from "./exemplars";
 import {
@@ -1115,9 +1116,12 @@ export const regenerateScene = async (
 
 export const buildAnimatedSections = async (
   rawInput: BuildInput,
-  options?: { skipRetries?: boolean },
+  options?: { skipRetries?: boolean; timeline?: BuildTimeline },
 ): Promise<BuildResult> => {
   const skipRetries = options?.skipRetries === true;
+  // Phase-boundary clock (see lib/agents/build-timeline.ts). Callers that
+  // persist it pass their own; otherwise a local one still logs live.
+  const timeline = options?.timeline ?? new BuildTimeline();
   // Re-apply customer-logo / partner-grid filters at READ time so old
   // briefs cached before F2 landed get clean data without re-crawl.
   const input: BuildInput = {
@@ -1447,6 +1451,7 @@ export const buildAnimatedSections = async (
     // monolithic pass in-process if the scaffold isn't spliceable — never ships
     // stubs.
     const sceneCount = input.script.scenes.length;
+    timeline.mark("design:scaffold:start");
     let scaffoldResponse: Awaited<ReturnType<typeof runDesign>>;
     try {
       scaffoldResponse = await runDesign([
@@ -1466,6 +1471,7 @@ export const buildAnimatedSections = async (
       scaffoldCode.includes("export") &&
       sectionsAreSpliceable(scaffoldCode, sceneCount);
 
+    timeline.mark("design:scaffold:done");
     if (!scaffoldSpliceable) {
       // Don't ship stubs — degrade explicitly to a whole-file monolithic pass.
       console.warn(
@@ -1509,6 +1515,9 @@ export const buildAnimatedSections = async (
             },
           }),
         ),
+      );
+      timeline.mark(
+        `design:fills:done (${sceneIndices.length} scenes, gate ${gate.width}/${gate.max}, ${gate.overloads} overload shrink(s))`,
       );
       if (gate.overloads > 0) {
         console.warn(
@@ -1554,6 +1563,7 @@ export const buildAnimatedSections = async (
         else fillWarnings.push(`scene ${i}: fill produced but did not splice — kept blank stub`);
       }
       designCode = assembled;
+      timeline.mark("design:backfill+assembled");
       if (fillWarnings.length > 0) {
         // Blank stubs will trip density/fill gates → the scoped design retry
         // (STAGE 5) regenerates them, so this is a soft signal, not a failure.
@@ -1562,6 +1572,7 @@ export const buildAnimatedSections = async (
     }
   }
 
+  timeline.mark("gates:structural:start");
   // Quality gate: count headlines / paragraphs / SVGs per section. If
   // the output is sparse, retry once with a specific failure message.
   // STRUCTURAL failures (crash / broken-looking — invented claims, severe
@@ -2049,6 +2060,7 @@ export const buildAnimatedSections = async (
       "[pipeline] parallel: deterministic choreographer applied (skipped the whole-file animation pass)",
     );
   }
+  timeline.mark("motion:done");
 
   // Dead-air quality gate: scan finite (forwards) animations per section.
   // If the latest delay in a section is < 60% of the section's duration,
@@ -2385,6 +2397,7 @@ export const buildAnimatedSections = async (
     };
   }
 
+  timeline.mark("pipeline:done");
   return {
     ok: true,
     code: finalCodeOut,
