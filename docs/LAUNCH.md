@@ -59,6 +59,41 @@ test suite green.
   magic bytes (PNG/JPEG/GIF/WebP/PDF/SVG) instead of trusting the client `file.type`,
   + `X-Content-Type-Options: nosniff` on `/uploads/*` ([next.config.js](../next.config.js)).
 
+## Adversarial infra audit — 2026-07-12 (24 findings fixed, commit e806ad1)
+
+A 7-dimension multi-agent audit of the launch infra, every finding verified by
+an independent skeptic panel before the fix landed. Highlights:
+
+- **Stripe** — resubscribe-after-cancel no longer strands a paying customer on
+  `free` (webhook upserts the Subscription by `userId`, not the changing
+  `stripeSubscriptionId`; permanent constraint errors ack so Stripe stops
+  retrying); checkout blocks a second live subscription; account deletion
+  cancels the live subscription first.
+- **GDPR** — an in-flight build/render can no longer resurrect a deleted user's
+  script JSON or MP4 (owner-existence guards in `saveScript` + `render-brief`);
+  R2 failures no longer abort the observable DB deletion.
+- **Security** — SVG uploads on the production `/api/assets` path now carry a
+  locked-down CSP + attachment disposition (the `next.config` sandbox only
+  covered `/uploads`).
+- **Resilience** — `withDbRetry` absorbs Neon scale-to-zero cold-wakes (the
+  first request after idle was 500ing); `getCurrentUser` + `submitBrief`
+  fail friendly instead of crashing/losing spend. **Set
+  `connect_timeout=15` on `DATABASE_URL`.**
+- **Delivery** — `/videos` shows finished MP4s on a fresh container (keyed on
+  the `Render` row); `/api/renders` supports HTTP Range so Safari/iOS video
+  plays.
+- **Deploy** — the Dockerfile now hard-verifies Playwright Chromium (the
+  blocking render gate needs it) and pre-fetches Remotion's browser via the
+  real node API.
+
+## Build performance (measured 2026-07-12, launch config)
+
+Instrumented 5-scene HubSpot build: generate ~2 min · scaffold ~6 min ·
+parallel fills ~16 min (**0 z.ai overloads** — concurrency machinery validated)
+· structural gates + scoped LLM retries ~15 min · render-truth + vision ~1 min.
+**Total ~37 min.** Every build now writes `build-timeline.json` for phase
+attribution. The optimization lever is the gate-retry phase, not the fills.
+
 ## Data model of record
 
 [prisma/schema.prisma](../prisma/schema.prisma) — `User / Subscription / Project /
