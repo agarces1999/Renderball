@@ -174,7 +174,7 @@ export async function POST(request: Request) {
   // Mark scene as regenerated so downstream code can track freshness.
   (script.scenes[sceneIndex] as unknown as Record<string, string>).regenerated_at =
     new Date().toISOString();
-  await saveScript(script);
+  await saveScript(script, user.id);
 
   return NextResponse.json({
     ok: true,

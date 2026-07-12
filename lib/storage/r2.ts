@@ -120,10 +120,19 @@ export const deletePrefix = async (prefix: string): Promise<number> => {
     );
     const keys = (page.Contents ?? []).map((o) => ({ Key: o.Key as string }));
     if (keys.length > 0) {
-      await c.send(
+      const res = await c.send(
         new DeleteObjectsCommand({ Bucket: bucket, Delete: { Objects: keys } }),
       );
-      deleted += keys.length;
+      // DeleteObjects is partial-success: S3/R2 reports per-key Errors while
+      // returning 200. Count only Deleted, and throw on any Error so the caller
+      // (delete-user's per-prefix guard) records this prefix as unswept rather
+      // than reporting phantom deletions.
+      deleted += res.Deleted?.length ?? 0;
+      if (res.Errors && res.Errors.length > 0) {
+        throw new Error(
+          `DeleteObjects left ${res.Errors.length} object(s) under "${prefix}" (${res.Errors[0]?.Code}: ${res.Errors[0]?.Message})`,
+        );
+      }
     }
     token = page.IsTruncated ? page.NextContinuationToken : undefined;
   } while (token);

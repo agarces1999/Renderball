@@ -4,7 +4,7 @@ import { promises as fs } from "fs";
 import path from "path";
 import { getCurrentUser } from "../../lib/auth";
 import { listBriefsByOwner, type BriefStatus, type StoredBrief } from "../../lib/store";
-import { objectExists, renderKey } from "../../lib/storage/r2";
+import { prisma } from "../../lib/db";
 import { AppShellServer } from "../../components/AppShellServer";
 import { ProjectThumb } from "../../components/ProjectThumb";
 
@@ -59,6 +59,18 @@ export default async function VideosPage() {
   if (!user) redirect("/");
   const briefs = await listBriefsByOwner(user.id);
 
+  // Durable-render set: which projects have a completed Render row. This is the
+  // source of truth for "a finished MP4 exists" — local disk is only a warm
+  // cache (wiped on redeploy), and brief.status is never set to "rendered".
+  // One indexed query for the whole gallery (no per-card R2 HEAD).
+  const renderedProjectIds = new Set(
+    (
+      await prisma.render
+        .findMany({ where: { ownerId: user.id, status: "complete" }, select: { projectId: true } })
+        .catch(() => [])
+    ).map((r) => r.projectId),
+  );
+
   const cards: Card[] = await Promise.all(
     briefs.map(async (brief): Promise<Card> => {
       // Fall back to 16:9 for legacy briefs whose stored format isn't one of
@@ -74,13 +86,9 @@ export default async function VideosPage() {
           path.join(process.cwd(), "src", "generated", sid, "Composition.tsx"),
         ),
       ]);
-      // Local disk is a warm cache; R2 is the durable truth. On a fresh
-      // container the disk is empty but the user's MP4s are all in R2 — the
-      // gallery must still show them (HEAD only runs when the disk misses,
-      // and only for rendered briefs, so a cold gallery costs a few HEADs).
-      const hasMp4 =
-        hasLocalMp4 ||
-        (brief.status === "rendered" && (await objectExists(renderKey(sid))));
+      // Show the MP4 if it's on the warm local disk OR a completed Render row
+      // proves it's durably in R2 (survives a fresh container).
+      const hasMp4 = hasLocalMp4 || renderedProjectIds.has(brief.id);
       return {
         brief,
         aspect,

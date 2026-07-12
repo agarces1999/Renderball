@@ -231,7 +231,21 @@ const pgLoadBriefByScriptId = async (
   return row ? (row.brief as unknown as StoredBrief) : null;
 };
 
-const pgSaveScript = async (script: Script): Promise<void> => {
+const pgSaveScript = async (script: Script, ownerId?: string): Promise<void> => {
+  // GDPR guard (audit 2026-07-12): ScriptDoc has no FK to Project, so a build /
+  // regen still in flight when the user deletes their account would UPSERT the
+  // script JSON back AFTER deleteUserData removed it — an orphan holding brand
+  // copy that no deletion path can reach again. When the caller knows the owner
+  // (every user-facing path does), refuse the write if that User is gone.
+  // customer_id can't be used here — it is a static "local-dev" placeholder,
+  // not the account id — so the owner must be threaded in explicitly.
+  if (ownerId) {
+    const owner = await prisma.user.findUnique({ where: { id: ownerId }, select: { id: true } });
+    if (!owner) {
+      console.warn(`[store] pgSaveScript: owner ${ownerId} no longer exists — skipping script ${script.id} (deleted mid-build?)`);
+      return;
+    }
+  }
   const json = script as unknown as Prisma.InputJsonValue;
   await prisma.scriptDoc.upsert({
     where: { id: script.id },
@@ -361,8 +375,14 @@ export const listBriefsByOwner = async (ownerId: string): Promise<StoredBrief[]>
   return all.filter((b) => b.owner_id === ownerId);
 };
 
-export const saveScript = async (script: Script): Promise<void> =>
-  backend() === "pg" ? pgSaveScript(script) : fileSaveScript(script);
+/**
+ * Persist a Script. Pass `ownerId` (the account, not the script's placeholder
+ * customer_id) so the pg backend can refuse a post-deletion resurrection write
+ * when the owner is gone — see pgSaveScript. Omit only where there is no owner
+ * (file backend / tests).
+ */
+export const saveScript = async (script: Script, ownerId?: string): Promise<void> =>
+  backend() === "pg" ? pgSaveScript(script, ownerId) : fileSaveScript(script);
 
 /**
  * Find the StoredBrief whose script_id matches the given scriptId.

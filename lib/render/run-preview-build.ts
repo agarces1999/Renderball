@@ -157,6 +157,8 @@ export async function runPreviewBuild(
       }
     }
     if (!renderCheck.ok) {
+      timeline.mark("gate:ssr-render:failed");
+      await persistTimeline();
       await recordUsage({ op: "build", model, scriptId, url: brief?.brand_kit_url, usage: currentUsage, failed: true });
     await recordMeteredUsage({
       ownerId,
@@ -254,15 +256,20 @@ export async function runPreviewBuild(
         // L3: surgically lighten ONLY the failing scenes' visual_concept and
         // rebuild — keeps the narrative + other scenes intact. In-memory + genDir
         // only, NEVER persisted to the canonical script.
+        // The directive text must follow `reason` — for a stranded hero the
+        // fix is a BIGGER, recomposed hero, not "fewer, smaller elements"
+        // (which the repair ladder already tailors in l3Reason). Only append
+        // the shrink guidance when the reason is about density/overflow.
+        const isStrandedReason = /hero|stranded|composer contract|recompose/i.test(reason);
+        const directive = isStrandedReason
+          ? `RECOMPOSE (must fit 1920×1080 — ${reason}): make the main visual a real hero — larger, anchored in the frame, vertically centered in its column; keep every element on-canvas.`
+          : `SIMPLIFY (must fit 1920×1080 — ${reason}): reduce to fewer, smaller elements; narrow or stack wide rows; NO element may extend off-canvas.`;
         const lighter = {
           ...currentScript,
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           scenes: currentScript.scenes.map((sc: any, i: number) =>
             sceneIndexes.includes(i)
-              ? {
-                  ...sc,
-                  visual_concept: `${sc.visual_concept}\n\nSIMPLIFY (must fit 1920×1080 — ${reason}): reduce to fewer, smaller elements; narrow or stack wide rows; NO element may extend off-canvas.`,
-                }
+              ? { ...sc, visual_concept: `${sc.visual_concept}\n\n${directive}` }
               : sc,
           ),
         };

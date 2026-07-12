@@ -1,7 +1,7 @@
 import { cache } from "react";
 import { auth, currentUser } from "@clerk/nextjs/server";
 import type { User } from "@prisma/client";
-import { prisma } from "./db";
+import { prisma, withDbRetry } from "./db";
 
 /**
  * Identity bridge: Clerk session → our Neon `User` row.
@@ -20,7 +20,10 @@ export const getCurrentUser = cache(async (): Promise<User | null> => {
   const { userId: clerkId } = await auth();
   if (!clerkId) return null;
 
-  const existing = await prisma.user.findUnique({ where: { clerkId } });
+  // withDbRetry: getCurrentUser runs FIRST on every authed path, so a cold Neon
+  // (scale-to-zero wake) would otherwise crash the page/route before the
+  // friendly entitlement copy is ever reached. One retry lets the wake settle.
+  const existing = await withDbRetry(() => prisma.user.findUnique({ where: { clerkId } }));
   if (existing) return existing;
 
   // First sight — pull the verified email from Clerk and create the row.

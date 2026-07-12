@@ -22,6 +22,13 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/app/.cache/ms-playwright
 COPY package.json package-lock.json ./
 RUN npm ci
 
+# The render-truth gate is BLOCKING and needs Playwright's Chromium at runtime —
+# a missing binary means EVERY build 422s. Install explicitly and hard-verify
+# the executable exists so a silent download failure fails the IMAGE build,
+# not every customer build.
+RUN npx playwright install chromium
+RUN node -e "const p=require('playwright').chromium.executablePath(); require('fs').accessSync(p); console.log('playwright chromium ok:', p)"
+
 # Generate the Prisma client against the committed schema.
 COPY prisma ./prisma
 RUN npx prisma generate
@@ -43,8 +50,10 @@ ENV NODE_ENV=production
 RUN npm run build
 
 # Pre-fetch Remotion's Chrome Headless Shell so the first render isn't slow.
-# Best-effort: if the CLI name drifts, Remotion fetches it at first render.
-RUN npx remotion browser ensure || true
+# (`npx remotion browser ensure` was a guaranteed no-op — the `remotion`
+# package ships no bin and @remotion/cli isn't a dependency. Use the renderer's
+# node API.) Best-effort: Remotion also fetches at first render if this fails.
+RUN node -e "require('@remotion/renderer').ensureBrowser().then(()=>console.log('remotion browser ok'))" || echo "WARN: remotion browser prefetch failed — first render will download it"
 
 EXPOSE 3000
 ENV PORT=3000

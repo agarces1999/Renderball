@@ -130,7 +130,7 @@ export async function POST(request: Request) {
     );
   }
 
-  await saveScript(result.script);
+  await saveScript(result.script, DEV_OWNER_ID);
   // Persist token usage for this script-gen call (Sonnet) — cache-aware cost —
   // plus the crawl rows, now attributable to the generated script.
   await recordCrawlUsage(result.script.id);

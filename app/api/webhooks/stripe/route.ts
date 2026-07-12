@@ -57,7 +57,7 @@ export async function POST(request: Request) {
         }
         if (subscriptionId) {
           const sub = await getStripe().subscriptions.retrieve(subscriptionId);
-          await syncSubscription(userId, sub);
+          await syncSubscription(userId, sub, { isDelete: false });
         }
         break;
       }
@@ -73,7 +73,7 @@ export async function POST(request: Request) {
           console.warn(`[stripe] subscription event for unknown customer ${customerId}`);
           break;
         }
-        await syncSubscription(user.id, sub);
+        await syncSubscription(user.id, sub, { isDelete: event.type === "customer.subscription.deleted" });
         break;
       }
       default:
@@ -81,32 +81,65 @@ export async function POST(request: Request) {
     }
     return NextResponse.json({ received: true });
   } catch (err) {
+    // P2002 and other deterministic constraint errors are PERMANENT — Stripe
+    // must not retry them for days (a poison event can get the whole endpoint
+    // disabled). Ack them 200 after logging; only transient failures 500.
+    if (err && typeof err === "object" && "code" in err && String((err as { code?: string }).code).startsWith("P2")) {
+      console.error("[stripe] permanent DB constraint error — acking to stop retries:", err);
+      return NextResponse.json({ received: true, warning: "constraint error logged" });
+    }
     console.error("[stripe] webhook handler failed:", err);
     // 500 → Stripe retries with backoff; correct for transient DB failures.
     return NextResponse.json({ error: "handler failed" }, { status: 500 });
   }
 }
 
-/** Upsert the Subscription row and set User.plan from the Stripe status. */
-async function syncSubscription(userId: string, sub: Stripe.Subscription): Promise<void> {
+/**
+ * Sync the Subscription row + User.plan from a Stripe subscription.
+ *
+ * Keyed on userId (the schema's real 1:1 — `Subscription.userId @unique`), NOT
+ * stripeSubscriptionId: after a cancel the old row survives (status=canceled),
+ * so a resubscribe brings a NEW sub id whose create branch would collide on
+ * userId → P2002 → the customer stays on `free` despite paying. Upserting by
+ * userId overwrites the stale row with the new subscription instead.
+ *
+ * Ordering guards (Stripe does not guarantee event order):
+ *  - a `.deleted` for a sub that is NOT the user's current one (a superseded,
+ *    already-replaced subscription) does not downgrade an active plan;
+ *  - a late `.updated` for a subscription we already recorded as canceled is
+ *    ignored (a canceled subscription is terminal in Stripe — it can't reactivate;
+ *    only a brand-new sub id does, which is a different row/create path).
+ */
+async function syncSubscription(
+  userId: string,
+  sub: Stripe.Subscription,
+  opts: { isDelete: boolean },
+): Promise<void> {
+  const existing = await prisma.subscription.findUnique({ where: { userId } });
+
+  if (opts.isDelete && existing && existing.stripeSubscriptionId !== sub.id) {
+    console.log(`[stripe] ignoring delete of superseded sub ${sub.id} (current: ${existing.stripeSubscriptionId})`);
+    return;
+  }
+  if (
+    !opts.isDelete &&
+    existing &&
+    existing.stripeSubscriptionId === sub.id &&
+    existing.status === "canceled"
+  ) {
+    console.log(`[stripe] ignoring stale update for already-canceled sub ${sub.id}`);
+    return;
+  }
+
   const plan = planForSubscriptionStatus(sub.status);
   const priceId = sub.items.data[0]?.price?.id ?? "";
   const periodEnd = sub.items.data[0]?.current_period_end ?? null;
+  const currentPeriodEnd = periodEnd ? new Date(periodEnd * 1000) : new Date();
   await prisma.$transaction([
     prisma.subscription.upsert({
-      where: { stripeSubscriptionId: sub.id },
-      update: {
-        status: sub.status,
-        stripePriceId: priceId,
-        currentPeriodEnd: periodEnd ? new Date(periodEnd * 1000) : new Date(),
-      },
-      create: {
-        userId,
-        stripeSubscriptionId: sub.id,
-        stripePriceId: priceId,
-        status: sub.status,
-        currentPeriodEnd: periodEnd ? new Date(periodEnd * 1000) : new Date(),
-      },
+      where: { userId },
+      update: { stripeSubscriptionId: sub.id, status: sub.status, stripePriceId: priceId, currentPeriodEnd },
+      create: { userId, stripeSubscriptionId: sub.id, status: sub.status, stripePriceId: priceId, currentPeriodEnd },
     }),
     prisma.user.update({ where: { id: userId }, data: { plan } }),
   ]);

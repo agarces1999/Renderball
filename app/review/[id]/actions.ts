@@ -17,7 +17,7 @@ export async function saveScriptEdits(
     // Only the owner of the brief that links this script may edit it.
     const brief = await loadBriefByScriptId(script.id, user.id);
     if (!brief) return { ok: false, error: "Script not found." };
-    await saveScript(script);
+    await saveScript(script, user.id);
     return { ok: true };
   } catch (err) {
     return {

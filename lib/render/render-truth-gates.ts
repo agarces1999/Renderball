@@ -632,49 +632,72 @@ const textCentroidX = (boxes: PieceBox[]): number | undefined => {
  * piece tagging (nothing to measure against — older builds fail open here and
  * are covered by dead-region/vision instead).
  */
+/** Union bounding box of a set of piece boxes (the hero cluster's footprint). */
+const unionBox = (bs: PieceBox[]): { x: number; y: number; w: number; h: number } => {
+  const x1 = Math.min(...bs.map((b) => b.x));
+  const y1 = Math.min(...bs.map((b) => b.y));
+  const x2 = Math.max(...bs.map((b) => b.x + b.w));
+  const y2 = Math.max(...bs.map((b) => b.y + b.h));
+  return { x: x1, y: y1, w: x2 - x1, h: y2 - y1 };
+};
+
 export const findStrandedHero = (
   m: SceneMeasurement,
   register?: string,
 ): RenderTruthFinding[] => {
   if (m.error) return [];
   const boxes = pieceBoxes(m);
-  const heroes = boxes.filter(
-    (b) =>
-      HERO_KINDS.has(b.kind) &&
-      b.w * b.h >= SH_MIN_AREA &&
-      // a full-bleed visual is a canvas treatment, not a placeable hero
-      b.w * b.h < 0.85 * m.width * m.height,
-  );
-  if (heroes.length === 0) return [];
-  const hero = heroes.reduce((a, b) => (b.w * b.h > a.w * a.h ? b : a));
-  const cx = hero.x + hero.w / 2;
-  const cy = hero.y + hero.h / 2;
+  const heroPieces = boxes.filter((b) => HERO_KINDS.has(b.kind) && b.w * b.h >= SH_MIN_AREA);
+  // A full-bleed hero-kind piece (≥85% of canvas) is a CANVAS TREATMENT, not a
+  // placeable hero. Its presence also means the scene is a full-bleed
+  // composition — so a smaller secondary piece (often the throughline motif)
+  // is NOT "stranded alone" and must not be judged as the hero (audit #22).
+  const canvasArea = m.width * m.height;
+  const fullBleedExists = heroPieces.some((b) => b.w * b.h >= 0.85 * canvasArea);
+  const placeable = heroPieces.filter((b) => b.w * b.h < 0.85 * canvasArea);
+  if (placeable.length === 0) return [];
+
+  // Evaluate the hero ENVELOPE (union of all placeable hero pieces), not just
+  // the single largest — the design prompt explicitly sanctions multi-piece
+  // hero CLUSTERS (a row of cards / KPI tiles), which the largest-piece view
+  // false-flagged as "too small" (audit #9).
+  const env = unionBox(placeable);
+  const cx = env.x + env.w / 2;
+  const cy = env.y + env.h / 2;
   const out: RenderTruthFinding[] = [];
 
-  // Universal rule (every register): a small hero stranded in a corner.
-  const small = hero.w < SH_MIN_W_FRAC * m.width && hero.h < SH_MIN_H_FRAC * m.height;
-  const cornered =
-    Math.abs(cx - m.width / 2) > SH_CORNER_FRAC * m.width &&
-    Math.abs(cy - m.height / 2) > SH_CORNER_FRAC * m.height;
-  if (small && cornered) {
-    out.push({
-      scene: m.scene,
-      kind: "stranded-hero",
-      detail:
-        `main visual piece "${hero.id}" (${hero.w}×${hero.h} at ${hero.x},${hero.y}) is SMALL and stranded in a corner of the ${m.width}×${m.height} frame. ` +
-        `Make it a real hero: span at least ${Math.round(SH_MIN_W_FRAC * 100)}% of the canvas width, center it vertically in its column — never leave a small UI element alone at a frame edge.`,
-    });
-    return out; // the corner fix subsumes the split contract — one instruction at a time
-  }
-
-  // Numeric split contract: hero ≥30% W, vertically centered, opposite the text column.
-  if (register === "split") {
-    if (hero.w < SH_MIN_W_FRAC * m.width) {
+  // Universal corner rule — the founder doctrine defect: a SINGLE small UI
+  // element ALONE in a corner. Only fires when there is exactly one placeable
+  // hero (truly alone) and no full-bleed treatment; a cluster (>1) or a
+  // full-bleed scene is a deliberate composition, never "stranded alone".
+  if (placeable.length === 1 && !fullBleedExists) {
+    const hero = placeable[0];
+    const small = hero.w < SH_MIN_W_FRAC * m.width && hero.h < SH_MIN_H_FRAC * m.height;
+    const cornered =
+      Math.abs(cx - m.width / 2) > SH_CORNER_FRAC * m.width &&
+      Math.abs(cy - m.height / 2) > SH_CORNER_FRAC * m.height;
+    if (small && cornered) {
       out.push({
         scene: m.scene,
         kind: "stranded-hero",
         detail:
-          `split scene: hero visual "${hero.id}" is ${hero.w}px wide — below the ${Math.round(SH_MIN_W_FRAC * 100)}% column contract (${Math.round(SH_MIN_W_FRAC * m.width)}px of ${m.width}). ` +
+          `main visual piece "${hero.id}" (${hero.w}×${hero.h} at ${hero.x},${hero.y}) is SMALL and stranded in a corner of the ${m.width}×${m.height} frame. ` +
+          `Make it a real hero: span at least ${Math.round(SH_MIN_W_FRAC * 100)}% of the canvas width, center it vertically in its column — never leave a small UI element alone at a frame edge.`,
+      });
+      return out; // the corner fix subsumes the split contract — one instruction at a time
+    }
+  }
+
+  // Numeric split contract: the hero ENVELOPE ≥30% W, vertically centered,
+  // opposite the text column. A full-bleed scene has no separable hero column.
+  if (register === "split" && !fullBleedExists) {
+    const label = placeable.length > 1 ? `hero cluster (${placeable.length} pieces)` : `hero visual "${placeable[0].id}"`;
+    if (env.w < SH_MIN_W_FRAC * m.width) {
+      out.push({
+        scene: m.scene,
+        kind: "stranded-hero",
+        detail:
+          `split scene: ${label} spans ${env.w}px — below the ${Math.round(SH_MIN_W_FRAC * 100)}% column contract (${Math.round(SH_MIN_W_FRAC * m.width)}px of ${m.width}). ` +
           `Scale the visual up to fill its column.`,
       });
     }
@@ -683,7 +706,7 @@ export const findStrandedHero = (
         scene: m.scene,
         kind: "stranded-hero",
         detail:
-          `split scene: hero visual "${hero.id}" centers at y=${Math.round(cy)} — outside the vertically-centered band (${Math.round(m.height / 2 - SH_VCENTER_FRAC * m.height)}–${Math.round(m.height / 2 + SH_VCENTER_FRAC * m.height)}px). ` +
+          `split scene: ${label} centers at y=${Math.round(cy)} — outside the vertically-centered band (${Math.round(m.height / 2 - SH_VCENTER_FRAC * m.height)}–${Math.round(m.height / 2 + SH_VCENTER_FRAC * m.height)}px). ` +
           `Center the visual vertically in its column.`,
       });
     }
@@ -700,7 +723,7 @@ export const findStrandedHero = (
           scene: m.scene,
           kind: "stranded-hero",
           detail:
-            `split scene: hero visual "${hero.id}" (center x=${Math.round(cx)}) and the text column (center x=${Math.round(tx)}) sit on the SAME half of the frame. ` +
+            `split scene: ${label} (center x=${Math.round(cx)}) and the text column (center x=${Math.round(tx)}) sit on the SAME half of the frame. ` +
             `Put the text column and the hero visual in OPPOSITE columns.`,
         });
       }

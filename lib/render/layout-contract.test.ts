@@ -137,6 +137,41 @@ check("full-bleed visual (≥85% of canvas) is a canvas treatment, not a hero", 
   assert(findStrandedHero(m, "full-bleed").length === 0, "full-bleed image excluded");
 });
 
+check("audit #9: multi-piece hero CLUSTER filling the column does NOT fire (split)", () => {
+  // A row of 3 KPI cards, each ~260px wide (< 30% alone) but the CLUSTER spans
+  // 1000-1780 = 780px (> 576px) on the right, text on the left. Legit — must pass.
+  const m = scene([
+    el("s1.copy", "text", 140, 330, 640, 420, { text: "Three ways we win", fontSize: 56 }),
+    el("s1.cards.0", "diegetic", 1000, 380, 240, 320),
+    el("s1.cards.1", "diegetic", 1270, 380, 240, 320),
+    el("s1.cards.2", "diegetic", 1540, 380, 240, 320),
+  ]);
+  assert(findStrandedHero(m, "split").length === 0, "a hero cluster filling the column is not stranded");
+});
+
+check("audit #9: a lone small card among a cluster is NOT called stranded (>1 piece)", () => {
+  // Two diegetic pieces present → not "alone". The corner rule must not fire
+  // even if one of them sits near a corner.
+  const m = scene([
+    el("s1.copy", "text", 200, 200, 900, 300, { text: "Headline", fontSize: 60 }),
+    el("s1.a", "diegetic", 780, 440, 360, 300),
+    el("s1.b", "diegetic", 1560, 860, 300, 200), // near a corner, but not alone
+  ]);
+  assert(findStrandedHero(m).length === 0, "the corner rule only fires for a SINGLE lone hero");
+});
+
+check("audit #22: a full-bleed diegetic treatment suppresses the stranded-corner rule", () => {
+  // A full-bleed diegetic layer (≥85% of canvas) + a small motif near a corner.
+  // The scene is a full-bleed composition; the motif is an accent, not stranded.
+  const m = scene([
+    el("s1.stage", "diegetic", 0, 0, 1920, 1040), // full-bleed treatment
+    el("s1.motif", "diegetic", 1560, 840, 300, 200, { text: "•" }), // small, cornered
+    el("s1.copy", "text", 160, 200, 800, 300, { text: "Over the stage", fontSize: 64 }),
+  ]);
+  assert(findStrandedHero(m).length === 0, "full-bleed present ⇒ no stranded-hero");
+  assert(findStrandedHero(m, "split").length === 0, "full-bleed present ⇒ no split contract either");
+});
+
 check("measure-errored scenes and piece-less builds fail open (no findings)", () => {
   const errored: SceneMeasurement = { scene: 0, width: 1920, height: 1080, elements: [], error: "boom" };
   assert(findStrandedHero(errored).length === 0, "error ⇒ no findings (measure-error gate owns it)");

@@ -35,11 +35,15 @@ const run = async () => {
   }
 
   const summary = await deleteUserData(user.id);
+  console.log(`stripe: subscription ${summary.stripeCancel}`);
   console.log(
     summary.r2Deleted === null
       ? "r2: storage not configured — skipped"
       : `r2: ${summary.r2Deleted} object(s) deleted`,
   );
+  if (summary.r2Failures.length > 0) {
+    console.warn(`r2: ${summary.r2Failures.length} prefix(es) FAILED — sweep later: ${summary.r2Failures.join(", ")}`);
+  }
   console.log(`scriptDocs: ${summary.scriptDocsDeleted} deleted`);
   console.log("user row deleted (projects/usage/renders cascaded); local artifacts cleaned");
   console.log("DONE — reminder: also delete the user in the Clerk dashboard.");

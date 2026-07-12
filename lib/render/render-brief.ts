@@ -21,9 +21,10 @@ import { promises as fs } from "fs";
 import path from "path";
 import { bundle } from "@remotion/bundler";
 import { renderMedia, selectComposition } from "@remotion/renderer";
-import type { StoredBrief } from "../store";
+import { saveBrief, type StoredBrief } from "../store";
 import type { Script } from "../../src/schema";
 import { prisma } from "../db";
+import { DEV_OWNER_ID } from "../auth";
 import { isStorageConfigured, putObject, renderKey } from "../storage/r2";
 import { scriptsEquivalent } from "./script-equal";
 import {
@@ -232,6 +233,19 @@ export const renderBriefToMp4 = async (
       ...RENDER_QUALITY,
     });
 
+    // GDPR guard (audit 2026-07-12): a render finishing AFTER the user deleted
+    // their account would push the finished MP4 back into R2 and write a Render
+    // row, both unreachable by any deletion path — a durable leak. Skip the
+    // durable writes (keep only the ephemeral local file, cleaned on redeploy)
+    // when the owner is gone.
+    const ownerAlive =
+      brief.owner_id === DEV_OWNER_ID ||
+      !!(await prisma.user.findUnique({ where: { id: brief.owner_id }, select: { id: true } }).catch(() => null));
+    if (!ownerAlive) {
+      console.warn(`[render] owner ${brief.owner_id} gone — skipping R2 upload + Render row (deleted mid-render?)`);
+      return { ok: true, url: `/api/renders/${brief.script_id}`, warnings };
+    }
+
     // Push the durable copy to R2. Best-effort: a configured-but-failing upload
     // must not lose a render the user just spent compute on — it stays on local
     // disk and /api/renders falls back to it. On a stateless container the local
@@ -267,6 +281,14 @@ export const renderBriefToMp4 = async (
       });
     } catch (err) {
       console.warn("[render] could not record Render row (render is fine):", err);
+    }
+
+    // Flip the brief to "rendered" so the gallery status chip is correct
+    // (the Render row above is what actually gates the thumbnail). Best-effort.
+    try {
+      await saveBrief({ ...brief, status: "rendered" });
+    } catch (err) {
+      console.warn("[render] could not update brief status to rendered:", err);
     }
 
     return {

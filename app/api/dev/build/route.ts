@@ -33,17 +33,21 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "scriptId required" }, { status: 400 });
   }
 
-  // Same dedup lock as the product route: a harness whose HTTP client died
-  // (the undici 300s headersTimeout incident) can re-POST and ATTACH to the
-  // in-flight build instead of silently starting a second, double-spending one.
-  const locked = await runBuildLocked(scriptId, DEV_OWNER_ID, () =>
+  // Dedup lock: a harness whose HTTP client died (the undici 300s headersTimeout
+  // incident) can re-POST the SAME scriptId and ATTACH to the in-flight build
+  // instead of double-spending. We deliberately DO NOT pass the per-owner busy
+  // guard here (unlike the product route): all dev builds share DEV_OWNER_ID, so
+  // the guard would 409 every concurrent dev build — including the loop's
+  // client-death retry, which regenerates a NEW scriptId and would then be
+  // wrongly rejected as "owner busy". The owner guard only exists to close the
+  // entitlement TOCTOU, and metering no-ops for DEV_OWNER_ID, so it protects
+  // nothing in dev. Per-script attach + the global semaphore still apply.
+  const locked = await runBuildLocked(scriptId, `${DEV_OWNER_ID}:${scriptId}`, () =>
     runPreviewBuild(scriptId, DEV_OWNER_ID),
   );
   if (locked.kind === "owner-busy") {
-    return NextResponse.json(
-      { error: "another dev build is already running for a different script" },
-      { status: 409 },
-    );
+    // Unreachable with the per-script owner key above, but keep the shape.
+    return NextResponse.json({ error: "build already running for this script" }, { status: 409 });
   }
   const result = locked.result;
   return NextResponse.json(result.body, { status: result.status });

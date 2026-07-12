@@ -183,11 +183,15 @@ export const repairRenderTruth = async (
     return { ok: false, reason: "cost-ceiling", steps, spentUsd: spent, findings: gate.findings, blocking: gate.blocking, initialFindings, measurements: gate.measurements };
   }
   const failing = scenesOf(gate.blocking);
-  log(`L3: rewriting script for scene(s) ${failing.join(", ")} (concept too dense to fit) + rebuild`);
-  const rw = await cb.rewriteScript(
-    failing,
-    `These scenes render content off-canvas even after layout retries — the visual_concept is too dense to fit 1920×1080. Simplify them to fewer, smaller elements that fit.`,
-  );
+  // The L3 reason must match the DEFECT. "Simplify to fewer, smaller elements"
+  // is right for overflow/density, but INVERTED for a stranded hero (the fix is
+  // a BIGGER, recomposed hero) — telling the model to shrink would entrench it.
+  const onlyStranded = gate.blocking.every((f) => f.kind === "stranded-hero");
+  const l3Reason = onlyStranded
+    ? `These scenes fail the layout composer contract even after layout retries — the main visual is too small or stranded at an edge. RECOMPOSE around a larger hero visual anchored in the frame (not fewer/smaller elements); the hero is the subject of the scene.`
+    : `These scenes render content off-canvas even after layout retries — the visual_concept is too dense to fit 1920×1080. Simplify them to fewer, smaller elements that fit.`;
+  log(`L3: rewriting script for scene(s) ${failing.join(", ")} (${onlyStranded ? "hero too small/stranded" : "concept too dense"}) + rebuild`);
+  const rw = await cb.rewriteScript(failing, l3Reason);
   if (rw.usage) spent += costOf(rw.usage);
   if (!rw.ok) {
     log(`L3 rewrite/rebuild error: ${rw.error ?? "unknown"}`);

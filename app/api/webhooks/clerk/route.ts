@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { verifyWebhook } from "@clerk/nextjs/webhooks";
+import { clerkClient } from "@clerk/nextjs/server";
 import { prisma } from "../../../../lib/db";
 import { deleteUserData } from "../../../../lib/delete-user";
 
@@ -58,10 +59,35 @@ export async function POST(request: NextRequest) {
             await prisma.user.update({ where: { clerkId }, data: { email } });
             console.log(`[clerk] user ${user.id} email synced`);
           } catch (err) {
-            // P2002: the new email already belongs to another row (recycled
-            // address). getCurrentUser re-links on next sign-in; don't make
-            // Clerk retry forever over it.
-            console.warn(`[clerk] email sync conflict for user ${user.id}:`, err);
+            const code = (err as { code?: string })?.code;
+            if (code === "P2002") {
+              // The new email already belongs to ANOTHER row (row B) that holds
+              // a stale address. Resolve by pulling row B's CURRENT email from
+              // Clerk and correcting it — that frees the address — then retry.
+              const conflicting = await prisma.user.findUnique({ where: { email } });
+              if (conflicting && conflicting.clerkId !== clerkId) {
+                try {
+                  const cc = await clerkClient();
+                  const cu = await cc.users.getUser(conflicting.clerkId);
+                  const trueEmail =
+                    cu.primaryEmailAddress?.emailAddress ?? cu.emailAddresses?.[0]?.emailAddress;
+                  if (trueEmail && trueEmail !== email) {
+                    await prisma.user.update({ where: { id: conflicting.id }, data: { email: trueEmail } });
+                    await prisma.user.update({ where: { clerkId }, data: { email } });
+                    console.log(`[clerk] resolved email conflict: freed ${email} from user ${conflicting.id}`);
+                    break;
+                  }
+                } catch (e2) {
+                  console.error(`[clerk] conflict-resolution lookup failed for ${email}:`, e2);
+                }
+              }
+              // Genuinely unresolved (both rows really use this email, or Clerk
+              // lookup failed) — 500 so Clerk retries; do NOT swallow (that left
+              // the stale email forever and broke email-based GDPR lookup).
+              console.error(`[clerk] unresolved email conflict for ${email} — returning 500 for retry`);
+              return NextResponse.json({ error: "email conflict — will retry" }, { status: 500 });
+            }
+            throw err; // transient/unknown → 500 via the outer catch (Clerk retries)
           }
         }
         break;
@@ -76,8 +102,14 @@ export async function POST(request: NextRequest) {
         }
         const summary = await deleteUserData(user.id);
         console.log(
-          `[clerk] user ${summary.userId} <${summary.email}> deleted — ${summary.projectCount} project(s), ${summary.scriptCount} script(s), r2=${summary.r2Deleted ?? "skipped"}`,
+          `[clerk] user ${summary.userId} <${summary.email}> deleted — ${summary.projectCount} project(s), ${summary.scriptCount} script(s), r2=${summary.r2Deleted ?? "skipped"}, stripe=${summary.stripeCancel}`,
         );
+        if (summary.r2Failures.length > 0) {
+          // The DB deletion (what the user observes) succeeded; only object
+          // storage lagged. Don't 500 — that would make Clerk redeliver and
+          // re-run the whole deletion. Log loudly for a manual sweep.
+          console.error(`[clerk] user ${summary.userId} R2 sweep needed: ${summary.r2Failures.join(", ")}`);
+        }
         break;
       }
       default:

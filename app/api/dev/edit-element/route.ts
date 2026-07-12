@@ -105,7 +105,7 @@ export async function POST(request: Request) {
       );
     }
     scene.content = applied.content;
-    await saveScript(script);
+    await saveScript(script, DEV_OWNER_ID);
     try {
       const genScript = path.join(process.cwd(), "src", "generated", scriptId, "script.json");
       await fs.writeFile(genScript, JSON.stringify(script, null, 2));
@@ -129,7 +129,7 @@ export async function POST(request: Request) {
   }
   scene.content = result.content;
 
-  await saveScript(script);
+  await saveScript(script, DEV_OWNER_ID);
 
   try {
     const genScript = path.join(process.cwd(), "src", "generated", scriptId, "script.json");

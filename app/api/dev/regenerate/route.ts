@@ -80,7 +80,7 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: result.error }, { status: 500 });
   }
 
-  await saveScript(result.script);
+  await saveScript(result.script, DEV_OWNER_ID);
   brief.script_id = result.script.id;
   brief.status = "script_generated";
   await saveBrief(brief);

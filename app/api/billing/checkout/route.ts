@@ -19,6 +19,16 @@ export async function POST() {
     );
   }
 
+  // Already-subscribed guard: without it a second checkout (double-click, stale
+  // tab, back-button) creates a SECOND live subscription on the same customer —
+  // the user is charged twice. Send active subscribers to the portal instead.
+  if (user.plan === "subscription") {
+    return NextResponse.json(
+      { error: "You're already subscribed — manage your plan from the billing portal.", alreadySubscribed: true },
+      { status: 409 },
+    );
+  }
+
   try {
     const stripe = getStripe();
     const session = await stripe.checkout.sessions.create({

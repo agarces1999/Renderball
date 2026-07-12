@@ -45,11 +45,22 @@ export async function GET(
               ? "application/pdf"
               : "application/octet-stream";
 
-  return new NextResponse(new Uint8Array(bytes), {
-    headers: {
-      "Content-Type": contentType,
-      "Cache-Control": "public, max-age=31536000, immutable",
-      "X-Content-Type-Options": "nosniff",
-    },
-  });
+  // SVG (and any XML) can carry inline <script>/onload — served inline on our
+  // own origin that is stored XSS with the viewer's cookies. This is the
+  // PRODUCTION delivery path (the next.config.js sandbox rule only covers
+  // /uploads/*, not /api/assets/*), so neutralize it here: a locked-down CSP
+  // that blocks all script + a non-inline disposition. Raster/pdf are inert and
+  // stay inline so the renderer's headless Chromium can load them.
+  const isActiveDoc = contentType === "image/svg+xml" || name.endsWith(".xml");
+  const headers: Record<string, string> = {
+    "Content-Type": contentType,
+    "Cache-Control": "public, max-age=31536000, immutable",
+    "X-Content-Type-Options": "nosniff",
+  };
+  if (isActiveDoc) {
+    headers["Content-Security-Policy"] = "default-src 'none'; style-src 'unsafe-inline'; sandbox";
+    headers["Content-Disposition"] = "attachment";
+  }
+
+  return new NextResponse(new Uint8Array(bytes), { headers });
 }

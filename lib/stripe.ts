@@ -50,6 +50,18 @@ export const planForSubscriptionStatus = (
   }
 };
 
-/** The app origin for checkout redirect URLs. */
-export const appOrigin = (): string =>
-  process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
+/**
+ * The app origin for checkout/portal redirect URLs. In production the
+ * localhost fallback is a footgun — Stripe would redirect a paying customer to
+ * http://localhost:3000 after checkout — so require NEXT_PUBLIC_APP_URL there.
+ */
+export const appOrigin = (): string => {
+  const url = process.env.NEXT_PUBLIC_APP_URL;
+  if (url) return url;
+  if (process.env.NODE_ENV === "production") {
+    throw new Error(
+      "NEXT_PUBLIC_APP_URL must be set in production — Stripe redirect URLs would otherwise point at localhost.",
+    );
+  }
+  return "http://localhost:3000";
+};

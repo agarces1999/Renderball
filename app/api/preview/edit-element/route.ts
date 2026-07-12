@@ -115,7 +115,7 @@ export async function POST(request: Request) {
       );
     }
     scene.content = applied.content;
-    await saveScript(script);
+    await saveScript(script, user.id);
     try {
       const genScript = path.join(process.cwd(), "src", "generated", scriptId, "script.json");
       await fs.writeFile(genScript, JSON.stringify(script, null, 2));
@@ -139,7 +139,7 @@ export async function POST(request: Request) {
   }
   scene.content = result.content;
 
-  await saveScript(script);
+  await saveScript(script, user.id);
 
   // Best-effort: keep the MP4-reuse contract by refreshing the built script.json.
   // A missing genDir just means the next render rebuilds with the new content

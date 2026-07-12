@@ -9,6 +9,8 @@ import { brandKitStatus } from "../../lib/brand-kit";
 import { checkEntitlement, recordMeteredUsage } from "../../lib/entitlement";
 import { assertZaiAvailable, ZaiUnavailableError } from "../../lib/zai-breaker";
 import { extractBrand } from "../../lib/crawl/extract-brand";
+import { withDbRetry } from "../../lib/db";
+import { recordUsage, addUsage, EMPTY_USAGE, type Usage } from "../../lib/usage";
 
 /** "NeueMontreal-Medium.woff2" → "Neue Montreal Medium" — a readable family
  *  name when the user didn't type one. */
@@ -45,8 +47,8 @@ export type {
  * the user fills the rest of the form.
  */
 export async function crawlWebsite(url: string): Promise<BrandExtract> {
-  // Crawling spends Anthropic tokens (palette vision + logo agent) — never let
-  // an unauthenticated caller trigger it.
+  // Crawling spends z.ai tokens (palette vision + design-language + logo agent)
+  // — never let an unauthenticated caller trigger it.
   const user = await getCurrentUser();
   if (!user) {
     return {
@@ -56,7 +58,24 @@ export async function crawlWebsite(url: string): Promise<BrandExtract> {
       error: "Please sign in to analyze a website.",
     };
   }
-  return extractBrand(url);
+  // Soft abuse-bound: a free user who exhausted their generate quota can
+  // otherwise trigger unbounded crawls by re-editing the URL field. Deny the
+  // crawl when the generate quota is spent (no new schema/service needed).
+  const ent = await checkEntitlement(user.id, "generate").catch(() => ({ allowed: true }));
+  if (!ent.allowed) {
+    return { url, fetched_at: new Date().toISOString(), ok: false, error: "Monthly limit reached — upgrade to analyze more sites." };
+  }
+  // Meter the crawl's model calls (previously unrecorded for real users — the
+  // onUsage collector was wired only into the dev route, so this z.ai spend was
+  // invisible to the ledger and the spend caps).
+  const crawlUsage = new Map<string, Usage>();
+  const extract = await extractBrand(url, {
+    onUsage: (model, usage) => crawlUsage.set(model, addUsage(crawlUsage.get(model) ?? EMPTY_USAGE, usage)),
+  });
+  for (const [model, usage] of crawlUsage) {
+    await recordUsage({ op: "crawl", model, url, usage });
+  }
+  return extract;
 }
 
 export type BriefSubmitResult =
@@ -269,36 +288,48 @@ export async function submitBrief(
     return { ok: true, brief_id };
   }
 
-  await saveScript(result.script);
+  // The script exists and the GLM spend is already sunk. A transient DB blip
+  // during these writes must NOT throw a raw error that loses the script and
+  // leaves the brief stuck in awaiting_agent_1 — retry the writes, and on hard
+  // failure tell the user honestly so their retry doesn't double-spend.
+  try {
+    // In auto mode, hydrate the stored brief with what the agent produced so
+    // the gallery / future agents see a populated brief.
+    const updatedBrief: StoredBrief = {
+      ...baseBrief,
+      status: "script_generated",
+      script_id: result.script.id,
+    };
+    if (isAuto) {
+      updatedBrief.purpose = result.script.brief.purpose;
+      updatedBrief.cta = result.script.brief.cta;
+      updatedBrief.moments = result.script.scenes.map((s) => ({
+        title: s.label,
+        // The agent's 1-sentence intent describes what the scene is FOR.
+        description: s.description ?? s.label,
+        creativity: "balanced",
+      }));
+    }
 
-  // Entitlement counter for the generate op (no-op for DEV_OWNER_ID; the
-  // detailed token cost lives in the usage ledger — the counter needs the row).
-  await recordMeteredUsage({
-    ownerId: user.id,
-    operation: "generate",
-    model: "glm-5.2",
-    costUsd: 0,
-    projectId: brief_id,
-  });
-
-  // In auto mode, hydrate the stored brief with what the agent
-  // produced so the gallery / future agents see a populated brief.
-  const updatedBrief: StoredBrief = {
-    ...baseBrief,
-    status: "script_generated",
-    script_id: result.script.id,
-  };
-  if (isAuto) {
-    updatedBrief.purpose = result.script.brief.purpose;
-    updatedBrief.cta = result.script.brief.cta;
-    updatedBrief.moments = result.script.scenes.map((s) => ({
-      title: s.label,
-      // The agent's 1-sentence intent describes what the scene is FOR.
-      description: s.description ?? s.label,
-      creativity: "balanced",
-    }));
+    await withDbRetry(() => saveScript(result.script, user.id));
+    await withDbRetry(() =>
+      recordMeteredUsage({
+        ownerId: user.id,
+        operation: "generate",
+        model: "glm-5.2",
+        costUsd: 0,
+        projectId: brief_id,
+      }),
+    );
+    await withDbRetry(() => saveBrief(updatedBrief));
+  } catch (err) {
+    console.error(`[submitBrief] post-generate persistence failed for ${brief_id} (script ${result.script.id}):`, err);
+    return {
+      ok: false,
+      error:
+        "We generated your story but hit a temporary storage error saving it. You weren't charged — please try again in a moment.",
+    };
   }
-  await saveBrief(updatedBrief);
 
   return { ok: true, brief_id };
 }
