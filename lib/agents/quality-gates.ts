@@ -388,6 +388,80 @@ export const assessContinuity = (
   return out;
 };
 
+// ─── Deterministic throughline-DRIFT repair (no LLM) ─────────────────
+//
+// A drifted throughline is a pure reposition defect: the SAME motif element is
+// tagged in ≥2 scenes but its px anchor jumped. The old fix re-emitted the
+// WHOLE 5-scene composition (~260k tokens, ~12-15 min) — absurd for "one
+// element is at the wrong x,y". This snaps every drifted occurrence to a single
+// consistent anchor (the MEDIAN of the tag's own px positions, so outliers move
+// toward where the majority already sit — minimal disruption) with a pure
+// string edit. Zero tokens, milliseconds.
+//
+// Only tags that assessContinuity could MEASURE (inline `left`/`top` px on the
+// tag itself) are moved — which is exactly the set that produces a drift
+// finding, so coverage is total for the cases this repairs. Caller re-runs the
+// structural/overflow gates and adopts only if not-worse (a move that pushes an
+// element off-canvas or into a collision is discarded, falling back to the LLM
+// retry). Returns the edited code + how many tags moved (0 ⇒ nothing to do).
+const median = (xs: number[]): number => {
+  const s = [...xs].sort((a, b) => a - b);
+  const mid = Math.floor(s.length / 2);
+  return s.length % 2 ? s[mid] : Math.round((s[mid - 1] + s[mid]) / 2);
+};
+
+/** Replace the first inline `left:`/`top:` numeric value in a single opening
+ *  tag. Handles all forms the agents emit: `left: 120`, `left: 120px`,
+ *  `left: "740px"` (the `px`/unit and quote are preserved). */
+const setAnchor = (tag: string, prop: "left" | "top", value: number): string =>
+  tag.replace(
+    new RegExp("(\\b" + prop + ":\\s*[\"'`]?)(\\d+)(px)?", ""),
+    `$1${value}$3`,
+  );
+
+export const repositionThroughline = (
+  code: string,
+  aspect: AspectRatio,
+): { code: string; moved: number } => {
+  const drifts = assessContinuity(code, aspect);
+  if (drifts.length === 0) return { code, moved: 0 };
+
+  // Per drifted slug, the target = median of its measured px positions.
+  const target = new Map<string, { left: number | null; top: number | null }>();
+  for (const d of drifts) {
+    const lefts = d.positions.map((p) => p.left).filter((v): v is number => v != null);
+    const tops = d.positions.map((p) => p.top).filter((v): v is number => v != null);
+    target.set(d.slug, {
+      left: lefts.length >= 2 ? median(lefts) : null,
+      top: tops.length >= 2 ? median(tops) : null,
+    });
+  }
+
+  // Same tag matcher assessContinuity uses. Rewrite each drifted slug's tags to
+  // the slug's target anchor (only the axis with a target moves).
+  const tagRe =
+    /<[a-zA-Z][\w.]*\b[^>]*?\bdata-throughline\s*=\s*(?:["']([\w-]+)["']|\{\s*(?:["'`]([\w-]+)["'`]|([A-Za-z_$][\w$]*))\s*\})[^>]*>/g;
+  let moved = 0;
+  const out = code.replace(tagRe, (fullTag, q, tpl, ident) => {
+    const slug = q ?? tpl ?? ident;
+    const t = target.get(slug);
+    if (!t) return fullTag; // this slug didn't drift
+    let tag = fullTag;
+    let changed = false;
+    if (t.left != null && pxAnchor(fullTag, "left") != null && pxAnchor(fullTag, "left") !== t.left) {
+      tag = setAnchor(tag, "left", t.left);
+      changed = true;
+    }
+    if (t.top != null && pxAnchor(fullTag, "top") != null && pxAnchor(fullTag, "top") !== t.top) {
+      tag = setAnchor(tag, "top", t.top);
+      changed = true;
+    }
+    if (changed) moved++;
+    return tag;
+  });
+  return { code: out, moved };
+};
+
 // ─── #1 Throughline-PRESENCE gate (retry-forcing, polish-tier) ───────
 //
 // assessContinuity (above) checks an EXISTING recurring tag for positional

@@ -33,6 +33,7 @@ import {
   assessFontFidelity,
   assessRegisterVariety,
   assessContinuity,
+  repositionThroughline,
   assessThroughlinePresence,
   findRedundantCaptions,
   hasCornerLogoSuppression,
@@ -1620,6 +1621,29 @@ export const buildAnimatedSections = async (
   // promote just that high-confidence tier to a polish retry. The check is coarse
   // (numeric px only; transform/%-centered motifs are invisible to it), so gate
   // ONLY the unambiguous cases to avoid false-positive retries.
+  // DETERMINISTIC drift repair (audit 2026-07-12): a drifted throughline is a
+  // pure reposition, not a reason to re-emit all 5 scenes (~260k tokens). Snap
+  // the tagged motif to a consistent anchor with a zero-token string edit BEFORE
+  // computing driftFailure, so a fixable drift never forces a whole-comp retry
+  // (and never poisons the cheap scoped path for co-occurring density failures).
+  // Adopt only if it compiles + doesn't regress structural gates — else discard.
+  {
+    const repos = repositionThroughline(designCode, gateAspect);
+    if (repos.moved > 0 && (await verifyCompilable(repos.code)) === null) {
+      const reStruct = assessStructuralGates(repos.code, input);
+      const notWorse =
+        reStruct.failures.length <= structural.failures.length &&
+        reStruct.severeContrastCount <= structural.severeContrastCount &&
+        reStruct.inventedClaimCount <= structural.inventedClaimCount;
+      if (notWorse) {
+        designCode = repos.code;
+        structural = reStruct;
+        console.warn(`[pipeline] throughline reposition: snapped ${repos.moved} motif tag(s) to a stable anchor (no LLM, no retry)`);
+      } else {
+        console.warn(`[pipeline] throughline reposition regressed a structural gate — discarded`);
+      }
+    }
+  }
   const SEVERE_DRIFT_PX = 280;
   const severeDrift = assessContinuity(designCode, gateAspect).filter(
     (d) => Math.max(d.driftX, d.driftY) >= SEVERE_DRIFT_PX,

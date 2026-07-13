@@ -12,6 +12,7 @@ import {
   findDuplicatedEyebrows,
   findDecorativeFillerIcons,
   assessContinuity,
+  repositionThroughline,
   assessFontFidelity,
   assessRegisterVariety,
   findRedundantCaptions,
@@ -120,6 +121,37 @@ check("stable anchor → no drift finding", () => {
 check("a motif used only once is ignored", () => {
   const once = `<div data-throughline="orb" style={{ left: 120, top: 120 }} />`;
   assert(assessContinuity(once, "16:9").length === 0, "single occurrence → nothing to compare");
+});
+
+// ── deterministic drift repair (repositionThroughline) ───────────────
+check("reposition snaps a drifted motif to a stable anchor → drift clears", () => {
+  const { code, moved } = repositionThroughline(DRIFT, "16:9");
+  assert(moved === 2, `expected both occurrences moved, got ${moved}`);
+  // After the snap, assessContinuity must find NO drift (this is what clears
+  // driftFailure and skips the whole-composition re-emit).
+  assert(assessContinuity(code, "16:9").length === 0, "drift must be gone after reposition");
+});
+check("reposition preserves the px unit + quotes (real fill form)", () => {
+  const q = `
+    <div data-throughline={SLUG} style={{ left: "740px", top: "300px" }}>a</div>
+    <div data-throughline={SLUG} style={{ left: "740px", top: "980px" }}>b</div>`;
+  const { code, moved } = repositionThroughline(q, "16:9");
+  assert(moved >= 1, "at least the drifted occurrence moves");
+  assert(/top:\s*"\d+px"/.test(code), `px+quote form must be preserved: ${code}`);
+  assert(assessContinuity(code, "16:9").length === 0, "drift cleared on the quoted-px form");
+});
+check("a stable motif is left untouched (no needless churn)", () => {
+  const { code, moved } = repositionThroughline(STABLE, "16:9");
+  assert(moved === 0, "nothing drifts → nothing moves");
+  assert(code === STABLE, "stable code returned byte-identical");
+});
+check("non-throughline tags are never touched", () => {
+  const mixed = `
+    <div data-throughline="orb" style={{ left: 100, top: 100 }} />
+    <div data-throughline="orb" style={{ left: 100, top: 900 }} />
+    <div className="other" style={{ left: 500, top: 500 }} />`;
+  const { code } = repositionThroughline(mixed, "16:9");
+  assert(/className="other" style=\{\{ left: 500, top: 500 \}\}/.test(code), "unrelated element must be byte-identical");
 });
 
 // ── C2: display-font fidelity ────────────────────────────────────────
