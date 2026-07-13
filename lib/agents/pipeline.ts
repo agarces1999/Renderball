@@ -1887,7 +1887,34 @@ export const buildAnimatedSections = async (
               fillFailure ||
               undersizedFailure ||
               accentFailure);
-          if (structural.failures.length === 0 && (!includePolish || gateReport.ok)) {
+          // FUTILE-RETRY GUARD (measured 2026-07-13: a density-only residue
+          // after an ADOPTED scoped improvement triggered a 941s whole-comp
+          // re-emit whose output STILL failed density — 15.7 min for zero
+          // adopted value). The scoped pass is the sharper density tool; when
+          // it already improved the build and density is the ONLY remaining
+          // failure, a whole-file re-roll is a worse bet than shipping
+          // best-available. Skip it. Any structural or non-density polish
+          // failure still goes to the whole-comp retry as before.
+          const densityOnlyResidue =
+            includePolish &&
+            structural.failures.length === 0 &&
+            !gateReport.ok &&
+            !(
+              contrastFailure ||
+              reThroughline ||
+              driftFailure ||
+              chartFailure ||
+              fontFailure ||
+              fillFailure ||
+              undersizedFailure ||
+              accentFailure
+            );
+          if (densityOnlyResidue) {
+            polishFailure = false;
+            console.warn(
+              "[pipeline] density-only residue after adopted scoped improvement — skipping futile whole-comp re-emit (shipping best available)",
+            );
+          } else if (structural.failures.length === 0 && (!includePolish || gateReport.ok)) {
             console.warn("[pipeline] scoped retry cleared all gates — skipping whole-comp retry");
           } else {
             console.warn("[pipeline] scoped retry improved but gaps remain — whole-comp retry follows");
