@@ -14,6 +14,7 @@ import {
   overflowFailuresByScene,
   unboundFailuresByScene,
   fillFailuresByScene,
+  throughlineAbsentByScene,
   groupByScene,
   sectionsAreSpliceable,
 } from "./scene-scope";
@@ -1764,11 +1765,27 @@ export const buildAnimatedSections = async (
     const scopeScenes = input.script.scenes ?? [];
     const scopeAspect = (input.script.config?.aspect_ratio ?? "16:9") as AspectRatio;
     const LOCALIZABLE_KEYS = new Set(["unbound_copy", "overflow_crop"]);
+
+    // Throughline ABSENCE is localizable (audit 2026-07-12): the motif is
+    // missing from specific scenes, so regenerate JUST those (add the tag) — not
+    // all 5. throughlineScoped is non-empty only when scoping can reach the
+    // presence bar; otherwise absence stays non-localizable → whole-comp fallback.
+    const scopeNarr = input.script.narrative;
+    const throughlineScoped =
+      includePolish && throughlineFailure && scopeNarr?.throughline
+        ? throughlineAbsentByScene(designCode, scopeScenes, {
+            throughline: scopeNarr.throughline,
+            slug: slugify(scopeNarr.throughline),
+            anchor: throughlineAnchorFor(scopeAspect),
+          })
+        : [];
+    const throughlineLocalizable = throughlineScoped.length > 0;
+
     const nonLocalizablePolish =
       includePolish &&
       !!(
         contrastFailure ||
-        throughlineFailure ||
+        (throughlineFailure && !throughlineLocalizable) ||
         driftFailure ||
         chartFailure ||
         fontFailure ||
@@ -1795,12 +1812,14 @@ export const buildAnimatedSections = async (
 
     // Every failing localizable gate must attribute to at least one scene; if a
     // crop/literal lives outside any Section block we can't scope it → fall back.
+    // (Throughline absence is complete-by-construction: throughlineScoped is
+    // non-empty only when scoping reaches the bar, else it's [] + non-localizable.)
     const localizationComplete =
       (!densityFails || densityScoped.length > 0) &&
       (!overflowFails || overflowScoped.length > 0) &&
       (!unboundFails || unboundScoped.length > 0);
 
-    const grouped = groupByScene(densityScoped, overflowScoped, unboundScoped);
+    const grouped = groupByScene(densityScoped, overflowScoped, unboundScoped, throughlineScoped);
     const canScope =
       grouped.length > 0 &&
       !nonLocalizablePolish &&
@@ -1849,13 +1868,19 @@ export const buildAnimatedSections = async (
           designCode = spliced;
           structural = reStructural;
           gateReport = reDensity;
-          // Recompute the whole-comp guard: the non-localizable polish flags
-          // were already clean (canScope required it), so only density moves.
+          // Recompute the whole-comp guard. The still-non-localizable polish
+          // flags (contrast/drift/chart/font/fill/undersized/accent) were
+          // required clean by canScope, so their consts stay valid. THROUGHLINE
+          // is now scopable, so a scoped regen may have just added the motif —
+          // re-assess presence on the SPLICED code so a fixed throughline no
+          // longer forces the whole-comp retry this scoping exists to avoid.
+          const reThroughline =
+            assessThroughlinePresence(spliced, input.script)?.message ?? null;
           polishFailure =
             includePolish &&
             (!gateReport.ok ||
               contrastFailure ||
-              throughlineFailure ||
+              reThroughline ||
               driftFailure ||
               chartFailure ||
               fontFailure ||

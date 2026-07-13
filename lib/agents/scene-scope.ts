@@ -194,6 +194,48 @@ export const unboundFailuresByScene = (
 };
 
 /**
+ * Per-scene throughline ABSENCE (audit 2026-07-12). The presence gate
+ * (assessThroughlinePresence) fires when the motif is tagged in fewer than
+ * ceil(60%) of scenes — and, being "non-localizable", used to force a
+ * WHOLE-composition re-emit (~260k tokens, ~12-15 min) to add a tag to one or
+ * two scenes. It IS localizable: this maps exactly which scenes lack the
+ * `data-throughline` tag and returns a scoped fix for just enough of them to
+ * reach the bar (the CHEAPEST scenes to fix, first). Returns [] when the gate
+ * wouldn't fire, or when there aren't enough LOCATABLE missing scenes to reach
+ * the bar (→ caller keeps the whole-comp fallback, which is safe).
+ */
+export const throughlineAbsentByScene = (
+  code: string,
+  scenes: unknown[],
+  ctx: { throughline: string; slug: string; anchor: { left: number; top: number } },
+): ScopedFailure[] => {
+  const n = scenes.length;
+  if (!ctx.throughline || n < 3) return [];
+  const bar = Math.max(2, Math.ceil(n * 0.6));
+
+  const missing: number[] = [];
+  let have = 0;
+  for (let i = 0; i < n; i++) {
+    const range = sectionRange(code, i);
+    if (!range) continue; // unlocatable section → can't scope it; leave to fallback
+    const block = code.slice(range.start, range.end);
+    if (/\bdata-throughline\s*=/.test(block)) have++;
+    else missing.push(i);
+  }
+  if (have >= bar) return []; // presence gate wouldn't fire
+  const need = bar - have;
+  if (missing.length < need) return []; // can't reach the bar by scoping → fallback
+
+  return missing.slice(0, need).map((scene) => ({
+    scene,
+    message:
+      `THROUGHLINE MISSING from this scene — the story's connective motif is: "${ctx.throughline}". ` +
+      `Instantiate it as ONE concrete recurring visual element (a shape/object/motif you can draw), evolved to fit THIS beat (it transforms/progresses along the story — never a reset copy), ` +
+      `and wrap it in \`<div data-throughline="${ctx.slug}">\` (this EXACT slug) anchored near (left ${ctx.anchor.left}px, top ${ctx.anchor.top}px) so it reads continuous with the other scenes. Keep all the scene's existing content.`,
+  }));
+};
+
+/**
  * Combine several ScopedFailure lists into one ordered instruction bundle per
  * scene. The pipeline feeds these straight into the per-scene regen prompt.
  */

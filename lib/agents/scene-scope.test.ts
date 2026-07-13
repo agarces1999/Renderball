@@ -12,6 +12,7 @@ import {
   overflowFailuresByScene,
   unboundFailuresByScene,
   fillFailuresByScene,
+  throughlineAbsentByScene,
   groupByScene,
   sectionsAreSpliceable,
 } from "./scene-scope";
@@ -159,6 +160,44 @@ check("sectionsAreSpliceable: a gap in indices → false", () => {
   const gap = `export const Section0 = () => null;
 export const Section2 = () => null;`;
   assert(!sectionsAreSpliceable(gap, 2), "0,2 is not the contiguous run 0,1");
+});
+
+// ── throughline absence localization (Tier 2) ──────────────────────────────
+const TL = { throughline: "a rising orange bar", slug: "orange-bar", anchor: { left: 740, top: 300 } };
+// 5 sections; only 0 and 1 carry the motif tag → 2/5 tagged, bar = ceil(0.6*5)=3.
+const FIVE_TWO_TAGGED = [0, 1, 2, 3, 4]
+  .map(
+    (i) =>
+      `export const Section${i} = () => (\n  <div>${
+        i < 2 ? `<div data-throughline="orange-bar" style={{ left: 740, top: 300 }}>m</div>` : "<h1>x</h1>"
+      }</div>\n);`,
+  )
+  .join("\n");
+const FIVE_SCENES = [0, 1, 2, 3, 4].map(() => ({ content: { headline: "x" } }));
+
+check("throughlineAbsentByScene scopes only enough missing scenes to reach the bar", () => {
+  const out = throughlineAbsentByScene(FIVE_TWO_TAGGED, FIVE_SCENES, TL);
+  // 2 tagged, bar 3 → need exactly ONE more scene, not all three untagged ones.
+  assert(out.length === 1, `should scope exactly 1 scene (bar-have), got ${out.length}`);
+  assert([2, 3, 4].includes(out[0].scene), "the scoped scene is one that lacked the motif");
+  assert(/data-throughline="orange-bar"/.test(out[0].message), "instruction carries the exact slug");
+  assert(/740px, top 300px/.test(out[0].message), "instruction carries the anchor");
+});
+check("throughlineAbsentByScene returns [] when the motif already meets the bar", () => {
+  const allTagged = [0, 1, 2, 3, 4]
+    .map((i) => `export const Section${i} = () => (<div data-throughline="orange-bar" style={{ left: 740, top: 300 }}>m</div>);`)
+    .join("\n");
+  assert(throughlineAbsentByScene(allTagged, FIVE_SCENES, TL).length === 0, "presence gate wouldn't fire");
+});
+check("throughlineAbsentByScene returns [] for a short (<3 scene) piece", () => {
+  const two = `export const Section0 = () => (<div/>);\nexport const Section1 = () => (<div/>);`;
+  assert(throughlineAbsentByScene(two, [{}, {}], TL).length === 0, "too short to thread");
+});
+check("throughlineScoped groups alongside other scoped failures", () => {
+  const tl = throughlineAbsentByScene(FIVE_TWO_TAGGED, FIVE_SCENES, TL);
+  const grouped = groupByScene([{ scene: 0, message: "density" }], tl);
+  // scene 0 (density) + one throughline scene → 2 distinct scenes, ordered.
+  assert(grouped.length === 2, `expected 2 grouped scenes, got ${grouped.length}`);
 });
 
 for (const { name, fn } of checks) {
