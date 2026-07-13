@@ -31,10 +31,12 @@ PRODUCT.md/GTM.md scoped for Days 15–34. The path below is real and ordered.
 
 - **Auth:** Clerk (Google + email + more). Supersedes the spec's email-magic-link.
 - **Payments:** Stripe **subscription + free tier** first; PAYG/credits as a fast-follow.
-  - ⚠️ **OPEN — price contradiction (founder decision needed):** this doc says
-    **$29.99/mo**, but the shipped `/billing` page and landing copy say
-    **$49.99/mo**. Whichever is chosen must match the Stripe Price object
-    (`STRIPE_PRICE_SUBSCRIPTION`) before checkout goes live.
+  - **Price: $49.99/mo** (founder decision, 2026-07-12). The app UI (`/billing`,
+    landing, refunds) already reflects this. The Stripe Price object
+    (`STRIPE_PRICE_SUBSCRIPTION`) must be created at $49.99 — the actual charge
+    comes from that Price, not from any hardcoded number. NOTE: `docs/PRODUCT.md`
+    still carries the old $29.99 unit-economics model; its margin/scenario math
+    needs recomputing at $49.99 before it's cited as current.
 - **Render:** ~~Remotion Lambda (AWS)~~ → **in-container `renderMedia`** for
   launch (amended 2026-07-10). The deploy is a long-running Docker container,
   not a serverless function, so the original "can't render in-request" blocker
@@ -156,7 +158,7 @@ Fill in [.env.example](../.env.example) → `.env.local`. Create these accounts;
 
 - [x] **Clerk** app — Google + Email enabled; publishable + secret keys wired (`@clerk/nextjs@6`, middleware + ClerkProvider + header controls). Remaining: **production instance + domain**, and the **webhook signing secret** (`CLERK_WEBHOOK_SIGNING_SECRET` — the sync webhook itself is built and waiting).
 - [x] **Postgres** — Neon connected; Prisma schema migrated (6 tables live), client singleton in `lib/db.ts`.
-- [ ] **Stripe** (test mode) — secret + webhook secret + Price id (`STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` / `STRIPE_PRICE_SUBSCRIPTION`); one Product at the CHOSEN price (see the $29.99-vs-$49.99 decision above). All code is live-on-config.
+- [ ] **Stripe** (test mode) — secret + webhook secret + Price id (`STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` / `STRIPE_PRICE_SUBSCRIPTION`); one Product at **$49.99/mo**. All code is live-on-config.
 - [ ] ~~AWS (Remotion Lambda)~~ — not needed for launch (container render decision).
 - [ ] **Cloudflare R2** (or S3) — bucket + API token (`STORAGE_*` env). All code is live-on-config; without it, renders/uploads fall back to container-local disk (lost on redeploy).
 - [ ] **Resend** — API key + verified sending domain.
