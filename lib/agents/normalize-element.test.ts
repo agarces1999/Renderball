@@ -5,7 +5,7 @@
  * The motivating defect: two builds this week shipped scenes with the brand
  * orange entirely absent ("palette is muted earth tones").
  */
-import { normalizeElementColors, lockColor, brandHues, hexToRgb, rgbToHsl } from "./normalize-element";
+import { normalizeElementColors, lockColor, brandHues, hexToRgb, rgbToHsl, assessAccentPresence } from "./normalize-element";
 
 let passed = 0;
 let failed = 0;
@@ -88,6 +88,46 @@ check("idempotent: normalizing twice equals normalizing once", () => {
   const once = normalizeElementColors(code, PALETTE).code;
   const twice = normalizeElementColors(once, PALETTE).code;
   assert(once === twice, "second pass must be a no-op");
+});
+
+console.log("\nassessAccentPresence (absent-brand-accent detection)");
+
+check("present when the signature accent's hue family appears anywhere", () => {
+  const code = `<div style={{ background: "#0b0e13", borderColor: "#ff9b80" }} />`; // an orange tint
+  const r = assessAccentPresence(code, PALETTE);
+  assert(r.present, "orange-family tint must count as accent presence");
+  assert(r.accentHue !== null && Math.abs(r.accentHue - rgbToHsl(...hexToRgb("#ff7a59")!).h) < 1,
+    "accentHue derived from the first chromatic palette entry");
+});
+
+check("ABSENT on all-neutral output (the defect the vision gate caught twice)", () => {
+  const code = `
+    <div style={{ background: "#f5f8fa", color: "#0b0e13" }}>
+      <span style={{ borderColor: "rgba(136, 136, 136, 0.4)" }}>muted earth tones</span>
+    </div>`;
+  const r = assessAccentPresence(code, PALETTE);
+  assert(!r.present, "all-neutral code must be flagged as accent-absent");
+});
+
+check("explicit signatureAccent overrides palette-order heuristic", () => {
+  // Palette lists navy first here; the explicit signature is orange.
+  const navyFirst = ["#213343", "#ff7a59", "#ffffff"];
+  const navyOnly = `<div style={{ background: "#213343" }} />`;
+  const withSig = assessAccentPresence(navyOnly, navyFirst, "#ff7a59");
+  assert(!withSig.present, "navy alone must not satisfy an explicit orange signature");
+  const withoutSig = assessAccentPresence(navyOnly, navyFirst);
+  assert(withoutSig.present, "without a signature, first chromatic entry (navy) suffices");
+});
+
+check("all-neutral brand ⇒ vacuously present (nothing to require)", () => {
+  const r = assessAccentPresence(`<div style={{ background: "#e5e5e5" }} />`, ["#111111", "#ffffff"]);
+  assert(r.present && r.accentHue === null, "neutral brands have no chromatic requirement");
+});
+
+check("accent hidden inside a data-URI does NOT count as presence", () => {
+  const uri = "data:image/png;base64," + "xx#ff7a59yy".repeat(8);
+  const r = assessAccentPresence(`<Img src="${uri}" style={{ color: "#888888" }} />`, PALETTE);
+  assert(!r.present, "base64 bodies are not rendered colors — must not satisfy presence");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);
