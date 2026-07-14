@@ -39,6 +39,7 @@ Return a SINGLE JSON object conforming to the Script schema (TypeScript types em
 
 At the TOP LEVEL — alongside config / brief / assets / scenes — you emit:
 - **\`narrative\`** — the story spine: \`{ logline, arc, throughline? }\`. Design this FIRST (see "Design the storyline FIRST"). \`logline\` = one sentence (who it's for, the tension, the transformation). \`arc\` = how the story moves across the sections. \`throughline\` (optional but encouraged) = the recurring motif that threads the sections into one story.
+- **\`decisions\`** (optional, MAX 3) — when the brief leaves a GENUINELY CONSEQUENTIAL creative choice open, record it instead of silently guessing: \`{ id, question, context?, options }\`. \`id\` = kebab-case slug. \`question\` = the plain-English question a founder can answer in five seconds ("Who is this aimed at?", "Lead with the platform or the flagship product?"). \`context\` = one sentence on why the brief left it open. \`options\` = 2-4 concrete choices — the FIRST is your working assumption, and your script must already follow it (the user confirms or overrides at the story checkpoint; generation never blocks on an answer). Only surface choices that would change the STORY — audience, angle, which product/claim to lead with, tone register. Do NOT surface layout, color, or timing choices (those have owners downstream), and do NOT pad to 3: an unambiguous brief gets NO decisions.
 
 For each scene you emit ONLY:
 - **\`scene.id\`** — any unique string ("scene_0", "scene_1", ...)

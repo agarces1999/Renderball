@@ -2702,6 +2702,22 @@ const buildDesignUserMessage = (input: BuildInput): string => {
       ].filter((l) => l.length > 0)
     : [];
 
+  // Resolved uncertainty decisions (the /review checkpoint). Each is a
+  // creative call the USER made explicitly — treat as hard direction, above
+  // any conflicting inference from the brief. Unresolved decisions carry
+  // their first option (the script was already written to that assumption,
+  // so only user-resolved ones need surfacing here).
+  const resolvedDecisions = (input.script.decisions ?? []).filter(
+    (d) => d.resolved && d.resolved.trim(),
+  );
+  const decisionLines: string[] = resolvedDecisions.length
+    ? [
+        "## Creative direction the user chose explicitly (overrides any conflicting inference)",
+        ...resolvedDecisions.map((d) => `- ${d.question} → **${d.resolved!.trim()}**`),
+        "",
+      ]
+    : [];
+
   const lines: string[] = [
     "Design the React sections for this brief. STATIC — no animation, no motion code. Pure layout, typography, decorative chrome. You are building beautiful animated-website sections; another developer will add motion later.",
     "",
@@ -2713,6 +2729,7 @@ const buildDesignUserMessage = (input: BuildInput): string => {
     `- Composition guidance: ${compositionGuidance}`,
     "",
     ...narrativeLines,
+    ...decisionLines,
     "## Sections to design",
     `Each section becomes one Section{N} React component (0-indexed). All sections render into the same ${dims.width}×${dims.height} surface (${aspect} ${orientation}).`,
     "",

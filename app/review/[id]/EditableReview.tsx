@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import type { Scene, Script } from "../../../src/schema";
+import type { Scene, Script, ScriptDecision } from "../../../src/schema";
 import { saveScriptEdits } from "./actions";
 import { cn } from "../../../lib/cn";
 
@@ -68,6 +68,17 @@ export function EditableReview({
     persist(nextScript);
   };
 
+  const handleDecision = (decisionId: string, answer: string) => {
+    const nextDecisions = (script.decisions ?? []).map((d) =>
+      d.id === decisionId ? { ...d, resolved: answer } : d,
+    );
+    const nextScript: Script = { ...script, decisions: nextDecisions };
+    setScript(nextScript);
+    persist(nextScript);
+  };
+
+  const decisions = script.decisions ?? [];
+
   return (
     <div>
       {/* Action bar — sits just under the global header */}
@@ -110,6 +121,30 @@ export function EditableReview({
         </div>
       </header>
 
+      {/* Uncertainty checkpoint — batched calls the agent couldn't make from
+          the brief alone. The story already follows each first option, so
+          building without answering is fine; answers steer the build. */}
+      {decisions.length > 0 && (
+        <section className="mb-10 rounded-md border border-hairline bg-surface p-5">
+          <div className="mb-1 font-mono text-[11px] uppercase tracking-[0.18em] text-accent-text">
+            Before you build — {decisions.length === 1 ? "one quick call" : `${decisions.length} quick calls`}
+          </div>
+          <p className="mb-4 text-[13px] text-muted">
+            The story already follows the first option in each. Confirm or
+            change it — your answer steers the build.
+          </p>
+          <div className="space-y-5">
+            {decisions.map((d) => (
+              <DecisionRow
+                key={d.id}
+                decision={d}
+                onResolve={(v) => handleDecision(d.id, v)}
+              />
+            ))}
+          </div>
+        </section>
+      )}
+
       {/* Scene sequence */}
       <div className="space-y-3">
         {script.scenes.map((scene, i) => (
@@ -131,6 +166,104 @@ export function EditableReview({
         Edit any line or visual brief, then build. Nothing renders until you
         say so.
       </p>
+    </div>
+  );
+}
+
+function DecisionRow({
+  decision,
+  onResolve,
+}: {
+  decision: ScriptDecision;
+  onResolve: (v: string) => void;
+}) {
+  const [otherOpen, setOtherOpen] = useState(false);
+  const [otherText, setOtherText] = useState("");
+  const resolved = decision.resolved?.trim() || null;
+  const isCustom = !!resolved && !decision.options.includes(resolved);
+
+  return (
+    <div>
+      <div className="text-[14px] font-medium text-ink">{decision.question}</div>
+      {decision.context && (
+        <div className="mt-0.5 text-[12.5px] text-muted">{decision.context}</div>
+      )}
+      <div className="mt-2 flex flex-wrap items-center gap-1.5">
+        {decision.options.map((opt, i) => {
+          const active = resolved === opt;
+          const assumed = !resolved && i === 0;
+          return (
+            <button
+              key={opt}
+              type="button"
+              onClick={() => {
+                setOtherOpen(false);
+                onResolve(opt);
+              }}
+              className={cn(
+                "rounded-full border px-3 py-1.5 text-[12.5px] transition-colors",
+                active
+                  ? "border-accent-line bg-accent-soft text-ink"
+                  : assumed
+                    ? "border-hairline-strong bg-surface-2 text-ink"
+                    : "border-hairline-strong text-muted hover:text-ink",
+              )}
+            >
+              {opt}
+              {assumed && (
+                <span className="ml-1.5 font-mono text-[10px] uppercase tracking-wider text-faint">
+                  assumed
+                </span>
+              )}
+            </button>
+          );
+        })}
+        {isCustom && !otherOpen && (
+          <span className="rounded-full border border-accent-line bg-accent-soft px-3 py-1.5 text-[12.5px] text-ink">
+            {resolved}
+          </span>
+        )}
+        <button
+          type="button"
+          onClick={() => {
+            setOtherText(isCustom ? resolved! : "");
+            setOtherOpen(true);
+          }}
+          className="px-1.5 py-1.5 text-[12.5px] text-faint transition-colors hover:text-muted"
+        >
+          Other…
+        </button>
+      </div>
+      {otherOpen && (
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            const v = otherText.trim();
+            if (!v) return;
+            onResolve(v);
+            setOtherOpen(false);
+          }}
+          className="mt-2 flex items-center gap-2"
+        >
+          <input
+            autoFocus
+            value={otherText}
+            onChange={(e) => setOtherText(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") setOtherOpen(false);
+            }}
+            placeholder="Your call, in a few words"
+            className="w-72 rounded-md border border-hairline-strong bg-surface-2 px-3 py-1.5 text-[13px] text-ink placeholder:text-faint outline-none focus:border-accent-line"
+          />
+          <button
+            type="submit"
+            disabled={!otherText.trim()}
+            className="rounded-md bg-accent px-3 py-1.5 text-[12.5px] font-medium text-accent-ink transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Set
+          </button>
+        </form>
+      )}
     </div>
   );
 }

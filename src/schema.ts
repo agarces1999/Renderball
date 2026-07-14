@@ -125,8 +125,33 @@ export interface Script {
 
   scenes: Scene[];
 
+  /**
+   * Uncertainty checkpoint (doctrine 2026-07-14: "ask the user whenever
+   * there is uncertainty" — batched here, never mid-build). When the brief
+   * leaves a genuinely consequential choice open, Agent 1 records it as a
+   * decision with a working ASSUMPTION so generation never blocks; the
+   * /review story screen surfaces the batch and the user confirms or
+   * overrides before the expensive build. Resolved answers are threaded
+   * into the build input. Optional for back-compat; empty means the brief
+   * was unambiguous.
+   */
+  decisions?: ScriptDecision[];
+
   status: ScriptStatus;
   approved_at?: string;
+}
+
+export interface ScriptDecision {
+  /** Stable kebab-case slug, unique within the script (e.g. "audience-focus"). */
+  id: string;
+  /** The plain-English question the user is being asked. */
+  question: string;
+  /** Why this was uncertain — one sentence of context from the brief/crawl. */
+  context?: string;
+  /** 2–4 concrete choices. The FIRST is the agent's working assumption. */
+  options: string[];
+  /** The user's answer (one of options, or free text). Unset = assumption stands. */
+  resolved?: string;
 }
 
 // ─── Assets ───────────────────────────────────────────────────────────

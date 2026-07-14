@@ -477,6 +477,50 @@ export const validateScript = (input: unknown): ValidationResult => {
     }
   }
 
+  // Uncertainty decisions — OPTIONAL (absence = the brief was unambiguous).
+  // When emitted, each must be answerable: a question, 2-4 options, and the
+  // first option is the working assumption the build proceeds on.
+  const decisions = s.decisions;
+  if (decisions !== undefined && decisions !== null) {
+    if (!Array.isArray(decisions)) {
+      return { ok: false, error: "decisions must be an array when present." };
+    }
+    if (decisions.length > 3) {
+      return { ok: false, error: "decisions: at most 3 — surface only genuinely consequential choices." };
+    }
+    const seenIds = new Set<string>();
+    for (let i = 0; i < decisions.length; i++) {
+      const d = decisions[i] as Record<string, unknown>;
+      if (typeof d !== "object" || d === null) {
+        return { ok: false, error: `decisions[${i}] must be an object.` };
+      }
+      if (typeof d.id !== "string" || !/^[a-z0-9]+(-[a-z0-9]+)*$/.test(d.id)) {
+        return { ok: false, error: `decisions[${i}].id must be a kebab-case slug.` };
+      }
+      if (seenIds.has(d.id)) {
+        return { ok: false, error: `decisions[${i}].id "${d.id}" is duplicated.` };
+      }
+      seenIds.add(d.id);
+      if (typeof d.question !== "string" || !d.question.trim()) {
+        return { ok: false, error: `decisions[${i}].question must be a non-empty string.` };
+      }
+      if (d.context !== undefined && typeof d.context !== "string") {
+        return { ok: false, error: `decisions[${i}].context must be a string when present.` };
+      }
+      if (
+        !Array.isArray(d.options) ||
+        d.options.length < 2 ||
+        d.options.length > 4 ||
+        d.options.some((o) => typeof o !== "string" || !o.trim())
+      ) {
+        return { ok: false, error: `decisions[${i}].options must be 2-4 non-empty strings (first = working assumption).` };
+      }
+      if (d.resolved !== undefined && typeof d.resolved !== "string") {
+        return { ok: false, error: `decisions[${i}].resolved must be a string when present.` };
+      }
+    }
+  }
+
   // Scenes must tile [0, totalSeconds]
   const scenes = s.scenes as unknown;
   if (!Array.isArray(scenes) || scenes.length === 0) {

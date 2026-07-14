@@ -380,5 +380,56 @@ check("backfill rejects invalid register strings (not in vocabulary)", () => {
   assert(out[1] === "quote", "valid kept");
 });
 
+// ── Uncertainty decisions (the /review checkpoint batch) ─────────────────────
+const scriptWithDecisions = (decisions: unknown) => ({
+  ...scriptWithCta("See how Ramp works", "Get a demo"),
+  decisions,
+});
+
+check("decisions: absent is fine (unambiguous brief) and a valid batch passes", () => {
+  assert(validateScript(scriptWithCta("See how Ramp works", "Get a demo")).ok, "absent must pass");
+  const r = validateScript(
+    scriptWithDecisions([
+      {
+        id: "audience-focus",
+        question: "Who is this aimed at?",
+        context: "The brief mentions both founders and finance teams.",
+        options: ["Founders", "Finance teams"],
+      },
+      {
+        id: "lead-product",
+        question: "Lead with the platform or the card?",
+        options: ["Platform", "Card", "Both equally"],
+        resolved: "Card",
+      },
+    ]),
+  );
+  assert(r.ok, `valid decisions must pass, got ${JSON.stringify(r)}`);
+});
+
+check("decisions: rejects >3, bad slug ids, duplicate ids, and <2 options", () => {
+  const four = Array.from({ length: 4 }, (_, i) => ({
+    id: `d-${i}`, question: "q?", options: ["a", "b"],
+  }));
+  assert(!validateScript(scriptWithDecisions(four)).ok, ">3 must fail (batched, not a survey)");
+  assert(
+    !validateScript(scriptWithDecisions([{ id: "Not A Slug", question: "q?", options: ["a", "b"] }])).ok,
+    "non-kebab id must fail",
+  );
+  assert(
+    !validateScript(
+      scriptWithDecisions([
+        { id: "dup", question: "q?", options: ["a", "b"] },
+        { id: "dup", question: "q2?", options: ["a", "b"] },
+      ]),
+    ).ok,
+    "duplicate ids must fail",
+  );
+  assert(
+    !validateScript(scriptWithDecisions([{ id: "one-opt", question: "q?", options: ["only"] }])).ok,
+    "a single option is not a decision",
+  );
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exitCode = 1;
