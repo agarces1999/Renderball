@@ -70,7 +70,21 @@ const PROVIDERS = [
   {
     id: "cerebras", wire: "openai", model: process.env.BAKEOFF_CEREBRAS_MODEL,
     baseURL: "https://api.cerebras.ai/v1", key: process.env.BAKEOFF_CEREBRAS_KEY,
-    elementThinking: {}, headThinking: {},
+    // Cerebras pre-debits max_completion_tokens against the TPM bucket before
+    // generating — send the param their docs name, keep caps tight upstream.
+    tokenParam: "max_completion_tokens",
+    // The doctrine as literal API params. gpt-oss has a REAL graded effort
+    // dial (low/medium/high) — think at the head, emit at the leaves.
+    // zai-glm-4.7 on Cerebras supports reasoning_effort "none" (a true off
+    // switch, added 2026-02-27) — the mode z.ai's own API refuses to serve.
+    elementThinking: (process.env.BAKEOFF_CEREBRAS_MODEL ?? "").startsWith("gpt-oss")
+      ? { reasoning_effort: "low" }
+      : (process.env.BAKEOFF_CEREBRAS_MODEL ?? "").startsWith("zai-glm")
+        ? { reasoning_effort: "none" }
+        : {},
+    headThinking: (process.env.BAKEOFF_CEREBRAS_MODEL ?? "").startsWith("gpt-oss")
+      ? { reasoning_effort: "high" }
+      : {},
   },
   {
     id: "gemini", wire: "openai", model: process.env.BAKEOFF_GEMINI_MODEL,
@@ -94,13 +108,17 @@ async function callAnthropic(p, system, user, extra, maxTokens) {
   return { text, thinking, out: j.usage?.output_tokens ?? 0, in: j.usage?.input_tokens ?? 0, secs: (Date.now() - t0) / 1000, stop: j.stop_reason };
 }
 
-async function callOpenai(p, system, user, _extra, maxTokens) {
+async function callOpenai(p, system, user, extra, maxTokens) {
   const t0 = Date.now();
   const res = await fetch(`${p.baseURL}/chat/completions`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${p.key}` },
     body: JSON.stringify({
-      model: p.model, max_tokens: maxTokens,
+      model: p.model,
+      [p.tokenParam ?? "max_tokens"]: maxTokens,
+      // Per-workload reasoning config (reasoning_effort etc.) — dropping this
+      // silently ran every openai-wire provider at its default effort.
+      ...extra,
       messages: [...(system ? [{ role: "system", content: system }] : []), { role: "user", content: user }],
     }),
     signal: AbortSignal.timeout(600000),
