@@ -65,6 +65,10 @@ export function ElementEditor({
   const [busy, setBusyState] = useState<null | "regenerate" | "delete" | "move" | "text">(null);
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
+  // Instructed regen (DESIGN.md flow step 6: "say what to change, it regenerates").
+  // The Regenerate button opens this ask; the API rejects blind rerolls.
+  const [regenAsk, setRegenAsk] = useState(false);
+  const [regenText, setRegenText] = useState("");
   // Bumped when the iframe's document (re)loads — recomputes x-ray rects + restores
   // selection against the NEW document (contentDocument is stale at src-change time).
   const [docTick, setDocTick] = useState(0);
@@ -558,13 +562,21 @@ export function ElementEditor({
   useEffect(() => detachDrag, []);
   // Cancel an in-progress text-edit session if the editor unmounts.
   useEffect(() => () => finishSessionRef.current?.(false), []);
+  // A fresh selection gets a fresh ask — a typed instruction is about ONE piece.
+  useEffect(() => {
+    setRegenAsk(false);
+    setRegenText("");
+  }, [selected?.pieceId]);
 
   const regenerate = async () => {
-    if (!selected) return;
+    const instruction = regenText.trim();
+    if (!selected || !instruction) return;
     setBusy("regenerate");
-    const ok = await post(`${apiBase}/regenerate-element`, { scriptId, sceneIndex, pieceId: selected.pieceId });
+    const ok = await post(`${apiBase}/regenerate-element`, { scriptId, sceneIndex, pieceId: selected.pieceId, instruction });
     setBusy(null);
     if (ok) {
+      setRegenAsk(false);
+      setRegenText("");
       reselectIdRef.current = selected.pieceId; // keep it selected across the reload
       setSelected(null);
       onChanged();
@@ -664,24 +676,62 @@ export function ElementEditor({
           />
           <div onMouseDown={onDragStart} title="Drag to move" style={{ position: "absolute", left: box.left, top: box.top, width: box.width, height: box.height, cursor: busy ? "wait" : "move", pointerEvents: "auto" }} />
           <div
-            style={{ position: "absolute", left: Math.max(4, box.left), top: Math.max(4, box.top - 42), pointerEvents: "auto" }}
-            className="flex items-center gap-1 rounded-lg border border-white/10 bg-[#11141b] px-1.5 py-1 shadow-xl"
+            style={{ position: "absolute", left: Math.max(4, box.left), top: Math.max(4, box.top - (regenAsk ? 74 : 42)), pointerEvents: "auto" }}
+            className="flex flex-col gap-1 rounded-lg border border-white/10 bg-[#11141b] px-1.5 py-1 shadow-xl"
           >
-            <span className="px-1.5 font-mono text-[10px] text-white/45">
-              {selected.pieceId}
-              <span className="ml-1 text-white/25">{selected.kind}</span>
-            </span>
-            {canEditText && (
-              <button type="button" onClick={editTextFromToolbar} disabled={!!busy} className="rounded-md bg-sky-500/90 px-2.5 py-1 text-[11px] font-medium text-white hover:bg-sky-500 disabled:opacity-50">
-                Edit text
+            <div className="flex items-center gap-1">
+              <span className="px-1.5 font-mono text-[10px] text-white/45">
+                {selected.pieceId}
+                <span className="ml-1 text-white/25">{selected.kind}</span>
+              </span>
+              {canEditText && (
+                <button type="button" onClick={editTextFromToolbar} disabled={!!busy} className="rounded-md bg-sky-500/90 px-2.5 py-1 text-[11px] font-medium text-white hover:bg-sky-500 disabled:opacity-50">
+                  Edit text
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => setRegenAsk((a) => !a)}
+                disabled={!!busy}
+                className={
+                  "rounded-md px-2.5 py-1 text-[11px] font-medium text-white disabled:opacity-50 " +
+                  (regenAsk ? "bg-indigo-500" : "bg-indigo-500/90 hover:bg-indigo-500")
+                }
+              >
+                {busy === "regenerate" ? "Regenerating…" : "Regenerate"}
               </button>
+              <button type="button" onClick={remove} disabled={!!busy} className="rounded-md bg-white/5 px-2.5 py-1 text-[11px] font-medium text-white/80 hover:bg-red-500/80 hover:text-white disabled:opacity-50">
+                {busy === "delete" ? "Deleting…" : "Delete"}
+              </button>
+            </div>
+            {regenAsk && (
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  void regenerate();
+                }}
+                className="flex items-center gap-1"
+              >
+                <input
+                  autoFocus
+                  value={regenText}
+                  onChange={(e) => setRegenText(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Escape") setRegenAsk(false);
+                  }}
+                  disabled={!!busy}
+                  placeholder="What should change? e.g. make it a bar chart"
+                  className="w-64 rounded-md bg-white/10 px-2 py-1 text-[11px] text-white placeholder-white/35 outline-none focus:bg-white/15 disabled:opacity-50"
+                />
+                <button
+                  type="submit"
+                  disabled={!!busy || !regenText.trim()}
+                  className="rounded-md bg-indigo-500/90 px-2.5 py-1 text-[11px] font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
+                >
+                  Go
+                </button>
+              </form>
             )}
-            <button type="button" onClick={regenerate} disabled={!!busy} className="rounded-md bg-indigo-500/90 px-2.5 py-1 text-[11px] font-medium text-white hover:bg-indigo-500 disabled:opacity-50">
-              {busy === "regenerate" ? "Regenerating…" : "Regenerate"}
-            </button>
-            <button type="button" onClick={remove} disabled={!!busy} className="rounded-md bg-white/5 px-2.5 py-1 text-[11px] font-medium text-white/80 hover:bg-red-500/80 hover:text-white disabled:opacity-50">
-              {busy === "delete" ? "Deleting…" : "Delete"}
-            </button>
           </div>
         </>
       )}

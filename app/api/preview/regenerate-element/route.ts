@@ -15,8 +15,13 @@ import { regenerateElement } from "../../../../lib/edit/regenerate-element";
  * card" provably cannot disturb its neighbors. The preview iframe and the MP4 render
  * both consume Composition.tsx, so the change shows in both.
  *
- * POST body: { scriptId, sceneIndex, pieceId, instruction? }
+ * POST body: { scriptId, sceneIndex, pieceId, instruction }
  * Returns: { ok, sceneIndex, pieceId, usage? } | { ok:false, error }
+ *
+ * `instruction` is REQUIRED (doctrine 2026-07-14): a user regen must say what
+ * to change — a blind reroll re-gambles quality instead of steering it. The
+ * lib layer keeps instruction optional for internal repair paths; this user
+ * boundary enforces it.
  */
 export async function POST(request: Request) {
   const user = await getCurrentUser();
@@ -66,6 +71,12 @@ export async function POST(request: Request) {
   }
   if (!pieceId || typeof pieceId !== "string") {
     return NextResponse.json({ error: "pieceId required" }, { status: 400 });
+  }
+  if (typeof instruction !== "string" || !instruction.trim()) {
+    return NextResponse.json(
+      { error: "Say what to change — regeneration needs an instruction." },
+      { status: 400 },
+    );
   }
 
   // Ownership check — loadScript is scoped to the caller.

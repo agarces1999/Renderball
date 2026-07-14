@@ -63,6 +63,10 @@ export function PreviewClient({ scriptId, script, initialWarnings }: Props) {
   const [reloadKey, setReloadKey] = useState(0);
   const [regenerating, setRegenerating] = useState(false);
   const [regenError, setRegenError] = useState<string | null>(null);
+  // Instructed regen (DESIGN.md flow step 6: "say what to change, it regenerates").
+  // The button opens this ask; the API rejects blind rerolls.
+  const [regenAsk, setRegenAsk] = useState(false);
+  const [regenInstruction, setRegenInstruction] = useState("");
   const [mp4State, setMp4State] = useState<Mp4State>({ kind: "idle" });
   const [warnings, setWarnings] = useState<PreviewWarnings | null>(
     (initialWarnings as PreviewWarnings | null) ?? null,
@@ -91,16 +95,21 @@ export function PreviewClient({ scriptId, script, initialWarnings }: Props) {
   const selectScene = (i: number) => {
     setSceneIndex(i);
     setReloadKey((k) => k + 1);
+    // The typed instruction is about ONE scene — a new scene gets a fresh ask.
+    setRegenAsk(false);
+    setRegenInstruction("");
   };
 
   const handleRegenerate = async () => {
+    const instruction = regenInstruction.trim();
+    if (!instruction) return;
     setRegenerating(true);
     setRegenError(null);
     try {
       const res = await fetch("/api/preview/regenerate-scene", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ scriptId, sceneIndex }),
+        body: JSON.stringify({ scriptId, sceneIndex, instruction }),
       });
       if (!res.ok) {
         const txt = await res.text();
@@ -111,6 +120,8 @@ export function PreviewClient({ scriptId, script, initialWarnings }: Props) {
         warnings?: PreviewWarnings;
       };
       if (json.warnings) setWarnings(json.warnings);
+      setRegenAsk(false);
+      setRegenInstruction("");
       setReloadKey((k) => k + 1);
     } catch (e) {
       setRegenError(e instanceof Error ? e.message : String(e));
@@ -250,14 +261,46 @@ export function PreviewClient({ scriptId, script, initialWarnings }: Props) {
         </button>
         <button
           type="button"
-          onClick={handleRegenerate}
+          onClick={() => setRegenAsk((a) => !a)}
           disabled={regenerating}
-          className="rounded-md border border-hairline-strong px-4 py-2 text-[13px] text-muted transition-colors hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
+          className={cn(
+            "rounded-md border px-4 py-2 text-[13px] transition-colors disabled:cursor-not-allowed disabled:opacity-50",
+            regenAsk
+              ? "border-accent-line bg-accent-soft text-ink"
+              : "border-hairline-strong text-muted hover:text-ink",
+          )}
         >
           {regenerating
             ? "Regenerating…"
             : `Regenerate scene ${sceneIndex + 1}`}
         </button>
+        {regenAsk && !regenerating && (
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              void handleRegenerate();
+            }}
+            className="flex items-center gap-2"
+          >
+            <input
+              autoFocus
+              value={regenInstruction}
+              onChange={(e) => setRegenInstruction(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") setRegenAsk(false);
+              }}
+              placeholder="What should change in this scene?"
+              className="w-72 rounded-md border border-hairline-strong bg-surface-2 px-3 py-2 text-[13px] text-ink placeholder:text-faint outline-none focus:border-accent-line"
+            />
+            <button
+              type="submit"
+              disabled={!regenInstruction.trim()}
+              className="rounded-md bg-accent px-4 py-2 text-[13px] font-medium text-accent-ink transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Go
+            </button>
+          </form>
+        )}
 
         <div className="ml-auto">
           {mp4State.kind === "done" ? (

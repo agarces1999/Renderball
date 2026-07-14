@@ -86,6 +86,15 @@ export async function POST(request: Request) {
       { status: 400 },
     );
   }
+  // Doctrine (2026-07-14): a user regen must say what to change — a blind
+  // reroll re-gambles quality instead of steering it. The lib layer keeps
+  // instruction optional for internal repair paths; the user boundary enforces.
+  if (typeof instruction !== "string" || !instruction.trim()) {
+    return NextResponse.json(
+      { error: "Say what to change — regeneration needs an instruction." },
+      { status: 400 },
+    );
+  }
 
   const script = await loadScript(scriptId, user.id);
   if (!script) {
