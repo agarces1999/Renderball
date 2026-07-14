@@ -8,7 +8,7 @@
  */
 import { assembleComposition, type AssembleInput } from "./assemble";
 import { verifyCompilable } from "./code-extraction";
-import type { Theme, SceneManifest } from "../edit/piece-model";
+import type { Theme, SceneManifest, Piece } from "../edit/piece-model";
 
 let passed = 0;
 let failed = 0;
@@ -101,6 +101,24 @@ await check("throughline piece co-locates data-throughline + literal px on one w
     "data-throughline + left/top must be on the SAME wrapper (assessContinuity reads px off that tag)");
 });
 
+await check("every emitted piece wrapper carries data-piece + data-kind (gate visibility)", () => {
+  // measure-scene's PAGE_WALK reads closest('[data-piece]') + data-kind; the BLOCKING
+  // render-truth gates (findCrossPieceOverlap, findStrandedHero) fail OPEN without them.
+  const walk = (ps: Piece[]) => {
+    for (const p of ps) {
+      if (p.kind !== "chrome") { // Section emits <Chrome/> itself — no wrapper to attribute
+        assert(out.includes(`data-piece="${p.id}" data-kind="${p.kind}"`),
+          `piece ${p.id} wrapper must carry data-piece + data-kind (kind ${p.kind})`);
+      }
+      if (p.children) walk(p.children);
+    }
+  };
+  scenes.forEach((s) => walk(s.pieces));
+  // throughline attr still co-locates AFTER the piece attrs on the same wrapper
+  assert(out.includes('data-piece="s0.bar" data-kind="diegetic" data-throughline="progress-bar"'),
+    "piece attrs + data-throughline on the same wrapper");
+});
+
 await check("emits the Generated alias rendering every Section", () => {
   assert(out.includes("export const Generated: React.FC<{ script: Script }>"), "Generated export");
   assert(out.includes("<Section0 script={script} />"), "Generated mounts Section0");
@@ -108,6 +126,59 @@ await check("emits the Generated alias rendering every Section", () => {
 
 await check("the assembled Composition.tsx COMPILES (esbuild tsx)", async () => {
   const err = await verifyCompilable(out);
+  assert(err === null, `should compile but: ${err}`);
+});
+
+// ————— piece-LOCAL keyframe namespacing (Theme.keyframes invariant, piece-model.ts) —————
+// Keyframe names are document-global and Generated mounts every Section into one
+// document, so two pieces declaring the same LOCAL @keyframes name would silently
+// last-write-win. Shared names (SHARED_KEYFRAMES) must stay untouched.
+const kfScenes: SceneManifest[] = [
+  {
+    scene: 0,
+    background: "BG",
+    pieces: [
+      { id: "s0.a", kind: "diegetic", file: "scene0/a.tsx", bounds: { x: 80, y: 100, w: 400, h: 300, z: 1 } },
+      { id: "s0.b", kind: "diegetic", file: "scene0/b.tsx", bounds: { x: 600, y: 100, w: 400, h: 300, z: 1 } },
+    ],
+  },
+];
+const kfBodies: Record<string, string> = {
+  // Both pieces declare a LOCAL `@keyframes pulse` (different frames!). s0.a also
+  // references the SHARED fadeRise, and its keyframe CSS carries a ${HAIRLINE}
+  // interpolation that must survive the rename byte-for-byte.
+  "s0.a": `<><style dangerouslySetInnerHTML={{ __html: \`@keyframes pulse{from{opacity:0.2}to{opacity:1;border-color:\${HAIRLINE}}}\` }} /><div style={{ animation: "pulse 1s infinite, fadeRise 0.4s ease-out" }} /></>`,
+  // s0.b's visible COPY contains the bare word "pulse" — keyframe names are
+  // often English words, and the rename must never touch prose.
+  "s0.b": `<><style dangerouslySetInnerHTML={{ __html: \`@keyframes pulse{from{transform:scale(0.9)}to{transform:scale(1.1)}}\` }} /><div style={{ animationName: "pulse" }}>Feel the pulse of your data</div></>`,
+};
+const kfOut = assembleComposition({ theme, scenes: kfScenes, pieceBody: (p) => kfBodies[p.id] ?? "<div />" });
+
+await check("same-named LOCAL keyframes are namespaced per piece (no cross-piece collision)", () => {
+  assert(kfOut.includes("@keyframes s0_a_pulse{"), "s0.a's local pulse namespaced to s0_a_pulse");
+  assert(kfOut.includes("@keyframes s0_b_pulse{"), "s0.b's local pulse namespaced to s0_b_pulse");
+  assert(!/@keyframes pulse\{/.test(kfOut), "no bare @keyframes pulse survives (would last-write-win)");
+});
+
+await check("local keyframe REFERENCES follow the rename; shared refs + ${token} survive", () => {
+  assert(kfOut.includes('animation: "s0_a_pulse 1s infinite, fadeRise 0.4s ease-out"'),
+    "s0.a's animation shorthand renamed — and the SHARED fadeRise reference untouched");
+  assert(kfOut.includes('animationName: "s0_b_pulse"'), "s0.b's animationName renamed");
+  assert(kfOut.includes("border-color:${HAIRLINE}"), "${token} interpolation survives the rename intact");
+});
+
+await check("visible COPY containing a keyframe name is NEVER rewritten", () => {
+  assert(kfOut.includes("Feel the pulse of your data"),
+    "prose mentioning 'pulse' must survive — renames apply only in animation contexts");
+});
+
+await check("SHARED_KEYFRAMES itself is never renamed (pieces reference shared names)", () => {
+  assert(kfOut.includes("@keyframes fadeRise{from{opacity:0}to{opacity:1}}"),
+    "shared preamble emitted verbatim — namespacing it would orphan every piece reference");
+});
+
+await check("the keyframe-namespaced Composition.tsx COMPILES (esbuild tsx)", async () => {
+  const err = await verifyCompilable(kfOut);
   assert(err === null, `should compile but: ${err}`);
 });
 

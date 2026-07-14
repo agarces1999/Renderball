@@ -25,6 +25,17 @@
  *  - Sections are named exactly `Section{i}` (pickSection looks for that first).
  *  - Throughline pieces get `data-throughline` AND literal px left/top CO-LOCATED
  *    on the same wrapper div, so assessContinuity/Presence still see them.
+ *  - EVERY emitted piece wrapper carries `data-piece` + `data-kind` (attribute
+ *    names mirror the Piece shim in build-wrapper.ts exactly) — measure-scene's
+ *    PAGE_WALK resolves each element to closest('[data-piece]') and reads
+ *    data-kind, and the BLOCKING render-truth gates (findCrossPieceOverlap,
+ *    findStrandedHero) key off those measured piece/pieceKind fields. Without
+ *    the attributes those gates silently fail OPEN on assembled output.
+ *  - Piece-LOCAL `@keyframes` are namespaced per piece (pulse → s0_a_pulse) so
+ *    two pieces' same-named local keyframes can't last-write-win across pieces
+ *    once Generated mounts every Section into one document. SHARED_KEYFRAMES
+ *    names are NEVER renamed — they are shared by design and every piece
+ *    references them by the shared name.
  *  - All animation is CSS `@keyframes` (in SHARED_KEYFRAMES) so SectionClock's
  *    getAnimations() can pin it for the MP4. No Remotion hooks inside a piece.
  */
@@ -91,6 +102,44 @@ const lastWordAccent = (text: string, color: string, emStyle?: React.CSSProperti
   return (<>{rest}{" "}<em style={{ fontStyle: "italic", color, fontWeight: 300, ...emStyle }}>{last}</em></>);
 };`;
 
+/** Namespace a piece's LOCAL `@keyframes` — and every same-piece reference — with
+ *  a CSS-ident prefix derived from the piece id ("s0.bar": drift1 → s0_bar_drift1).
+ *  CSS keyframe names are DOCUMENT-global and Generated mounts every Section into
+ *  one document, so two pieces each declaring a local `@keyframes pulse` would
+ *  silently last-write-win across pieces (and a local redeclaration of a shared
+ *  name would hijack it for every other piece). This is the minimal correct form
+ *  of the piece-model invariant (piece-model.ts `Theme.keyframes`): ONLY names
+ *  declared inside the piece body are renamed — SHARED_KEYFRAMES names must stay
+ *  untouched, because pieces reference them by the shared name and renaming the
+ *  shared preamble would orphan every reference.
+ *
+ *  Renames apply ONLY in animation contexts — the `@keyframes` declaration and
+ *  the VALUE of `animation` / `animationName` / `animation-name` properties (a
+ *  quoted/template string in style objects, or a bare CSS value up to `;`/`}`
+ *  in style blocks). Keyframe names are often English words (pulse, float,
+ *  drift); renaming any wider — even rest-of-line — corrupts visible COPY
+ *  mentioning the word. The lookarounds rename bare identifiers only, so
+ *  `${token}` interpolations and hyphenated neighbors pass through intact. The
+ *  declared-name charset has no regex metacharacters, so names inject safely. */
+const namespaceLocalKeyframes = (body: string, pieceId: string): string => {
+  const declared = new Set<string>();
+  for (const m of body.matchAll(/@keyframes\s+([A-Za-z_][A-Za-z0-9_-]*)/g)) declared.add(m[1]);
+  if (declared.size === 0) return body;
+  const prefix = pieceId.replace(/[^A-Za-z0-9_]/g, "_");
+  const renameIn = (segment: string): string => {
+    for (const name of declared) {
+      segment = segment.replace(new RegExp(`(?<![\\w-])${name}(?![\\w-])`, "g"), `${prefix}_${name}`);
+    }
+    return segment;
+  };
+  return body
+    .replace(/@keyframes\s+([A-Za-z_][A-Za-z0-9_-]*)/g, (_, name) => `@keyframes ${prefix}_${name}`)
+    .replace(
+      /(\banimation(?:Name|-name)?\s*:\s*)("[^"\n]*"|'[^'\n]*'|`[^`\n]*`|[^;}\n]*)/g,
+      (_, prop, value) => prop + renameIn(value),
+    );
+};
+
 /** Inline one piece (and its nested children) into a positioned wrapper. Text
  *  pieces flow-size (maxWidth, height auto) so a wrapped headline is never clipped;
  *  others use a fixed rect. Atmosphere is full-bleed. Chrome is emitted by the
@@ -98,15 +147,21 @@ const lastWordAccent = (text: string, color: string, emStyle?: React.CSSProperti
 const emitPiece = (piece: Piece, sceneIndex: number, resolve: PieceBodyResolver, pad: string): string => {
   if (piece.kind === "chrome") return ""; // Section emits <Chrome/> itself
   const b = piece.bounds;
-  const body = resolve(piece, sceneIndex);
+  const body = namespaceLocalKeyframes(resolve(piece, sceneIndex), piece.id);
   const childMarkup = (piece.children ?? [])
     .map((ch) => emitPiece(ch, sceneIndex, resolve, pad + INDENT))
     .filter(Boolean)
     .join("\n");
 
+  // Attribute names mirror the Piece shim (build-wrapper.ts) EXACTLY: measure-scene's
+  // PAGE_WALK resolves every element to closest('[data-piece]') + its data-kind, and
+  // the BLOCKING render-truth gates (findCrossPieceOverlap, findStrandedHero) key off
+  // those measured fields — omit these and the gates fail open on assembled output.
+  const pieceAttrs = ` data-piece=${JSON.stringify(piece.id)} data-kind=${JSON.stringify(piece.kind)}`;
+
   if (piece.kind === "atmosphere") {
     // Full-bleed decorative layer; bounds.z controls stacking (glow under, grain over).
-    return `${pad}<div style={{ position: "absolute", inset: 0, zIndex: ${b.z}, pointerEvents: "none" }}>\n${pad}${INDENT}${body}\n${childMarkup ? childMarkup + "\n" : ""}${pad}</div>`;
+    return `${pad}<div${pieceAttrs} style={{ position: "absolute", inset: 0, zIndex: ${b.z}, pointerEvents: "none" }}>\n${pad}${INDENT}${body}\n${childMarkup ? childMarkup + "\n" : ""}${pad}</div>`;
   }
 
   const sizing =
@@ -118,7 +173,7 @@ const emitPiece = (piece: Piece, sceneIndex: number, resolve: PieceBodyResolver,
     : "";
   // Co-locate data-throughline AND literal px left/top on this same wrapper so
   // assessContinuity's pxAnchor + assessThroughlinePresence still read them.
-  return `${pad}<div${throughAttr} style={{ position: "absolute", left: ${b.x}, top: ${b.y}, ${sizing}, zIndex: ${b.z} }}>\n${pad}${INDENT}${body}\n${childMarkup ? childMarkup + "\n" : ""}${pad}</div>`;
+  return `${pad}<div${pieceAttrs}${throughAttr} style={{ position: "absolute", left: ${b.x}, top: ${b.y}, ${sizing}, zIndex: ${b.z} }}>\n${pad}${INDENT}${body}\n${childMarkup ? childMarkup + "\n" : ""}${pad}</div>`;
 };
 
 const emitSection = (scene: SceneManifest, resolve: PieceBodyResolver): string => {
