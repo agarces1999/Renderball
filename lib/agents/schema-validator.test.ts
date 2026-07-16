@@ -18,6 +18,8 @@ import {
   countDrawableNouns,
   countInteriorSpecifics,
   BEAT_COVERAGE_MIN_FRACTION,
+  checkSceneComposition,
+  TEMPLATE_LEAK_RX,
 } from "./schema-validator";
 
 let passed = 0;
@@ -675,6 +677,329 @@ check("validateScript({richness:false}) loads a stored thin script (back-compat)
 
 check("richness errors each stay ≤200 chars and name the scene", () => {
   for (const e of checkScriptRichness(GPT_OSS_THIN)) {
+    assert(e.length <= 200, `error over 200 chars (${e.length}): ${e}`);
+    assert(/Scene(s)? \d/.test(e), `error must name the scene: ${e}`);
+  }
+});
+
+// ── Composition contract (checkSceneComposition — the cast-doctrine blueprint) ──
+// The thinking head authors per-scene SceneComposition blueprints; these checks
+// make richness machine-checkable BEFORE any element generates. Acceptance-run
+// evidence: the fast emitter copied template examples verbatim ("Deal won —
+// $12,400" CRM rows in a Duolingo language app) and duplicated copy across
+// elements. Fixtures below are Duolingo-flavored on purpose.
+
+type CompScenes = Parameters<typeof checkSceneComposition>[0];
+const clone = <T,>(x: T): T => JSON.parse(JSON.stringify(x)) as T;
+
+// GOOD fixture: a two-scene Duolingo composed script that passes everything.
+// Scene 0 hero has EXACTLY 6 interior items (the boundary: 6 passes, 5 fails).
+const duoGood = () =>
+  clone([
+    {
+      index: 0,
+      label: "Hook",
+      visual_concept: "A Duolingo lesson screen in a phone frame, headline left.",
+      content: {
+        headline: "Streaks make Spanish stick",
+        lede: "Five minutes a day, every day.",
+        asset_ids: [],
+      },
+      composition: {
+        atmosphere:
+          "Feather-green confetti drifts slowly upward behind the phone, soft and celebratory",
+        elements: [
+          {
+            role: "hero",
+            subject: "a Duolingo lesson screen in a phone frame",
+            interior: [
+              "XP bar 340/500",
+              "streak flame '7'",
+              "chips: días / noches",
+              "hearts counter 4/5",
+              "crown level 12 badge",
+              "green owl mascot mid-hop",
+            ],
+            motion: "the streak flame pulses each time the XP bar fills",
+          },
+          {
+            role: "copy",
+            subject: "headline block left of the phone",
+            interior: ["headline 'Streaks make Spanish stick'", "lede set beneath in Feather Book"],
+            ownsCopy: ["headline", "lede"],
+          },
+          {
+            role: "atmosphere",
+            subject: "confetti field behind the phone",
+            interior: ["feather-green confetti pieces"],
+          },
+        ],
+      },
+    },
+    {
+      index: 1,
+      label: "Proof",
+      visual_concept: "A streak leaderboard card with the headline above.",
+      content: { headline: "22 million learners strong", asset_ids: [] },
+      composition: {
+        atmosphere:
+          "Warm sunrise gradient washes the canvas while tiny owls parade along the base",
+        elements: [
+          {
+            role: "hero",
+            subject: "a streak leaderboard card",
+            interior: [
+              "leaderboard row: Ana — 214 day streak",
+              "leaderboard row: Luis — 198 day streak",
+              "weekly XP total 1,240",
+              "gem count 505",
+              "league badge 'Obsidian'",
+              "daily goal ring 80%",
+            ],
+            motion: "leaderboard rows cascade in one by one",
+          },
+          {
+            role: "copy",
+            subject: "headline above the card",
+            interior: ["headline '22 million learners strong'"],
+            ownsCopy: ["headline"],
+          },
+          {
+            role: "connector",
+            subject: "dotted flight path from the owl to the card",
+            interior: ["dotted arc with arrowhead"],
+          },
+        ],
+      },
+    },
+  ]) as unknown as CompScenes;
+
+// Typed accessors into the loose fixture (keeps mutations readable).
+const sceneOf = (s: CompScenes, i: number) =>
+  s[i] as unknown as {
+    content: Record<string, unknown>;
+    composition: {
+      atmosphere?: string;
+      elements: {
+        role: string;
+        interior: string[];
+        ownsCopy?: string[];
+        motion?: string;
+      }[];
+    };
+  };
+
+check("composition: the good Duolingo composed script passes every check", () => {
+  const e = checkSceneComposition(duoGood());
+  assert(e.length === 0, `expected clean, got ${JSON.stringify(e)}`);
+});
+
+check("composition: scenes without a composition field are skipped", () => {
+  const bare = [
+    { label: "Open", visual_concept: "Logo over a glow.", content: { headline: "Hi", asset_ids: [] } },
+  ] as unknown as CompScenes;
+  assert(checkSceneComposition(bare).length === 0, "uncomposed scripts must produce no errors");
+  const mixed = [...duoGood(), ...bare] as unknown as CompScenes;
+  assert(checkSceneComposition(mixed).length === 0, "an uncomposed trailing scene must be skipped");
+});
+
+// — 1) roles —
+check("composition: an off-vocabulary role is rejected with the closed set", () => {
+  const s = duoGood();
+  sceneOf(s, 0).composition.elements[2].role = "background";
+  const e = checkSceneComposition(s);
+  assert(
+    e.some((x) => /Scene 0 element 2: role "background" invalid/.test(x) && /hero\|copy\|atmosphere\|connector\|throughline/.test(x)),
+    `expected the closed-set role error, got ${JSON.stringify(e)}`,
+  );
+});
+
+check("composition: a composed scene needs ≥1 hero and ≥1 copy element", () => {
+  const noHero = duoGood();
+  sceneOf(noHero, 0).composition.elements[0].role = "connector";
+  const a = checkSceneComposition(noHero);
+  assert(a.some((x) => /Scene 0: composition has no hero element/.test(x)), `expected no-hero, got ${JSON.stringify(a)}`);
+  const noCopy = duoGood();
+  sceneOf(noCopy, 1).composition.elements[1].role = "throughline";
+  const b = checkSceneComposition(noCopy);
+  assert(b.some((x) => /Scene 1: composition has no copy element/.test(x)), `expected no-copy, got ${JSON.stringify(b)}`);
+});
+
+// — 2) hero inventory —
+check("composition boundary: a 5-item hero fails, 6 passes", () => {
+  const s = duoGood();
+  sceneOf(s, 0).composition.elements[0].interior.pop(); // 6 → 5
+  const e = checkSceneComposition(s);
+  assert(
+    e.some((x) => /Scene 0 hero: 5 interior item\(s\)/.test(x) && /≥6/.test(x)),
+    `expected the 5-item count error, got ${JSON.stringify(e)}`,
+  );
+  // 6 items = the good fixture itself, asserted clean above.
+  assert(checkSceneComposition(duoGood()).length === 0, "6 items must pass");
+});
+
+check("composition: generic filler interior items are rejected ('some data rows', 'sample content')", () => {
+  const s = duoGood();
+  const hero = sceneOf(s, 0).composition.elements[0];
+  hero.interior[3] = "some data rows";
+  hero.interior[4] = "sample content";
+  const e = checkSceneComposition(s).filter((x) => /is generic filler/.test(x));
+  assert(e.length === 2, `expected both filler items flagged, got ${JSON.stringify(e)}`);
+  assert(e.some((x) => x.includes('"some data rows"')), `expected the item quoted, got ${JSON.stringify(e)}`);
+});
+
+check("composition: a vague 2-word item fails concreteness; digit/quoted/3-word items pass", () => {
+  const s = duoGood();
+  sceneOf(s, 0).composition.elements[0].interior[3] = "blue thing";
+  const e = checkSceneComposition(s);
+  assert(
+    e.some((x) => /Scene 0 hero: interior item "blue thing" is not concrete/.test(x)),
+    `expected the vague-item error, got ${JSON.stringify(e)}`,
+  );
+  // "XP bar 340/500" (digit), "streak flame '7'" (quoted) and "chips: días /
+  // noches" (3 words + specific noun) all live in the clean good fixture.
+});
+
+// — 3) template-leak guard —
+check("composition: the acceptance-run '$12,400' leak is rejected verbatim", () => {
+  const s = duoGood();
+  sceneOf(s, 0).composition.elements[0].interior[3] = "Deal won — $12,400";
+  const e = checkSceneComposition(s);
+  const f = e.find((x) => /template example value — author real values for THIS brand/.test(x));
+  assert(!!f, `expected the template-leak error, got ${JSON.stringify(e)}`);
+  assert(f!.includes('"Deal won — $12,400"') && f!.startsWith("Scene 0 hero:"), `expected item + role named, got ${f}`);
+});
+
+check("composition: leak guard is case-insensitive and covers the audit set; near-values pass", () => {
+  const s = duoGood();
+  sceneOf(s, 1).composition.elements[2].interior = [
+    "ACME CORP account row",
+    "avatar chip for sarah chen",
+    "signup john.doe@example.com",
+    "pipeline row $12,500", // near-value: NOT a leak
+  ];
+  const e = checkSceneComposition(s).filter((x) => /template example value/.test(x));
+  assert(e.length === 3, `expected exactly the 3 leaks (not $12,500), got ${JSON.stringify(e)}`);
+  assert(e.every((x) => x.startsWith("Scene 1 connector:")), `leaks must name the element role, got ${JSON.stringify(e)}`);
+});
+
+check("TEMPLATE_LEAK_RX covers the full audit/acceptance leak set", () => {
+  for (const leak of [
+    "Deal won — $12,400", "$8,300 closed", "Acme Corp", "Beta LLC", "Gamma Inc",
+    "Sarah Chen", "47 deals", "152 users", "3.8 rating", "john.doe@example.com", "John Doe",
+  ]) {
+    assert(TEMPLATE_LEAK_RX.test(leak), `expected leak match: ${leak}`);
+  }
+  for (const real of ["XP bar 340/500", "22 million learners", "$12,500 pipeline", "38 rating widgets"]) {
+    assert(!TEMPLATE_LEAK_RX.test(real), `real value must not match: ${real}`);
+  }
+});
+
+// — 4) ownership —
+check("composition: ownsCopy naming a field absent from scene.content is flagged", () => {
+  const s = duoGood();
+  sceneOf(s, 1).composition.elements[1].ownsCopy = ["headline", "lede"]; // scene 1 has no lede
+  const e = checkSceneComposition(s);
+  assert(
+    e.some((x) => /Scene 1 copy: ownsCopy field "lede" is not in scene\.content/.test(x)),
+    `expected the orphaned-field error, got ${JSON.stringify(e)}`,
+  );
+});
+
+check("composition: a field owned by two elements is flagged by name", () => {
+  const s = duoGood();
+  sceneOf(s, 0).composition.elements[0].ownsCopy = ["headline"]; // hero grabs the copy's field
+  const e = checkSceneComposition(s);
+  assert(
+    e.some((x) => /Scene 0: content field "headline" owned by 2 elements \(hero, copy\)/.test(x)),
+    `expected the double-owner error, got ${JSON.stringify(e)}`,
+  );
+});
+
+check("composition: ownsCopy must collectively cover the headline", () => {
+  const s = duoGood();
+  sceneOf(s, 1).composition.elements[1].ownsCopy = [];
+  const e = checkSceneComposition(s);
+  assert(
+    e.some((x) => /Scene 1: no element owns "headline"/.test(x)),
+    `expected the headline-coverage error, got ${JSON.stringify(e)}`,
+  );
+});
+
+// — 5) atmosphere variety —
+check("composition: atmosphere is required and must be ≥6 words", () => {
+  const missing = duoGood();
+  delete sceneOf(missing, 0).composition.atmosphere;
+  const a = checkSceneComposition(missing);
+  assert(a.some((x) => /Scene 0: composition\.atmosphere is required/.test(x)), `expected required error, got ${JSON.stringify(a)}`);
+  const short = duoGood();
+  sceneOf(short, 0).composition.atmosphere = "Soft green glow pulses gently";
+  const b = checkSceneComposition(short);
+  assert(b.some((x) => /Scene 0: composition\.atmosphere is 5 word\(s\)/.test(x)), `expected 5-word error, got ${JSON.stringify(b)}`);
+});
+
+check("composition: adjacent scenes sharing a normalized atmosphere fail (digits/hex can't hide it)", () => {
+  const s = duoGood();
+  sceneOf(s, 0).composition.atmosphere = "Confetti drifts upward at 3s in #58cc02 bursts across the whole canvas";
+  sceneOf(s, 1).composition.atmosphere = "Confetti drifts upward at 6s in #1cb0f6 bursts across the whole canvas";
+  const e = checkSceneComposition(s);
+  assert(
+    e.some((x) => /Scenes 0 and 1: same atmosphere/.test(x) && /confetti drifts upward/.test(x)),
+    `expected the adjacent-duplicate error with the phrase quoted, got ${JSON.stringify(e)}`,
+  );
+});
+
+check("composition: the same atmosphere on NON-adjacent scenes passes", () => {
+  const s = duoGood();
+  const scene2 = clone(s[1]) as unknown as (typeof s)[number]; // scene 1 sits between 0 and 2
+  s.push(scene2);
+  sceneOf(s, 2).composition.atmosphere = sceneOf(s, 0).composition.atmosphere!;
+  const e = checkSceneComposition(s);
+  assert(!e.some((x) => /same atmosphere/.test(x)), `non-adjacent repeats must pass, got ${JSON.stringify(e)}`);
+});
+
+// — 6) motion tied to named content —
+check("composition: a scene where no motion references its element's own interior fails", () => {
+  const none = duoGood();
+  delete sceneOf(none, 0).composition.elements[0].motion;
+  const a = checkSceneComposition(none);
+  assert(a.some((x) => /Scene 0: no element's motion references its own interior/.test(x)), `expected motion error, got ${JSON.stringify(a)}`);
+  const ambient = duoGood();
+  sceneOf(ambient, 0).composition.elements[0].motion = "a soft glow pulses gently forever";
+  const b = checkSceneComposition(ambient);
+  assert(b.some((x) => /Scene 0: no element's motion/.test(x)), `generic ambience must not count, got ${JSON.stringify(b)}`);
+});
+
+check("composition: motion token match is case-insensitive", () => {
+  const s = duoGood();
+  sceneOf(s, 0).composition.elements[0].motion = "The STREAK Flame pulses once per correct answer";
+  assert(checkSceneComposition(s).length === 0, "uppercase STREAK must match the interior's 'streak'");
+});
+
+check("composition: motion referencing ANOTHER element's interior does not count", () => {
+  const s = duoGood();
+  const scene1 = sceneOf(s, 1);
+  delete scene1.composition.elements[0].motion; // hero motion gone
+  scene1.composition.elements[2].motion = "leaderboard rows sweep past"; // connector quoting the HERO's interior
+  const e = checkSceneComposition(s);
+  assert(
+    e.some((x) => /Scene 1: no element's motion references its own interior/.test(x)),
+    `cross-element references must not satisfy the check, got ${JSON.stringify(e)}`,
+  );
+});
+
+// — error hygiene: ≤200 chars, scene named, repair-loop ready —
+check("composition errors each stay ≤200 chars and name the scene", () => {
+  const broken = duoGood();
+  const s0 = sceneOf(broken, 0);
+  s0.composition.atmosphere = "Soft green glow pulses gently";
+  s0.composition.elements[0].interior = ["some data rows", "blue thing", "Deal won — $12,400"];
+  s0.composition.elements[0].ownsCopy = ["headline", "subtitle"];
+  s0.composition.elements[1].role = "background";
+  delete s0.composition.elements[0].motion;
+  const errors = checkSceneComposition(broken);
+  assert(errors.length >= 7, `expected a broad failure set, got ${JSON.stringify(errors)}`);
+  for (const e of errors) {
     assert(e.length <= 200, `error over 200 chars (${e.length}): ${e}`);
     assert(/Scene(s)? \d/.test(e), `error must name the scene: ${e}`);
   }

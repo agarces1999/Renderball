@@ -1,4 +1,4 @@
-import type { Script } from "../../src/schema";
+import type { ElementSpec, Scene, Script } from "../../src/schema";
 
 /**
  * Minimal validator for Agent 1 output.
@@ -508,6 +508,291 @@ export const checkScriptRichness = (scenes: RichnessSceneInput[]): string[] => {
       `Scenes ${worst.scenes.join(", ")} share the same atmosphere phrase ("${worst.gram}") — give each scene motion tied to a named element of THAT scene, not copy-paste ambience.`,
     );
   }
+
+  return errors;
+};
+
+// ─── Composition contract (cast-doctrine blueprint checks) ───────────────
+//
+// The thinking head authors a per-scene SceneComposition (src/schema.ts:
+// ElementSpec/SceneComposition) — what each element IS and the concrete
+// inventory it must visibly contain — and the fast emitter transcribes it.
+// The acceptance run showed why this must be MACHINE-checked before any
+// element generates: the emitter copied template examples verbatim ("Deal
+// won — $12,400" CRM rows appeared in a Duolingo language app) and
+// duplicated copy across elements; the audit showed models obey checked
+// rules and ignore prose. checkSceneComposition turns richness into that
+// checkable contract: closed roles, hero inventories of ≥6 concrete items,
+// no template-example leaks, exclusive copy ownership, a per-scene
+// atmosphere, and motion tied to named content. Every error is ≤200 chars,
+// names the scene + element role, and is written for the verbatim-error
+// repair loop. Scenes WITHOUT a composition are skipped — the head authors
+// compositions; this validates what it authored, nothing else.
+
+/** The closed role vocabulary for composition elements. */
+export const COMPOSITION_ROLES = [
+  "hero",
+  "copy",
+  "atmosphere",
+  "connector",
+  "throughline",
+] as const;
+const ROLE_SET = new Set<string>(COMPOSITION_ROLES);
+const ROLES_HINT = COMPOSITION_ROLES.join("|");
+
+/** A hero element must name at least this many interior items. */
+export const HERO_INTERIOR_MIN = 6;
+/** composition.atmosphere must be at least this many words. */
+export const ATMOSPHERE_MIN_WORDS = 6;
+/** Motion must quote a token of at least this length from the element's OWN interior. */
+export const MOTION_TOKEN_MIN_LEN = 4;
+
+/**
+ * Known template-example values that have leaked into real builds (audit +
+ * acceptance evidence: the fast emitter transcribed the prompt's CRM example
+ * rows — "Deal won — $12,400", "Acme Corp", "Sarah Chen" — into a Duolingo
+ * language app). An interior item containing one is a verbatim template
+ * copy, never a real value for the brand. Case-insensitive; deliberately no
+ * /g so .test() stays stateless in loops. Extend whenever a new leak ships.
+ */
+export const TEMPLATE_LEAK_RX = new RegExp(
+  [
+    "\\$12,400",
+    "\\$8,300",
+    "\\bacme corp\\b",
+    "\\bbeta llc\\b",
+    "\\bgamma inc\\b",
+    "\\bdeal won\\b",
+    "\\bsarah chen\\b",
+    "\\b47 deals\\b",
+    "\\b152 users\\b",
+    "\\b3\\.8 rating\\b",
+    "john\\.doe@example\\.com",
+    "\\bjohn doe\\b",
+  ].join("|"),
+  "i",
+);
+
+/**
+ * Generic-filler vocabulary: an interior item whose meaning is carried by
+ * these words ("some data rows", "sample content") names nothing the emitter
+ * can draw. A digit or a quoted value anchors concreteness and overrides it
+ * ("XP bar 340/500" passes on the digits).
+ */
+export const GENERIC_FILLER_RX =
+  /\b(some|various|placeholder|sample|example|generic|content|items?|data|stuff|elements?)\b/i;
+
+/** A quoted literal value inside an item ("streak flame '7'"). */
+const QUOTED_VALUE_RX = /["'“”‘’][^"'“”‘’]*["'“”‘’]/;
+// Glue words that can't serve as the "specific noun" of a ≥3-word item.
+const GLUE_WORDS = new Set([
+  "a", "an", "the", "of", "with", "and", "or", "for", "in", "on", "at",
+  "to", "by", "from", "into", "onto", "over", "under", "its", "their",
+  "his", "her", "that", "this",
+]);
+
+/** Truncate an authored string for quoting inside a ≤200-char error. */
+const truncateForError = (s: string, max = 40): string =>
+  s.length > max ? `${s.slice(0, max - 1)}…` : s;
+
+/**
+ * Why a hero interior item is not concrete. "generic" = generic-filler
+ * vocabulary with nothing anchoring it; "vague" = too short / no specific
+ * noun. null = concrete: a digit, a quoted value, or ≥3 words with at least
+ * one non-generic non-glue word.
+ */
+const heroItemProblem = (item: string): "generic" | "vague" | null => {
+  const t = item.trim();
+  if (/\d/.test(t) || QUOTED_VALUE_RX.test(t)) return null;
+  if (GENERIC_FILLER_RX.test(t)) return "generic";
+  const words = t.split(/\s+/).filter((w) => /[\p{L}\p{N}]/u.test(w));
+  const hasSpecificWord = words.some((w) => {
+    const core = w.toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
+    return core.length >= 3 && !GLUE_WORDS.has(core) && !GENERIC_FILLER_RX.test(core);
+  });
+  return words.length >= 3 && hasSpecificWord ? null : "vague";
+};
+
+/** lowercase, strip hex colors + digits, collapse whitespace — the atmosphere identity. */
+const normalizeAtmosphere = (s: string): string =>
+  s
+    .toLowerCase()
+    .replace(/#[0-9a-f]{3,8}\b/g, " ")
+    .replace(/\d+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+/** ≥MOTION_TOKEN_MIN_LEN-char alphanumeric runs, lowercased. */
+const MOTION_TOKEN_RX = new RegExp(`[\\p{L}\\p{N}]{${MOTION_TOKEN_MIN_LEN},}`, "gu");
+const interiorTokens = (item: string): string[] =>
+  Array.from(item.matchAll(MOTION_TOKEN_RX), (m) => m[0].toLowerCase());
+
+/** Loosely-typed element for defensive reads of head-authored JSON. */
+type RawElement = Partial<ElementSpec> & Record<string, unknown>;
+
+const stringInterior = (el: RawElement): string[] =>
+  Array.isArray(el?.interior)
+    ? (el.interior as unknown[]).filter((x): x is string => typeof x === "string")
+    : [];
+
+/**
+ * The composition contract. Returns one error per finding (each ≤200 chars,
+ * naming the scene and element role, actionable for the verbatim-error
+ * repair loop); empty array = every composed scene meets the contract.
+ * Scenes without a `composition` field are skipped.
+ */
+export const checkSceneComposition = (scenes: Scene[]): string[] => {
+  const errors: string[] = [];
+  // Normalized atmosphere per scene index (null = uncomposed/unusable) so
+  // the variety check compares LITERAL neighbours only.
+  const atmosNorm: (string | null)[] = [];
+
+  scenes.forEach((scene, i) => {
+    atmosNorm[i] = null;
+    const comp = scene?.composition;
+    if (!comp || typeof comp !== "object") return; // head hasn't composed this scene
+
+    const content = (scene.content ?? {}) as Record<string, unknown>;
+
+    // 5) ATMOSPHERE — required, ≥6 words, distinct from the previous scene's.
+    const atmosphere = (comp as { atmosphere?: unknown }).atmosphere;
+    if (typeof atmosphere !== "string" || !atmosphere.trim()) {
+      errors.push(
+        `Scene ${i}: composition.atmosphere is required — ≥${ATMOSPHERE_MIN_WORDS} words describing THIS scene's own ambient treatment.`,
+      );
+    } else {
+      const words = atmosphere.trim().split(/\s+/).length;
+      if (words < ATMOSPHERE_MIN_WORDS) {
+        errors.push(
+          `Scene ${i}: composition.atmosphere is ${words} word(s) — need ≥${ATMOSPHERE_MIN_WORDS} words describing THIS scene's own ambient treatment.`,
+        );
+      }
+      const norm = normalizeAtmosphere(atmosphere);
+      if (norm && atmosNorm[i - 1] === norm) {
+        errors.push(
+          `Scenes ${i - 1} and ${i}: same atmosphere ("${truncateForError(norm, 48)}") — adjacent scenes need distinct ambient treatments.`,
+        );
+      }
+      atmosNorm[i] = norm || null;
+    }
+
+    const rawElements = (comp as { elements?: unknown }).elements;
+    if (!Array.isArray(rawElements) || rawElements.length === 0) {
+      errors.push(
+        `Scene ${i}: composition.elements must be a non-empty array of element specs (roles: ${ROLES_HINT}).`,
+      );
+      return;
+    }
+    const elements = rawElements as RawElement[];
+    // Display name for errors: the authored role when present, else the index.
+    const elName = (el: RawElement, j: number): string =>
+      typeof el?.role === "string" && el.role.trim()
+        ? truncateForError(el.role.trim(), 16)
+        : `element ${j}`;
+
+    // 1) ROLES — closed set; ≥1 hero and ≥1 copy per composed scene.
+    let heroCount = 0;
+    let copyCount = 0;
+    elements.forEach((el, j) => {
+      const role = el?.role;
+      if (typeof role !== "string" || !ROLE_SET.has(role)) {
+        errors.push(
+          `Scene ${i} element ${j}: role "${truncateForError(String(role), 20)}" invalid — must be one of ${ROLES_HINT}.`,
+        );
+        return;
+      }
+      if (role === "hero") heroCount++;
+      else if (role === "copy") copyCount++;
+    });
+    if (heroCount === 0) {
+      errors.push(
+        `Scene ${i}: composition has no hero element — every composed scene needs ≥1 element with role "hero" carrying its main visual.`,
+      );
+    }
+    if (copyCount === 0) {
+      errors.push(
+        `Scene ${i}: composition has no copy element — every composed scene needs ≥1 element with role "copy" owning its on-screen text.`,
+      );
+    }
+
+    // 2) HERO INVENTORY — ≥6 interior items, each concrete.
+    // 3) TEMPLATE-LEAK GUARD — every element's interior.
+    elements.forEach((el, j) => {
+      const interior = stringInterior(el);
+      if (el?.role === "hero") {
+        if (interior.length < HERO_INTERIOR_MIN) {
+          errors.push(
+            `Scene ${i} hero: ${interior.length} interior item(s) — a hero needs ≥${HERO_INTERIOR_MIN} concrete interior items, real values authored for this brand and scene.`,
+          );
+        }
+        for (const item of interior) {
+          const problem = heroItemProblem(item);
+          if (problem === "generic") {
+            errors.push(
+              `Scene ${i} hero: interior item "${truncateForError(item)}" is generic filler — name the real thing with a real value ("XP bar 340/500", not "some data rows").`,
+            );
+          } else if (problem === "vague") {
+            errors.push(
+              `Scene ${i} hero: interior item "${truncateForError(item)}" is not concrete — give it a digit, a quoted value, or ≥3 words naming a specific thing.`,
+            );
+          }
+        }
+      }
+      for (const item of interior) {
+        if (TEMPLATE_LEAK_RX.test(item)) {
+          errors.push(
+            `Scene ${i} ${elName(el, j)}: interior item "${truncateForError(item)}" is a template example value — author real values for THIS brand.`,
+          );
+        }
+      }
+    });
+
+    // 4) OWNERSHIP — ownsCopy fields exist in content, are exclusive, and
+    //    collectively cover the headline.
+    const owners = new Map<string, string[]>();
+    elements.forEach((el, j) => {
+      if (!Array.isArray(el?.ownsCopy)) return;
+      const name = elName(el, j);
+      for (const field of el.ownsCopy as unknown[]) {
+        if (typeof field !== "string") continue;
+        if (content[field] === undefined || content[field] === null) {
+          errors.push(
+            `Scene ${i} ${name}: ownsCopy field "${truncateForError(field, 24)}" is not in scene.content — own only fields the scene actually defines.`,
+          );
+          continue;
+        }
+        const list = owners.get(field);
+        if (list) list.push(name);
+        else owners.set(field, [name]);
+      }
+    });
+    for (const [field, list] of owners) {
+      if (list.length > 1) {
+        errors.push(
+          `Scene ${i}: content field "${truncateForError(field, 24)}" owned by ${list.length} elements (${truncateForError(list.join(", "), 40)}) — each field needs exactly one owner.`,
+        );
+      }
+    }
+    if (!owners.has("headline")) {
+      errors.push(
+        `Scene ${i}: no element owns "headline" — ownsCopy must collectively cover the headline (give it to the copy element).`,
+      );
+    }
+
+    // 6) MOTION — at least one element's motion quotes its OWN interior.
+    const motionTied = elements.some((el) => {
+      if (typeof el?.motion !== "string" || !el.motion.trim()) return false;
+      const motion = el.motion.toLowerCase();
+      return stringInterior(el).some((item) =>
+        interiorTokens(item).some((t) => motion.includes(t)),
+      );
+    });
+    if (!motionTied) {
+      errors.push(
+        `Scene ${i}: no element's motion references its own interior — tie one motion beat to a ≥${MOTION_TOKEN_MIN_LEN}-char token from that element's interior items.`,
+      );
+    }
+  });
 
   return errors;
 };
