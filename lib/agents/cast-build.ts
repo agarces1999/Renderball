@@ -19,6 +19,13 @@
  *   - choreograph      compiles motion deterministically (zero tokens),
  *     pacing correct by construction.
  *
+ * On top of the sequencing, this module owns the DETERMINISTIC POST-PASSES
+ * that close the four measured gpt-oss defect classes (cast spike run 1 +
+ * parity audit, 2026-07-15) at zero tokens: `${keyframe}` interpolation
+ * rewrite, canvas-scale self-positioning rebase, unowned-copy strip, and the
+ * paint-time color-mutation (invert/hue-rotate) guard. Same doctrine as
+ * normalize-element: rewrite the defect out, don't ask nicely and retry.
+ *
  * Failure posture: an element that stays broken after ONE surgical repair is
  * substituted with a minimal safe placeholder and COUNTED — the build
  * completes degraded rather than dying, and telemetry reports it honestly.
@@ -27,8 +34,8 @@
  */
 import type { Script } from "../../src/schema";
 import type { Theme, SceneManifest, Piece } from "../edit/piece-model";
-import { castCall } from "../llm/cast-provider";
-import { composeSceneLayout, type Aspect, type ElementSlot } from "./layout-composer";
+import { castCall, type CastEffort } from "../llm/cast-provider";
+import { composeSceneLayout, CANVAS, type Aspect, type ElementSlot, type ScenePlan } from "./layout-composer";
 import { normalizeElementColors, assessAccentPresence } from "./normalize-element";
 import { assembleComposition } from "./assemble";
 import { applyChoreography } from "./choreograph";
@@ -81,11 +88,30 @@ export interface CastBuildResult {
  */
 const MAX_TOKENS_BY_SLOT: Record<string, number> = {
   atmosphere: 2000, // gradient washes / glow / grain — compact
+  connector: 3000, // the full-bleed SVG connector system (≥12 primitives)
   copy: 2500, // the editorial text stack
-  hero: 4000, // the diegetic visual — the dense one
+  // The diegetic visual — the dense one. Enriched-brief mocks measured ~5.7k
+  // tokens out at effort medium (audit-matrix condition E); Cerebras
+  // pre-debits this cap against TPM, so 6000 is the honest measured shape,
+  // not lazy headroom.
+  hero: 6000,
   throughline: 1500, // one small motif
 };
 const maxTokensFor = (slotId: string): number => MAX_TOKENS_BY_SLOT[slotId] ?? 4000;
+
+/**
+ * Reasoning-effort routing, measured on gpt-oss (parity audit 2026-07-15):
+ * effort MEDIUM is the sweet spot for DIEGETIC pieces — the enriched-brief
+ * interior gain (3.3x) needs it. Effort HIGH is HARMFUL (≈80k reasoning chars,
+ * broken markers) — never route anything there. LOW is fine for the
+ * copy/atmosphere/throughline workloads ("think at the head, emit at the
+ * leaves" — these leaves barely need to think).
+ */
+const EFFORT_BY_SLOT: Record<string, CastEffort> = {
+  hero: "medium",
+  connector: "medium",
+};
+const effortFor = (slotId: string): CastEffort => EFFORT_BY_SLOT[slotId] ?? "low";
 
 // ─── Shared conventions ─────────────────────────────────────────────────────
 
@@ -126,6 +152,155 @@ const tokenForRole = (theme: Theme, role: string): string => {
     if (hit) return hit;
   }
   return keys[0];
+};
+
+// ─── Deterministic post-passes ──────────────────────────────────────────────
+// Each pass makes one MEASURED gpt-oss element defect unrepresentable, at zero
+// tokens, before the fragment gate runs. Exported for tests.
+
+/**
+ * (a) Keyframe-interpolation rewrite. gpt-oss generalizes the palette-const
+ * pattern to the shared @keyframes names and emits
+ * `animation: \`${fadeRise} 0.6s …\`` — a JS identifier interpolation. It
+ * PASSES esbuild (the fragment gate binds no identifiers) but throws
+ * ReferenceError the moment a Section renders, killing every scene — 54 hits
+ * in cast-spike run 1 (scripts/cast-spike.ts, where this rewrite was proven
+ * spike-side). `${name}` → the literal CSS name, for every name declared in
+ * the theme's shared keyframes or in the body itself.
+ */
+export const rewriteKeyframeInterpolations = (
+  body: string,
+  themeKeyframes: string,
+): { code: string; rewrites: number } => {
+  const names = new Set<string>();
+  for (const src of [themeKeyframes, body]) {
+    for (const m of src.matchAll(/@keyframes\s+([A-Za-z_][A-Za-z0-9_-]*)/g)) names.add(m[1]);
+  }
+  let rewrites = 0;
+  for (const n of names) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(n)) continue; // hyphenated names can't be `${}` refs
+    body = body.replace(new RegExp(`\\$\\{\\s*${n}\\s*\\}`, "g"), () => {
+      rewrites++;
+      return n;
+    });
+  }
+  return { code: body, rewrites };
+};
+
+/**
+ * (b) Self-positioning strip. The contract says the WRAPPER owns placement —
+ * an element that absolutely positions its own root at CANVAS coordinates
+ * (left/top too large to be a local offset inside its own w×h wrapper) gets
+ * double-offset and paints outside its slot. Rebase such a root to the
+ * wrapper origin; the wrapper (assemble.ts) already sits at the slot's canvas
+ * position. Local offsets (left/top within the wrapper's extent) pass through.
+ */
+export const stripCanvasSelfPositioning = (
+  body: string,
+  bounds: { w: number; h: number },
+): { code: string; stripped: boolean } => {
+  const start = body.indexOf("<");
+  if (start === -1) return { code: body, stripped: false };
+  // Find the root tag's closing ">" with a brace/quote-aware scan — style
+  // expressions legally contain ">" (arrow fns, comparisons).
+  let depth = 0;
+  let quote: string | null = null;
+  let tagEnd = -1;
+  for (let i = start; i < body.length; i++) {
+    const ch = body[i];
+    if (quote) {
+      if (ch === "\\") i++;
+      else if (ch === quote) quote = null;
+    } else if (ch === '"' || ch === "'" || ch === "`") quote = ch;
+    else if (ch === "{") depth++;
+    else if (ch === "}") depth--;
+    else if (ch === ">" && depth === 0) {
+      tagEnd = i;
+      break;
+    }
+  }
+  if (tagEnd === -1) return { code: body, stripped: false };
+  const rootTag = body.slice(start, tagEnd);
+  if (!/position\s*:\s*["'`]absolute["'`]/.test(rootTag)) return { code: body, stripped: false };
+  const num = (prop: string): number | null => {
+    const m = new RegExp(`\\b${prop}\\s*:\\s*"?(-?\\d+(?:\\.\\d+)?)(?:px)?"?`).exec(rootTag);
+    return m ? Number(m[1]) : null;
+  };
+  const left = num("left");
+  const top = num("top");
+  // Canvas-scale: an offset no local child could have inside this wrapper.
+  const canvasScale = (left !== null && left > bounds.w) || (top !== null && top > bounds.h);
+  if (!canvasScale) return { code: body, stripped: false };
+  const rebased = rootTag
+    .replace(/\bleft\s*:\s*"?-?\d+(?:\.\d+)?(?:px)?"?/, "left: 0")
+    .replace(/\btop\s*:\s*"?-?\d+(?:\.\d+)?(?:px)?"?/, "top: 0");
+  return { code: body.slice(0, start) + rebased + body.slice(tagEnd), stripped: true };
+};
+
+const escapeRegExp = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * (c) Unowned-copy guard. Content-field ownership lives in the SLOT (layout
+ * composer invariant d): a piece that renders another element's copy verbatim
+ * forks the text — it paints twice, and a later content edit updates only the
+ * owner. Where the offense is a text node EXACTLY equal to the unowned value
+ * (the measured form — bare or a quoted string expression), strip it
+ * deterministically; anything subtler stays in `residual` for the caller to
+ * route to the surgical-repair retry with a verbatim error.
+ */
+export const stripUnownedCopy = (
+  body: string,
+  unownedValues: string[],
+): { code: string; stripped: string[]; residual: string[] } => {
+  const stripped: string[] = [];
+  const residual: string[] = [];
+  for (const value of unownedValues) {
+    const v = value.trim();
+    if (!v || !body.includes(v)) continue;
+    const esc = escapeRegExp(v);
+    const next = body
+      .replace(new RegExp(`>\\s*${esc}\\s*<`, "g"), "><") // >VALUE<
+      .replace(new RegExp(`>\\s*\\{\\s*(["'\`])${esc}\\1\\s*\\}\\s*<`, "g"), "><"); // >{"VALUE"}<
+    if (next !== body) {
+      stripped.push(v);
+      body = next;
+    }
+    if (body.includes(v)) residual.push(v);
+  }
+  return { code: body, stripped, residual };
+};
+
+/**
+ * (d) Paint-time color-mutation guard. `filter: invert(…)` / `hue-rotate(…)`
+ * flip brand colors AFTER the hue-lock has run — the emitted hexes read
+ * on-brand to normalize-element while painting off-brand pixels, invisibly to
+ * the whole color stack. Strip those declarations; benign filters
+ * (blur/drop-shadow/…) survive untouched.
+ */
+const MUTATING_FILTER = /(?:invert|hue-rotate)\s*\(/i;
+
+export const stripColorMutationFilters = (body: string): { code: string; stripped: number } => {
+  let stripped = 0;
+  // Style-object form: filter: "…" / WebkitFilter: '…' / backdropFilter: `…`.
+  // The optional trailing comma is consumed; a leftover trailing comma on the
+  // previous prop is legal TSX either way.
+  let out = body.replace(
+    /\b(?:filter|WebkitFilter|backdropFilter)\s*:\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`[^`]*`)\s*,?/g,
+    (m, val: string) => {
+      if (!MUTATING_FILTER.test(val)) return m;
+      stripped++;
+      return "";
+    },
+  );
+  // CSS-string form (inside appended keyframes / style strings).
+  out = out.replace(
+    /(?:-webkit-|backdrop-)?filter\s*:\s*[^;{}"'`\n]*(?:invert|hue-rotate)\s*\([^;{}]*;?/gi,
+    () => {
+      stripped++;
+      return "";
+    },
+  );
+  return { code: out, stripped };
 };
 
 // ─── The element system prompt ──────────────────────────────────────────────
@@ -170,6 +345,96 @@ const buildElementSystem = (theme: Theme): string => {
     .join("\n");
 };
 
+// ─── Enriched brief blocks ──────────────────────────────────────────────────
+// Ported from scripts/audit-matrix.ts's ENRICHED prompt (conditions D/E) — the
+// live experiment measured this taste stack 3.3x-ing mock-interior density on
+// gpt-oss, and reference-grade scenes run up to 87 interior elements. Adapted
+// per element kind: diegetic briefs carry the interior checklist + the
+// no-placeholder contract + register→archetype guidance; atmosphere briefs
+// carry the menu + a variety directive; copy briefs stay LEAN on purpose (the
+// copy stack was never the thin part, and brief tokens are input cost).
+
+const NO_PLACEHOLDER_DATA = `NO PLACEHOLDER DATA — every price, stat, metric, label, and timestamp is a CONCRETE literal value (invented-but-specific diegetic detail is ENCOURAGED: "$128.00", "Meeting booked · 2:30 PM", "1,204 contacts"). Masked or unresolved values — "$•••.00", "XX%", "Loading", "TBD", lorem, blank grey slab-bars standing in for text — are REJECTED; they render as a broken half-loaded product.`;
+
+const MOCK_INTERIOR_CHECKLIST = [
+  `MOCK INTERIOR (the empty-container rule): a mock (app window, browser, dashboard, phone, terminal) with an empty or sparse interior is REJECTED. Ship at least 15 labeled interior elements, including at least 4 concrete text values — realistic labels/values/timestamps — drawn from this vocabulary (all plain divs/spans/SVG):`,
+  `- window/browser header: traffic-light dots + URL/title bar with a REAL address`,
+  `- sidebar nav: 4-6 icon+label rows, ONE active (accent left-rail or fill)`,
+  `- filled data rows: ≥3 rows of name + value + status chip ("Renewal — Acme Corp · $12,400 · Won")`,
+  `- KPI tiles: number + label + delta ("47 deals · +12% WoW"), 2-4 tiles in a row`,
+  `- a small chart: 5-8 bars or a sparkline as divs/SVG, with 2-3 axis/series labels`,
+  `- activity feed / inbox lines: avatar-initial circle + one-line message + timestamp`,
+  `- status pills (Live/Pending/Won), tabs with one active, toggles, kanban columns with 2-3 cards, table with header + 4-6 rows, timeline dots, funnel bars`,
+  `Interior mock text is diegetic chrome: 11-16px is correct there (realism over legibility inside the prop).`,
+  NO_PLACEHOLDER_DATA,
+].join("\n");
+
+/** Register→archetype guidance, adapted to the HERO element's role in the
+ *  scene shape (the scene-level map lives in the audit-matrix enrichment). */
+const REGISTER_ARCHETYPE: Record<string, string> = {
+  stat: `Register "stat" → the scene is a KPI hero (ONE massive metric in the copy column); you are its SUPPORTING structure: a radial gauge / sparkline / delta chips / a labeled baseline rule — substantive, never a bare card marooned in space.`,
+  list: `Register "list" → the copy column is a REAL list; you are its diegetic echo: a dashboard/table/kanban mock whose filled rows mirror the list's subject matter.`,
+  split: `Register "split" → asymmetric split; you are the substantive diegetic prop opposite the copy: a full product mock (browser/app window) with a real interior, commanding your whole slot.`,
+  quote: `Register "quote" → a manifesto pull-quote scene; stay quiet and compositional — a modest chart/motif band that never competes with the words.`,
+  "full-bleed": `Register "full-bleed" → you ARE the canvas: an edge-to-edge treatment (dashboard wall, oversized mock, immersive field) the copy sits on top of; design the full frame.`,
+  centered: `Register "centered" → centered editorial; you are a wide band beneath the copy: a horizontal mock strip, timeline, or labeled chart.`,
+};
+
+export const ATMOSPHERE_MENU = [
+  "orbital rings (thin concentric ellipses, slow rotation)",
+  "floating embers (small accent dots drifting upward at varied speeds)",
+  "faint vertical light rays",
+  "vignette glow (dark edges, luminous center)",
+  "parallax bands (wide translucent diagonal bands drifting at different speeds)",
+  "film grain",
+  "multi-stop gradient backdrop",
+  "slow linear-gradient shimmer sweep",
+] as const;
+
+/**
+ * Deterministic per-scene atmosphere variety: rotate the menu by scene index
+ * so adjacent scenes are STEERED toward different combinations. The reference
+ * bar is 8 distinct gradient signatures video-wide; near-identical washes on
+ * every scene was a measured cast defect.
+ */
+export const atmosphereDirective = (sceneIndex: number, register: string): string => {
+  const n = ATMOSPHERE_MENU.length;
+  const lean = [0, 1, 2].map((k) => ATMOSPHERE_MENU[(sceneIndex * 3 + k) % n]);
+  return [
+    `ATMOSPHERE MENU — build 2-3 layers from: ${ATMOSPHERE_MENU.join(" · ")}.`,
+    `VARIETY (scene ${sceneIndex}, register ${register}): adjacent scenes must NOT reuse the same combination — this scene leans toward: ${lean.join(" · ")}. Match the register's energy: tension/chaos beats scatter and dissonate; resolution beats order and converge.`,
+    `Include ≥2 infinite-loop animations on decorative layers (gradient pulse 4s, drift 9-11s, shimmer 8s) so the scene never freezes after entry.`,
+  ].join("\n");
+};
+
+// ─── The SVG connector layer ────────────────────────────────────────────────
+// Reference-grade scenes tie relationship concepts together with SVG connector
+// SYSTEMS (~69 primitives in the reference's chaos scene); raw cast scenes had
+// none. Scenes whose visual_concept speaks in relationships earn a dedicated
+// full-bleed decorative piece painted between atmosphere and content.
+
+const CONNECTOR_CONCEPT_RE = /\b(?:connect|network|flow|scatter|link|converg|chaos)/i;
+
+/** Does this scene's visual concept imply a relationship system? */
+export const wantsConnector = (visualConcept: unknown): boolean =>
+  typeof visualConcept === "string" && CONNECTOR_CONCEPT_RE.test(visualConcept);
+
+/** The connector's synthetic slot. Kind "atmosphere" on purpose: the assembler
+ *  emits it full-bleed with pointerEvents none — no layout-composer changes.
+ *  Same numeric z as the base layer but later in paint order, so it sits above
+ *  the atmosphere wash and below all z≥1 content. */
+const connectorSlot = (aspect: Aspect): ElementSlot => {
+  const { w, h } = CANVAS[aspect];
+  return {
+    id: "connector",
+    kind: "atmosphere",
+    bounds: { x: 0, y: 0, w, h, z: 0 },
+    contentFields: [],
+    paletteRoles: ["hairline", "accent"],
+    allowedOverlaps: [],
+  };
+};
+
 // ─── Element briefs ─────────────────────────────────────────────────────────
 
 type SceneContent = Script["scenes"][number]["content"];
@@ -209,6 +474,22 @@ const copyLines = (content: SceneContent | undefined, owned: string[]): string[]
   return out;
 };
 
+/** The scene copy VALUES (headline/lede/bullets — the measured leak fields) a
+ *  slot does NOT own. These are what the unowned-copy guard hunts for in the
+ *  slot's generated body: ownership lives in the slot's contentFields. */
+const unownedCopyValues = (content: SceneContent | undefined, owned: string[]): string[] => {
+  const c = (content ?? {}) as Record<string, unknown>;
+  const out: string[] = [];
+  for (const field of ["headline", "lede"]) {
+    const v = c[field];
+    if (!owned.includes(field) && typeof v === "string" && v.trim()) out.push(v.trim());
+  }
+  if (!owned.includes("bullets") && Array.isArray(c.bullets)) {
+    for (const bItem of c.bullets) if (typeof bItem === "string" && bItem.trim()) out.push(bItem.trim());
+  }
+  return out;
+};
+
 /**
  * One element's brief: ONLY what that element owns — its role, its wrapper
  * geometry, the content-field values it renders, the palette roles it may
@@ -239,6 +520,14 @@ const elementBrief = (args: {
   if (slot.id === "atmosphere") {
     lines.push(
       `Full-bleed decorative BASE layer (z0) under all content: gradient washes, glow, grain. The accent role may appear at LOW ALPHA only (a glow, never a fill). No text, no UI.`,
+      atmosphereDirective(sceneIndex, register),
+    );
+  } else if (slot.id === "connector") {
+    lines.push(
+      `Full-bleed decorative CONNECTOR layer between the atmosphere and the content: ONE inline SVG relationship system (root <svg viewBox="0 0 ${b.w} ${b.h}" style={{ position: "absolute", inset: 0, width: "100%", height: "100%" }}>) that ties this scene's concept together visually.`,
+      `Requirements: at least 12 SVG primitives; dashed connector paths (strokeDasharray) linking node positions; small node marks (circles/rects) at path endpoints and junctions; curved paths over straight lines where they read better.`,
+      `Derive the topology FROM the visual concept above (scattered chaos → tangled crossing paths; convergence → paths meeting at a hub; flow → a directed left-to-right run).`,
+      `Paint structure with the hairline role, accent SPARINGLY (1-3 focal paths/nodes). Keep the center-of-frame copy zone visually calm. No text, no UI — this layer is connective tissue, not content.`,
     );
   } else if (slot.id === "copy") {
     lines.push(`The scene's editorial text stack — ONE flow column, top to bottom, each field tagged:`, ...copyLines(scene.content, slot.contentFields));
@@ -264,6 +553,9 @@ const elementBrief = (args: {
     if (slot.contentFields.length === 0) {
       lines.push(`No visual fields given — invent the diegetic visual (a browser mock, chart, panel, KPI cluster…) from the visual concept above.`);
     }
+    const archetype = REGISTER_ARCHETYPE[register];
+    if (archetype) lines.push(archetype);
+    lines.push(MOCK_INTERIOR_CHECKLIST);
   }
 
   lines.push("", "Emit ONLY the JSX for THIS element.");
@@ -358,10 +650,29 @@ export const castBuild = async (
     composeSceneLayout({ register: scene.register, content: scene.content }, aspect, { hasThroughline }),
   );
 
+  // Connector casting: scenes whose visual_concept speaks in relationships
+  // earn the SVG connector layer; when no concept names one, ONE mid-video
+  // scene still gets it (reference-grade builds always carry at least one
+  // connector system — see the section constants above).
+  const connectorScenes = new Set<number>(
+    script.scenes.flatMap((scene, i) => (wantsConnector(scene.visual_concept) ? [i] : [])),
+  );
+  if (connectorScenes.size === 0 && script.scenes.length > 0) {
+    connectorScenes.add(Math.floor(script.scenes.length / 2));
+  }
+  /** The composer's slots + the synthetic connector slot, in paint order
+   *  (connector directly after the base atmosphere layer). */
+  const slotsFor = (plan: ScenePlan, i: number): ElementSlot[] => {
+    if (!connectorScenes.has(i)) return plan.elements;
+    const slots = [...plan.elements];
+    slots.splice(1, 0, connectorSlot(aspect));
+    return slots;
+  };
+
   const scenes: SceneManifest[] = plans.map((plan, i) => ({
     scene: i,
     background: tokenForRole(theme, "canvas"),
-    pieces: plan.elements.map(
+    pieces: slotsFor(plan, i).map(
       (slot): Piece => ({
         id: `s${i}.${slot.id}`, // the Piece id convention (see ElementSlot.id)
         kind: slot.kind,
@@ -379,7 +690,7 @@ export const castBuild = async (
   //       see assemble.ts) ──────────────────────────────────────────────────
   const system = buildElementSystem(theme);
   const jobs: ElementJob[] = plans.flatMap((plan, i) =>
-    plan.elements
+    slotsFor(plan, i)
       .filter((slot) => slot.kind !== "chrome")
       .map((slot) => ({
         sceneIndex: i,
@@ -393,16 +704,20 @@ export const castBuild = async (
   //         hue-lock → fragment-verify → one repair → placeholder ──────────
   const runElement = async (job: ElementJob): Promise<ElementOutcome> => {
     let tokens = 0;
+    const effort = effortFor(job.slot.id);
+    // Verbatim copy this element does NOT own (ownership lives in the slot).
+    const unowned = unownedCopyValues(script.scenes[job.sceneIndex]?.content, job.slot.contentFields);
 
-    // One attempt: call, extract, hue-lock, syntax-verify. A transport throw
-    // (castCall retries internally first) is treated like a broken result —
-    // the build completes degraded rather than dying on one element.
+    // One attempt: call, extract, deterministic post-passes, hue-lock,
+    // syntax-verify. A transport throw (castCall retries internally first) is
+    // treated like a broken result — the build completes degraded rather than
+    // dying on one element.
     const attempt = async (
       user: string,
     ): Promise<{ ok: true; body: string; rewrites: number } | { ok: false; raw: string; error: string }> => {
       let text: string;
       try {
-        const res = await caller({ system, user, maxTokens: maxTokensFor(job.slot.id), effort: "low" });
+        const res = await caller({ system, user, maxTokens: maxTokensFor(job.slot.id), effort });
         tokens += res.outputTokens;
         text = res.text;
       } catch (err) {
@@ -412,10 +727,26 @@ export const castBuild = async (
       if (raw.length < 8 || !raw.includes("<") || /^\s*(?:import|export)\b/.test(raw)) {
         return { ok: false, raw, error: "output is not a JSX fragment (empty, no markup, or a module)" };
       }
-      const { code: locked, changes } = normalizeElementColors(raw, palette);
-      const compileErr = await verifyFragment(locked);
+      // Deterministic post-passes — each closes a measured defect class at
+      // zero tokens (see the pass docs above), BEFORE the fragment gate.
+      let body = rewriteKeyframeInterpolations(raw, theme.keyframes).code;
+      body = stripCanvasSelfPositioning(body, job.slot.bounds).code;
+      body = stripColorMutationFilters(body).code;
+      const { code: locked, changes } = normalizeElementColors(body, palette);
+      // Unowned-copy guard: exact text nodes strip deterministically inside
+      // stripUnownedCopy; anything subtler routes to the surgical repair with
+      // a verbatim error naming the stolen copy.
+      const guard = stripUnownedCopy(locked, unowned);
+      if (guard.residual.length > 0) {
+        return {
+          ok: false,
+          raw,
+          error: `element renders copy it does not own: ${guard.residual.map((v) => JSON.stringify(v)).join(", ")} — those fields belong to another element (ownership is fixed by the layout contract); remove that text entirely`,
+        };
+      }
+      const compileErr = await verifyFragment(guard.code);
       if (compileErr) return { ok: false, raw, error: compileErr };
-      return { ok: true, body: locked, rewrites: changes.reduce((n, ch) => n + ch.count, 0) };
+      return { ok: true, body: guard.code, rewrites: changes.reduce((n, ch) => n + ch.count, 0) };
     };
 
     const first = await attempt(job.brief);
