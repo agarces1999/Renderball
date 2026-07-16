@@ -19,6 +19,15 @@
  *   - choreograph      compiles motion deterministically (zero tokens),
  *     pacing correct by construction.
  *
+ * COMPOSITION CONSUMPTION (2026-07-16): when a scene carries a
+ * SceneComposition blueprint (authored by composition-head.ts, attached as
+ * scene.composition), element briefs LEAD with it — subject + verbatim
+ * interior inventory + explicit copy ownership + motion beat — and the
+ * generic checklist/archetype/menu text stays out. Spec presence also
+ * OVERRIDES the connector keyword heuristic and strengthens the unowned-copy
+ * guard's ownership inputs. Scenes without a composition build exactly as
+ * before (back-compat by construction).
+ *
  * On top of the sequencing, this module owns the DETERMINISTIC POST-PASSES
  * that close the four measured gpt-oss defect classes (cast spike run 1 +
  * parity audit, 2026-07-15) at zero tokens: `${keyframe}` interpolation
@@ -32,7 +41,7 @@
  * A final composition that does not compile, by contrast, THROWS: that is an
  * orchestrator bug, never a runtime condition.
  */
-import type { Script } from "../../src/schema";
+import type { Script, ElementSpec } from "../../src/schema";
 import type { Theme, SceneManifest, Piece } from "../edit/piece-model";
 import { castCall, type CastEffort } from "../llm/cast-provider";
 import { composeSceneLayout, CANVAS, type Aspect, type ElementSlot, type ScenePlan } from "./layout-composer";
@@ -490,6 +499,74 @@ const unownedCopyValues = (content: SceneContent | undefined, owned: string[]): 
   return out;
 };
 
+// ─── Composition-blueprint consumption ──────────────────────────────────────
+// The thinking head (composition-head.ts) authors a per-scene SceneComposition
+// — what each element IS + its interior inventory with REAL brand/scene
+// values. When a scene carries one, briefs LEAD with that blueprint and the
+// generic checklist/archetype text stays out (the head already did the
+// inventing; the leaves transcribe). Scenes without a composition keep the
+// generic-brief path unchanged — back-compat by construction.
+
+type CastScene = Script["scenes"][number];
+
+/** Map a spec element to its cast slot by role — roles are the slot ids
+ *  (hero/copy/atmosphere/connector/throughline), so the mapping is a find. */
+const specForSlot = (scene: CastScene | undefined, slotId: string): ElementSpec | undefined =>
+  scene?.composition?.elements.find((e) => e.role === slotId);
+
+/**
+ * The copy fields an element OWNS, for both its brief and the unowned-copy
+ * guard. With a composition present the spec is the ownership source of
+ * truth: `ownsCopy` is explicit and exclusive, so a hero spec that owns
+ * nothing makes ALL copy values unowned for the hero — stronger guard inputs
+ * than slot.contentFields (which never carried copy fields for the hero
+ * anyway, but DID let an under-specified world be ambiguous). Fields NO spec
+ * claims fall back to their slot owner, so an incomplete composition can
+ * never strip the headline out of the copy element that structurally owns it.
+ */
+const ownedCopyFields = (scene: CastScene | undefined, slot: ElementSlot): string[] => {
+  const comp = scene?.composition;
+  if (!comp) return slot.contentFields;
+  const owned = new Set(specForSlot(scene, slot.id)?.ownsCopy ?? []);
+  const claimed = new Set(comp.elements.flatMap((e) => e.ownsCopy ?? []));
+  for (const f of slot.contentFields) if (!claimed.has(f)) owned.add(f);
+  return [...owned];
+};
+
+/**
+ * The blueprint lead for a composed element: subject + the verbatim interior
+ * inventory + owned-copy render instructions + the motion beat. Transcription
+ * doctrine (src/schema.ts ElementSpec): the head authored these values for
+ * THIS brand and scene — the element furnishes what the spec names, never
+ * template examples.
+ */
+const blueprintLines = (spec: ElementSpec, content: SceneContent | undefined, owned: string[]): string[] => {
+  const lines: string[] = [
+    `BLUEPRINT (authored by the composition head — TRANSCRIBE it, do not re-invent):`,
+    `This element IS: ${spec.subject}`,
+  ];
+  if (spec.interior.length > 0) {
+    lines.push(
+      `TRANSCRIBE this interior inventory — every item below must be visibly present, verbatim values:`,
+      ...spec.interior.map((item) => `- ${item}`),
+      `The inventory is the FLOOR, not the ceiling: furnish supporting chrome in the same diegetic register, but every named value ships verbatim — never substituted, never rounded.`,
+    );
+  }
+  const copy = copyLines(content, owned);
+  if (copy.length > 0) {
+    lines.push(
+      `COPY THIS ELEMENT OWNS — render each field VERBATIM from the \`c\` binding, tagged with its data-content-path:`,
+      ...copy,
+    );
+  } else {
+    lines.push(
+      `This element owns NO scene copy — the headline/lede/bullets belong to other elements; render none of that text.`,
+    );
+  }
+  if (spec.motion) lines.push(`MOTION BEAT (sustained, tied to the named interior item): ${spec.motion}`);
+  return lines;
+};
+
 /**
  * One element's brief: ONLY what that element owns — its role, its wrapper
  * geometry, the content-field values it renders, the palette roles it may
@@ -508,6 +585,8 @@ const elementBrief = (args: {
 }): string => {
   const { theme, script, sceneIndex, register, slot, pieceId, throughline } = args;
   const scene = script.scenes[sceneIndex];
+  const spec = specForSlot(scene, slot.id);
+  const owned = ownedCopyFields(scene, slot);
   const b = slot.bounds;
   const lines: string[] = [
     `CREATE this element — scene ${sceneIndex} ("${scene.label}", register ${register}), piece id "${pieceId}", kind "${slot.kind}".`,
@@ -517,28 +596,47 @@ const elementBrief = (args: {
     `PALETTE ROLES you may paint with: ${slot.paletteRoles.map((r) => `${r} → ${tokenForRole(theme, r)}`).join(", ")}.`,
   ];
 
+  // Composed scenes: the brief LEADS with the head's blueprint. The generic
+  // checklist/archetype/menu text below is the FALLBACK for un-composed scenes.
+  if (spec) lines.push(...blueprintLines(spec, scene.content, owned));
+
   if (slot.id === "atmosphere") {
     lines.push(
       `Full-bleed decorative BASE layer (z0) under all content: gradient washes, glow, grain. The accent role may appear at LOW ALPHA only (a glow, never a fill). No text, no UI.`,
-      atmosphereDirective(sceneIndex, register),
     );
+    if (scene.composition) {
+      lines.push(
+        `ATMOSPHERE TREATMENT (authored for THIS scene — adjacent scenes carry different treatments): ${scene.composition.atmosphere}`,
+        `Include ≥2 infinite-loop animations on decorative layers (gradient pulse 4s, drift 9-11s, shimmer 8s) so the scene never freezes after entry.`,
+      );
+    } else {
+      lines.push(atmosphereDirective(sceneIndex, register));
+    }
   } else if (slot.id === "connector") {
     lines.push(
       `Full-bleed decorative CONNECTOR layer between the atmosphere and the content: ONE inline SVG relationship system (root <svg viewBox="0 0 ${b.w} ${b.h}" style={{ position: "absolute", inset: 0, width: "100%", height: "100%" }}>) that ties this scene's concept together visually.`,
       `Requirements: at least 12 SVG primitives; dashed connector paths (strokeDasharray) linking node positions; small node marks (circles/rects) at path endpoints and junctions; curved paths over straight lines where they read better.`,
-      `Derive the topology FROM the visual concept above (scattered chaos → tangled crossing paths; convergence → paths meeting at a hub; flow → a directed left-to-right run).`,
+      spec
+        ? `Derive the topology FROM the blueprint above — the subject and inventory name the system.`
+        : `Derive the topology FROM the visual concept above (scattered chaos → tangled crossing paths; convergence → paths meeting at a hub; flow → a directed left-to-right run).`,
       `Paint structure with the hairline role, accent SPARINGLY (1-3 focal paths/nodes). Keep the center-of-frame copy zone visually calm. No text, no UI — this layer is connective tissue, not content.`,
     );
   } else if (slot.id === "copy") {
-    lines.push(`The scene's editorial text stack — ONE flow column, top to bottom, each field tagged:`, ...copyLines(scene.content, slot.contentFields));
+    if (spec) {
+      lines.push(`ONE flow column, top to bottom — render EXACTLY the owned fields in the blueprint above, each tagged with its data-content-path.`);
+    } else {
+      lines.push(`The scene's editorial text stack — ONE flow column, top to bottom, each field tagged:`, ...copyLines(scene.content, owned));
+    }
   } else if (slot.id === "throughline") {
     lines.push(
       `This element IS the story's throughline motif: ${JSON.stringify(throughline)}. It recurs at this exact anchor in EVERY scene and must read as ONE continuous object that evolves along the arc — never a fresh object per cut. The wrapper already carries the data-throughline tag and the pinned anchor; render only the motif itself.`,
     );
   } else {
-    // hero — the diegetic visual. It renders its owned visual fields when the
-    // scene brings them; otherwise it INVENTS the visual from the concept
-    // (the composer keeps the slot either way — see layout-composer).
+    // hero — the diegetic visual. Composed: the blueprint above IS the visual
+    // (subject + inventory); asset mounting stays contractual either way.
+    // Un-composed: it renders its owned visual fields when the scene brings
+    // them, otherwise it INVENTS the visual from the concept, steered by the
+    // generic taste stack (the composer keeps the slot either way).
     const c = scene.content ?? ({} as SceneContent);
     if (slot.contentFields.includes("illustration") && c.illustration) {
       lines.push(`Illustration intent: ${JSON.stringify(c.illustration)} — draw it as inline SVG.`);
@@ -550,12 +648,14 @@ const elementBrief = (args: {
         if (img) lines.push(`Image ${id}: mount with <Img src=${JSON.stringify(img.src)} /> (${img.width}×${img.height}${img.alt_text ? `, ${img.alt_text}` : ""}).`);
       }
     }
-    if (slot.contentFields.length === 0) {
-      lines.push(`No visual fields given — invent the diegetic visual (a browser mock, chart, panel, KPI cluster…) from the visual concept above.`);
+    if (!spec) {
+      if (slot.contentFields.length === 0) {
+        lines.push(`No visual fields given — invent the diegetic visual (a browser mock, chart, panel, KPI cluster…) from the visual concept above.`);
+      }
+      const archetype = REGISTER_ARCHETYPE[register];
+      if (archetype) lines.push(archetype);
+      lines.push(MOCK_INTERIOR_CHECKLIST);
     }
-    const archetype = REGISTER_ARCHETYPE[register];
-    if (archetype) lines.push(archetype);
-    lines.push(MOCK_INTERIOR_CHECKLIST);
   }
 
   lines.push("", "Emit ONLY the JSX for THIS element.");
@@ -650,15 +750,23 @@ export const castBuild = async (
     composeSceneLayout({ register: scene.register, content: scene.content }, aspect, { hasThroughline }),
   );
 
-  // Connector casting: scenes whose visual_concept speaks in relationships
-  // earn the SVG connector layer; when no concept names one, ONE mid-video
-  // scene still gets it (reference-grade builds always carry at least one
-  // connector system — see the section constants above).
+  // Connector casting. A scene WITH a composition is decided by the head:
+  // it carries the connector iff the spec cast one (spec presence OVERRIDES
+  // the keyword heuristic — the head sees the whole story; the regex sees one
+  // string). Un-composed scenes keep the heuristic: relationship concepts earn
+  // the SVG connector layer, and when nothing does, ONE mid-video scene still
+  // gets it (reference-grade builds always carry at least one connector
+  // system) — unless the head composed that mid scene and cast none, in which
+  // case that IS the decision.
   const connectorScenes = new Set<number>(
-    script.scenes.flatMap((scene, i) => (wantsConnector(scene.visual_concept) ? [i] : [])),
+    script.scenes.flatMap((scene, i) => {
+      if (scene.composition) return specForSlot(scene, "connector") ? [i] : [];
+      return wantsConnector(scene.visual_concept) ? [i] : [];
+    }),
   );
   if (connectorScenes.size === 0 && script.scenes.length > 0) {
-    connectorScenes.add(Math.floor(script.scenes.length / 2));
+    const mid = Math.floor(script.scenes.length / 2);
+    if (!script.scenes[mid]?.composition) connectorScenes.add(mid);
   }
   /** The composer's slots + the synthetic connector slot, in paint order
    *  (connector directly after the base atmosphere layer). */
@@ -705,8 +813,13 @@ export const castBuild = async (
   const runElement = async (job: ElementJob): Promise<ElementOutcome> => {
     let tokens = 0;
     const effort = effortFor(job.slot.id);
-    // Verbatim copy this element does NOT own (ownership lives in the slot).
-    const unowned = unownedCopyValues(script.scenes[job.sceneIndex]?.content, job.slot.contentFields);
+    // Verbatim copy this element does NOT own. Ownership lives in the slot —
+    // and when the scene carries a composition, the spec's explicit ownsCopy
+    // is the stronger source of truth (see ownedCopyFields).
+    const unowned = unownedCopyValues(
+      script.scenes[job.sceneIndex]?.content,
+      ownedCopyFields(script.scenes[job.sceneIndex], job.slot),
+    );
 
     // One attempt: call, extract, deterministic post-passes, hue-lock,
     // syntax-verify. A transport throw (castCall retries internally first) is

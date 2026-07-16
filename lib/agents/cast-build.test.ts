@@ -28,6 +28,7 @@ import {
   stripCanvasSelfPositioning,
   stripUnownedCopy,
   stripColorMutationFilters,
+  wantsConnector,
   type CastBuildInput,
 } from "./cast-build";
 import { verifyCompilable } from "./code-extraction";
@@ -154,8 +155,9 @@ const cannedFor = (id: string, nth: number): string => {
 };
 
 /** Fake caster: canned bodies + in-flight tracking + a captured call log
- *  (user prompt, routed effort, and the per-slot maxTokens cap). */
-const makeFakeCaller = () => {
+ *  (user prompt, routed effort, and the per-slot maxTokens cap). The canned
+ *  map is injectable so the composed-scenes build can carry its own bodies. */
+const makeFakeCaller = (canned: (id: string, nth: number) => string = cannedFor) => {
   const callCounts = new Map<string, number>();
   const log: { id: string; user: string; effort?: string; maxTokens: number }[] = [];
   const state = { inFlight: 0, maxInFlight: 0, calls: 0 };
@@ -169,7 +171,7 @@ const makeFakeCaller = () => {
       const nth = (callCounts.get(id) ?? 0) + 1;
       callCounts.set(id, nth);
       log.push({ id, user: call.user, effort: call.effort, maxTokens: call.maxTokens });
-      return { text: cannedFor(id, nth), thinking: "", inputTokens: 50, outputTokens: 100, seconds: 0.005, stopReason: "stop" };
+      return { text: canned(id, nth), thinking: "", inputTokens: 50, outputTokens: 100, seconds: 0.005, stopReason: "stop" };
     } finally {
       state.inFlight--;
     }
@@ -349,6 +351,176 @@ await check("determinism: a second build yields byte-identical manifests", async
   const again = makeFakeCaller();
   const r2 = await castBuild(input, { caller: again.caller as never, concurrency: 4 });
   assert(JSON.stringify(r2.scenes) === JSON.stringify(result.scenes), "SceneManifests must be deterministic");
+});
+
+// ─── Composed scenes: the head's blueprint drives the cast ───────────────────
+// A second golden build where scenes carry SceneComposition blueprints
+// (composition-head.ts output). Proves: briefs LEAD with the blueprint
+// (inventory verbatim, generic checklist/archetype/menu OUT), spec ownsCopy
+// redistributes copy ownership (brief lines + the unowned-copy guard), and
+// connector casting obeys the SPEC, not the keyword heuristic — in both
+// directions. The first golden build above is the un-composed fallback path,
+// unchanged.
+
+console.log("\ncast-build composed scenes (blueprint consumption)");
+
+const COMPOSED_LEDE = "Approve the narrative before the render.";
+const HERO_SUBJECT = "the Renderball build console in a browser frame";
+const HERO_INVENTORY = [
+  'URL bar "app.renderball.com/builds/rb-2041"',
+  'status chip "Rendering — scene 5 of 8"',
+  "progress bar at 62%",
+  'log line "choreograph: 0 tokens, 41ms"',
+  'KPI tile "Build 9:12"',
+  'KPI tile "Cost $1.62"',
+];
+const S0_ATMOS = "deep navy radial wash with slow drifting film grain";
+const S1_ATMOS = "cool charcoal field crossed by parallax bands drifting at different speeds";
+
+// Scene 0's concept SPEAKS in relationships ("network of connected") but its
+// composition casts NO connector — the spec must override the heuristic OFF.
+// Scene 1's concept has no relationship keywords but its composition CASTS a
+// connector — the spec must override the heuristic ON.
+const composedScript = {
+  narrative: { logline: "x", arc: "y", throughline: THROUGHLINE },
+  config: { aspect_ratio: "16:9" },
+  assets: { fonts: [], images: [], audio: [], videos: [] },
+  scenes: [
+    {
+      label: "Hook", register: "split",
+      visual_concept: "Composition: copy left, a network of connected build panels right.",
+      content: {
+        headline: "Every build tells a story", lede: COMPOSED_LEDE,
+        bullets: ["Approve the arc first", "Render once"], asset_ids: [],
+      },
+      start_seconds: 0, end_seconds: 4,
+      composition: {
+        elements: [
+          {
+            role: "hero", subject: HERO_SUBJECT, interior: HERO_INVENTORY,
+            // The head moved the BULLETS into the hero (diegetic checklist).
+            ownsCopy: ["bullets"],
+            motion: "the progress bar fills from 62% as the status chip ticks to scene 6",
+          },
+          { role: "copy", subject: "the editorial stack", interior: ["headline in display type", "lede beneath"], ownsCopy: ["headline", "lede"], motion: "the headline rises as one block" },
+          { role: "atmosphere", subject: "deep navy wash", interior: ["radial glow upper-left", "film grain"], ownsCopy: [], motion: "the glow pulses on a 4s loop" },
+        ],
+        atmosphere: S0_ATMOS,
+      },
+    },
+    {
+      label: "Proof", register: "stat",
+      visual_concept: "Composition: one massive metric with a support column.",
+      content: { headline: "3x faster", meta: [{ label: "BUILD", value: "under 10 min" }], asset_ids: [] },
+      start_seconds: 4, end_seconds: 8,
+      composition: {
+        elements: [
+          {
+            role: "hero", subject: "a KPI support column beside the metric",
+            interior: ['delta chip "+212% vs agency"', 'baseline rule "agency: 6 weeks"', "radial gauge at 91%", 'sparkline over "last 30 builds"', 'tile "9:12 avg build"', 'tile "$1.62 avg cost"'],
+            ownsCopy: [], motion: "the radial gauge sweeps to 91%",
+          },
+          { role: "copy", subject: "the massive metric stack", interior: ["one display-type metric", "meta row beneath"], ownsCopy: ["headline", "meta"], motion: "the metric counts up" },
+          { role: "connector", subject: "a dashed convergence system feeding the metric", interior: ["five dashed paths meeting at a hub right of center"], ownsCopy: [], motion: "dashes crawl along the paths" },
+          { role: "atmosphere", subject: "charcoal band field", interior: ["parallax bands", "vignette"], ownsCopy: [], motion: "bands drift at different speeds" },
+        ],
+        atmosphere: S1_ATMOS,
+      },
+    },
+  ],
+} as unknown as Script;
+
+// s0.copy STEALS bullets[0] as an exact text node — under the SPEC, bullets
+// belong to the hero, so the guard must strip it from the copy element even
+// though the copy SLOT structurally owns bullets in the un-composed world.
+const COMPOSED_COPY_S0 = `<div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
+  <h1 data-content-path="headline" style={{ fontFamily: FONT_DISPLAY, fontSize: 88, margin: 0, color: INK }}>{c.headline}</h1>
+  <p data-content-path="lede" style={{ fontFamily: FONT_BODY, fontSize: 28, margin: 0, color: INK }}>{c.lede}</p>
+  <div>Approve the arc first</div>
+</div>`;
+const composedCanned = (id: string): string => (id === "s0.copy" ? COMPOSED_COPY_S0 : DEFAULT_BODY);
+
+const cfake = makeFakeCaller(composedCanned);
+const cresult = await castBuild(
+  { script: composedScript, theme, palette: PALETTE, signatureAccent: "#ff7a59", aspect: "16:9" },
+  { caller: cfake.caller as never, concurrency: 4 },
+);
+const cbrief = (id: string) => cfake.log.find((l) => l.id === id)!.user;
+
+await check("composed build compiles; connector cast from SPEC, not heuristic (both directions)", async () => {
+  const err = await verifyCompilable(cresult.code);
+  assert(err === null, `should compile but: ${err}`);
+  // Heuristic would say YES for s0 ("network of connected") — spec says no.
+  assert(wantsConnector(composedScript.scenes[0].visual_concept), "sanity: the heuristic WOULD fire on s0");
+  assert(!cresult.scenes[0].pieces.some((p) => p.id === "s0.connector"), "s0 composition casts no connector — spec overrides the keyword heuristic");
+  // Heuristic would say NO for s1 — spec says yes.
+  assert(!wantsConnector(composedScript.scenes[1].visual_concept), "sanity: the heuristic would NOT fire on s1");
+  assert(cresult.scenes[1].pieces.some((p) => p.id === "s1.connector"), "s1 composition casts the connector — produced from spec");
+  assert(cresult.scenes[1].pieces[1].id === "s1.connector", "connector still sits directly after the base atmosphere layer");
+});
+
+await check("hero brief LEADS with the blueprint: subject + inventory VERBATIM + motion; generic stack OUT", () => {
+  const brief = cbrief("s0.hero");
+  assert(brief.includes(`This element IS: ${HERO_SUBJECT}`), "subject line leads");
+  assert(brief.includes("TRANSCRIBE this interior inventory — every item below must be visibly present, verbatim values:"), "transcription instruction");
+  for (const item of HERO_INVENTORY) assert(brief.includes(`- ${item}`), `inventory item verbatim: ${item}`);
+  assert(brief.includes("the progress bar fills from 62%"), "motion beat carried");
+  assert(brief.indexOf("This element IS:") < brief.indexOf("Emit ONLY the JSX"), "blueprint precedes the emit instruction");
+  // The generic taste stack is the FALLBACK — it must NOT dilute a composed brief.
+  assert(!brief.includes("at least 15 labeled interior elements"), "generic interior checklist absent");
+  assert(!brief.includes('Register "split"'), "register archetype absent");
+  assert(!brief.includes("No visual fields given"), "invent-the-visual line absent");
+});
+
+await check("spec ownsCopy drives the briefs: bullets moved to the hero, copy keeps headline+lede", () => {
+  const hero = cbrief("s0.hero");
+  assert(hero.includes("COPY THIS ELEMENT OWNS"), "hero carries owned-copy instructions");
+  assert(hero.includes(`bullets.0: "Approve the arc first" (data-content-path="bullets.0")`), "hero brief carries the bullet VALUE + choreograph path");
+  const copy = cbrief("s0.copy");
+  assert(copy.includes('"Every build tells a story"') && copy.includes(JSON.stringify(COMPOSED_LEDE)), "copy brief keeps its owned values");
+  assert(!copy.includes("bullets.0"), "copy brief no longer carries bullets (the spec moved them)");
+  assert(copy.includes("render EXACTLY the owned fields in the blueprint above"), "copy brief points at the blueprint");
+  // A spec that owns NOTHING says so explicitly (s1.hero).
+  assert(cbrief("s1.hero").includes("This element owns NO scene copy"), "owns-nothing is stated, not implied");
+});
+
+await check("unowned-copy guard strengthened by the spec: copy's stolen bullet stripped, no repair burned", () => {
+  // In the un-composed world the copy SLOT owns bullets and the theft would be
+  // legal. Under the spec, bullets are the hero's — the guard must strip it.
+  assert(!cresult.code.includes("Approve the arc first"), "the stolen bullet text is GONE from the final code");
+  assert(cresult.code.includes('data-piece="s0.copy"') && cresult.code.includes("{c.lede}"), "copy element still shipped with its owned bindings");
+  assert(cresult.telemetry.repairs === 0 && cresult.telemetry.failures === 0, "deterministic strip — no repair, no placeholder");
+  assert(cresult.telemetry.elements === 9, `9 elements expected (s0: 4 + s1: 5), got ${cresult.telemetry.elements}`);
+});
+
+await check("atmosphere briefs carry the AUTHORED treatment; the rotating menu is fallback-only", () => {
+  const a0 = cbrief("s0.atmosphere");
+  const a1 = cbrief("s1.atmosphere");
+  assert(a0.includes(`ATMOSPHERE TREATMENT (authored for THIS scene — adjacent scenes carry different treatments): ${S0_ATMOS}`), "s0 authored treatment");
+  assert(a1.includes(S1_ATMOS), "s1 authored treatment (differs by authorship, not rotation)");
+  assert(!a0.includes("leans toward") && !a0.includes("ATMOSPHERE MENU"), "menu + variety rotation absent on composed scenes");
+  assert(a0.includes("infinite-loop animations"), "the never-freeze demand survives in both modes");
+});
+
+await check("connector + throughline briefs under composition: blueprint topology, contract lines intact", () => {
+  const conn = cbrief("s1.connector");
+  assert(conn.includes("This element IS: a dashed convergence system feeding the metric"), "connector blueprint leads");
+  assert(conn.includes("Derive the topology FROM the blueprint above"), "topology from the blueprint, not the concept");
+  assert(conn.includes("at least 12 SVG primitives") && conn.includes("strokeDasharray"), "the SVG system contract survives");
+  // No throughline spec authored → the un-spec'd element keeps its contract brief.
+  const tl = cbrief("s0.throughline");
+  assert(tl.includes(THROUGHLINE) && !tl.includes("This element IS:"), "un-spec'd element inside a composed scene falls back cleanly");
+});
+
+await check("fully-composed script with no connector specs: the mid-scene fallback is suppressed", async () => {
+  const noConn = JSON.parse(JSON.stringify(composedScript)) as Script;
+  noConn.scenes[1].composition!.elements = noConn.scenes[1].composition!.elements.filter((e) => e.role !== "connector");
+  const f = makeFakeCaller(composedCanned);
+  const r = await castBuild(
+    { script: noConn, theme, palette: PALETTE, aspect: "16:9" },
+    { caller: f.caller as never, concurrency: 4 },
+  );
+  assert(r.scenes.every((s) => !s.pieces.some((p) => p.id.endsWith(".connector"))), "the head cast no connector anywhere — that IS the decision");
 });
 
 // ─── The deterministic post-passes, unit-level ───────────────────────────────
