@@ -10,6 +10,10 @@ import type { Script } from "../../src/schema";
  *   • scenes tile [0, totalFrames] exactly
  *   • every scene has visual_concept and content
  *   • content.texts are readable (>=2 unicode letters/digits)
+ *   • script-richness contract on the generation path (beat coverage,
+ *     visual_concept floor, interior furnishing, atmosphere anti-copy)
+ *     — see checkScriptRichness; stored scripts opt out via
+ *     validateScript(input, { richness: false })
  *
  * The old element-level checks are gone — Scene no longer has
  * elements[]. Agent 2 produces the visual layer from visual_concept
@@ -260,8 +264,11 @@ export const findUngroundedStageLabels = (
 // cheapest place to stop it is here. Decoration-only nouns are deliberately
 // absent. Word-boundary, case-insensitive; generous on purpose (false-negative
 // direction — when unsure, a scene PASSES).
-const DIEGETIC_ELEMENT_RX =
-  /\b(panels?|cards?|dashboards?|mock(?:up)?s?|diagrams?|charts?|graphs?|mesh|nodes?|grids?|tables?|browser|windows?|devices?|phones?|laptops?|screens?|interface|map|timeline|counter|trust[\s-]?bar|logos?|illustration|screenshots?|spinner|badges?|gauge|meter|tiles?|avatars?|photos?|images?|flow(?:chart)?|connectors?|sparkline|histogram|kpi|widgets?|popup|terminal|console|editor|rows?|product|constellation|waveform|dial|ledger|receipts?|invoices?|documents?)\b/i;
+// (Kept as a source string so the richness contract below can extend the same
+// vocabulary without duplicating it.)
+const DIEGETIC_ELEMENT_SOURCE =
+  "panels?|cards?|dashboards?|mock(?:up)?s?|diagrams?|charts?|graphs?|mesh|nodes?|grids?|tables?|browser|windows?|devices?|phones?|laptops?|screens?|interface|map|timeline|counter|trust[\\s-]?bar|logos?|illustration|screenshots?|spinner|badges?|gauge|meter|tiles?|avatars?|photos?|images?|flow(?:chart)?|connectors?|sparkline|histogram|kpi|widgets?|popup|terminal|console|editor|rows?|product|constellation|waveform|dial|ledger|receipts?|invoices?|documents?";
+const DIEGETIC_ELEMENT_RX = new RegExp(`\\b(${DIEGETIC_ELEMENT_SOURCE})\\b`, "i");
 const DIEGETIC_UI_RX = /\bUI\b/; // the acronym specifically, not "build"/"guide"
 
 /**
@@ -282,6 +289,227 @@ export const findTypeOnlyScenes = (
     out.push(i);
   });
   return out;
+};
+
+// ─── Script-richness contract (machine-checked) ──────────────────────────
+//
+// Bake-off evidence (gpt-oss on the full production prompt, 2026-07): the
+// model met EVERY rule backed by a static validator and missed EVERY richness
+// norm enforced only by prose — 44% of the reference's visual_concept mass,
+// latest beats landing at 0-17% of scene duration (vs the prompt's ≥60% ask),
+// and the prompt's own fallback atmosphere ("glow pulse + drifting dots")
+// copied near-verbatim into all 5 scenes (→ monotone videos). The mechanism
+// fast models demonstrably respond to is the one validateScript already
+// drives: static check → verbatim error → one repair call. These four checks
+// turn the richness norms into that contract. All regex/string level; every
+// error ≤200 chars, actionable, naming the scene. Calibrated so the reference
+// script (src/generated/01KXEAF0SNT0RR079Z1SJZ1KWZ) passes every check:
+// beats 58-75%, 870-1237 chars, 4-9 drawable nouns, 3-6 interiors, no shared
+// atmosphere phrase.
+//
+// BACK-COMPAT: the contract applies to NEWLY GENERATED scripts only — see
+// ValidateScriptOptions.richness. Stored scripts predate it.
+
+/** Latest explicit beat must reach this fraction of the scene's duration.
+ *  The prompt asks for ≥60%; the enforced floor is 50% (the reference's
+ *  tightest scene lands at 58%, and 50% still rejects the thin failure mode's
+ *  8-33% by a wide margin). */
+export const BEAT_COVERAGE_MIN_FRACTION = 0.5;
+/** Scenes shorter than this are exempt from beat coverage (matches the
+ *  pipeline dead-air gate's skip). */
+export const BEAT_COVERAGE_MIN_SCENE_SECONDS = 3;
+export const VISUAL_CONCEPT_MIN_CHARS = 120;
+export const VISUAL_CONCEPT_MIN_NOUNS = 3;
+/** A container (mock/window/panel/card/dashboard/browser) must name at least
+ *  this many interior specifics. */
+export const FURNISHING_MIN_INTERIORS = 2;
+/** An atmosphere phrase shared by this many scenes is a copy-paste reject. */
+export const ATMOS_COPY_MIN_SCENES = 3;
+const ATMOS_NGRAM_WORDS = 4;
+
+/**
+ * Explicit timed beats in visual_concept prose: "at 2.3s" / "from 3.8s"
+ * (the exact idiom the prompt mandates — "ALL TIMING ... IN SECONDS. Write
+ * 'From Xs to Ys:' or 'at 2.4s'"). Same seconds-token parse as the pipeline
+ * dead-air scan (`(\d+(?:\.\d+)?)s\b`), scoped to at/from so durations
+ * ("duration 0.8s", "over 0.6s"), staggers ("0.15s stagger") and cycle
+ * lengths ("(4s cycle)") never count as beats. Infinite-loop START times DO
+ * count — "glow loops infinite from 3s" is a timed motion event a viewer
+ * sees fire at 3s (this is also what the reference's tail beats are).
+ */
+const BEAT_TIME_RX = /\b(?:at|from)\s+(\d+(?:\.\d+)?)\s*s\b/gi;
+
+/** Largest explicit beat timestamp in a visual_concept (0 when none parse). */
+export const latestExplicitBeat = (visualConcept: string): number => {
+  let latest = 0;
+  for (const m of visualConcept.matchAll(BEAT_TIME_RX)) {
+    latest = Math.max(latest, Number.parseFloat(m[1]));
+  }
+  return latest;
+};
+
+// Drawable-noun vocabulary for the visual_concept floor = the diegetic set
+// plus concrete sub-element nouns (a wordmark, an accent bar, a CTA pill...)
+// that are legitimately drawable but too small to count as a scene's diegetic
+// anchor in findTypeOnlyScenes. Pure-decoration nouns (glow, ember, gradient)
+// stay excluded so the floor measures things to LOOK AT.
+const EXTRA_DRAWABLE_SOURCE =
+  "wordmarks?|bars?|dots?|buttons?|pills?|toasts?|modals?|lines?|hairlines?|dividers?|bubbles?|check(?:mark)?s?|icons?|favicons?|labels?|fields?|sidebars?|toolbars?|titlebars?|tooltips?|cursors?|chips?|arrows?|rings?|tabs?|lists?";
+const DRAWABLE_NOUN_RX = new RegExp(
+  `\\b(${DIEGETIC_ELEMENT_SOURCE}|${EXTRA_DRAWABLE_SOURCE})\\b`,
+  "gi",
+);
+
+/** Naive singular so "cards"/"card" count once ("mesh"/"glass" unaffected). */
+const singularize = (w: string): string =>
+  w.endsWith("s") && !w.endsWith("ss") ? w.slice(0, -1) : w;
+
+/** Distinct concrete drawable nouns named in a visual_concept. */
+export const countDrawableNouns = (visualConcept: string): number => {
+  const seen = new Set<string>();
+  for (const m of visualConcept.matchAll(DRAWABLE_NOUN_RX)) {
+    seen.add(singularize(m[0].toLowerCase().replace(/[\s-]+/g, " ")));
+  }
+  return seen.size;
+};
+
+// Containers that promise a UI interior. A visual_concept that names one and
+// then furnishes it with nothing is the "bare container" failure — the build
+// renders empty chrome (or worse, delegates the interior to a site_img_*
+// asset, which renders blank).
+const CONTAINER_SOURCE = "mock(?:up)?s?|windows?|panels?|cards?|dashboards?|browsers?";
+const CONTAINER_RX = new RegExp(`\\b(?:${CONTAINER_SOURCE})\\b`, "i");
+// The container phrase to quote verbatim in the error: one preceding word +
+// the container run ("three window mockups", "a bare dashboard").
+const CONTAINER_PHRASE_RX = new RegExp(
+  `(?:\\S+\\s+)?(?:${CONTAINER_SOURCE})(?:[\\s-](?:${CONTAINER_SOURCE}))?\\b`,
+  "i",
+);
+// Interior specifics — the things DRAWN INSIDE a container. Text-slot names
+// (headline/lede/caption) are deliberately absent: they appear in nearly
+// every concept and would neuter the check.
+const INTERIOR_SOURCE =
+  "rows?|labell?ed|labels?|values?|tabs?|feeds?|charts?|graphs?|avatars?|favicons?|fields?|columns?|cells?|buttons?|badges?|check(?:mark)?s?|toggles?|icons?|logos?|menus?|sidebars?|toolbars?|title\\s?bars?|headers?|footers?|nav|url\\s?bar|status\\s?bar|toasts?|modals?|inputs?|cursors?|timestamps?|metrics?|sparklines?|records?|titles?";
+const INTERIOR_RX = new RegExp(`\\b(${INTERIOR_SOURCE})\\b`, "gi");
+
+/** Distinct interior specifics named in a visual_concept. */
+export const countInteriorSpecifics = (visualConcept: string): number => {
+  const seen = new Set<string>();
+  for (const m of visualConcept.matchAll(INTERIOR_RX)) {
+    seen.add(singularize(m[0].toLowerCase().replace(/\s+/g, " ")));
+  }
+  return seen.size;
+};
+
+// Atmosphere anti-copy: normalized word 4-grams mined from motion clauses
+// (clauses mentioning infinite/loop — the sustained-ambience idiom). A gram
+// shared by ≥3 scenes is the "glow pulse + drifting dots" copy-paste
+// signature. Normalization strips hex colors and numbers so "(4s cycle)" vs
+// "(3s cycle)" can't hide a copied phrase; unit leftovers (s/ms/px/deg/x/em)
+// are dropped so they don't fabricate junk grams.
+const ATMOS_UNIT_TOKENS = new Set(["s", "ms", "px", "x", "deg", "em"]);
+
+const motionGrams = (visualConcept: string): Set<string> => {
+  const grams = new Set<string>();
+  // Clause split: semicolons, newlines, or sentence-final periods. Periods
+  // inside decimals ("2.3s") are followed by digits, not whitespace → kept.
+  for (const clause of visualConcept.split(/[;\n]|\.(?=\s|$)/)) {
+    if (!/\b(?:infinite|loops?|looping)\b/i.test(clause)) continue;
+    const tokens = clause
+      .replace(/#[0-9a-f]{3,8}\b/gi, " ")
+      .toLowerCase()
+      .replace(/[^a-z]+/g, " ")
+      .split(/\s+/)
+      .filter((t) => t.length > 0 && !ATMOS_UNIT_TOKENS.has(t));
+    for (let i = 0; i + ATMOS_NGRAM_WORDS <= tokens.length; i++) {
+      grams.add(tokens.slice(i, i + ATMOS_NGRAM_WORDS).join(" "));
+    }
+  }
+  return grams;
+};
+
+/** Minimal structural scene shape the richness contract reads. */
+export interface RichnessSceneInput {
+  start_seconds?: unknown;
+  end_seconds?: unknown;
+  visual_concept?: unknown;
+}
+
+/**
+ * The four richness checks. Returns one error per finding (each ≤200 chars,
+ * naming the scene); empty array = the script meets the contract. Consumed by
+ * validateScript on the generation path so failures drive the existing
+ * repair-retry loop verbatim. Non-string / missing visual_concepts are
+ * skipped (structural validation owns those errors).
+ */
+export const checkScriptRichness = (scenes: RichnessSceneInput[]): string[] => {
+  const errors: string[] = [];
+  const gramScenes = new Map<string, number[]>();
+
+  scenes.forEach((sc, i) => {
+    const vc = typeof sc.visual_concept === "string" ? sc.visual_concept : "";
+    if (!vc.trim()) return;
+
+    // 1) Beat coverage — the latest explicit beat must reach ≥50% of the
+    //    scene. This is where the thin failure mode lives (beats at 8-33%).
+    const dur =
+      typeof sc.start_seconds === "number" && typeof sc.end_seconds === "number"
+        ? sc.end_seconds - sc.start_seconds
+        : 0;
+    if (dur >= BEAT_COVERAGE_MIN_SCENE_SECONDS) {
+      const latest = latestExplicitBeat(vc);
+      if (latest < dur * BEAT_COVERAGE_MIN_FRACTION) {
+        const pct = Math.round((latest / dur) * 100);
+        errors.push(
+          `Scene ${i}: latest timed beat ${latest}s = ${pct}% of its ${dur}s — beats must reach ≥${Math.round(BEAT_COVERAGE_MIN_FRACTION * 100)}% of scene duration. Add late explicit beats (e.g. "accent bar extends at ${(dur * 0.7).toFixed(1)}s").`,
+        );
+      }
+    }
+
+    // 2) visual_concept floor — enough prose AND enough drawable things.
+    const chars = vc.trim().length;
+    const nouns = countDrawableNouns(vc);
+    if (chars < VISUAL_CONCEPT_MIN_CHARS || nouns < VISUAL_CONCEPT_MIN_NOUNS) {
+      errors.push(
+        `Scene ${i}: visual_concept too thin (${chars} chars, ${nouns} drawable nouns) — need ≥${VISUAL_CONCEPT_MIN_CHARS} chars AND ≥${VISUAL_CONCEPT_MIN_NOUNS} concrete drawable elements (panel, chart, logo, bar, mock, button...).`,
+      );
+    }
+
+    // 3) Interior furnishing — a named container needs ≥2 interior specifics.
+    if (CONTAINER_RX.test(vc)) {
+      const interiors = countInteriorSpecifics(vc);
+      if (interiors < FURNISHING_MIN_INTERIORS) {
+        const phrase = (vc.match(CONTAINER_PHRASE_RX)?.[0] ?? "container")
+          .trim()
+          .slice(0, 40);
+        errors.push(
+          `Scene ${i}: names "${phrase}" but only ${interiors} interior detail(s) — a container must name ≥${FURNISHING_MIN_INTERIORS} specifics drawn inside it (rows, labels, values, tabs, feed, chart, avatar...).`,
+        );
+      }
+    }
+
+    // 4) Collect atmosphere grams for the cross-scene anti-copy pass.
+    for (const g of motionGrams(vc)) {
+      const list = gramScenes.get(g);
+      if (list) list.push(i);
+      else gramScenes.set(g, [i]);
+    }
+  });
+
+  // Atmosphere anti-copy — quote the most widely shared phrase.
+  let worst: { gram: string; scenes: number[] } | null = null;
+  for (const [gram, list] of gramScenes) {
+    if (list.length >= ATMOS_COPY_MIN_SCENES && (!worst || list.length > worst.scenes.length)) {
+      worst = { gram, scenes: list };
+    }
+  }
+  if (worst) {
+    errors.push(
+      `Scenes ${worst.scenes.join(", ")} share the same atmosphere phrase ("${worst.gram}") — give each scene motion tied to a named element of THAT scene, not copy-paste ambience.`,
+    );
+  }
+
+  return errors;
 };
 
 /** Case- and whitespace-insensitive equality for short copy strings. */
@@ -413,7 +641,25 @@ export const backfillSceneRegisters = (input: unknown): unknown => {
   };
 };
 
-export const validateScript = (input: unknown): ValidationResult => {
+export interface ValidateScriptOptions {
+  /**
+   * Script-richness contract (beat coverage / visual_concept floor /
+   * interior furnishing / atmosphere anti-copy — see checkScriptRichness).
+   * ON by default: validateScript's production caller is the generation
+   * repair loop (lib/agents/script-generator.ts), where a failure feeds
+   * back as a verbatim error for one repair call, so default-on means
+   * "generation path only". The contract applies to NEWLY GENERATED
+   * scripts — any loader validating a STORED script must pass
+   * `{ richness: false }` (stored scripts predate the contract and must
+   * keep loading).
+   */
+  richness?: boolean;
+}
+
+export const validateScript = (
+  input: unknown,
+  opts: ValidateScriptOptions = {},
+): ValidationResult => {
   if (typeof input !== "object" || input === null) {
     return { ok: false, error: "Output is not a JSON object." };
   }
@@ -719,6 +965,16 @@ export const validateScript = (input: unknown): ValidationResult => {
         ok: false,
         error: `Section ${idx} content.asset_ids must be an array of strings (use [] if none).`,
       };
+    }
+  }
+
+  // Richness contract — LAST, so structural errors surface first and the
+  // repair call always works against a structurally sound script. Skipped
+  // for stored scripts via opts.richness === false (back-compat).
+  if (opts.richness !== false) {
+    const richness = checkScriptRichness(scenes as RichnessSceneInput[]);
+    if (richness.length > 0) {
+      return { ok: false, error: richness.join(" | ") };
     }
   }
 

@@ -2,6 +2,8 @@
  * Regression tests for headlineProblem (QA S4) — hero headlines must be one
  * punchy clause, not a crammed headline+subhead. Run: `npm test`.
  */
+import { existsSync, readFileSync } from "fs";
+import { join } from "path";
 import {
   headlineProblem,
   findUngroundedClaims,
@@ -11,6 +13,11 @@ import {
   findTypeOnlyScenes,
   normalizeScriptContent,
   backfillSceneRegisters,
+  checkScriptRichness,
+  latestExplicitBeat,
+  countDrawableNouns,
+  countInteriorSpecifics,
+  BEAT_COVERAGE_MIN_FRACTION,
 } from "./schema-validator";
 
 let passed = 0;
@@ -175,7 +182,10 @@ check("flags growth/bridge round when unsupported; dedupes", () => {
 
 // ── CTA must not echo the headline (SCENE-QA P7) ─────────────────────────────
 // A two-scene script whose final scene carries a cta. Override its headline /
-// cta.primary per test; everything else is a minimal valid script.
+// cta.primary per test; everything else is a minimal valid script. The
+// fixtures are DELIBERATELY minimal (stored-script shaped), so these calls
+// pass { richness: false } — the richness contract has its own suite below.
+const RICHNESS_OFF = { richness: false } as const;
 const scriptWithCta = (headline: string, ctaPrimary: string | undefined) => ({
   config: { duration_seconds: 10, aspect_ratio: "16:9" },
   brief: {},
@@ -203,22 +213,22 @@ const scriptWithCta = (headline: string, ctaPrimary: string | undefined) => ({
 });
 
 check("CTA primary equal to the headline is flagged (the Ramp defect)", () => {
-  const r = validateScript(scriptWithCta("See how Ramp works", "See how Ramp works"));
+  const r = validateScript(scriptWithCta("See how Ramp works", "See how Ramp works"), RICHNESS_OFF);
   assert(!r.ok && /duplicates the headline/.test(r.error), `got ${JSON.stringify(r)}`);
 });
 
 check("CTA duplication is caught case/space-insensitively", () => {
-  const r = validateScript(scriptWithCta("Get Started Today", "  get started today "));
+  const r = validateScript(scriptWithCta("Get Started Today", "  get started today "), RICHNESS_OFF);
   assert(!r.ok && /duplicates the headline/.test(r.error), `got ${JSON.stringify(r)}`);
 });
 
 check("a distinct verb-led CTA passes", () => {
-  const r = validateScript(scriptWithCta("See how Ramp works", "Get a demo"));
+  const r = validateScript(scriptWithCta("See how Ramp works", "Get a demo"), RICHNESS_OFF);
   assert(r.ok, `expected ok, got ${JSON.stringify(r)}`);
 });
 
 check("a scene with no cta is a no-op for the duplication check", () => {
-  const r = validateScript(scriptWithCta("See how Ramp works", undefined));
+  const r = validateScript(scriptWithCta("See how Ramp works", undefined), RICHNESS_OFF);
   assert(r.ok, `expected ok, got ${JSON.stringify(r)}`);
 });
 
@@ -387,7 +397,7 @@ const scriptWithDecisions = (decisions: unknown) => ({
 });
 
 check("decisions: absent is fine (unambiguous brief) and a valid batch passes", () => {
-  assert(validateScript(scriptWithCta("See how Ramp works", "Get a demo")).ok, "absent must pass");
+  assert(validateScript(scriptWithCta("See how Ramp works", "Get a demo"), RICHNESS_OFF).ok, "absent must pass");
   const r = validateScript(
     scriptWithDecisions([
       {
@@ -403,6 +413,7 @@ check("decisions: absent is fine (unambiguous brief) and a valid batch passes", 
         resolved: "Card",
       },
     ]),
+    RICHNESS_OFF,
   );
   assert(r.ok, `valid decisions must pass, got ${JSON.stringify(r)}`);
 });
@@ -411,9 +422,9 @@ check("decisions: rejects >3, bad slug ids, duplicate ids, and <2 options", () =
   const four = Array.from({ length: 4 }, (_, i) => ({
     id: `d-${i}`, question: "q?", options: ["a", "b"],
   }));
-  assert(!validateScript(scriptWithDecisions(four)).ok, ">3 must fail (batched, not a survey)");
+  assert(!validateScript(scriptWithDecisions(four), RICHNESS_OFF).ok, ">3 must fail (batched, not a survey)");
   assert(
-    !validateScript(scriptWithDecisions([{ id: "Not A Slug", question: "q?", options: ["a", "b"] }])).ok,
+    !validateScript(scriptWithDecisions([{ id: "Not A Slug", question: "q?", options: ["a", "b"] }]), RICHNESS_OFF).ok,
     "non-kebab id must fail",
   );
   assert(
@@ -422,13 +433,251 @@ check("decisions: rejects >3, bad slug ids, duplicate ids, and <2 options", () =
         { id: "dup", question: "q?", options: ["a", "b"] },
         { id: "dup", question: "q2?", options: ["a", "b"] },
       ]),
+      RICHNESS_OFF,
     ).ok,
     "duplicate ids must fail",
   );
   assert(
-    !validateScript(scriptWithDecisions([{ id: "one-opt", question: "q?", options: ["only"] }])).ok,
+    !validateScript(scriptWithDecisions([{ id: "one-opt", question: "q?", options: ["only"] }]), RICHNESS_OFF).ok,
     "a single option is not a decision",
   );
+});
+
+// ── Script-richness contract (bake-off follow-up) ────────────────────────────
+// gpt-oss met every machine-checked rule and missed every prose-only norm:
+// latest beats at 0-17% of scene duration, bare containers delegated to
+// site_img_*, and the prompt's fallback atmosphere copied into all 5 scenes.
+// These pin the contract that turns those norms into static checks. The gold
+// standard is the HubSpot reference script (01KXEAF0SNT0RR079Z1SJZ1KWZ) —
+// constants are calibrated so it passes everything.
+
+const rs = (visual_concept: string, start = 0, end = 6) => ({
+  start_seconds: start,
+  end_seconds: end,
+  visual_concept,
+});
+
+// A scene that satisfies all per-scene checks (75% beat coverage, >120 chars,
+// many drawable nouns, furnished container) — the control fixture. Multi-scene
+// tests append a per-scene ambient clause via richScene() so the shared base
+// carries NO atmosphere grams of its own (the base has no infinite clause).
+const RICH_BASE =
+  "Composition: A dashboard panel sits center with three KPI tiles labeled 'Volume', 'Uptime', 'Speed', a left sidebar with nav items, and a bar chart beneath. Animations: panel fadeRise at 0s; tiles cascade from 1.2s; chart bars draw at 3s; accent bar extends at 4.5s;";
+const richScene = (ambient: string) => rs(`${RICH_BASE} ${ambient}`);
+const RICH_VC = `${RICH_BASE} the chart baseline shimmer loops infinite from 0s.`;
+
+check("richness: a rich scene is clean", () => {
+  const e = checkScriptRichness([rs(RICH_VC)]);
+  assert(e.length === 0, `expected clean, got ${JSON.stringify(e)}`);
+});
+
+// — beat parsing —
+check("latestExplicitBeat reads at/from times, ignores durations/staggers/cycles", () => {
+  assert(
+    latestExplicitBeat(
+      "Window enters at 0s. Fields fill at 1s, each 0.4s. Modal pops at 2.3s, duration 0.9s. Glow loops infinite (3s cycle) from 4.8s.",
+    ) === 4.8,
+    "should read 4.8 (the infinite-loop START is a timed beat)",
+  );
+  assert(
+    latestExplicitBeat("Headline fadeRise, duration 5.5s, with 0.4s stagger (4s cycle), over 0.6s.") === 0,
+    "durations / staggers / cycle lengths are not beats",
+  );
+});
+
+check("beat coverage: exactly at the fraction passes, just under fails with the measured %", () => {
+  const dur = 6;
+  const atFloor = rs(`${RICH_VC} Final caption fadeRise at ${dur * BEAT_COVERAGE_MIN_FRACTION}s.`, 0, dur);
+  assert(checkScriptRichness([atFloor]).length === 0, "beat at exactly 50% of D must pass");
+  const under = rs(
+    "Composition: A dashboard panel with rows, labels, and a chart. Animations: panel fadeRise at 0s; rows cascade at 1s; glow loops infinite from 0s. Nothing after that lands late in the scene.",
+    0,
+    dur,
+  );
+  const e = checkScriptRichness([under]);
+  assert(e.some((x) => /Scene 0: latest timed beat 1s = 17% of its 6s/.test(x)), `expected 17% beat error, got ${JSON.stringify(e)}`);
+});
+
+check("beat coverage: scenes under 3s are exempt (matches the dead-air gate)", () => {
+  const e = checkScriptRichness([
+    rs("Composition: The logo, wordmark, and accent bar sit centered on the canvas holding one still beat for a fast cut between sections of the story.", 0, 2.5),
+  ]);
+  assert(!e.some((x) => /timed beat/.test(x)), `short scene must skip beat check, got ${JSON.stringify(e)}`);
+});
+
+// — visual_concept floor —
+check("floor: distinct drawable nouns are counted once across case/plural", () => {
+  assert(countDrawableNouns("cards Card CARDS") === 1, "one distinct noun");
+  assert(countDrawableNouns("a logo, a wordmark, an accent bar, more logos") === 3, "logo+wordmark+bar");
+});
+
+check("floor: short or noun-poor visual_concepts fail with measured numbers", () => {
+  const short = checkScriptRichness([rs("A logo and accent bar over a glow. Logo scaleIn at 0s, bar settles at 3.5s.")]);
+  assert(short.some((x) => /Scene 0: visual_concept too thin \(\d+ chars, 2 drawable nouns\)/.test(x)), `got ${JSON.stringify(short)}`);
+  const nounPoor = checkScriptRichness([
+    rs(
+      "Composition: An enormous headline dominates the frame while a warm radial glow breathes behind it and gentle gradients wash the backdrop in the brand hue. Animations: headline settles at 0s; glow deepens at 3.4s.",
+    ),
+  ]);
+  assert(nounPoor.some((x) => /too thin \(\d+ chars, 0 drawable nouns\)/.test(x)), `got ${JSON.stringify(nounPoor)}`);
+});
+
+// — interior furnishing —
+check("furnishing: distinct interior specifics counted once", () => {
+  assert(countInteriorSpecifics("rows and rows of labels") === 2, "row + label");
+});
+
+check("furnishing: a bare container fails, quoting the container phrase", () => {
+  const e = checkScriptRichness([
+    rs(
+      "Composition: Three window mockups slide across the canvas representing the product suite, with a tangled network of gray lines behind them. Animations: windows slide in at 0s, 1s, and 3.2s.",
+    ),
+  ]);
+  const f = e.find((x) => /interior detail/.test(x));
+  assert(!!f && f.includes('"Three window mockups"'), `expected the bare container quoted verbatim, got ${JSON.stringify(e)}`);
+});
+
+check("furnishing: a container with ≥2 named interiors passes; no container = not applicable", () => {
+  const furnished = checkScriptRichness([rs(RICH_VC)]);
+  assert(!furnished.some((x) => /interior detail/.test(x)), `got ${JSON.stringify(furnished)}`);
+  const noContainer = checkScriptRichness([
+    rs(
+      "Composition: A constellation of nodes and connectors spans the canvas with the logo at center and an accent bar beneath. Animations: nodes cascade from 0.5s; connectors draw at 2s; bar extends at 4.2s.",
+    ),
+  ]);
+  assert(!noContainer.some((x) => /interior detail/.test(x)), `got ${JSON.stringify(noContainer)}`);
+});
+
+// — atmosphere anti-copy —
+check("anti-copy: the same normalized ambience in 3 scenes fires (hex/timing changes don't hide it)", () => {
+  const stamp = (hex: string, cycle: number, from: number) =>
+    richScene(`A soft ${hex} glow pulse loops infinite (${cycle}s cycle) from ${from}s.`);
+  const e = checkScriptRichness([stamp("#ff7a59", 4, 0), stamp("#191717", 2, 1), stamp("#786959", 3, 2)]);
+  const f = e.find((x) => /share the same atmosphere phrase/.test(x));
+  assert(!!f, `expected anti-copy to fire, got ${JSON.stringify(e)}`);
+  assert(/glow pulse/.test(f!), `expected the shared phrase quoted, got ${f}`);
+  assert(/Scenes 0, 1, 2/.test(f!), `expected all three scenes named, got ${f}`);
+});
+
+check("anti-copy: two scenes sharing a phrase stay clean (threshold is 3)", () => {
+  const twin = richScene("Decorative dots drift infinite with slow sinusoidal motion from 0s.");
+  const other = richScene("The hub icon rotates slowly infinite through the scene tail.");
+  const e = checkScriptRichness([twin, twin, other]);
+  assert(!e.some((x) => /atmosphere phrase/.test(x)), `got ${JSON.stringify(e)}`);
+});
+
+// — the real thin specimen: gpt-oss's HubSpot script (full-pipeline spike;
+//   summarized in .data/full-spike/build-report.json under "script") —
+//   Fails beat coverage in ALL scenes, furnishing in scene 1 ("three window
+//   mockups" whose interiors were delegated to site_img_*), and anti-copy
+//   (the prompt's fallback atmosphere pasted across scenes). Scenes verbatim.
+const GPT_OSS_THIN = [
+  rs(
+    "Composition: Centered on a #f5f0e8 canvas, the HubSpot logo (asset site_logo) fades in with a spring scale, while a glowing hub icon composed of three #ff7a59 nodes appears behind it, initially spaced apart. Animations: Logo scaleIn at 0s (duration 0.8s); hub nodes fadeIn and drift outward from center at 0.3s intervals; a subtle #ff7a59 radial glow pulses infinite (4s cycle) from 0s; two decorative dots drift infinite with slow sinusoidal motion from 0s.",
+    0,
+    4,
+  ),
+  rs(
+    "Composition: Left side displays three window mockups (assets site_img_0, site_img_1, site_img_2) representing Marketing Hub, Sales Hub, and Service Hub on a #f5f0e8 canvas, each with header colors #b69987, #191717, #786959; right side shows a tangled network of gray lines. Animations: Windows slide in from left at 0s, 0.5s, and 1s respectively, each with a brief loading flicker; a soft #ff7a59 glow pulse loops infinite across the canvas from 0s; three accent dots drift infinite with sin‑based motion at varied speeds from 1s.",
+    4,
+    11,
+  ),
+  rs(
+    "Composition: A central #ff7a59 hub icon expands on the #f5f0e8 canvas, merging the three scattered nodes into one solid circle; surrounding it, three cards labeled \"Marketing Hub\", \"Sales Hub\", and \"Service Hub\" slide in from left, center, and right. Animations: Hub icon scaleIn at 0s (duration 0.8s); cards fadeRise and slideIn at 1s, 1.3s, and 1.6s; the hub emits a subtle pulse (scale 1→1.05) looping infinite from 2s; two decorative dots drift infinite with slow sinusoidal motion from 0s.",
+    11,
+    19,
+  ),
+  rs(
+    "Composition: A vertical list of three panels on the #f5f0e8 canvas, each showing a screenshot (assets site_img_0, site_img_1, site_img_2) of Marketing Hub, Sales Hub, and Service Hub with overlaid titles; a solid #ff7a59 hub icon sits above the list, pulsing gently. Animations: Panels fadeRise with 0.5s stagger starting at 1s; hub icon pulse (scale 1→1.04) loops infinite from 2s; background subtle glow pulse loops infinite from 0s.",
+    19,
+    25,
+  ),
+  rs(
+    "Composition: Centered CTA button 'Start free trial' on the #f5f0e8 canvas, with a #ff7a59 underline drawing left‑to‑right beneath it; the unified hub icon now a solid circle sits faintly behind the button, and the HubSpot logo appears in the top‑left corner with a soft glow. Animations: CTA text scaleIn at 0s (duration 0.7s); underline drawWidth 0→100% at 0.8s (duration 0.9s); hub icon pulse loops infinite from 1s; logo glow pulse loops infinite from 0s.",
+    25,
+    30,
+  ),
+];
+
+check("THIN specimen: every gpt-oss scene fails beat coverage (beats land at 8-33%)", () => {
+  const beats = checkScriptRichness(GPT_OSS_THIN).filter((x) => /timed beat/.test(x));
+  assert(beats.length === 5, `expected all 5 scenes flagged, got ${beats.length}: ${JSON.stringify(beats)}`);
+  for (let i = 0; i < 5; i++) {
+    assert(beats.some((x) => x.startsWith(`Scene ${i}:`)), `scene ${i} missing from ${JSON.stringify(beats)}`);
+  }
+  assert(beats.some((x) => /Scene 1: latest timed beat 1s = 14% of its 7s/.test(x)), `expected the measured % verbatim, got ${JSON.stringify(beats)}`);
+});
+
+check("THIN specimen: 'three window mockups' flagged as a bare container", () => {
+  const e = checkScriptRichness(GPT_OSS_THIN);
+  const f = e.find((x) => x.startsWith("Scene 1:") && /interior detail/.test(x));
+  assert(!!f && f.includes('"three window mockups"'), `expected the bare container quoted, got ${JSON.stringify(e)}`);
+});
+
+check("THIN specimen: copy-pasted fallback atmosphere fires anti-copy across ≥3 scenes", () => {
+  const f = checkScriptRichness(GPT_OSS_THIN).find((x) => /share the same atmosphere phrase/.test(x));
+  assert(!!f, "expected the anti-copy error");
+  assert(/drift infinite|pulse loops infinite/.test(f!), `expected the copied signature quoted, got ${f}`);
+});
+
+check("THIN specimen: the floor is NOT what catches it (fails are beat/furnishing/anti-copy)", () => {
+  const e = checkScriptRichness(GPT_OSS_THIN);
+  assert(!e.some((x) => /too thin/.test(x)), `thin specimen passes the floor by design, got ${JSON.stringify(e)}`);
+});
+
+// — the gold standard: the HubSpot reference script must pass EVERYTHING —
+//   (generated fixture, gitignored — skip cleanly when absent)
+const refScriptPath = join(process.cwd(), "src/generated/01KXEAF0SNT0RR079Z1SJZ1KWZ/script.json");
+if (existsSync(refScriptPath)) {
+  const refScript = JSON.parse(readFileSync(refScriptPath, "utf8")) as {
+    scenes: { start_seconds: number; end_seconds: number; visual_concept: string }[];
+  };
+  check("REFERENCE script (gold standard) meets the full richness contract", () => {
+    const e = checkScriptRichness(refScript.scenes);
+    assert(e.length === 0, `the reference must pass every check — calibration broke: ${JSON.stringify(e)}`);
+  });
+  check("REFERENCE script passes validateScript with richness ON (the default)", () => {
+    const r = validateScript(refScript);
+    assert(r.ok, `expected ok, got ${JSON.stringify(!r.ok && r.error)}`);
+  });
+} else {
+  console.log("  - skipped REFERENCE richness calibration (generated fixture not present)");
+}
+
+// — generation-path wiring + stored-script back-compat —
+const storedThinScript = {
+  config: { duration_seconds: 6, aspect_ratio: "16:9" },
+  brief: {},
+  assets: [],
+  scenes: [
+    {
+      start_seconds: 0,
+      end_seconds: 6,
+      label: "Open",
+      visual_concept: "Logo fades in over a soft glow.",
+      content: { headline: "Hello world", asset_ids: [] },
+    },
+  ],
+};
+
+check("validateScript enforces richness by default (the generation repair loop path)", () => {
+  const r = validateScript(storedThinScript);
+  assert(!r.ok, "thin script must fail on the generation path");
+  if (!r.ok) {
+    assert(/timed beat/.test(r.error) && /too thin/.test(r.error), `expected both richness errors joined, got ${r.error}`);
+  }
+});
+
+check("validateScript({richness:false}) loads a stored thin script (back-compat)", () => {
+  const r = validateScript(storedThinScript, { richness: false });
+  assert(r.ok, `stored scripts predate the contract and must keep loading, got ${JSON.stringify(r)}`);
+});
+
+check("richness errors each stay ≤200 chars and name the scene", () => {
+  for (const e of checkScriptRichness(GPT_OSS_THIN)) {
+    assert(e.length <= 200, `error over 200 chars (${e.length}): ${e}`);
+    assert(/Scene(s)? \d/.test(e), `error must name the scene: ${e}`);
+  }
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);
