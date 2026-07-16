@@ -117,7 +117,26 @@ check('preserves a leading "use client" directive', async () => {
   assert((await verifyCompilable(out)) === null, "must compile");
 });
 
-// ── 7. verifyCompilable actually rejects broken syntax ─────────────────
+// ── 7. ```json fences: the "on" corruption (acceptance6 attempt-1 kill) ─
+// GLM-5.2 @ Fireworks consistently fences Script JSON as ```json. The lang
+// alternation lacked "json", so the dangling-fence replace prefix-matched
+// "js" and left "on" glued to the body → JSON.parse death on a valid script.
+check("extracts a closed ```json fence intact", async () => {
+  const json = `{\n  "id": "x",\n  "scenes": []\n}`;
+  const out = stripCodeFence("```json\n" + json + "\n```");
+  assert(out.startsWith("{"), `must start at the brace, got: ${out.slice(0, 12)}`);
+  JSON.parse(out); // must parse
+});
+
+check("strips a dangling ```json fence without eating into the body", async () => {
+  const json = `{\n  "id": "x",\n  "scenes": []\n}`;
+  const out = stripCodeFence("```json\n" + json); // truncation: no closing fence
+  assert(!out.startsWith("on"), "the 'on' of json must not leak into the body");
+  assert(out.startsWith("{"), `must start at the brace, got: ${out.slice(0, 12)}`);
+  JSON.parse(out); // must parse
+});
+
+// ── 8. verifyCompilable actually rejects broken syntax ─────────────────
 check("verifyCompilable returns an error for unparseable code", async () => {
   const err = await verifyCompilable("export const = ;;; <not valid");
   assert(err !== null, "broken code must report an error");

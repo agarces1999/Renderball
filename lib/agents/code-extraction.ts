@@ -29,8 +29,12 @@ export const stripCodeFence = (s: string): string => {
 
   // 1. If a fenced code block exists anywhere, take the largest one's body.
   //    This transparently discards prose BEFORE and AFTER the fence.
+  // Alternation order is load-bearing: "json" must precede "js" — the
+  // dangling-fence replace below has a fully-optional tail, so a "js" prefix
+  // match on a ```json fence would win outright and leave "on" glued to the
+  // body (exactly how acceptance6 lost a valid 220s script attempt).
   const fenceRe =
-    /```(?:tsx|typescript|ts|jsx|javascript|js)?[ \t]*\r?\n([\s\S]*?)\r?\n```/g;
+    /```(?:tsx|typescript|ts|jsx|javascript|json|js)?[ \t]*\r?\n([\s\S]*?)\r?\n```/g;
   let best = "";
   for (let m = fenceRe.exec(out); m; m = fenceRe.exec(out)) {
     if (m[1].length > best.length) best = m[1];
@@ -40,7 +44,7 @@ export const stripCodeFence = (s: string): string => {
   } else {
     // No closing fence — strip a dangling opening/closing fence if present.
     out = out
-      .replace(/^```(?:tsx|typescript|ts|jsx|javascript|js)?[ \t]*\r?\n?/, "")
+      .replace(/^```(?:tsx|typescript|ts|jsx|javascript|json|js)?[ \t]*\r?\n?/, "")
       .replace(/\r?\n?[ \t]*```[ \t]*$/, "");
   }
 

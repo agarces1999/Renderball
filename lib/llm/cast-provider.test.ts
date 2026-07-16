@@ -160,6 +160,21 @@ await check("Fireworks model routes to Fireworks wire: url, key, max_tokens, thi
   assert(th2?.type === "enabled" && th2.budget_tokens === 8192, "effort high → bounded thinking budget");
 });
 
+await check("json flag maps to response_format json_object on both wires; absent otherwise", async () => {
+  process.env.RB_FIREWORKS_KEY = "fw-test-key";
+  let sent: Record<string, unknown> = {};
+  mockFetch((_url, init) => {
+    sent = JSON.parse(String(init.body));
+    return ok(completion("{}"));
+  });
+  await castCall({ system: "", user: "u", maxTokens: 100, json: true, effort: "none", model: "accounts/fireworks/models/glm-5p2" });
+  assert((sent.response_format as { type?: string })?.type === "json_object", "fireworks wire carries response_format");
+  await castCall({ system: "", user: "u", maxTokens: 100, json: true });
+  assert((sent.response_format as { type?: string })?.type === "json_object", "cerebras wire carries response_format");
+  await castCall({ system: "", user: "u", maxTokens: 100 });
+  assert(!("response_format" in sent), "no response_format unless asked — element TSX must stay unconstrained");
+});
+
 await check("Fireworks model without RB_FIREWORKS_KEY fails fast, names the missing key", async () => {
   const saved = process.env.RB_FIREWORKS_KEY;
   delete process.env.RB_FIREWORKS_KEY;

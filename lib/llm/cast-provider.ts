@@ -33,6 +33,11 @@ export interface CastCall {
    *  workloads to different models). Precedence: call.model → RB_CAST_MODEL →
    *  the gpt-oss-120b default. */
   model?: string;
+  /** Constrain the response to syntactically-valid JSON (OpenAI-wire
+   *  response_format json_object — supported by both Fireworks and Cerebras).
+   *  Use for JSON-emitting stages (script head): kills the fence/typo failure
+   *  class at the decoder instead of burning a ~50s repair round on it. */
+  json?: boolean;
   signal?: AbortSignal;
 }
 
@@ -99,6 +104,7 @@ const wireFor = (model: string): WireConfig =>
             : call.effort
               ? { thinking: { type: "enabled", budget_tokens: FIREWORKS_THINKING_BUDGETS[call.effort] } }
               : {}),
+          ...(call.json ? { response_format: { type: "json_object" } } : {}),
         }),
       }
     : {
@@ -108,6 +114,7 @@ const wireFor = (model: string): WireConfig =>
           model: m,
           max_completion_tokens: call.maxTokens,
           ...(call.effort ? { reasoning_effort: call.effort } : {}),
+          ...(call.json ? { response_format: { type: "json_object" } } : {}),
         }),
       };
 
