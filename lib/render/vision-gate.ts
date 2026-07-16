@@ -16,9 +16,19 @@
 import { promises as fs } from "fs";
 
 export interface VisionFinding {
+  /** Scene index the finding applies to. SEQUENCE_SCENE (-1) = whole-video finding. */
   scene: number;
   issue: string;
+  /**
+   * Where the finding came from. Absent/"scene" = a per-frame verdict (routable
+   * to a scene retry). "sequence" = the whole-video judge (monotony/arc) —
+   * route to head-level fixes, NEVER a single-scene regen.
+   */
+  scope?: "scene" | "sequence";
 }
+
+/** Sentinel scene index for sequence-level findings (no single scene owns them). */
+export const SEQUENCE_SCENE = -1;
 
 /** Brand truth the rubric judges against. */
 export interface BrandTruth {
@@ -44,7 +54,63 @@ export type VisionJudge = (
   rubric: string,
 ) => Promise<VisionVerdict>;
 
-export const buildRubric = (brand: BrandTruth, sceneConcept?: string): string => {
+/**
+ * Pull the plan's concrete elements out of a visual_concept so plan-fidelity is
+ * judged PER ELEMENT instead of against a prose blob. Two sources:
+ *   1. Quoted labels — the plan's literal on-screen strings ('Email Tool',
+ *      "app.hubspot.com"). These are the strongest fidelity anchors.
+ *   2. Concrete element nouns (with up to two modifier words: "glass cards",
+ *      "connector lines", "app window") from the Composition half of the
+ *      concept — the Animations half re-names the same elements.
+ * Deduped, capped, quoted labels first. Best-effort: an empty result just means
+ * the rubric falls back to the prose concept alone.
+ */
+export const extractPlannedElements = (concept: string): string[] => {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const push = (raw: string) => {
+    const t = raw.trim().replace(/\s+/g, " ");
+    if (t.length < 2 || t.length > 60 || !/[a-z0-9]/i.test(t)) return;
+    const k = t.toLowerCase();
+    if (!seen.has(k)) {
+      seen.add(k);
+      out.push(t);
+    }
+  };
+
+  // 1) Quoted labels. Opening quote must follow start/space/punct and the closing
+  //    quote must precede space/punct/end so possessives ("the scene's tabs")
+  //    don't open a phantom span.
+  const QUOTED = /(^|[\s(,:;—–-])(?:'([^'\n]{1,60})'|"([^"\n]{1,60})"|‘([^‘’\n]{1,60})’|“([^“”\n]{1,60})”)(?=[\s).,;:!?—–-]|$)/g;
+  for (const m of concept.matchAll(QUOTED)) push(m[2] ?? m[3] ?? m[4] ?? m[5] ?? "");
+
+  // 2) Concrete element nouns (+ up to two preceding modifier tokens). Only the
+  //    Composition section — Animations re-mentions every element.
+  const composition = concept.split(/\bAnimations?\s*:/i)[0] ?? concept;
+  // Modifier tokens need ≥2 chars — the stranded "s" of a possessive
+  // ("scene's tabs") must not become a modifier ("s tabs").
+  const ELEMENT_NOUN =
+    /(?:\b[A-Za-z][\w-]+\s+){0,2}\b(?:logo|wordmark|tagline|headline|subheadline|subhead|caption|button|cta|card|tab|panel|sidebar|navbar|nav|dashboard|diagram|chart|graph|timeline|badge|pill|divider|bar|window|feed|record|ticker|table|grid|row|avatar|icon|illustration|map|mockup|screen|sparkline|counter|terminal|browser|device|phone|list)s?\b/gi;
+  const LEADING_STOP =
+    /^(?:the|a|an|of|in|on|at|to|from|with|and|or|for|its|their|each|every|per|this|that|these|those|then|also|show(?:s|ing)?|read(?:s|ing)?|sit(?:s|ting)?|hold(?:s|ing)?|below|above|beneath|behind)\s+/i;
+  for (const m of composition.match(ELEMENT_NOUN) ?? []) {
+    let t = m;
+    while (LEADING_STOP.test(t)) t = t.replace(LEADING_STOP, "");
+    push(t);
+  }
+  // Bounded: the checklist is a rubric aid, not an inventory. Quoted labels won
+  // their slots first (pushed first).
+  return out.slice(0, 14);
+};
+
+export const buildRubric = (
+  brand: BrandTruth,
+  sceneConcept?: string,
+  // Optional override; by default the checklist is extracted from the concept
+  // itself so every existing caller gets per-element fidelity for free.
+  plannedElements?: string[],
+): string => {
+  const elements = sceneConcept ? (plannedElements ?? extractPlannedElements(sceneConcept)) : (plannedElements ?? []);
   const lines = [
     "You are a brutally honest brand-video QA reviewer. This is ONE rendered scene of a 1920×1080 brand video a customer PAID for.",
     "Judge ONLY what you can see. Report concrete, visible problems a viewer would notice — not nitpicks.",
@@ -59,13 +125,19 @@ export const buildRubric = (brand: BrandTruth, sceneConcept?: string): string =>
     "- Web-page chrome: this must look like a FILM frame. Flag website navigation bars with LINKS, pagination/carousel dots, scroll indicators, or a composition that reads as a landing-page screenshot rather than a staged scene. SANCTIONED EXEMPTION — every scene deliberately carries the video's own brand chrome: a small brand wordmark/logo in the TOP-LEFT corner and a small uppercase context pill in the TOP-RIGHT (e.g. \"● OURA RING\"). These are the film's watermark, present BY DESIGN. Never report them — alone or together, in any wording. Only flag corner elements that are something ELSE (a clickable-looking nav menu, multiple links, a button row).",
     "- Readability: flag any text or logo that is washed out, low-contrast, or hard to read against its surface — including a hero illustration so dim it reads as an indistinct blob.",
     "- Wall-of-type: flag a scene that is essentially just large text with no substantial non-text/diegetic element.",
+    "- Density/craft: reference-grade furnishing is the bar — this frame must look FINISHED, not sketched. Every prominent container you can see — an app window, dashboard, browser mock, phone screen, card, or panel — must show realistic interior content: labeled rows, real-looking values or numbers, timestamps, small captions, avatars or icons. Flag: a large mock or panel whose interior is empty or a plain wash of color; a 'dashboard' or 'app window' that is just an outlined rectangle with a title; a chart area with axes but no data marks; a scene whose lower half is entirely empty canvas. Deliberate negative space around ONE fully-drawn hero element is fine — an unfurnished container or a half-empty frame is not.",
     brand.fonts && brand.fonts.length
       ? `- Fonts: the brand uses ${brand.fonts.join(", ")}. Flag if the type looks like a generic default that ignores the brand's faces (esp. a missing serif).`
       : "- Fonts: flag obviously off-brand/default typography.",
     "- Clipping/overflow: flag any element cut off at an edge (a deterministic gate also checks this; report if you still see it).",
     ...(sceneConcept
       ? [
-          `- Plan fidelity: the scene was designed to this concept: "${sceneConcept.slice(0, 500)}". Flag a DEGRADED delivery — a planned hero element missing/blank/unrecognizably small, a specified interaction that looks broken, the concept's emotional beat visibly inverted.`,
+          // Full concept (was a 500-char slice that cut real plans mid-sentence
+          // — concepts run 800–1300 chars). 4000 is a safety valve only.
+          `- Plan fidelity: the scene was designed to this concept: "${sceneConcept.slice(0, 4000)}". For EACH planned element, verify three things: (a) PRESENT — you can point at it in the frame; (b) FURNISHED — it carries its stated content (labels, values, rows), not a blank stand-in; (c) RECOGNIZABLE — a viewer would name it the way the plan does. Flag every planned element that is missing, blank, or unrecognizably degraded, and any specified interaction that looks broken or the concept's emotional beat visibly inverted.`,
+          ...(elements.length
+            ? [`  Planned elements to verify one by one: ${elements.map((e) => `"${e}"`).join(", ")}.`]
+            : []),
         ]
       : []),
     'Return ONLY JSON: {"ok": boolean, "issues": ["short, specific problem", ...]}. ok=true and issues:[] when the scene looks correct and on-brand. No prose.',
@@ -153,6 +225,82 @@ export const makeVisionJudge = (
     const text = await callVision(buf.toString("base64"), rubric);
     return parseVerdict(text);
   };
+};
+
+// ─── Sequence-level gate (whole-video, one call) ─────────────────────
+//
+// Per-frame verdicts are structurally blind to repetition: five separate CLEAN
+// verdicts missed the same radial glow recycled in 4/5 scenes (founder caught
+// it by eye in the parity audit). Monotony, archetype repetition, and a flat
+// arc only exist ACROSS frames, so all frames go to the judge in ONE call.
+
+/** Injected multi-image judge: all ordered frames + one prompt → raw model text. */
+export type SequenceJudge = (imagesB64: string[], prompt: string) => Promise<string>;
+
+/**
+ * Rubric for the whole-video pass. Same {ok, issues[]} JSON contract as the
+ * per-scene rubric so downstream parsing/telemetry is uniform.
+ */
+export const buildSequenceRubric = (sceneCount: number, brand: BrandTruth): string => {
+  const lines = [
+    `You are a brutally honest brand-video QA reviewer judging a WHOLE video, not one frame. You are given ${sceneCount} frames IN ORDER: image 1 is scene 0 (the opening), image ${sceneCount} is scene ${sceneCount - 1} (the closing/CTA). Each frame already passed single-frame QA — judge ONLY how they work as a SEQUENCE.`,
+    "Check:",
+    `- Atmosphere monotony: flag when 3 or more scenes share the same background treatment — the same centered radial glow, the same gradient wash, the same vignette, the same floating-dot field in the same spot. Name the scenes (e.g. "scenes 0, 2, 3 all use the same centered radial glow").${
+      brand.backgroundColor
+        ? ` The brand canvas color ${brand.backgroundColor} repeating on every scene is EXPECTED consistency — never flag the canvas color itself.`
+        : " A consistent brand canvas color across scenes is EXPECTED — never flag the canvas color itself."
+    }`,
+    "- Archetype repetition: flag when several scenes are the same layout re-skinned — centered-logo-plus-headline three times, two near-identical split screens, the same hub diagram twice. The video should read as different staged shots, not one slide restyled.",
+    "- Arc progression: the video must MOVE. Early frames establish, the middle escalates or demonstrates, the closing lands the CTA with different energy than the open. Flag when a late frame is interchangeable with an early frame in tone, composition, or energy — a closing scene that looks like the opening restated.",
+    "- Throughline evolution: a recurring motif (a device, product window, diagram, mascot) should EVOLVE across scenes — grow, gain content, move, resolve — not be copy-pasted identically. Flag identical reuse of the same drawn element across scenes.",
+    'SANCTIONED CHROME: every frame deliberately carries the video\'s own brand chrome — a small brand wordmark in the TOP-LEFT corner and a small uppercase context pill in the TOP-RIGHT (e.g. "● OURA RING"). Their repetition across all frames is BY DESIGN. Never report them — alone, together, or as "repeated in every scene".',
+    'Return ONLY JSON: {"ok": boolean, "issues": ["short, specific problem naming the scenes involved", ...]}. ok=true and issues:[] when the sequence reads as a progressing story. No prose.',
+  ];
+  return lines.join("\n");
+};
+
+/**
+ * Run the whole-video pass: all frames (already in scene order — index i =
+ * scene i) go to the injected multi-image judge in ONE call. Findings come back
+ * as {scene: SEQUENCE_SCENE, scope: "sequence"} so callers route them to
+ * head-level fixes, never a single-scene retry. Never throws (advisory): a
+ * judge error or an unparseable verdict becomes ONE distinguishable
+ * "SEQUENCE-JUDGE-ERROR:" finding — silence must mean "ran clean", not
+ * "swallowed" (the Duolingo lesson).
+ */
+export const judgeSequence = async (
+  imagesB64: string[],
+  brand: BrandTruth,
+  judge: SequenceJudge,
+): Promise<VisionFinding[]> => {
+  if (imagesB64.length === 0) return [];
+  const errorFinding = (why: string): VisionFinding[] => [
+    { scene: SEQUENCE_SCENE, scope: "sequence", issue: `SEQUENCE-JUDGE-ERROR: ${why}` },
+  ];
+  let text: string;
+  try {
+    text = await judge(imagesB64, buildSequenceRubric(imagesB64.length, brand));
+  } catch (e) {
+    return errorFinding(`judge call failed — ${e instanceof Error ? e.message : String(e)}`);
+  }
+  // Same tolerant parse pattern as parseVerdict — but malformed output here is
+  // an explicit error finding, NOT a silent pass: this call is one-per-build,
+  // so a swallowed failure would silently disable the whole sequence layer.
+  const m = /\{[\s\S]*\}/.exec(text);
+  if (!m) return errorFinding("verdict contained no JSON object");
+  let o: { ok?: unknown; issues?: unknown };
+  try {
+    o = JSON.parse(m[0]) as { ok?: unknown; issues?: unknown };
+  } catch {
+    return errorFinding("verdict JSON did not parse");
+  }
+  const issues = Array.isArray(o.issues) ? o.issues.filter((x): x is string => typeof x === "string") : [];
+  if (o.ok === true && issues.length === 0) return [];
+  // The sanctioned-chrome post-filter applies here too — "wordmark repeated in
+  // every corner" is the by-design watermark, not monotony.
+  return issues
+    .filter((issue) => !isSanctionedChromeFinding(issue))
+    .map((issue) => ({ scene: SEQUENCE_SCENE, scope: "sequence" as const, issue }));
 };
 
 // ─── Brand-fidelity backstop (crawl-independent) ─────────────────────

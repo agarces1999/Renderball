@@ -2,16 +2,23 @@
  * Tests for the vision gate. The judge is injected, so the aggregation logic +
  * tolerant verdict parsing are verified without any real vision-model spend.
  */
+import { readFileSync } from "fs";
+import { join } from "path";
 import {
   runVisionGate,
   parseVerdict,
   buildRubric,
+  buildSequenceRubric,
+  judgeSequence,
+  extractPlannedElements,
   buildBrandColorPrompt,
   parseBrandFidelity,
   checkBrandColorFidelity,
   isSanctionedChromeFinding,
+  SEQUENCE_SCENE,
   type VisionJudge,
   type VisionVerdict,
+  type SequenceJudge,
 } from "./vision-gate";
 
 let passed = 0;
@@ -138,6 +145,145 @@ await check("runVisionGate: sanctioned-chrome findings are dropped, real ones ke
   const findings = await runVisionGate([{ scene: 0, screenshotPath: "a.png" }], { name: "Oura" }, judge);
   assert(findings.length === 1, `expected 1 surviving finding, got ${findings.length}: ${JSON.stringify(findings)}`);
   assert(/too dim/.test(findings[0].issue), "the real finding survives");
+});
+
+// ── density/craft dimension ─────────────────────────────────────────
+// The parity audit's core finding: the rubric was a defect detector with no
+// absolute quality bar — near-empty mocks passed because emptiness wasn't in
+// its vocabulary. The density block makes reference-grade furnishing the bar.
+await check("buildRubric: density/craft block demands furnished containers", () => {
+  const r = buildRubric({ name: "HubSpot" });
+  assert(/Density\/craft/.test(r), "density block present");
+  assert(r.includes("a large mock or panel whose interior is empty or a plain wash"), "empty-panel flag phrase present");
+  assert(r.includes("lower half is entirely empty canvas"), "empty-lower-half flag phrase present");
+  assert(/labeled rows/.test(r) && /timestamps/.test(r), "names concrete interior content (rows, timestamps)");
+  assert(/negative space/.test(r), "deliberate hero negative space stays exempt");
+});
+
+await check("buildRubric: sanctioned-chrome exemption survives the density upgrade", () => {
+  const r = buildRubric({ name: "Oura" });
+  assert(/SANCTIONED EXEMPTION/.test(r), "exemption block intact");
+  assert(/TOP-LEFT/.test(r) && /TOP-RIGHT/.test(r), "corner marks still described");
+  assert(/Never report them/.test(r), "never-report instruction intact");
+});
+
+// ── plan fidelity: full concept + per-element verification ─────────
+await check("buildRubric: concept is no longer truncated at 500 chars", () => {
+  const tail = "THE-PLANNED-CLOSING-BEAT-SENTINEL";
+  const concept = `Composition: ${"x".repeat(900)} then ${tail}`;
+  const r = buildRubric({}, concept);
+  assert(r.includes(tail), "text past the old 500-char slice must reach the judge");
+});
+
+await check("buildRubric: fidelity is phrased as per-element verification", () => {
+  const r = buildRubric({}, "Composition: A dashboard panel with a headline 'One platform'.");
+  assert(/PRESENT/.test(r) && /FURNISHED/.test(r) && /RECOGNIZABLE/.test(r), "present/furnished/recognizable triad");
+  assert(/Planned elements to verify one by one/.test(r), "checklist line present");
+  assert(r.includes('"One platform"'), "quoted label lands in the checklist");
+});
+
+await check("buildRubric: explicit plannedElements override the auto-extraction", () => {
+  const r = buildRubric({}, "Composition: stuff.", ["ticker tape", "orbit diagram"]);
+  assert(r.includes('"ticker tape"') && r.includes('"orbit diagram"'), "override list used");
+});
+
+await check("buildRubric: no concept → no fidelity block (back-compat)", () => {
+  const r = buildRubric({ backgroundColor: "#440b12" });
+  assert(!/Plan fidelity/.test(r) && !/Planned elements/.test(r), "fidelity only with a concept");
+});
+
+await check("extractPlannedElements: quoted labels + nouns from the real reference concept", () => {
+  const script = JSON.parse(
+    readFileSync(join(process.cwd(), "src", "generated", "01KXEAF0SNT0RR079Z1SJZ1KWZ", "script.json"), "utf8"),
+  ) as { scenes: { visual_concept: string }[] };
+  const els = extractPlannedElements(script.scenes[1].visual_concept);
+  assert(els.includes("Email Tool") && els.includes("CRM"), `quoted tab labels extracted, got ${JSON.stringify(els)}`);
+  assert(els.includes("Your tools are everywhere"), "quoted headline extracted");
+  assert(
+    els.some((e) => /\btabs?\b/i.test(e)) && els.some((e) => /\bheadline\b/i.test(e)),
+    `concrete nouns (tabs, headline) extracted, got ${JSON.stringify(els)}`,
+  );
+});
+
+await check("extractPlannedElements: possessive apostrophes don't open phantom quotes", () => {
+  const els = extractPlannedElements("Composition: The scene's tabs collide. The brand's logo sits above a label 'Real Label'.");
+  assert(els.includes("Real Label"), "the real quoted label extracted");
+  assert(!els.some((e) => /s tabs/.test(e)), `no phantom span between possessives: ${JSON.stringify(els)}`);
+});
+
+await check("extractPlannedElements: deduped and bounded", () => {
+  const els = extractPlannedElements(`Composition: ${Array.from({ length: 30 }, (_, i) => `a card labeled 'L${i}'`).join(", ")}.`);
+  assert(els.length <= 14, `capped at 14, got ${els.length}`);
+  assert(new Set(els.map((e) => e.toLowerCase())).size === els.length, "no duplicates");
+});
+
+// ── sequence-level gate ─────────────────────────────────────────────
+// Five separate CLEAN per-frame verdicts missed the same radial glow in 4/5
+// scenes; monotony/arc only exist ACROSS frames, so all frames go in one call.
+await check("buildSequenceRubric: names monotony, repetition, arc, and throughline checks", () => {
+  const r = buildSequenceRubric(5, { name: "Fuse", backgroundColor: "#440b12" });
+  assert(/Atmosphere monotony/.test(r) && /3 or more scenes/.test(r) && /radial glow/.test(r), "monotony check with the glow example");
+  assert(/Archetype repetition/.test(r), "archetype repetition check");
+  assert(/Arc progression/.test(r) && /interchangeable with an early frame/.test(r), "arc progression check");
+  assert(/Throughline evolution/.test(r), "throughline evolution check");
+  assert(/5 frames IN ORDER/.test(r) && /scene 4/.test(r), "frame ordering spelled out for the judge");
+  assert(r.includes("#440b12") && /never flag the canvas color/i.test(r), "brand canvas consistency exempted");
+  assert(/SANCTIONED CHROME/.test(r) && /Never report them/.test(r), "chrome discipline carried over");
+  assert(r.includes('{"ok": boolean, "issues"'), "same JSON contract as the per-scene rubric");
+});
+
+await check("judgeSequence: canned verdict → findings with sequence scope, scene -1", async () => {
+  let gotImages: string[] = [];
+  let gotPrompt = "";
+  const judge: SequenceJudge = async (imgs, prompt) => {
+    gotImages = imgs;
+    gotPrompt = prompt;
+    return '{"ok": false, "issues": ["scenes 0, 2, 3 all use the same centered radial glow", "closing scene restates the opening composition"]}';
+  };
+  const findings = await judgeSequence(["b64a", "b64b", "b64c", "b64d"], { name: "Fuse" }, judge);
+  assert(gotImages.length === 4, "all frames sent in one call");
+  assert(/Atmosphere monotony/.test(gotPrompt), "judge got the sequence rubric");
+  assert(findings.length === 2, `got ${JSON.stringify(findings)}`);
+  assert(findings.every((f) => f.scene === SEQUENCE_SCENE && f.scope === "sequence"), "distinguishable sequence shape");
+  assert(/radial glow/.test(findings[0].issue), "issue text carried");
+});
+
+await check("judgeSequence: clean verdict → no findings", async () => {
+  const findings = await judgeSequence(["a", "b"], {}, async () => '{"ok": true, "issues": []}');
+  assert(findings.length === 0, JSON.stringify(findings));
+});
+
+await check("judgeSequence: malformed JSON → one graceful error finding, no throw", async () => {
+  const findings = await judgeSequence(["a", "b"], {}, async () => "the model rambled with no json");
+  assert(findings.length === 1, `got ${JSON.stringify(findings)}`);
+  assert(findings[0].scene === SEQUENCE_SCENE && findings[0].scope === "sequence", "error finding uses the sequence shape");
+  assert(/SEQUENCE-JUDGE-ERROR/.test(findings[0].issue), "distinguishable from a real sequence issue");
+});
+
+await check("judgeSequence: broken JSON braces → graceful error finding", async () => {
+  const findings = await judgeSequence(["a"], {}, async () => '{"ok": false, "issues": ["unterminated }');
+  assert(findings.length === 1 && /SEQUENCE-JUDGE-ERROR/.test(findings[0].issue), JSON.stringify(findings));
+});
+
+await check("judgeSequence: judge throw → error finding, never propagates", async () => {
+  const findings = await judgeSequence(["a"], {}, async () => {
+    throw new Error("vision timeout");
+  });
+  assert(findings.length === 1 && /SEQUENCE-JUDGE-ERROR/.test(findings[0].issue) && /vision timeout/.test(findings[0].issue), JSON.stringify(findings));
+});
+
+await check("judgeSequence: sanctioned-chrome sequence findings are filtered", async () => {
+  const findings = await judgeSequence(["a", "b", "c"], { name: "Oura" }, async () =>
+    '{"ok": false, "issues": ["Brand wordmark repeated in the top-left corner of every scene", "scenes 0 and 2 share the same gradient wash"]}',
+  );
+  assert(findings.length === 1, `chrome-repetition dropped, real one kept: ${JSON.stringify(findings)}`);
+  assert(/gradient wash/.test(findings[0].issue), "the real monotony finding survives");
+});
+
+await check("judgeSequence: no frames → no judge call, no findings", async () => {
+  let called = false;
+  const findings = await judgeSequence([], {}, async () => { called = true; return "{}"; });
+  assert(findings.length === 0 && !called, "empty input short-circuits");
 });
 
 // ── brand-color fidelity backstop (text-only) ──────────────────────
