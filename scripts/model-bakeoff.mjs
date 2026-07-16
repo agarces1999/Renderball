@@ -170,7 +170,9 @@ const copyLines = (scene) => {
   if (c.eyebrow) out.push(`eyebrow: "${c.eyebrow}" (data-content-path="eyebrow")`);
   if (c.headline) out.push(`headline: "${c.headline}" (data-content-path="headline")`);
   if (c.lede) out.push(`lede: "${c.lede}" (data-content-path="lede")`);
-  if (Array.isArray(c.bullets)) c.bullets.forEach((b, i) => out.push(`bullet[${i}]: "${b}" (data-content-path="bullets[${i}]")`));
+  // Dot-form paths — choreograph.ts fieldsOf() convention; bracket-form tags
+  // never receive entrance choreography (cast-build contract review 2026-07-14).
+  if (Array.isArray(c.bullets)) c.bullets.forEach((b, i) => out.push(`bullet[${i}]: "${b}" (data-content-path="bullets.${i}")`));
   return out.join("\n");
 };
 const elementBrief = (sceneIdx, piece) => {
@@ -182,7 +184,10 @@ const elementBrief = (sceneIdx, piece) => {
     `BOUNDS: ${BOUNDS[piece.kind] ?? BOUNDS.diegetic}`,
   ];
   if (piece.kind === "text") lines.push(`SCENE COPY (verbatim, tagged):\n${copyLines(scene)}`);
-  if (piece.id.includes("throughline")) lines.push(`This piece IS the throughline motif: ${script.narrative?.throughline ?? ""}. Wrap in <div data-throughline="THROUGHLINE_SLUG"> near (left 960, top 300).`);
+  // Anchor matches throughlineAnchorFor("16:9") = (1360, 540) — the wrapper div
+  // carries data-throughline + placement in production (assemble.ts contract);
+  // here the element self-positions since the harness renders bodies standalone.
+  if (piece.id.includes("throughline")) lines.push(`This piece IS the throughline motif: ${script.narrative?.throughline ?? ""}. Wrap in <div data-throughline="THROUGHLINE_SLUG"> anchored near (left 1360, top 540).`);
   if (piece.kind === "chrome") lines.push(`BrandChrome bar: use the shared Chrome/logo consts.`);
   lines.push("", "Emit ONLY the JSX for THIS element.");
   return lines.join("\n");
