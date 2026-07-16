@@ -22,8 +22,8 @@
  *     every attempt THROWS (the only throw),
  *   - terminal validation failure RETURNS the last attempt's scenes plus the
  *     full error log — never throws on validation,
- *   - the head call is effort "high" at maxTokens 16000 (the one call where
- *     thinking is the point).
+ *   - the head call is effort "high" at maxTokens 28000 (the one call where
+ *     thinking is the point; 16k measurably truncated v6's 5-scene head).
  */
 import {
   buildCompositionPrompt,
@@ -222,11 +222,12 @@ await check("happy path: attempts=1, errors=[], compositions attached in scene o
   assert(spy.seen[0][0].composition !== undefined, "validator received scenes WITH compositions attached");
 });
 
-await check("head call shape: effort high, maxTokens 16000 — the one call where thinking is the point", async () => {
+await check("head call shape: effort high, maxTokens 28000 — the one call where thinking is the point", async () => {
   const fake = makeCaller([VALID_JSON]);
   await generateComposition({ script, caller: fake.caller });
   assert(fake.calls[0].effort === "high" && HEAD_EFFORT === "high", "effort high");
-  assert(fake.calls[0].maxTokens === 16000 && HEAD_MAX_TOKENS === 16000, "maxTokens 16000");
+  // 28000, not 16000: v6's Klarna head truncated attempts 1-2 at exactly 16k.
+  assert(fake.calls[0].maxTokens === 28000 && HEAD_MAX_TOKENS === 28000, "maxTokens 28000");
   assert(fake.calls[0].system.includes("COMPOSITION DIRECTOR"), "the director system prompt shipped");
 });
 

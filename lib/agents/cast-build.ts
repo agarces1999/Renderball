@@ -102,7 +102,11 @@ export interface CastBuildResult {
  * the measured shape of its workload and nothing more.
  */
 const MAX_TOKENS_BY_SLOT: Record<string, number> = {
-  atmosphere: 2000, // gradient washes / glow / grain — compact
+  // 3500, not 2000 (acceptance v6 poisoned-cache postmortem, 2026-07-16):
+  // working atmospheres measured 1563-1834 tok, but v6's s1/s2 atmospheres
+  // truncated at EXACTLY 2000 (stop=length) and shipped as placeholders —
+  // the cap was the whole failure. 3500 clears the measured shape ~2x.
+  atmosphere: 3500, // gradient washes / glow / grain — compact
   connector: 3000, // the full-bleed SVG connector system (≥12 primitives)
   copy: 2500, // the editorial text stack
   // The diegetic visual — the dense one. Enriched-brief mocks measured ~5.7k
@@ -360,15 +364,21 @@ export const stripColorMutationFilters = (body: string): { code: string; strippe
  * locked brand faces. Prompt-level asking already failed; this pass rewrites
  * the defect out deterministically:
  *   - any style-object `fontFamily:` whose value is NOT a theme reference
- *     (a FONT_DISPLAY/FONT_BODY/FONT_MONO const, or a stack whose primary
- *     family IS one of the theme's families) is replaced — FONT_DISPLAY when
- *     the element reads as display type (fontSize ≥ 40px in the same style
- *     object, or an h1-h6 tag), FONT_BODY otherwise. Mono therefore survives
- *     ONLY where the theme's dataFont face is actually referenced — a foreign
- *     "Menlo, monospace" is a foreign face like any other.
+ *     (a FONT_DISPLAY/FONT_BODY/FONT_MONO const, or a stack that matches one
+ *     of the theme's stacks IN FULL — every family, not just the primary) is
+ *     replaced. A stack whose PRIMARY is a theme family but whose tail is
+ *     foreign ('"Klarna Sans", serif') rewrites to the matching FONT_* const:
+ *     acceptance v6's scene-3 payment UI shipped fallback SERIF because only
+ *     the primary family was checked and the foreign tail rendered when the
+ *     face lost the load race. A fully-foreign stack rewrites FONT_DISPLAY
+ *     when the element reads as display type (fontSize ≥ 40px in the same
+ *     style object, or an h1-h6 tag), FONT_BODY otherwise. Mono therefore
+ *     survives ONLY where the theme's dataFont face is actually referenced —
+ *     a foreign "Menlo, monospace" is a foreign face like any other.
  *   - `font-family:` declarations inside CSS strings get the same test; the
- *     rewrite target there is the theme's body STACK (a JS const can't be
- *     referenced from inside a literal CSS string).
+ *     rewrite target there is the matching theme STACK (a JS const can't be
+ *     referenced from inside a literal CSS string) — the theme stack whose
+ *     primary the value names, else the body stack.
  *   - a copy/hero piece with NO font binding anywhere gets one injected at the
  *     piece ROOT (FONT_DISPLAY when the root itself is display-sized/heading,
  *     else FONT_BODY) so its whole subtree inherits a theme face.
@@ -382,6 +392,16 @@ const HEADING_TAG_RE = /^h[1-6]$/i;
 const primaryFamily = (stack: string): string =>
   (stack.split(",")[0] ?? "").replace(/["'`]/g, "").trim().toLowerCase();
 
+/** Full-stack identity: every family, unquoted/lowercased/order-preserved.
+ *  '"Klarna Sans", serif' → "klarna sans, serif". The v6 defect lived in
+ *  comparing primaries only — a theme primary with a foreign tail passed. */
+const normalizeStack = (stack: string): string =>
+  stack
+    .split(",")
+    .map((f) => f.replace(/["'`]/g, "").trim().toLowerCase())
+    .filter(Boolean)
+    .join(", ");
+
 /** Strip one layer of JS string/template quoting off an expression source. */
 const unquoteExpr = (expr: string): string => {
   const t = expr.trim();
@@ -394,11 +414,39 @@ export const normalizeFontBindings = (
   theme: Theme,
   slotId: string,
 ): { code: string; rewrites: number; injected: boolean } => {
-  const themeFamilies = [theme.fonts.display, theme.fonts.body, theme.fonts.mono]
-    .map(primaryFamily)
-    .filter(Boolean);
-  const isThemeValue = (expr: string): boolean =>
-    FONT_CONST_RE.test(expr) || themeFamilies.includes(primaryFamily(unquoteExpr(expr)));
+  /** [const name, primary family, full normalized stack, raw stack] per face. */
+  const faces = [
+    ["FONT_DISPLAY", theme.fonts.display] as const,
+    ["FONT_BODY", theme.fonts.body] as const,
+    ["FONT_MONO", theme.fonts.mono] as const,
+  ].map(([constName, stack]) => ({
+    constName,
+    stack,
+    primary: primaryFamily(stack),
+    full: normalizeStack(stack),
+  }));
+  /** A theme value is a BARE FONT_* const reference (or a template literal
+   *  interpolating one), or a string literal matching a FULL theme stack —
+   *  every family, not just the primary (the v6 serif-fallback defect).
+   *  A QUOTED const name — fontFamily: "FONT_BODY", which the fast tier
+   *  emits — is NOT a theme value: it paints a literal font family named
+   *  FONT_BODY, which no browser has, so text falls to default SERIF
+   *  (measured: acceptance v7 run 1 shipped serif copy stacks on 3 scenes). */
+  const isThemeValue = (expr: string): boolean => {
+    const t = expr.trim();
+    const q = t[0];
+    const quoted = (q === '"' || q === "'" || q === "`") && t.endsWith(q) && t.length >= 2;
+    if (!quoted) return FONT_CONST_RE.test(t) || faces.some((f) => f.full && f.full === normalizeStack(t));
+    const content = t.slice(1, -1);
+    if (q === "`" && /\$\{[^}]*FONT_(?:DISPLAY|BODY|MONO)[^}]*\}/.test(content)) return true;
+    return faces.some((f) => f.full && f.full === normalizeStack(content));
+  };
+  /** Exactly a FONT_* const name once unquoted → rewrite to the BARE const. */
+  const QUOTED_CONST_RE = /^FONT_(?:DISPLAY|BODY|MONO)$/;
+  /** The theme face a non-theme value NAMES by its primary family (a theme
+   *  primary with a foreign tail) — the rewrite keeps the authored face and
+   *  fixes only the stack. undefined = fully foreign, heuristics decide. */
+  const faceForPrimary = (expr: string) => faces.find((f) => f.primary && f.primary === primaryFamily(unquoteExpr(expr)));
 
   let rewrites = 0;
   const edits: { start: number; end: number; text: string }[] = [];
@@ -455,8 +503,14 @@ export const normalizeFontBindings = (
     const value = obj.slice(vStart, vEnd);
     if (isThemeValue(value)) continue;
 
-    // Display type when the SAME style object sizes ≥ 40px, or the owning tag
-    // is heading-ish (nearest "<tag" before the style attribute).
+    // Precedence: a QUOTED const name unquotes to the bare const (the face
+    // was authored, only the quoting is wrong); a theme primary with a
+    // foreign tail keeps its authored face (only the stack is normalized);
+    // fully-foreign values fall to the heuristics: display type when the
+    // SAME style object sizes ≥ 40px, or the owning tag is heading-ish
+    // (nearest "<tag" before the style attribute).
+    const quotedConst = QUOTED_CONST_RE.exec(unquoteExpr(value).trim())?.[0];
+    const named = faceForPrimary(value);
     const sizeM = /\bfontSize\s*:\s*["'`]?(\d+(?:\.\d+)?)/.exec(obj);
     const tagM = /<([A-Za-z][A-Za-z0-9]*)[^<]*$/.exec(body.slice(0, m.index));
     const wantsDisplay =
@@ -465,19 +519,27 @@ export const normalizeFontBindings = (
     edits.push({
       start: open + vStart,
       end: open + vEnd,
-      text: wantsDisplay ? "FONT_DISPLAY" : "FONT_BODY",
+      text: quotedConst ?? (named ? named.constName : wantsDisplay ? "FONT_DISPLAY" : "FONT_BODY"),
     });
     rewrites++;
   }
   let code = body;
   for (const e of edits.reverse()) code = code.slice(0, e.start) + e.text + code.slice(e.end);
 
-  // CSS-string form (appended keyframes / <style> template strings). The value
-  // may be a `${FONT_*}` interpolation — consumed whole so it tests as a const.
+  // CSS-string form (appended keyframes / <style> template strings). A
+  // `${FONT_*}` interpolation builds the stack from the const — theme value.
+  // A bare/quoted const NAME in literal CSS ("font-family: FONT_BODY") names
+  // no real font → rewrite to that face's full stack. A theme primary with a
+  // foreign tail rewrites to THAT face's full stack (no JS const inside a
+  // literal CSS string); fully foreign → the body stack.
   code = code.replace(/font-family\s*:\s*((?:\$\{[^}]*\}|[^;{}\n])+)/gi, (whole, val: string) => {
-    if (isThemeValue(val)) return whole;
+    const v = val.trim();
+    if (/\$\{[^}]*FONT_(?:DISPLAY|BODY|MONO)[^}]*\}/.test(v)) return whole;
+    if (faces.some((f) => f.full && f.full === normalizeStack(v))) return whole;
     rewrites++;
-    return `font-family: ${theme.fonts.body}`;
+    const nameM = /^["'`]?(FONT_(?:DISPLAY|BODY|MONO))["'`]?$/.exec(v);
+    const face = nameM ? faces.find((f) => f.constName === nameM[1]) : faceForPrimary(v);
+    return `font-family: ${face?.stack ?? theme.fonts.body}`;
   });
 
   // Root injection: a copy/hero piece with NO binding anywhere inherits a
@@ -732,6 +794,20 @@ const copyLines = (content: SceneContent | undefined, owned: string[]): string[]
     c.texts.forEach((t, i) => out.push(`texts.${i}: ${JSON.stringify(t)} (data-content-path="texts.${i}")`));
   }
   return out;
+};
+
+/** Residual-REJECTION floor for unowned copy. A short single-token value —
+ *  the brand name "Klarna" as a one-word headline — appears legitimately
+ *  inside a hero mock's wordmark, URL bar, and chrome, so rejecting the
+ *  element on its mere presence is a guaranteed false positive (measured:
+ *  acceptance v7 run 1 placeholdered s0.hero THREE rounds running on it,
+ *  shipping a washout). Exact-node STRIPPING still applies to every value;
+ *  only unambiguous copy (≥2 words or ≥12 chars) can reject an element. */
+export const UNOWNED_REJECT_MIN_WORDS = 2;
+export const UNOWNED_REJECT_MIN_CHARS = 12;
+export const isRejectableUnownedCopy = (v: string): boolean => {
+  const t = v.trim();
+  return t.split(/\s+/).filter(Boolean).length >= UNOWNED_REJECT_MIN_WORDS || t.length >= UNOWNED_REJECT_MIN_CHARS;
 };
 
 /** The scene copy VALUES (headline/lede/bullets — the measured leak fields) a
@@ -1112,13 +1188,16 @@ export const castBuild = async (
       const { code: locked, changes } = normalizeElementColors(body, palette);
       // Unowned-copy guard: exact text nodes strip deterministically inside
       // stripUnownedCopy; anything subtler routes to the surgical repair with
-      // a verbatim error naming the stolen copy.
+      // a verbatim error naming the stolen copy. Only UNAMBIGUOUS copy can
+      // reject (isRejectableUnownedCopy) — a bare brand-name token inside a
+      // mock's own chrome is diegetic, not theft.
       const guard = stripUnownedCopy(locked, unowned);
-      if (guard.residual.length > 0) {
+      const rejectable = guard.residual.filter(isRejectableUnownedCopy);
+      if (rejectable.length > 0) {
         return {
           ok: false,
           raw,
-          error: `element renders copy it does not own: ${guard.residual.map((v) => JSON.stringify(v)).join(", ")} — those fields belong to another element (ownership is fixed by the layout contract); remove that text entirely`,
+          error: `element renders copy it does not own: ${rejectable.map((v) => JSON.stringify(v)).join(", ")} — those fields belong to another element (ownership is fixed by the layout contract); remove that text entirely`,
         };
       }
       const compileErr = await verifyFragment(guard.code);

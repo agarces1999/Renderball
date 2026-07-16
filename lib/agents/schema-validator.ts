@@ -523,8 +523,9 @@ export const checkScriptRichness = (scenes: RichnessSceneInput[]): string[] => {
 // duplicated copy across elements; the audit showed models obey checked
 // rules and ignore prose. checkSceneComposition turns richness into that
 // checkable contract: closed roles, hero inventories of ≥6 concrete items,
-// no template-example leaks, exclusive copy ownership, a per-scene
-// atmosphere, and motion tied to named content. Every error is ≤200 chars,
+// no template-example leaks, exclusive copy ownership (including the 4b
+// cross-check: an interior item may not retype copy another element owns),
+// a per-scene atmosphere, and motion tied to named content. Every error is ≤200 chars,
 // names the scene + element role, and is written for the verbatim-error
 // repair loop. Scenes WITHOUT a composition are skipped — the head authors
 // compositions; this validates what it authored, nothing else.
@@ -546,6 +547,12 @@ export const HERO_INTERIOR_MIN = 6;
 export const ATMOSPHERE_MIN_WORDS = 6;
 /** Motion must quote a token of at least this length from the element's OWN interior. */
 export const MOTION_TOKEN_MIN_LEN = 4;
+/** Owned-copy text participates in the interior-duplication cross-check only
+ *  when long enough to be unambiguous: ≥ this many words OR ≥ this many chars
+ *  (short generic fragments like "Today" would false-positive on every
+ *  timestamp; a real CTA/headline clears one of the floors). */
+export const INTERIOR_COPY_MIN_WORDS = 4;
+export const INTERIOR_COPY_MIN_CHARS = 12;
 
 /**
  * Known template-example values that have leaked into real builds (audit +
@@ -778,6 +785,55 @@ export const checkSceneComposition = (scenes: Scene[]): string[] => {
         `Scene ${i}: no element owns "headline" — ownsCopy must collectively cover the headline (give it to the copy element).`,
       );
     }
+
+    // 4b) INTERIOR-COPY CROSS-CHECK — no element's interior[] item may
+    //     contain copy text another element ownsCopy (case-insensitive
+    //     substring; only values ≥INTERIOR_COPY_MIN_WORDS words or
+    //     ≥INTERIOR_COPY_MIN_CHARS chars participate). Acceptance v6: the
+    //     head authored the copy-owned "Get the app" CTA verbatim inside
+    //     s4's hero interior, so the CTA painted TWICE — ownership was
+    //     exclusive on paper while the interior inventory forked the text.
+    const copyValuesFor = (field: string): string[] => {
+      const v = content[field];
+      if (typeof v === "string") return [v];
+      if (Array.isArray(v)) {
+        return v.flatMap((item) =>
+          typeof item === "string"
+            ? [item]
+            : item && typeof item === "object"
+              ? Object.values(item).filter((s): s is string => typeof s === "string")
+              : [],
+        );
+      }
+      if (v && typeof v === "object") {
+        return Object.values(v).filter((s): s is string => typeof s === "string");
+      }
+      return [];
+    };
+    const unambiguousCopy = (t: string): boolean =>
+      t.split(/\s+/).filter(Boolean).length >= INTERIOR_COPY_MIN_WORDS ||
+      t.length >= INTERIOR_COPY_MIN_CHARS;
+    elements.forEach((ownerEl, ownerIdx) => {
+      if (!Array.isArray(ownerEl?.ownsCopy)) return;
+      const ownerName = elName(ownerEl, ownerIdx);
+      for (const field of ownerEl.ownsCopy as unknown[]) {
+        if (typeof field !== "string") continue;
+        for (const raw of copyValuesFor(field)) {
+          const value = raw.trim();
+          if (!value || !unambiguousCopy(value)) continue;
+          const needle = value.toLowerCase();
+          elements.forEach((el, j) => {
+            if (j === ownerIdx) return;
+            const hit = stringInterior(el).find((item) => item.toLowerCase().includes(needle));
+            if (hit) {
+              errors.push(
+                `Scene ${i} ${elName(el, j)}: interior item "${truncateForError(hit)}" retypes copy owned by ${ownerName} ("${truncateForError(value, 32)}") — interiors must not duplicate another element's copy.`,
+              );
+            }
+          });
+        }
+      }
+    });
 
     // 6) MOTION — at least one element's motion quotes its OWN interior.
     const motionTied = elements.some((el) => {

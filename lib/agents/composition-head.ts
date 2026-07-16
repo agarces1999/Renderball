@@ -82,8 +82,15 @@ export interface GenerateCompositionResult {
  * the point, so it gets effort "high" (gpt-oss's real dial; on GLM-wire
  * callers the field is a no-op, which is fine) and a ceiling sized for a full
  * multi-scene blueprint plus reasoning.
+ *
+ * 28000, not 16000 (acceptance v6 + Fireworks-gains audit, 2026-07-16): at
+ * 16k the v6 Klarna head TRUNCATED attempts 1 and 2 at exactly the cap
+ * (reasoning + 5-scene blueprint overflow), burning two full repair rounds on
+ * a ceiling artifact. 28k covers the measured reasoning+emission shape with
+ * honest headroom (Cerebras pre-debits this against TPM, so it is sized, not
+ * lazy).
  */
-export const HEAD_MAX_TOKENS = 16000;
+export const HEAD_MAX_TOKENS = 28000;
 export const HEAD_EFFORT = "high" as const;
 
 // ─── The prompt ─────────────────────────────────────────────────────────────

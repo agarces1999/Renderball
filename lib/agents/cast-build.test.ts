@@ -29,6 +29,7 @@ import {
   stripUnownedCopy,
   stripColorMutationFilters,
   normalizeFontBindings,
+  isRejectableUnownedCopy,
   neutralizeInk,
   modelFor,
   effortFor,
@@ -691,6 +692,50 @@ await check("normalizeFontBindings (unit): root injection for copy/hero only; fa
   assert(!atmos.injected && atmos.code === bare, "atmosphere pieces are never injected");
   const already = normalizeFontBindings('<div style={{ fontFamily: FONT_MONO }} />', theme, "copy");
   assert(!already.injected, "a bound piece is not re-injected (idempotent)");
+});
+
+await check("normalizeFontBindings (unit): a QUOTED const name is a serif trap — unquoted to the bare const (v7 fast-tier defect)", () => {
+  const body = [
+    "<div>",
+    '<h2 style={{ fontFamily: "FONT_DISPLAY" }}>quoted display const</h2>',
+    "<p style={{ fontFamily: 'FONT_BODY', fontSize: 14 }}>quoted body const</p>",
+    '<style>{`.k{font-family: FONT_MONO;} .m{font-family: "FONT_DISPLAY";}`}</style>',
+    "</div>",
+  ].join("\n");
+  const r = normalizeFontBindings(body, theme, "copy");
+  assert(r.rewrites === 4, `4 rewrites expected (2 style-object + 2 CSS), got ${r.rewrites}`);
+  assert(r.code.includes("fontFamily: FONT_DISPLAY }"), "quoted display const → BARE const (browser has no font named FONT_DISPLAY)");
+  assert(r.code.includes("fontFamily: FONT_BODY, fontSize: 14"), "quoted body const → bare const, face kept");
+  assert(!/font-family:\s*["'`]?FONT_/.test(r.code), "no literal FONT_* family survives inside CSS strings");
+  assert(r.code.includes('.k{font-family: "Mono", monospace;}'), "bare const name in CSS → that face's full stack");
+  assert(r.code.includes('.m{font-family: "Display", sans-serif;}'), "quoted const name in CSS → that face's full stack");
+  assert(!r.injected, "bindings exist — no root injection");
+});
+
+await check("unowned-copy rejection floor: short single-token values strip but never REJECT (v7 'Klarna' false positive)", () => {
+  assert(!isRejectableUnownedCopy("Klarna"), "a one-word brand-name headline must not reject an element");
+  assert(!isRejectableUnownedCopy("$120"), "a bare price token must not reject");
+  assert(isRejectableUnownedCopy("Tap. Done."), "two-word real copy still rejects");
+  assert(isRejectableUnownedCopy("Get the app"), "multi-word CTA copy still rejects");
+  assert(isRejectableUnownedCopy("Unmistakable"), "a single ≥12-char word is unambiguous — still rejects");
+});
+
+await check("normalizeFontBindings (unit): theme primary with a FOREIGN TAIL is normalized to the named face (v6 serif-fallback defect)", () => {
+  const body = [
+    "<div>",
+    "<div style={{ fontFamily: '\"Body\", Georgia, serif', fontSize: 64 }}>named body face beats the size heuristic</div>",
+    "<code style={{ fontFamily: '\"Mono\", Courier', fontSize: 12 }}>named mono survives as MONO, not BODY</code>",
+    '<style>{`.pay{font-family: "Display", serif;} .ok{font-family: "Body", sans-serif;}`}</style>',
+    "</div>",
+  ].join("\n");
+  const r = normalizeFontBindings(body, theme, "hero");
+  assert(r.rewrites === 3, `3 rewrites expected (2 style-object + 1 CSS), got ${r.rewrites}`);
+  assert(!/Georgia|Courier/.test(r.code), "foreign tail families gone");
+  assert(r.code.includes("fontFamily: FONT_BODY, fontSize: 64"), "body-primary stack → FONT_BODY even at display size (the named face wins)");
+  assert(r.code.includes("fontFamily: FONT_MONO, fontSize: 12"), "mono-primary stack → FONT_MONO (named face wins over the dataFont-only policy)");
+  assert(r.code.includes('font-family: "Display", sans-serif'), "CSS-string form → the named face's FULL theme stack");
+  assert(r.code.includes('font-family: "Body", sans-serif'), "a verbatim full theme stack in CSS stays untouched");
+  assert(!r.injected, "bindings exist — no root injection");
 });
 
 // ─── The deterministic post-passes, unit-level ───────────────────────────────

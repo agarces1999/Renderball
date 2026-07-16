@@ -926,6 +926,49 @@ check("composition: ownsCopy must collectively cover the headline", () => {
   );
 });
 
+// — 4b) interior-copy cross-check (acceptance v6: "Get the app" CTA retyped
+//        inside s4's hero interior → the CTA painted twice) —
+check("composition: an interior item retyping copy another element owns is flagged", () => {
+  const s = duoGood();
+  // Scene 0 copy owns the headline; the hero's interior retypes it verbatim.
+  sceneOf(s, 0).composition.elements[0].interior[0] = 'banner "Streaks make Spanish stick" pinned top';
+  const e = checkSceneComposition(s);
+  assert(
+    e.some((x) => /Scene 0 hero: interior item .*retypes copy owned by copy/.test(x)),
+    `expected the interior-copy cross-check error, got ${JSON.stringify(e)}`,
+  );
+});
+
+check("composition: cta object copy participates and matching is case-insensitive", () => {
+  const s = duoGood();
+  const s1 = sceneOf(s, 1);
+  s1.content.cta = { primary: "Get the Klarna app" };
+  s1.composition.elements[1].ownsCopy = ["headline", "cta"];
+  s1.composition.elements[0].interior[0] = "pay button GET THE KLARNA APP in the accent";
+  const e = checkSceneComposition(s);
+  assert(
+    e.some((x) => /Scene 1 hero: interior item .*retypes copy owned by copy .*Get the Klarna app/.test(x)),
+    `expected the cta-duplication error, got ${JSON.stringify(e)}`,
+  );
+});
+
+check("composition: short/ambiguous owned copy (<4 words and <12 chars) is exempt", () => {
+  const s = duoGood();
+  const s0 = sceneOf(s, 0);
+  s0.content.eyebrow = "Today"; // 1 word, 5 chars — would false-positive on every timestamp
+  s0.composition.elements[1].ownsCopy = ["headline", "lede", "eyebrow"];
+  s0.composition.elements[0].interior[0] = "chip labeled Today at the top rail";
+  const e = checkSceneComposition(s);
+  assert(!e.some((x) => /retypes copy owned by/.test(x)), `short copy must be exempt, got ${JSON.stringify(e)}`);
+});
+
+check("composition: the OWNING element's interior may quote its own copy", () => {
+  const s = duoGood();
+  // duoGood's copy interiors already quote their own headline values verbatim.
+  const e = checkSceneComposition(s);
+  assert(!e.some((x) => /retypes copy owned by/.test(x)), `owner self-quotes must pass, got ${JSON.stringify(e)}`);
+});
+
 // — 5) atmosphere variety —
 check("composition: atmosphere is required and must be ≥6 words", () => {
   const missing = duoGood();
