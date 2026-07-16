@@ -40,6 +40,8 @@ import {
   countTextNodes,
   DIEGETIC_MIN_ELEMENTS,
   DIEGETIC_MIN_TEXT_NODES,
+  HERO_MIN_ELEMENTS,
+  HERO_MIN_TEXT_NODES,
   DEPTH_FLOOR,
   MIN_GRADIENT_SIGNATURES,
   MAX_SCENES_PER_SIGNATURE,
@@ -177,6 +179,43 @@ await check(`clause (a): enough elements but <${DIEGETIC_MIN_TEXT_NODES} text no
   assert(f1.length === 1 && f1[0].detail.includes("3 non-empty text nodes"), `24 elements / 3 texts must fail: ${f1.map((f) => f.detail)}`);
   const textPiece = assessDiegeticInterior(mockWithSpans(30, "text"), 1);
   assert(textPiece.length === 1 && textPiece[0].detail.includes(`no data-kind="diegetic" piece`), "a rich TEXT piece cannot satisfy the diegetic floor");
+});
+
+await check(`clause (a2): a hollow ".hero" fails EVEN when a rich sibling carries clause (a)`, () => {
+  // The v5 scene-2 leak shape: hero = 1 element / 0 texts, sibling diegetic
+  // rich enough to satisfy the any-diegetic floor on its own.
+  const roots = parseHtmlStructure(
+    `<div>` +
+      `<div data-piece="s2.hero" data-kind="diegetic"><div></div></div>` +
+      `<div data-piece="s2.throughline" data-kind="diegetic"><div>` +
+      Array.from({ length: 16 }, (_, i) => `<span>v${i}</span>`).join("") +
+      `</div></div></div>`,
+  );
+  const f = assessDiegeticInterior(roots, 2);
+  assert(f.length === 1, `exactly the hero finding expected (sibling carries clause a), got: ${f.map((x) => x.kind).join(",")}`);
+  assert(f[0].kind === "thin-hero" && f[0].scene === 2 && f[0].blocking, "thin-hero on scene 2, blocking");
+  assert(f[0].detail.includes(`"s2.hero"`), `finding must NAME the hero id: ${f[0].detail}`);
+  assert(f[0].detail.includes("1 element descendants") && f[0].detail.includes("0 non-empty text nodes"), `measured numbers in detail: ${f[0].detail}`);
+  assert(f[0].repairInstruction.includes("s2.hero"), "repair instruction targets the hero by id");
+});
+
+await check(`clause (a2): a hero at the floor (${HERO_MIN_ELEMENTS}el/${HERO_MIN_TEXT_NODES}tx) passes; one under fails`, () => {
+  const heroWith = (spans: number, texts: number) =>
+    parseHtmlStructure(
+      `<div><div data-piece="s0.hero" data-kind="diegetic"><div>` +
+        Array.from({ length: spans }, (_, i) => `<span>${i < texts ? `t${i}` : ""}</span>`).join("") +
+        `</div></div></div>`,
+    );
+  // container + N spans = N+1 element descendants of the hero wrapper.
+  const atFloor = assessDiegeticInterior(heroWith(HERO_MIN_ELEMENTS - 1, HERO_MIN_TEXT_NODES), 0)
+    .filter((f) => f.kind === "thin-hero");
+  assert(atFloor.length === 0, `${HERO_MIN_ELEMENTS}el/${HERO_MIN_TEXT_NODES}tx hero must pass, got: ${atFloor.map((f) => f.detail)}`);
+  const under = assessDiegeticInterior(heroWith(HERO_MIN_ELEMENTS - 2, HERO_MIN_TEXT_NODES), 0)
+    .filter((f) => f.kind === "thin-hero");
+  assert(under.length === 1 && under[0].detail.includes(`${HERO_MIN_ELEMENTS - 1} element descendants`), `one-under-floor hero must fail: ${under.map((f) => f.detail)}`);
+  const noText = assessDiegeticInterior(heroWith(HERO_MIN_ELEMENTS + 4, 0), 0)
+    .filter((f) => f.kind === "thin-hero");
+  assert(noText.length === 1 && noText[0].detail.includes("0 non-empty text nodes"), `a 0-text hero must fail the text floor: ${noText.map((f) => f.detail)}`);
 });
 
 await check(`clause (b): depth ${DEPTH_FLOOR - 1} fails with measured number, ${DEPTH_FLOOR} passes`, () => {
@@ -354,6 +393,36 @@ await check("spike: clause (d) img-src fires on scenes 1 and 3 (raw site_img_* a
   const imgs = ofKind(spikeFindings!, "img-src");
   assert(scenesOf(imgs).join(",") === "1,3", `scenes 1,3 expected, got ${scenesOf(imgs).join(",")}`);
   assert(imgs.every((f) => f.detail.includes("site_img_0")), `raw asset ids named in detail: ${imgs.map((f) => f.detail)}`);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// REAL fixtures — clause (a2) per-hero calibration (acceptance v6)
+// ─────────────────────────────────────────────────────────────────────────────
+
+const A5_DIR = path.join(process.cwd(), "src/generated/CAST_SPIKE_A5_GLM52");
+const DUO_REF_DIR = path.join(process.cwd(), "src/generated/01KWTMK9WXRZNF7X553R9AN63M");
+
+await check("v5 genDir: thin-hero fires on EXACTLY scene 2 (s2.hero = 1el/0tx; sibling carried clause a)", async () => {
+  const script = JSON.parse(await fs.readFile(path.join(A5_DIR, "script.json"), "utf8"));
+  const code = await fs.readFile(path.join(A5_DIR, "Composition.tsx"), "utf8");
+  const findings = assessDensity(code, script);
+  const heroes = ofKind(findings, "thin-hero");
+  assert(scenesOf(heroes).join(",") === "2", `scene 2 only expected, got scenes [${scenesOf(heroes).join(",")}]: ${heroes.map((f) => f.detail).join(" | ")}`);
+  assert(heroes[0].detail.includes(`"s2.hero"`), `the finding must name the hero id: ${heroes[0].detail}`);
+  assert(heroes[0].detail.includes("1 element descendants") && heroes[0].detail.includes("0 non-empty text nodes"), `measured 1el/0tx in detail: ${heroes[0].detail}`);
+  // Calibration pin: the OTHER v5 heroes (83/5, 57/9, 122/16, 93/18) pass.
+  assert(heroes.every((f) => f.blocking), "thin-hero blocks");
+});
+
+await check("Duolingo GLM reference: zero thin-hero findings (s3.hero = 34el/2tx passes the hero floor)", async () => {
+  // Calibration pin: the reference hero is an illustrative tableau with only
+  // 2 interior text nodes — the hero text floor (≥1) must admit it while the
+  // element floor (≥15) still rejects the v5 lone-element hero.
+  const script = JSON.parse(await fs.readFile(path.join(DUO_REF_DIR, "script.json"), "utf8"));
+  const code = reassemble(await readDecomposed(DUO_REF_DIR));
+  const findings = assessDensity(code, script);
+  const heroes = ofKind(findings, "thin-hero");
+  assert(heroes.length === 0, `reference heroes must pass, got: ${heroes.map((f) => f.detail).join(" | ")}`);
 });
 
 await check("every finding carries the gate contract: kind, scene, blocking, detail, repairInstruction", () => {

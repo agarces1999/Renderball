@@ -14,6 +14,14 @@
  *      piece whose wrapper contains ≥15 element descendants AND ≥4 non-empty
  *      interior text nodes. (Reference per-scene best: 87/30, 36/7, 45/7,
  *      36/7, 15/5. Spike best: 13/3.)
+ *   a2. PER-HERO FLOOR (acceptance v6, 2026-07-16) — any piece whose
+ *      data-piece id ends in ".hero" must ITSELF meet a hero floor
+ *      (≥15 element descendants AND ≥1 non-empty text node). Clause (a) alone
+ *      leaked: acceptance v5's scene 2 shipped its hero as a LONE element in a
+ *      void (s2.hero = 1el/0tx) while a sibling piece (s2.throughline,
+ *      16el/4tx) carried the any-diegetic floor. The hero is the scene's main
+ *      visual — a sibling cannot carry it. Scenes without a ".hero" piece are
+ *      governed by clause (a) exactly as before.
  *   b. DOM DEPTH — per scene, max element nesting depth ≥7. (Reference 7–11;
  *      spike flat 5.)
  *   c. ATMOSPHERE VARIETY — video-level: ≥4 distinct gradient signatures
@@ -65,6 +73,20 @@ export const DIEGETIC_MIN_ELEMENTS = 15;
 /** (a) …and it says things: ≥4 non-empty interior text nodes. Reference best
  *  pieces: 30/7/7/7/5 text nodes; spike best: 3. */
 export const DIEGETIC_MIN_TEXT_NODES = 4;
+/** (a2) A HERO must itself have an interior. Calibration (measured via the
+ *  same SSR path, 2026-07-16): passing heroes — Duolingo GLM reference
+ *  (01KWTMK9WXRZNF7X553R9AN63M) s3.hero = 34el/2tx; acceptance v5
+ *  (CAST_SPIKE_A5_GLM52) s0/s1/s3/s4 heroes = 83/5, 57/9, 122/16, 93/18.
+ *  Failing hero — v5 s2.hero = 1el/0tx (the lone-element-in-a-void leak).
+ *  Element floor 15 (same bar as clause a): weakest passing hero measures 34
+ *  (2.3x margin); the failing hero measures 1 (15x under). */
+export const HERO_MIN_ELEMENTS = 15;
+/** (a2) …and says at least ONE thing. The reference hero is an illustrative
+ *  tableau with only 2 interior text nodes, so the hero text floor is 1, not
+ *  clause (a)'s 4 — heroes may be image-like, but a 0-text hero paired with a
+ *  hollow interior is the v5 failure shape (measured 0 on the failing hero,
+ *  ≥2 on every passing one). */
+export const HERO_MIN_TEXT_NODES = 1;
 /** (b) Depth floor 7: reference scenes measure 7–11 deep; the spike is flat
  *  at 5 everywhere. Depth = element nesting on the SSR'd Section markup (a
  *  root element is depth 1), including display:contents piece wrappers —
@@ -83,6 +105,7 @@ export const IMG_SRC_WHITELIST = /^(https?:|data:|\/)/;
 
 export type DensityKind =
   | "thin-diegetic"
+  | "thin-hero"
   | "shallow-dom"
   | "atmosphere-monotony"
   | "img-src"
@@ -505,25 +528,26 @@ export const imgSrcs = (roots: (HtmlNode | string)[]): string[] => {
 // exported individually for tests; assessDensity composes them.
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** (a) Diegetic-interior floor for one scene. */
+/** (a) Diegetic-interior floor + (a2) per-hero floor for one scene. */
 export const assessDiegeticInterior = (
   roots: (HtmlNode | string)[],
   scene: number,
 ): DensityFinding[] => {
-  const diegetics = pieceStats(roots).filter((p) => p.kind === "diegetic");
+  const findings: DensityFinding[] = [];
+  const pieces = pieceStats(roots);
+  const diegetics = pieces.filter((p) => p.kind === "diegetic");
   const passing = diegetics.find(
     (p) => p.elements >= DIEGETIC_MIN_ELEMENTS && p.textNodes >= DIEGETIC_MIN_TEXT_NODES,
   );
-  if (passing) return [];
-  const best = diegetics
-    .slice()
-    .sort((a, b) => b.elements + b.textNodes * 2 - (a.elements + a.textNodes * 2))[0];
-  const measured = best
-    ? `richest diegetic piece "${best.id}" has ${best.elements} element descendants and ` +
-      `${best.textNodes} non-empty text nodes`
-    : `no data-kind="diegetic" piece at all`;
-  return [
-    {
+  if (!passing) {
+    const best = diegetics
+      .slice()
+      .sort((a, b) => b.elements + b.textNodes * 2 - (a.elements + a.textNodes * 2))[0];
+    const measured = best
+      ? `richest diegetic piece "${best.id}" has ${best.elements} element descendants and ` +
+        `${best.textNodes} non-empty text nodes`
+      : `no data-kind="diegetic" piece at all`;
+    findings.push({
       kind: "thin-diegetic",
       scene,
       blocking: true,
@@ -538,8 +562,31 @@ export const assessDiegeticInterior = (
         `text strings inside the mock — e.g. a toolbar with named buttons, 3–4 list rows each ` +
         `with a title, meta label and status chip, a sidebar with named items). Do not add ` +
         `empty decorative boxes; every added element should be plausible product content.`,
-    },
-  ];
+    });
+  }
+  // (a2) Per-HERO floor — the hero must ITSELF meet the floor; a rich sibling
+  // piece satisfying clause (a) cannot carry it (the v5 scene-2 leak: s2.hero
+  // shipped as one element in a void while s2.throughline carried the scene).
+  for (const hero of pieces.filter((p) => p.id.endsWith(".hero"))) {
+    if (hero.elements >= HERO_MIN_ELEMENTS && hero.textNodes >= HERO_MIN_TEXT_NODES) continue;
+    findings.push({
+      kind: "thin-hero",
+      scene,
+      blocking: true,
+      detail:
+        `scene ${scene}: hero piece "${hero.id}" has ${hero.elements} element descendants and ` +
+        `${hero.textNodes} non-empty text nodes — the HERO floor is ≥${HERO_MIN_ELEMENTS} elements ` +
+        `AND ≥${HERO_MIN_TEXT_NODES} text node(s) in the hero ITSELF. A sibling piece cannot ` +
+        `carry the hero: the hero is the scene's main visual, and this one is a hollow prop.`,
+      repairInstruction:
+        `Rebuild "${hero.id}" as the scene's real main visual with its own INTERIOR: a concrete ` +
+        `product artifact (screen, dashboard, device mock, chart, annotated tableau) containing ` +
+        `at least ${HERO_MIN_ELEMENTS} nested elements and at least ${HERO_MIN_TEXT_NODES} visible ` +
+        `text string(s) — rows, cells, chips, labels, values that belong to the product. Do not ` +
+        `delegate the scene's substance to sibling pieces; the hero itself must hold it.`,
+    });
+  }
+  return findings;
 };
 
 /** (b) DOM depth floor for one scene. */
