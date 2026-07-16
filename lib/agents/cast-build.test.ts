@@ -28,6 +28,10 @@ import {
   stripCanvasSelfPositioning,
   stripUnownedCopy,
   stripColorMutationFilters,
+  normalizeFontBindings,
+  neutralizeInk,
+  modelFor,
+  effortFor,
   wantsConnector,
   type CastBuildInput,
 } from "./cast-build";
@@ -44,6 +48,12 @@ const check = async (name: string, fn: () => void | Promise<void>) => {
 const assert = (c: boolean, m: string) => { if (!c) throw new Error(m); };
 
 console.log("cast-build (element-cast orchestrator)");
+
+// Model-routing env must not leak in from the shell — the golden build below
+// asserts the DEFAULT (gpt-oss) model + effort routing.
+delete process.env.RB_CAST_MODEL;
+delete process.env.RB_CAST_MODEL_HERO;
+delete process.env.RB_CAST_MODEL_LEAVES;
 
 // ─── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -155,13 +165,13 @@ const cannedFor = (id: string, nth: number): string => {
 };
 
 /** Fake caster: canned bodies + in-flight tracking + a captured call log
- *  (user prompt, routed effort, and the per-slot maxTokens cap). The canned
- *  map is injectable so the composed-scenes build can carry its own bodies. */
+ *  (user prompt, routed effort + model, and the per-slot maxTokens cap). The
+ *  canned map is injectable so other builds can carry their own bodies. */
 const makeFakeCaller = (canned: (id: string, nth: number) => string = cannedFor) => {
   const callCounts = new Map<string, number>();
-  const log: { id: string; user: string; effort?: string; maxTokens: number }[] = [];
+  const log: { id: string; user: string; effort?: string; model?: string; maxTokens: number }[] = [];
   const state = { inFlight: 0, maxInFlight: 0, calls: 0 };
-  const caller = async (call: { system: string; user: string; maxTokens: number; effort?: string }) => {
+  const caller = async (call: { system: string; user: string; maxTokens: number; effort?: string; model?: string }) => {
     state.inFlight++;
     state.calls++;
     state.maxInFlight = Math.max(state.maxInFlight, state.inFlight);
@@ -170,7 +180,7 @@ const makeFakeCaller = (canned: (id: string, nth: number) => string = cannedFor)
       const id = /piece id "([^"]+)"/.exec(call.user)?.[1] ?? "?";
       const nth = (callCounts.get(id) ?? 0) + 1;
       callCounts.set(id, nth);
-      log.push({ id, user: call.user, effort: call.effort, maxTokens: call.maxTokens });
+      log.push({ id, user: call.user, effort: call.effort, model: call.model, maxTokens: call.maxTokens });
       return { text: canned(id, nth), thinking: "", inputTokens: 50, outputTokens: 100, seconds: 0.005, stopReason: "stop" };
     } finally {
       state.inFlight--;
@@ -521,6 +531,166 @@ await check("fully-composed script with no connector specs: the mid-scene fallba
     { caller: f.caller as never, concurrency: 4 },
   );
   assert(r.scenes.every((s) => !s.pieces.some((p) => p.id.endsWith(".connector"))), "the head cast no connector anywhere — that IS the decision");
+});
+
+// ─── Mixed casting: model routing + model-aware effort + fonts + ink ─────────
+// Acceptance v3's deterministic fixes: hero/connector and leaf workloads route
+// to different models (each with its own effort dial semantics), foreign font
+// bindings are rewritten to theme faces, and a chromatic ink is neutralized on
+// entry (v2's DS emitted ink=#57cc02 — every element painted copy green by
+// contract).
+
+console.log("\ncast-build mixed casting (model + effort routing, font binding, ink guard)");
+
+await check("modelFor: hero/connector → RB_CAST_MODEL_HERO, leaves → RB_CAST_MODEL_LEAVES, unset → undefined", () => {
+  assert(modelFor("hero") === undefined && modelFor("copy") === undefined, "unset env → provider default (undefined)");
+  process.env.RB_CAST_MODEL_HERO = "zai-glm-4.7";
+  process.env.RB_CAST_MODEL_LEAVES = "gemma-4-31b";
+  try {
+    assert(modelFor("hero") === "zai-glm-4.7", "hero → HERO model");
+    assert(modelFor("connector") === "zai-glm-4.7", "connector → HERO model (it draws)");
+    for (const k of ["copy", "atmosphere", "throughline"]) {
+      assert(modelFor(k) === "gemma-4-31b", `${k} → LEAVES model`);
+    }
+  } finally {
+    delete process.env.RB_CAST_MODEL_HERO;
+    delete process.env.RB_CAST_MODEL_LEAVES;
+  }
+});
+
+await check("effortFor is model-aware: zai-glm-* → \"none\", gemma-* → omitted, gpt-oss keeps medium/low", () => {
+  assert(effortFor("hero", "zai-glm-4.7") === "none", "GLM hero → the off switch");
+  assert(effortFor("copy", "zai-glm-4.7") === "none", "GLM copy → the off switch (no graded dial on GLM)");
+  assert(effortFor("hero", "gemma-4-31b") === undefined, "gemma hero → param OMITTED (no reasoning dial)");
+  assert(effortFor("copy", "gemma-4-31b") === undefined, "gemma copy → param OMITTED");
+  assert(effortFor("hero", "gpt-oss-120b") === "medium", "gpt-oss hero keeps medium");
+  assert(effortFor("connector", "gpt-oss-120b") === "medium", "gpt-oss connector keeps medium");
+  assert(effortFor("copy", "gpt-oss-120b") === "low", "gpt-oss copy keeps low");
+  assert(effortFor("hero") === "medium", "no per-call model, no env → the gpt-oss default routing");
+  process.env.RB_CAST_MODEL = "zai-glm-4.7";
+  try {
+    assert(effortFor("hero") === "none", "RB_CAST_MODEL drives effort when there is no per-call model");
+  } finally {
+    delete process.env.RB_CAST_MODEL;
+  }
+});
+
+// One mixed build: s0.copy emits FOREIGN serif bindings (must be rewritten to
+// theme faces); everything else emits the bare default (copy/hero pieces earn
+// a root injection). Both env models set → every call carries an explicit
+// model + its model-correct effort.
+const SERIF_COPY = `<div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
+  <h1 data-content-path="headline" style={{ fontFamily: "Georgia, serif", fontSize: 88, margin: 0, color: INK }}>{c.headline}</h1>
+  <p data-content-path="lede" style={{ fontFamily: "Georgia, serif", fontSize: 28, margin: 0, color: INK }}>${LEDE}</p>
+</div>`;
+const mixedCanned = (id: string): string => (id === "s0.copy" ? SERIF_COPY : DEFAULT_BODY);
+
+process.env.RB_CAST_MODEL_HERO = "zai-glm-4.7";
+process.env.RB_CAST_MODEL_LEAVES = "gemma-4-31b";
+const mfake = makeFakeCaller(mixedCanned);
+let mresult: Awaited<ReturnType<typeof castBuild>>;
+try {
+  mresult = await castBuild(input, { caller: mfake.caller as never, concurrency: 4 });
+} finally {
+  delete process.env.RB_CAST_MODEL_HERO;
+  delete process.env.RB_CAST_MODEL_LEAVES;
+}
+
+await check("caller-arg capture: hero/connector carry the HERO model + effort \"none\"; leaves carry the LEAVES model + effort omitted", () => {
+  const drawIds = new Set(["s0.hero", "s1.hero", "s1.connector"]);
+  assert(mfake.log.length === 12, `12 calls expected, got ${mfake.log.length}`);
+  for (const l of mfake.log) {
+    if (drawIds.has(l.id)) {
+      assert(l.model === "zai-glm-4.7", `${l.id} must route to the HERO model, got ${l.model}`);
+      assert(l.effort === "none", `${l.id} on GLM must send effort "none", got ${l.effort}`);
+    } else {
+      assert(l.model === "gemma-4-31b", `${l.id} must route to the LEAVES model, got ${l.model}`);
+      assert(l.effort === undefined, `${l.id} on gemma must OMIT effort, got ${l.effort}`);
+    }
+  }
+});
+
+await check("mixed build: foreign serif rewritten to theme faces by size, fontRewrites exact, compiles", async () => {
+  const err = await verifyCompilable(mresult.code);
+  assert(err === null, `should compile but: ${err}`);
+  assert(!mresult.code.includes("Georgia"), "the serif fallback must be gone");
+  assert(mresult.code.includes("fontFamily: FONT_DISPLAY, fontSize: 88"), "88px headline → display face");
+  assert(mresult.code.includes("fontFamily: FONT_BODY, fontSize: 28"), "28px lede → body face");
+  // 2 rewrites in s0.copy + 4 root injections (s0.hero, s1.hero, s1.copy,
+  // s2.copy carry NO binding in the default body).
+  assert(mresult.telemetry.fontRewrites === 6, `2 rewrites + 4 injections = 6, got ${mresult.telemetry.fontRewrites}`);
+  assert(mresult.code.includes('fontFamily: FONT_BODY, width: "100%"'), "a bare copy/hero root earned an injected theme face");
+  assert(mresult.telemetry.inkCorrected === false, "the fixture's near-white ink is neutral — no correction");
+});
+
+await check("ink guard end-to-end: chromatic ink corrected on entry, telemetry counts it, emitted const is near-black", async () => {
+  const poisoned: Theme = { ...theme, palette: { ...theme.palette, INK: "#57cc02" } };
+  const f = makeFakeCaller();
+  const r = await castBuild({ ...input, theme: poisoned }, { caller: f.caller as never, concurrency: 4 });
+  assert(r.telemetry.inkCorrected === true, "chromatic ink must be counted as corrected");
+  assert(r.code.includes('const INK = "#1a1a1a"'), "the emitted INK const is the near-black override");
+  assert(!r.code.includes("#57cc02"), "the poisoned ink never ships");
+});
+
+await check("neutralizeInk (unit): #57cc02 corrected, #10141c passes, pure, only ink touched", () => {
+  const poisoned: Theme = { ...theme, palette: { ...theme.palette, INK: "#57cc02" } };
+  const r = neutralizeInk(poisoned);
+  assert(r.corrected === true, "streak-green ink must correct");
+  assert(r.theme.palette.INK === "#1a1a1a", `near-black override expected, got ${r.theme.palette.INK}`);
+  assert(r.theme.palette.ACCENT === "#ff7a59", "only the ink key is overridden");
+  assert(poisoned.palette.INK === "#57cc02", "input theme must not be mutated");
+  const navy: Theme = { ...theme, palette: { ...theme.palette, INK: "#10141c" } };
+  const r2 = neutralizeInk(navy);
+  assert(!r2.corrected && r2.theme.palette.INK === "#10141c", "near-black brand navy passes through");
+  assert(!neutralizeInk(theme).corrected, "the fixture's near-white ink is neutral — passes");
+});
+
+await check("normalizeFontBindings (unit): foreign faces rewritten by size/tag; theme refs untouched; mono only via dataFont", () => {
+  const body = [
+    "<div>",
+    '<h2 style={{ fontFamily: "Georgia, serif" }}>display by tag</h2>',
+    "<div style={{ fontFamily: '\"Palatino\", serif', fontSize: 64 }}>display by size</div>",
+    '<p style={{ fontFamily: "Menlo, monospace", fontSize: 14 }}>foreign mono</p>',
+    "<span style={{ fontFamily: FONT_MONO, fontSize: 12 }}>data</span>",
+    "<em style={{ fontFamily: `${FONT_DISPLAY}`, fontSize: 90 }}>tpl const</em>",
+    "<i style={{ fontFamily: '\"Mono\", monospace', fontSize: 12 }}>theme mono stack</i>",
+    "</div>",
+  ].join("\n");
+  const r = normalizeFontBindings(body, theme, "copy");
+  assert(r.rewrites === 3, `3 rewrites expected, got ${r.rewrites}`);
+  assert(!/Georgia|Palatino|Menlo/.test(r.code), "foreign families gone");
+  assert(r.code.includes("<h2 style={{ fontFamily: FONT_DISPLAY }}>"), "heading-ish tag → display face");
+  assert(r.code.includes("fontFamily: FONT_DISPLAY, fontSize: 64"), "≥40px → display face");
+  assert(r.code.includes("fontFamily: FONT_BODY, fontSize: 14"), "foreign mono → BODY (mono is NOT preserved off the theme's dataFont)");
+  assert(r.code.includes("fontFamily: FONT_MONO, fontSize: 12"), "FONT_MONO const reference untouched");
+  assert(r.code.includes("${FONT_DISPLAY}"), "template-interpolated theme const untouched");
+  assert(r.code.includes("'\"Mono\", monospace'"), "the theme's own mono STACK is a theme value — untouched");
+  assert(!r.injected, "bindings exist — no root injection");
+});
+
+await check("normalizeFontBindings (unit): CSS-string form → theme body stack; ${FONT_*} interpolation untouched", () => {
+  const body =
+    "<div style={{ fontFamily: FONT_BODY }}><style>{`.x{font-family: Comic Sans MS, cursive;} .y{font-family: ${FONT_MONO};}`}</style></div>";
+  const r = normalizeFontBindings(body, theme, "copy");
+  assert(r.rewrites === 1, `1 rewrite expected, got ${r.rewrites}`);
+  assert(!r.code.includes("Comic Sans"), "foreign CSS family gone");
+  assert(r.code.includes('font-family: "Body", sans-serif'), "theme body STACK in its place (no JS const inside a CSS string)");
+  assert(r.code.includes("font-family: ${FONT_MONO}"), "interpolated theme const survives");
+});
+
+await check("normalizeFontBindings (unit): root injection for copy/hero only; face follows the root", () => {
+  const bare = '<div style={{ display: "flex" }}><p>hello</p></div>';
+  const c = normalizeFontBindings(bare, theme, "copy");
+  assert(c.injected, "copy piece with no binding earns an injection");
+  assert(c.code.startsWith('<div style={{ fontFamily: FONT_BODY, display: "flex" }}>'), `injected into the existing root style: ${c.code.slice(0, 60)}`);
+  const noStyle = normalizeFontBindings("<section><p>hello</p></section>", theme, "hero");
+  assert(noStyle.injected && noStyle.code.startsWith("<section style={{ fontFamily: FONT_BODY }}>"), "style attr synthesized when the root has none");
+  const heading = normalizeFontBindings("<h1>Massive</h1>", theme, "copy");
+  assert(heading.code.startsWith("<h1 style={{ fontFamily: FONT_DISPLAY }}>"), "heading-ish root → display face");
+  const atmos = normalizeFontBindings(bare, theme, "atmosphere");
+  assert(!atmos.injected && atmos.code === bare, "atmosphere pieces are never injected");
+  const already = normalizeFontBindings('<div style={{ fontFamily: FONT_MONO }} />', theme, "copy");
+  assert(!already.injected, "a bound piece is not re-injected (idempotent)");
 });
 
 // ─── The deterministic post-passes, unit-level ───────────────────────────────

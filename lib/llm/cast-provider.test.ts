@@ -61,6 +61,27 @@ await check("effort dial + max_completion_tokens reach the wire verbatim", async
   assert(msgs[0].role === "system" && msgs[1].role === "user", "system + user roles");
 });
 
+await check("model override reaches the wire (call.model → RB_CAST_MODEL → default)", async () => {
+  let sent: Record<string, unknown> = {};
+  mockFetch((_url, init) => {
+    sent = JSON.parse(String(init.body));
+    return ok(completion("x"));
+  });
+  await castCall({ system: "", user: "u", maxTokens: 100, model: "zai-glm-4.7" });
+  assert(sent.model === "zai-glm-4.7", "explicit call.model must reach the wire");
+  process.env.RB_CAST_MODEL = "env-model";
+  try {
+    await castCall({ system: "", user: "u", maxTokens: 100, model: "override-model" });
+    assert(sent.model === "override-model", "call.model beats RB_CAST_MODEL");
+    await castCall({ system: "", user: "u", maxTokens: 100 });
+    assert(sent.model === "env-model", "no override falls back to RB_CAST_MODEL");
+  } finally {
+    delete process.env.RB_CAST_MODEL;
+  }
+  await castCall({ system: "", user: "u", maxTokens: 100 });
+  assert(sent.model === "gpt-oss-120b", "no override, no env → the gpt-oss default");
+});
+
 await check("omitted effort omits the param (model default, not a guess)", async () => {
   let sent: Record<string, unknown> = {};
   mockFetch((_url, init) => {

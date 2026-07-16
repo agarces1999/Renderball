@@ -29,6 +29,10 @@ export interface CastCall {
   /** Honest output ceiling — pre-debited against TPM. Size per workload. */
   maxTokens: number;
   effort?: CastEffort;
+  /** Per-call model override (mixed casting routes hero/connector and leaf
+   *  workloads to different models). Precedence: call.model → RB_CAST_MODEL →
+   *  the gpt-oss-120b default. */
+  model?: string;
   signal?: AbortSignal;
 }
 
@@ -95,7 +99,7 @@ export const castCall = async (call: CastCall): Promise<CastResult> => {
           authorization: `Bearer ${KEY()}`,
         },
         body: JSON.stringify({
-          model: MODEL(),
+          model: call.model ?? MODEL(),
           max_completion_tokens: call.maxTokens,
           ...(call.effort ? { reasoning_effort: call.effort } : {}),
           messages: [

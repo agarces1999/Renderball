@@ -45,7 +45,7 @@ import type { Script, ElementSpec } from "../../src/schema";
 import type { Theme, SceneManifest, Piece } from "../edit/piece-model";
 import { castCall, type CastEffort } from "../llm/cast-provider";
 import { composeSceneLayout, CANVAS, type Aspect, type ElementSlot, type ScenePlan } from "./layout-composer";
-import { normalizeElementColors, assessAccentPresence } from "./normalize-element";
+import { normalizeElementColors, assessAccentPresence, hexToRgb, rgbToHsl, isNeutral } from "./normalize-element";
 import { assembleComposition } from "./assemble";
 import { applyChoreography } from "./choreograph";
 import { stripCodeFence, verifyCompilable } from "./code-extraction";
@@ -84,6 +84,12 @@ export interface CastBuildResult {
     /** Total off-brand color rewrites in shipped bodies ("what would have
      *  shipped off-brand"). */
     normalizedColors: number;
+    /** Foreign fontFamily values rewritten to theme faces + root bindings
+     *  injected ("what would have shipped off-face"). */
+    fontRewrites: number;
+    /** True when the ink guard neutralized a chromatic body-text color on the
+     *  incoming theme (see neutralizeInk). */
+    inkCorrected: boolean;
   };
 }
 
@@ -120,7 +126,39 @@ const EFFORT_BY_SLOT: Record<string, CastEffort> = {
   hero: "medium",
   connector: "medium",
 };
-const effortFor = (slotId: string): CastEffort => EFFORT_BY_SLOT[slotId] ?? "low";
+
+/**
+ * MIXED-CASTING MODEL ROUTING (acceptance v3 finding, 2026-07-16): the drawing
+ * workloads (hero/connector — the diegetic visual + the SVG relationship
+ * system) and the leaf workloads (copy/atmosphere/throughline) have different
+ * craft profiles, so each side is independently overridable:
+ *   hero/connector → RB_CAST_MODEL_HERO
+ *   everything else → RB_CAST_MODEL_LEAVES
+ * Both optional; undefined defers to the provider's own resolution
+ * (RB_CAST_MODEL → gpt-oss-120b), so a single-model world is unchanged.
+ */
+export const modelFor = (kind: string): string | undefined =>
+  (kind === "hero" || kind === "connector"
+    ? process.env.RB_CAST_MODEL_HERO
+    : process.env.RB_CAST_MODEL_LEAVES) || undefined;
+
+/**
+ * Effort routing is MODEL-aware (Cerebras dials differ per family, verified
+ * acceptance v3 2026-07-16):
+ *   - zai-glm-*: "none" is the ONLY valid off switch (graded low/medium are
+ *     gpt-oss features; leaving effort unset lets GLM think expensively).
+ *   - gemma-*:   no reasoning dial at all — the param must be OMITTED.
+ *   - gpt-oss (and anything unrecognized): the measured medium/low slot
+ *     routing above.
+ * `model` is the per-call override; when absent the effective model is what
+ * the provider will resolve (RB_CAST_MODEL → gpt-oss-120b).
+ */
+export const effortFor = (slotId: string, model?: string): CastEffort | undefined => {
+  const effective = model ?? process.env.RB_CAST_MODEL ?? "gpt-oss-120b";
+  if (effective.startsWith("zai-glm-")) return "none";
+  if (effective.startsWith("gemma-")) return undefined;
+  return EFFORT_BY_SLOT[slotId] ?? "low";
+};
 
 // ─── Shared conventions ─────────────────────────────────────────────────────
 
@@ -310,6 +348,216 @@ export const stripColorMutationFilters = (body: string): { code: string; strippe
     },
   );
   return { code: out, stripped };
+};
+
+/**
+ * (e) Font-binding normalizer. Acceptance v3 measured the defect this closes:
+ * zai-glm-4.7 DRAWS confidently but does not BIND fonts — text ships with
+ * generic serif/system stacks (or no fontFamily at all) instead of the theme's
+ * locked brand faces. Prompt-level asking already failed; this pass rewrites
+ * the defect out deterministically:
+ *   - any style-object `fontFamily:` whose value is NOT a theme reference
+ *     (a FONT_DISPLAY/FONT_BODY/FONT_MONO const, or a stack whose primary
+ *     family IS one of the theme's families) is replaced — FONT_DISPLAY when
+ *     the element reads as display type (fontSize ≥ 40px in the same style
+ *     object, or an h1-h6 tag), FONT_BODY otherwise. Mono therefore survives
+ *     ONLY where the theme's dataFont face is actually referenced — a foreign
+ *     "Menlo, monospace" is a foreign face like any other.
+ *   - `font-family:` declarations inside CSS strings get the same test; the
+ *     rewrite target there is the theme's body STACK (a JS const can't be
+ *     referenced from inside a literal CSS string).
+ *   - a copy/hero piece with NO font binding anywhere gets one injected at the
+ *     piece ROOT (FONT_DISPLAY when the root itself is display-sized/heading,
+ *     else FONT_BODY) so its whole subtree inherits a theme face.
+ * Brace/quote-aware like the passes above; pure and idempotent.
+ */
+const FONT_CONST_RE = /\bFONT_(?:DISPLAY|BODY|MONO)\b/;
+const DISPLAY_SIZE_PX = 40;
+const HEADING_TAG_RE = /^h[1-6]$/i;
+
+/** Primary family of a CSS stack: '"Cabinet Grotesk", sans-serif' → "cabinet grotesk". */
+const primaryFamily = (stack: string): string =>
+  (stack.split(",")[0] ?? "").replace(/["'`]/g, "").trim().toLowerCase();
+
+/** Strip one layer of JS string/template quoting off an expression source. */
+const unquoteExpr = (expr: string): string => {
+  const t = expr.trim();
+  const q = t[0];
+  return (q === '"' || q === "'" || q === "`") && t.endsWith(q) ? t.slice(1, -1) : t;
+};
+
+export const normalizeFontBindings = (
+  body: string,
+  theme: Theme,
+  slotId: string,
+): { code: string; rewrites: number; injected: boolean } => {
+  const themeFamilies = [theme.fonts.display, theme.fonts.body, theme.fonts.mono]
+    .map(primaryFamily)
+    .filter(Boolean);
+  const isThemeValue = (expr: string): boolean =>
+    FONT_CONST_RE.test(expr) || themeFamilies.includes(primaryFamily(unquoteExpr(expr)));
+
+  let rewrites = 0;
+  const edits: { start: number; end: number; text: string }[] = [];
+
+  // Style-object form: walk every style={{ … }} block brace/quote-aware.
+  const styleRe = /style=\{\{/g;
+  for (let m = styleRe.exec(body); m; m = styleRe.exec(body)) {
+    const open = m.index + "style={".length; // the object's own "{"
+    let depth = 0;
+    let quote: string | null = null;
+    let close = -1;
+    for (let i = open; i < body.length; i++) {
+      const ch = body[i];
+      if (quote) {
+        if (ch === "\\") i++;
+        else if (ch === quote) quote = null;
+        continue;
+      }
+      if (ch === '"' || ch === "'" || ch === "`") { quote = ch; continue; }
+      if (ch === "{") depth++;
+      else if (ch === "}") {
+        depth--;
+        if (depth === 0) { close = i; break; }
+      }
+    }
+    if (close === -1) continue;
+    const obj = body.slice(open, close + 1);
+
+    const famKey = /\bfontFamily\s*:\s*/.exec(obj);
+    if (!famKey) continue;
+    // Value expression: scan to the "," or "}" that closes it at depth 0.
+    const vStart = famKey.index + famKey[0].length;
+    let vEnd = -1;
+    let vDepth = 0;
+    let vQuote: string | null = null;
+    for (let i = vStart; i < obj.length; i++) {
+      const ch = obj[i];
+      if (vQuote) {
+        if (ch === "\\") i++;
+        else if (ch === vQuote) vQuote = null;
+        continue;
+      }
+      if (ch === '"' || ch === "'" || ch === "`") { vQuote = ch; continue; }
+      if (ch === "(" || ch === "[" || ch === "{") vDepth++;
+      else if (ch === ")" || ch === "]") vDepth--;
+      else if (ch === "}") {
+        if (vDepth === 0) { vEnd = i; break; }
+        vDepth--;
+      } else if (ch === "," && vDepth === 0) { vEnd = i; break; }
+    }
+    if (vEnd === -1) continue;
+    // Leave trailing whitespace (the pad before a closing "}") outside the edit.
+    while (vEnd > vStart && /\s/.test(obj[vEnd - 1])) vEnd--;
+    const value = obj.slice(vStart, vEnd);
+    if (isThemeValue(value)) continue;
+
+    // Display type when the SAME style object sizes ≥ 40px, or the owning tag
+    // is heading-ish (nearest "<tag" before the style attribute).
+    const sizeM = /\bfontSize\s*:\s*["'`]?(\d+(?:\.\d+)?)/.exec(obj);
+    const tagM = /<([A-Za-z][A-Za-z0-9]*)[^<]*$/.exec(body.slice(0, m.index));
+    const wantsDisplay =
+      (sizeM ? Number(sizeM[1]) >= DISPLAY_SIZE_PX : false) ||
+      (tagM ? HEADING_TAG_RE.test(tagM[1]) : false);
+    edits.push({
+      start: open + vStart,
+      end: open + vEnd,
+      text: wantsDisplay ? "FONT_DISPLAY" : "FONT_BODY",
+    });
+    rewrites++;
+  }
+  let code = body;
+  for (const e of edits.reverse()) code = code.slice(0, e.start) + e.text + code.slice(e.end);
+
+  // CSS-string form (appended keyframes / <style> template strings). The value
+  // may be a `${FONT_*}` interpolation — consumed whole so it tests as a const.
+  code = code.replace(/font-family\s*:\s*((?:\$\{[^}]*\}|[^;{}\n])+)/gi, (whole, val: string) => {
+    if (isThemeValue(val)) return whole;
+    rewrites++;
+    return `font-family: ${theme.fonts.body}`;
+  });
+
+  // Root injection: a copy/hero piece with NO binding anywhere inherits a
+  // theme face from its own root instead of whatever the render host defaults.
+  let injected = false;
+  if (
+    (slotId === "copy" || slotId === "hero") &&
+    !/\bfontFamily\s*:/.test(code) &&
+    !/font-family\s*:/i.test(code)
+  ) {
+    const start = code.indexOf("<");
+    if (start !== -1) {
+      let depth = 0;
+      let quote: string | null = null;
+      let tagEnd = -1;
+      for (let i = start; i < code.length; i++) {
+        const ch = code[i];
+        if (quote) {
+          if (ch === "\\") i++;
+          else if (ch === quote) quote = null;
+        } else if (ch === '"' || ch === "'" || ch === "`") quote = ch;
+        else if (ch === "{") depth++;
+        else if (ch === "}") depth--;
+        else if (ch === ">" && depth === 0) { tagEnd = i; break; }
+      }
+      const nameM = /^<([A-Za-z][A-Za-z0-9.]*)/.exec(code.slice(start));
+      if (tagEnd !== -1 && nameM) {
+        const rootTag = code.slice(start, tagEnd);
+        const rootSize = /\bfontSize\s*:\s*["'`]?(\d+(?:\.\d+)?)/.exec(rootTag);
+        const face =
+          (rootSize ? Number(rootSize[1]) >= DISPLAY_SIZE_PX : false) || HEADING_TAG_RE.test(nameM[1])
+            ? "FONT_DISPLAY"
+            : "FONT_BODY";
+        const styleAt = rootTag.search(/style=\{\{/);
+        if (styleAt !== -1) {
+          const at = start + styleAt + "style={{".length;
+          code = `${code.slice(0, at)} fontFamily: ${face},${code.slice(at)}`;
+        } else {
+          const at = start + nameM[0].length;
+          code = `${code.slice(0, at)} style={{ fontFamily: ${face} }}${code.slice(at)}`;
+        }
+        injected = true;
+      }
+    }
+  }
+  return { code, rewrites, injected };
+};
+
+/**
+ * (f) Ink guard. Acceptance v2 measured the defect: the design-system head
+ * emitted ink=#57cc02 (Duolingo streak-green) as the BODY-TEXT color, so every
+ * element painted copy green BY CONTRACT — no element-level pass can fix a
+ * poisoned theme. Ink must read as text: neutral (isNeutral — the shared
+ * normalize-element policy) or dark enough to read as near-black
+ * (l ≤ INK_DARK_L covers legitimate near-black brand navies like #10141c that
+ * carry a nominal hue). A chromatic mid-lightness ink is overridden to the
+ * near-black #1a1a1a class. Pure — returns a NEW theme, never mutates; only
+ * hex inks are judged (the theme heads emit hex; an exotic rgba ink passes
+ * through unjudged rather than misjudged). castBuild applies this on entry and
+ * telemetry counts it.
+ */
+const INK_ALIASES = ["ink", "fg", "text"];
+const INK_DARK_L = 0.18;
+const NEUTRAL_INK = "#1a1a1a";
+
+export const neutralizeInk = (theme: Theme): { theme: Theme; corrected: boolean } => {
+  const keys = Object.keys(theme.palette);
+  let inkKey: string | undefined;
+  for (const alias of INK_ALIASES) {
+    inkKey =
+      keys.find((k) => k.toLowerCase() === alias) ??
+      keys.find((k) => k.toLowerCase().includes(alias));
+    if (inkKey) break;
+  }
+  if (!inkKey) return { theme, corrected: false };
+  const rgb = hexToRgb((theme.palette[inkKey] ?? "").trim());
+  if (!rgb) return { theme, corrected: false };
+  const hsl = rgbToHsl(...rgb);
+  if (isNeutral(hsl) || hsl.l <= INK_DARK_L) return { theme, corrected: false };
+  return {
+    theme: { ...theme, palette: { ...theme.palette, [inkKey]: NEUTRAL_INK } },
+    corrected: true,
+  };
 };
 
 // ─── The element system prompt ──────────────────────────────────────────────
@@ -709,6 +957,7 @@ interface ElementOutcome {
   repaired: boolean;
   failed: boolean;
   colorRewrites: number;
+  fontRewrites: number;
 }
 
 const round2 = (n: number): number => Math.round(n * 100) / 100;
@@ -729,9 +978,16 @@ export const castBuild = async (
   opts?: { caller?: typeof castCall; concurrency?: number },
 ): Promise<CastBuildResult> => {
   const t0 = Date.now();
-  const { script, theme, palette, aspect } = input;
-  if (Object.keys(theme.palette).length === 0) {
+  const { script, palette, aspect } = input;
+  if (Object.keys(input.theme.palette).length === 0) {
     throw new Error("cast-build: theme.palette is empty — nothing for elements to paint with");
+  }
+  // Ink guard on ENTRY: a poisoned theme (chromatic body-text color) poisons
+  // every element by contract — corrected before anything reads the theme.
+  const inkGuard = neutralizeInk(input.theme);
+  const theme = inkGuard.theme;
+  if (inkGuard.corrected) {
+    console.warn(`[cast-build] chromatic ink neutralized to ${NEUTRAL_INK} (theme ink was not a readable text color)`);
   }
   const caller = opts?.caller ?? castCall;
   const width = Math.max(1, Math.floor(opts?.concurrency ?? (Number(process.env.RB_CAST_CONCURRENCY) || 14)));
@@ -812,7 +1068,8 @@ export const castBuild = async (
   //         hue-lock → fragment-verify → one repair → placeholder ──────────
   const runElement = async (job: ElementJob): Promise<ElementOutcome> => {
     let tokens = 0;
-    const effort = effortFor(job.slot.id);
+    const model = modelFor(job.slot.id);
+    const effort = effortFor(job.slot.id, model);
     // Verbatim copy this element does NOT own. Ownership lives in the slot —
     // and when the scene carries a composition, the spec's explicit ownsCopy
     // is the stronger source of truth (see ownedCopyFields).
@@ -827,10 +1084,12 @@ export const castBuild = async (
     // dying on one element.
     const attempt = async (
       user: string,
-    ): Promise<{ ok: true; body: string; rewrites: number } | { ok: false; raw: string; error: string }> => {
+    ): Promise<
+      { ok: true; body: string; rewrites: number; fontRewrites: number } | { ok: false; raw: string; error: string }
+    > => {
       let text: string;
       try {
-        const res = await caller({ system, user, maxTokens: maxTokensFor(job.slot.id), effort });
+        const res = await caller({ system, user, maxTokens: maxTokensFor(job.slot.id), effort, model });
         tokens += res.outputTokens;
         text = res.text;
       } catch (err) {
@@ -845,6 +1104,8 @@ export const castBuild = async (
       let body = rewriteKeyframeInterpolations(raw, theme.keyframes).code;
       body = stripCanvasSelfPositioning(body, job.slot.bounds).code;
       body = stripColorMutationFilters(body).code;
+      const fonts = normalizeFontBindings(body, theme, job.slot.id);
+      body = fonts.code;
       const { code: locked, changes } = normalizeElementColors(body, palette);
       // Unowned-copy guard: exact text nodes strip deterministically inside
       // stripUnownedCopy; anything subtler routes to the surgical repair with
@@ -859,12 +1120,17 @@ export const castBuild = async (
       }
       const compileErr = await verifyFragment(guard.code);
       if (compileErr) return { ok: false, raw, error: compileErr };
-      return { ok: true, body: guard.code, rewrites: changes.reduce((n, ch) => n + ch.count, 0) };
+      return {
+        ok: true,
+        body: guard.code,
+        rewrites: changes.reduce((n, ch) => n + ch.count, 0),
+        fontRewrites: fonts.rewrites + (fonts.injected ? 1 : 0),
+      };
     };
 
     const first = await attempt(job.brief);
     if (first.ok) {
-      return { pieceId: job.pieceId, body: first.body, outputTokens: tokens, repaired: false, failed: false, colorRewrites: first.rewrites };
+      return { pieceId: job.pieceId, body: first.body, outputTokens: tokens, repaired: false, failed: false, colorRewrites: first.rewrites, fontRewrites: first.fontRewrites };
     }
 
     // ONE surgical repair: the same brief + the broken output + the exact
@@ -881,11 +1147,11 @@ export const castBuild = async (
       ].join("\n"),
     );
     if (second.ok) {
-      return { pieceId: job.pieceId, body: second.body, outputTokens: tokens, repaired: true, failed: false, colorRewrites: second.rewrites };
+      return { pieceId: job.pieceId, body: second.body, outputTokens: tokens, repaired: true, failed: false, colorRewrites: second.rewrites, fontRewrites: second.fontRewrites };
     }
 
     console.warn(`[cast-build] ${job.pieceId}: broken through repair — shipping placeholder (${second.error.slice(0, 120)})`);
-    return { pieceId: job.pieceId, body: placeholderBody(theme, job.slot), outputTokens: tokens, repaired: false, failed: true, colorRewrites: 0 };
+    return { pieceId: job.pieceId, body: placeholderBody(theme, job.slot), outputTokens: tokens, repaired: false, failed: true, colorRewrites: 0, fontRewrites: 0 };
   };
 
   const outcomes = await Promise.all(jobs.map((job) => limiter.with(() => runElement(job))));
@@ -923,6 +1189,8 @@ export const castBuild = async (
       tokensOut: outcomes.reduce((n, o) => n + o.outputTokens, 0),
       wallSeconds: round2((Date.now() - t0) / 1000),
       normalizedColors: outcomes.reduce((n, o) => n + o.colorRewrites, 0),
+      fontRewrites: outcomes.reduce((n, o) => n + o.fontRewrites, 0),
+      inkCorrected: inkGuard.corrected,
     },
   };
 };
