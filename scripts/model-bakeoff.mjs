@@ -231,7 +231,9 @@ for (const p of active) {
         const res = await call(p, ELEMENT_SYSTEM, elementBrief(job.scene, job.piece), p.elementThinking, 6000);
         const frag = res.text.trim().replace(/^```\w*\n?|```$/g, "");
         const ok = frag.length > 40 && !/^\s*import\b/.test(frag) && /</.test(frag) && (await syntaxOk(frag));
-        return { id: job.piece.id, kind: job.piece.kind, out: res.out, secs: res.secs, visible: frag.length, thinking: res.thinking.length, ok, stop: res.stop };
+        // `code` persists the emitted JSX so the eyeball gallery (scripts/bakeoff-eyeball.ts)
+        // can render what each provider actually generated — stats alone can't be eyeballed.
+        return { id: job.piece.id, kind: job.piece.kind, out: res.out, secs: res.secs, visible: frag.length, thinking: res.thinking.length, ok, stop: res.stop, code: frag };
       } catch (e) {
         r.errors.push(`${job.piece.id}: ${e.message}`);
         return { id: job.piece.id, kind: job.piece.kind, out: 0, secs: 0, visible: 0, thinking: 0, ok: false, stop: "error" };
