@@ -141,6 +141,41 @@ export interface Script {
   approved_at?: string;
 }
 
+/**
+ * Per-scene COMPOSITION SPEC — the blueprint layer of the cast doctrine
+ * (2026-07-16). The parity audit measured that the fast emitter transcribes
+ * explicit inventories at reference quality but invents poorly; so ALL
+ * invention moves upstream: a thinking head authors, per scene, exactly what
+ * each element is and what lives inside it, with real brand/scene-specific
+ * values. Element generation then embeds the inventory verbatim — the model
+ * furnishes what the spec names, never template examples. Optional for
+ * back-compat: scenes without a spec fall back to visual_concept-driven
+ * briefs.
+ */
+export interface ElementSpec {
+  /** Which cast slot this describes: hero | copy | atmosphere | connector | throughline. */
+  role: string;
+  /** What the element IS, concretely ("a Duolingo lesson screen in a phone frame"). */
+  subject: string;
+  /**
+   * The interior inventory — SHORT concrete items the element must visibly
+   * contain, with real values authored for THIS brand and scene ("XP bar
+   * 340/500", "streak flame '7'", "chips: días / noches"). Heroes need ≥6;
+   * generation transcribes these, it does not invent them.
+   */
+  interior: string[];
+  /** Scene.content fields this element exclusively renders (ownership). */
+  ownsCopy?: string[];
+  /** One sustained motion beat tied to a named interior item. */
+  motion?: string;
+}
+
+export interface SceneComposition {
+  elements: ElementSpec[];
+  /** The atmosphere treatment for THIS scene — must differ from adjacent scenes. */
+  atmosphere: string;
+}
+
 export interface ScriptDecision {
   /** Stable kebab-case slug, unique within the script (e.g. "audience-focus"). */
   id: string;
@@ -223,6 +258,12 @@ export interface Scene {
    * Optional for back-compat; defaults to "centered" when absent.
    */
   register?: SceneRegister;
+  /**
+   * The composition blueprint (see SceneComposition) — authored by the
+   * thinking head at build time, consumed by the element cast. Optional:
+   * absent on stored/approved scripts until the composition pass runs.
+   */
+  composition?: SceneComposition;
   /**
    * The content manifest — every named copy slot a viewer reads, plus
    * the assets and illustration intent the section incorporates.
