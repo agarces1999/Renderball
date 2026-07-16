@@ -64,6 +64,53 @@ const KEY = () => process.env.RB_CAST_KEY || "";
 /** The cast path is available only when explicitly configured. */
 export const castConfigured = (): boolean => KEY().length > 0;
 
+// ── multi-provider resolution ────────────────────────────────────────────────
+// Fireworks models are namespaced ("accounts/fireworks/models/…"), so the
+// model id itself selects the provider — no separate routing config needed.
+// Smoke-verified on glm-5p2 (2026-07-16): `thinking: {type:"disabled"}` is a
+// TRUE off switch (2.5s, zero reasoning, clean output — undocumented but
+// accepted); `thinking: {enabled, budget_tokens}` separates reasoning into
+// reasoning_content. `reasoning_effort` WITHOUT the thinking param leaks CoT
+// into visible content on this serving — never send it bare to Fireworks.
+const isFireworksModel = (model: string): boolean => model.startsWith("accounts/fireworks/");
+
+interface WireConfig {
+  url: string;
+  key: string;
+  body: (call: CastCall, model: string) => Record<string, unknown>;
+}
+
+const FIREWORKS_THINKING_BUDGETS: Record<Exclude<CastEffort, "none">, number> = {
+  low: 1024,
+  medium: 2048,
+  high: 8192,
+};
+
+const wireFor = (model: string): WireConfig =>
+  isFireworksModel(model)
+    ? {
+        url: "https://api.fireworks.ai/inference/v1/chat/completions",
+        key: process.env.RB_FIREWORKS_KEY || "",
+        body: (call, m) => ({
+          model: m,
+          max_tokens: call.maxTokens,
+          ...(call.effort === "none"
+            ? { thinking: { type: "disabled" } }
+            : call.effort
+              ? { thinking: { type: "enabled", budget_tokens: FIREWORKS_THINKING_BUDGETS[call.effort] } }
+              : {}),
+        }),
+      }
+    : {
+        url: `${BASE_URL()}/chat/completions`,
+        key: KEY(),
+        body: (call, m) => ({
+          model: m,
+          max_completion_tokens: call.maxTokens,
+          ...(call.effort ? { reasoning_effort: call.effort } : {}),
+        }),
+      };
+
 /** Bounded, retry-after-honoring backoff for the token-bucket 429s. */
 const RETRIES = 4;
 const BASE_DELAY_MS = 1500;
@@ -83,8 +130,16 @@ const retryDelayMs = (attempt: number, retryAfterHeader: string | null): number 
  * nothing here. The 120s timeout is generous headroom over both.
  */
 export const castCall = async (call: CastCall): Promise<CastResult> => {
-  if (!castConfigured()) {
-    throw new CastProviderError("cast provider not configured (RB_CAST_KEY missing)", null, false);
+  const model = call.model ?? MODEL();
+  const wire = wireFor(model);
+  if (!wire.key) {
+    throw new CastProviderError(
+      isFireworksModel(model)
+        ? "cast provider not configured (RB_FIREWORKS_KEY missing for a Fireworks model)"
+        : "cast provider not configured (RB_CAST_KEY missing)",
+      null,
+      false,
+    );
   }
   const t0 = Date.now();
   let lastErr: CastProviderError | null = null;
@@ -92,16 +147,14 @@ export const castCall = async (call: CastCall): Promise<CastResult> => {
   for (let attempt = 0; attempt <= RETRIES; attempt++) {
     let res: Response;
     try {
-      res = await fetch(`${BASE_URL()}/chat/completions`, {
+      res = await fetch(wire.url, {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          authorization: `Bearer ${KEY()}`,
+          authorization: `Bearer ${wire.key}`,
         },
         body: JSON.stringify({
-          model: call.model ?? MODEL(),
-          max_completion_tokens: call.maxTokens,
-          ...(call.effort ? { reasoning_effort: call.effort } : {}),
+          ...wire.body(call, model),
           messages: [
             ...(call.system ? [{ role: "system", content: call.system }] : []),
             { role: "user", content: call.user },

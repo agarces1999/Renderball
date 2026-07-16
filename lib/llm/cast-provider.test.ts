@@ -139,6 +139,40 @@ await check("network failure retries within budget then surfaces the error", asy
   assert(calls === 5, `4 retries + original = 5 attempts, got ${calls}`);
 });
 
+await check("Fireworks model routes to Fireworks wire: url, key, max_tokens, thinking mapping", async () => {
+  process.env.RB_FIREWORKS_KEY = "fw-test-key";
+  let sentUrl = ""; let sent: Record<string, unknown> = {}; let auth = "";
+  mockFetch((url, init) => {
+    sentUrl = String(url);
+    auth = String((init.headers as Record<string, string>).authorization);
+    sent = JSON.parse(String(init.body));
+    return ok(completion("<div />"));
+  });
+  await castCall({ system: "s", user: "u", maxTokens: 4000, effort: "none", model: "accounts/fireworks/models/glm-5p2" });
+  assert(sentUrl.includes("api.fireworks.ai/inference/v1"), "fireworks URL");
+  assert(auth === "Bearer fw-test-key", "fireworks key used, not RB_CAST_KEY");
+  assert(sent.max_tokens === 4000 && !("max_completion_tokens" in sent), "fireworks uses max_tokens");
+  const th = sent.thinking as { type?: string };
+  assert(th?.type === "disabled", "effort none → thinking disabled (the smoke-verified off switch)");
+  assert(!("reasoning_effort" in sent), "bare reasoning_effort never sent to Fireworks (CoT leaks into content)");
+  await castCall({ system: "s", user: "u", maxTokens: 4000, effort: "high", model: "accounts/fireworks/models/glm-5p2" });
+  const th2 = sent.thinking as { type?: string; budget_tokens?: number };
+  assert(th2?.type === "enabled" && th2.budget_tokens === 8192, "effort high → bounded thinking budget");
+});
+
+await check("Fireworks model without RB_FIREWORKS_KEY fails fast, names the missing key", async () => {
+  const saved = process.env.RB_FIREWORKS_KEY;
+  delete process.env.RB_FIREWORKS_KEY;
+  try {
+    await castCall({ system: "", user: "u", maxTokens: 100, model: "accounts/fireworks/models/glm-5p2" });
+    assert(false, "must throw");
+  } catch (e) {
+    assert(e instanceof CastProviderError && !e.retryable && /RB_FIREWORKS_KEY/.test(e.message), "named config error");
+  } finally {
+    if (saved) process.env.RB_FIREWORKS_KEY = saved;
+  }
+});
+
 globalThis.fetch = realFetch;
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exitCode = 1;

@@ -155,7 +155,10 @@ export const modelFor = (kind: string): string | undefined =>
  */
 export const effortFor = (slotId: string, model?: string): CastEffort | undefined => {
   const effective = model ?? process.env.RB_CAST_MODEL ?? "gpt-oss-120b";
-  if (effective.startsWith("zai-glm-")) return "none";
+  // Any GLM lineage (Cerebras zai-glm-* OR Fireworks accounts/.../glm-5p2*):
+  // elements run thinking-OFF — "none" maps to each provider's true off
+  // switch in cast-provider (reasoning_effort:"none" / thinking:{disabled}).
+  if (/(^|\/)(zai-)?glm-/.test(effective) || effective.includes("/glm-5p")) return "none";
   if (effective.startsWith("gemma-")) return undefined;
   return EFFORT_BY_SLOT[slotId] ?? "low";
 };
