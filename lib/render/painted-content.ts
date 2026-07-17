@@ -225,6 +225,158 @@ export const assessEmptyBand = async (
   return { bandFracH: H > 0 ? run.len / H : 0, startFracH: H > 0 ? run.start / H : 0 };
 };
 
+/** A downsampled COLUMN carrying less than this share of ink counts as
+ *  "empty" (v15 occupancy). Higher than ROW_INK_FLOOR by design: faint
+ *  atmosphere texture (ring lines, grain) must not break a void run — a
+ *  column crossed only by a hairline or sparse texture is still a void.
+ *  Calibrated with the v15 occupancy sweep (see occupancy.ts header). */
+export const COLUMN_INK_FLOOR = 0.015;
+
+export interface EmptyColumnRun {
+  /** Widest contiguous run of empty columns, as a fraction of frame W. */
+  runFracW: number;
+  /** Where that run starts, as a fraction of frame W. */
+  startFracW: number;
+  /** Where it ends (exclusive), as a fraction of frame W. */
+  endFracW: number;
+}
+
+/**
+ * v15 (occupancy, Lever B) — the VERTICAL twin of assessEmptyBand: the widest
+ * contiguous run of columns carrying (almost) no painted ink, over the FULL
+ * width (margins included — a void that swallows a margin is still a void;
+ * the caller's floor absorbs normal gutters). Same dominant-background
+ * subtraction, so soft atmosphere gradients don't count as ink.
+ */
+export const assessEmptyColumnRun = async (
+  input: string | Buffer,
+  opts: InkOptions & { colInkFloor?: number } = {},
+): Promise<EmptyColumnRun> => {
+  const colorDistance = opts.colorDistance ?? DEFAULT_COLOR_DISTANCE;
+  const sampleWidth = opts.sampleWidth ?? BAND_SAMPLE_WIDTH;
+  const colFloor = opts.colInkFloor ?? COLUMN_INK_FLOOR;
+
+  const { data, info } = await sharp(input)
+    .resize({ width: sampleWidth, withoutEnlargement: true })
+    .removeAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  const W = info.width;
+  const H = info.height;
+  const ch = info.channels;
+  const N = W * H;
+
+  const buckets = new Map<number, [number, number, number, number]>();
+  for (let i = 0; i < N; i++) {
+    const p = i * ch;
+    const r = data[p];
+    const g = ch >= 3 ? data[p + 1] : r;
+    const b = ch >= 3 ? data[p + 2] : r;
+    const key = ((r >> 4) << 8) | ((g >> 4) << 4) | (b >> 4);
+    const e = buckets.get(key);
+    if (e) {
+      e[0]++;
+      e[1] += r;
+      e[2] += g;
+      e[3] += b;
+    } else {
+      buckets.set(key, [1, r, g, b]);
+    }
+  }
+  let dom: [number, number, number, number] = [1, 0, 0, 0];
+  for (const e of buckets.values()) if (e[0] > dom[0]) dom = e;
+  const bgR = dom[1] / dom[0];
+  const bgG = dom[2] / dom[0];
+  const bgB = dom[3] / dom[0];
+
+  const d2 = colorDistance * colorDistance;
+  const empty: boolean[] = new Array(W).fill(true);
+  for (let x = 0; x < W; x++) {
+    let ink = 0;
+    for (let y = 0; y < H; y++) {
+      const p = (y * W + x) * ch;
+      const r = data[p];
+      const g = ch >= 3 ? data[p + 1] : r;
+      const b = ch >= 3 ? data[p + 2] : r;
+      const dr = r - bgR;
+      const dg = g - bgG;
+      const db = b - bgB;
+      if (dr * dr + dg * dg + db * db > d2) ink++;
+    }
+    empty[x] = H > 0 && ink / H < colFloor;
+  }
+  const run = largestEmptyRun(empty, 0, W);
+  return {
+    runFracW: W > 0 ? run.len / W : 0,
+    startFracW: W > 0 ? run.start / W : 0,
+    endFracW: W > 0 ? (run.start + run.len) / W : 0,
+  };
+};
+
+/**
+ * v15 (occupancy anchors) — ink share per FRACTIONAL region (x/y/w/h all as
+ * fractions of the frame), dominant-background subtracted like everything
+ * else here. Used to pixel-verify that a claimed "anchor" motif actually
+ * paints (a transparent wrapper or near-canvas gradient measures ~0).
+ */
+export const assessRegionInk = async (
+  input: string | Buffer,
+  regions: ReadonlyArray<{ x: number; y: number; w: number; h: number }>,
+  opts: InkOptions = {},
+): Promise<number[]> => {
+  if (regions.length === 0) return [];
+  const colorDistance = opts.colorDistance ?? DEFAULT_COLOR_DISTANCE;
+  const sampleWidth = opts.sampleWidth ?? BAND_SAMPLE_WIDTH;
+  const { data, info } = await sharp(input)
+    .resize({ width: sampleWidth, withoutEnlargement: true })
+    .removeAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  const W = info.width;
+  const H = info.height;
+  const ch = info.channels;
+  const N = W * H;
+  const buckets = new Map<number, [number, number, number, number]>();
+  for (let i = 0; i < N; i++) {
+    const p = i * ch;
+    const r = data[p];
+    const g = ch >= 3 ? data[p + 1] : r;
+    const b = ch >= 3 ? data[p + 2] : r;
+    const key = ((r >> 4) << 8) | ((g >> 4) << 4) | (b >> 4);
+    const e = buckets.get(key);
+    if (e) { e[0]++; e[1] += r; e[2] += g; e[3] += b; }
+    else buckets.set(key, [1, r, g, b]);
+  }
+  let dom: [number, number, number, number] = [1, 0, 0, 0];
+  for (const e of buckets.values()) if (e[0] > dom[0]) dom = e;
+  const bgR = dom[1] / dom[0];
+  const bgG = dom[2] / dom[0];
+  const bgB = dom[3] / dom[0];
+  const d2 = colorDistance * colorDistance;
+  return regions.map((reg) => {
+    const x0 = Math.max(0, Math.floor(reg.x * W));
+    const y0 = Math.max(0, Math.floor(reg.y * H));
+    const x1 = Math.min(W, Math.ceil((reg.x + reg.w) * W));
+    const y1 = Math.min(H, Math.ceil((reg.y + reg.h) * H));
+    let ink = 0;
+    let n = 0;
+    for (let y = y0; y < y1; y++) {
+      for (let x = x0; x < x1; x++) {
+        const p = (y * W + x) * ch;
+        const r = data[p];
+        const g = ch >= 3 ? data[p + 1] : r;
+        const b = ch >= 3 ? data[p + 2] : r;
+        const dr = r - bgR;
+        const dg = g - bgG;
+        const db = b - bgB;
+        if (dr * dr + dg * dg + db * db > d2) ink++;
+        n++;
+      }
+    }
+    return n > 0 ? ink / n : 0;
+  });
+};
+
 /**
  * Measure how much of a frame is actually painted.
  *

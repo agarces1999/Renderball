@@ -115,11 +115,16 @@ import {
   findEdgeCroppedPieces,
   planEdgeCropMoves,
   hexLuminance,
+  findStrayFragments,
+  exciseStrayFragment,
   type EdgeCropFinding,
   type RenderTruthFinding,
   type RenderTruthKind,
   type SlotTerritory,
+  type StrayFragmentFinding,
 } from "../lib/render/render-truth-gates";
+import { assessOccupancy, type OccupancyVoidFinding } from "../lib/render/occupancy";
+import { assessTextNodeContrast, type TextContrastFinding } from "../lib/render/text-contrast";
 import { clampPieceOffsets } from "../lib/agents/assemble";
 import {
   assessDensity,
@@ -164,6 +169,7 @@ import {
   parseVerdict,
   isSanctionedChromeFinding,
   judgeSequence,
+  stampSceneIndexBadge,
   type SequenceJudge,
   type VisionFinding,
 } from "../lib/render/vision-gate";
@@ -429,7 +435,7 @@ const cacheBustEvents: { pieceId: string; reason: string }[] = [];
 /** v12 (#1): CLASS-MATCHED retry history — progress is judged on the finding
  *  class that targeted the piece, not a proxy metric. v13 adds hero-scale
  *  (painted-union %) and skeleton (qualifying bar count). */
-type FailureClass = "washout" | "render-truth" | "accent-fill" | "density" | "vision" | "hero-scale" | "skeleton";
+type FailureClass = "washout" | "render-truth" | "accent-fill" | "density" | "vision" | "hero-scale" | "skeleton" | "occupancy" | "text-contrast";
 const regenHistory = new Map<string, { cls: FailureClass; value: number; aux: number; escalated: boolean }>();
 const noProgressEvents: {
   pieceId: string;
@@ -448,12 +454,25 @@ const washoutLiftEvents: {
   action: "forced-lift" | "lift-noop-regen-routed";
   via: "paint-rewrite" | "root-override" | null;
   targetToken: string | null;
+  /** v15 (#3): interior text nodes recolored in the same lift pass so the new
+   *  surface can't ghost them (the cycle-6 white-on-white headline class). */
+  interiorTextRepaints: number;
   before: { spread: number; std: number };
   after: { spread: number; std: number } | null;
   cleared: boolean | null;
 }[] = [];
 /** v12 (#4): broken rendered images swapped to the text wordmark. */
 const imgSwapEvents: { round: number; scene: number; pieceId: string; src: string; via: string }[] = [];
+/** v15 (#4): stray accent fragments (crossing/isolated bars) — deterministic
+ *  clip/remove where safe, else recorded as a structural advisory. */
+const strayFragmentEvents: {
+  round: number;
+  scene: number;
+  pieceId: string;
+  form: "crossing" | "isolated";
+  action: "clipped" | "removed" | "none";
+  detail: string;
+}[] = [];
 /** v13 (#5): bind-in-place ledger — literal copy mounts converted to bound
  *  c.<field> references at finalize time (render no-op; editor lever). */
 const bindCopyEvents: { round: number; scene: number; field: string; accessor: string; count: number }[] = [];
@@ -1276,7 +1295,17 @@ const runSequenceRound = async (
   const ordered = measurements
     .filter((m): m is SceneMeasurement & { screenshotPath: string } => !!m.screenshotPath)
     .sort((a, b) => a.scene - b.scene);
-  const imagesB64 = await Promise.all(ordered.map(async (m) => (await fs.readFile(m.screenshotPath)).toString("base64")));
+  // v15 (#5): burn an unambiguous "SCENE N" badge into each frame before
+  // judging so the verdict cites the badge index, not inferred position
+  // (cycle 6's verdict swapped scenes 0/4). The badge is keyed to the TRUE
+  // scene index (m.scene), never the array position.
+  const imagesB64 = await Promise.all(
+    ordered.map(async (m) => {
+      const raw = await fs.readFile(m.screenshotPath);
+      const stamped = await stampSceneIndexBadge(raw, m.scene);
+      return stamped.toString("base64");
+    }),
+  );
   const findings = await judgeSequence(imagesB64, brandTruth, sequenceJudge);
   if (findings.some((f) => f.issue.startsWith("SEQUENCE-JUDGE-ERROR:"))) {
     // v10: SKIP after the FIRST abort — no retry. The judge is advisory; a
@@ -1306,10 +1335,14 @@ const computeTargets = (args: {
   underscale?: HeroUnderscaleFinding[];
   /** v13 (#4): BLOCKING skeleton-bar findings only (advisories never route). */
   skeletonBlocking?: SkeletonBarFinding[];
+  /** v15 (#1): BLOCKING occupancy voids (quote/centered scenes). */
+  occupancyVoids?: OccupancyVoidFinding[];
+  /** v15 (#2): BLOCKING per-text-node contrast findings (the ghost class). */
+  textContrastBlocking?: TextContrastFinding[];
   /** Per-scene script registers — v11 (#4): barbell repair is register-aware. */
   registers?: (string | undefined)[];
 }): Map<string, string[]> => {
-  const { validPieceIds, density, profile, rtBlocking, washout, accentFill, edgeCropResidual, vision, underscale, skeletonBlocking, registers } = args;
+  const { validPieceIds, density, profile, rtBlocking, washout, accentFill, edgeCropResidual, vision, underscale, skeletonBlocking, occupancyVoids, textContrastBlocking, registers } = args;
   const targets = new Map<string, string[]>();
   const add = (pieceId: string, sceneFallback: number, feedback: string): void => {
     let id = pieceId;
@@ -1379,6 +1412,16 @@ const computeTargets = (args: {
   // v13 (#4): skeleton-bar rows — only the BLOCKING (≥2 rows) arm routes.
   for (const f of skeletonBlocking ?? []) {
     add(f.pieceId, f.scene, `[structural/skeleton_bars] ${f.detail}\n${f.repairInstruction}`);
+  }
+  // v15 (#1): occupancy void — BLOCKING voids route to the scene hero to
+  // furnish the abandoned region (advisory voids ride along, see the caller).
+  for (const f of occupancyVoids ?? []) {
+    add(f.pieceId, f.scene, `[occupancy/occupancy-void] ${f.detail}\n${f.repairInstruction}`);
+  }
+  // v15 (#2): per-text-node contrast — BLOCKING ghost text routes to its own
+  // piece to recolor the text (never the surface).
+  for (const f of textContrastBlocking ?? []) {
+    add(f.pieceId, f.scene, `[text-contrast/text-contrast] ${f.detail}\n${f.repairInstruction}`);
   }
   // v10: accent-as-fill routes to the named hero (blocking).
   for (const f of accentFill) {
@@ -1490,6 +1533,22 @@ interface GateRoundReport {
   imgSwaps: (typeof imgSwapEvents)[number][];
   accentFill: { stats: AccentFillResult["stats"]; findings: AccentFillFinding[]; errors: string[] };
   edgeCrop: { initial: EdgeCropFinding[]; residual: EdgeCropFinding[] };
+  /** v15 (#1): occupancy void bands + card-interior advisories. */
+  occupancy: {
+    stats: import("../lib/render/occupancy").OccupancySceneStat[];
+    findings: OccupancyVoidFinding[];
+    cardAdvisories: import("../lib/render/occupancy").CardOccupancyAdvisory[];
+    errors: string[];
+  };
+  /** v15 (#2): per-text-node contrast findings (blocking + advisory). */
+  textContrast: {
+    blocking: TextContrastFinding[];
+    advisories: TextContrastFinding[];
+    stats: import("../lib/render/text-contrast").TextContrastStat[];
+    errors: string[];
+  };
+  /** v15 (#4): stray-fragment excise/advisory events this round. */
+  strayFragments: (typeof strayFragmentEvents)[number][];
   vision: SceneVisionVerdict[];
   targets: { pieceId: string; feedback: string[] }[];
 }
@@ -1622,6 +1681,7 @@ const main = async (): Promise<void> => {
       v11: `meta-text leak: rendered text segments carrying repair vocabulary/coordinate-math prose strip deterministically at the element gate (dominant prose = reject); unowned-copy BINDING check: c.<field> references for unowned fields strip/reject in-round (+ value coverage widened to eyebrow/caption/cta, trailing-punct + case variants); clamp-vs-slot: oversized (>25% over slot) or neighbor-invading clamps route regen directly; full-bleed barbell routes to the HERO with a vertical-fill instruction (head carries the matching clause); logo-glyph count >1 per hero mock = finding; interior-clip advisory (text protruding >30% past its piece union); detached sequence verdict fires on round-0 frames and threads into round-1+ regen prompts`,
       v12: `class-matched breaker: retry progress judged on the targeting class (washout → measured spread/std delta; render-truth → per-piece blocking count; density → el/tx; accent-fill → largest-rect frac), one escalation max, same-class failure after escalation = accept-and-flag; washout gate→backstop closure: forceHeroSurfaceLift with MEASURED panel+canvas colors (gradients/rgba/root-override included) fires the moment the gate does, re-measures, residuals regen with an explicit lighten/darken direction (invariant: never a no-op); cross-piece text collision Case D: copy-class canvas text (≤32px) over ANOTHER piece's text nodes = blocking, routed to BOTH pieces role-split (hero shrinks into slot / copy takes an opaque panel) + composition-head MOCK TERRITORY clause (full-canvas app shell forfeits the copy column); broken-image swap: measured naturalWidth===0 → deterministic text-wordmark swap (tag sites + the chrome logoSrc binding) + structural img_broken`,
       v13: `register-aware richness vocabulary: quote/centered/full-bleed registers additionally accept TYPOGRAPHIC drawables (oversized numeral, type lockup, sticker, stamp, scribble...) in the script validator + prompt (floor unchanged; kills the type-poster brand-contract defect); hero-underscale: painted-union of a centered/quote hero <${HERO_UNDERSCALE_MIN_FRAC * 100}% of canvas = BLOCKING, routed "the artifact owns the frame — scale it up" (calibrated: Oatly s2 carton 0.33% fires, LiquidDeath s1 9.26% nearest pass); washout near-miss ADVISORY band (spread<floor AND std<floor+3, never blocking, appended to any regen of the piece); skeleton-bar measured detector: ≥3 sibling flat mid-grey rounded no-text bars >60px wide = structural skeleton_bars (advisory; ≥2 rows in a piece = blocking)`,
+      v15: `OCCUPANCY BUDGET (Lever B): measured empty-column void band (pixel truth + diegetic-anchor exemption) on quote/centered scenes ≥${(0.23 * 100).toFixed(0)}% of frame width = BLOCKING "furnish the void" (split/stat/list ADVISE; card-interior furnish advisory rides along); PER-TEXT-NODE CONTRAST (Lever C): each text node vs its LOCAL sampled backdrop (dominant-cluster, glyphs excluded) — <2.5:1 at ≥14px on a solid backdrop = BLOCKING (the cycle-6 white-on-white ghost class), 2.5-4.5:1 advisory; the whole-box rt-contrast text arm is RETIRED (it averaged glyphs in → FP'd legible navy-on-cream at 1.15:1); LIFT INTERIOR REPAINT: forceHeroSurfaceLift recolors interior text that would ghost against the NEW surface in the SAME pass (invariant: a lift never creates a text-contrast finding); STRAY-FRAGMENT arm: thin accent bars crossing a panel edge or floating isolated from their piece → deterministic clip/remove where the span is unambiguous, else structural advisory; SEQUENCE-JUDGE INDEX STAMPING: a magenta "SCENE N" badge burned into each frame's bottom-left before judging (cycle 6 swapped scenes 0/4); carries: theme font-family names join the meta-text vocabulary (the "NIB PRO" chrome leak) + the split-span binder tolerates one appended trailing punctuation ("built for you." vs "…for you")`,
     },
     terminalError: null,
   };
@@ -2259,8 +2319,48 @@ const main = async (): Promise<void> => {
       }
       finalMeasurements = measurements;
 
-      // Structural gates read the (possibly clamped) final code.
+      // (b6) v15 (#4): STRAY MOTIF FRAGMENTS — thin accent bars crossing a
+      // panel edge or floating isolated from their piece. Deterministic
+      // clip/remove where the authored span is unambiguous, else a structural
+      // advisory. Advisory posture: no regen target, no extra measure pass; the
+      // excise applies to finalCode + the cache (next round self-heals) and the
+      // shipped Composition.tsx is rewritten only if something changed.
+      let strayExcised = 0;
+      for (const m of measurements) {
+        for (const f of findStrayFragments(m, accentHexes)) {
+          const body = pieceCache.get(f.pieceId);
+          const repair = body ? exciseStrayFragment(body, f, theme.palette) : { code: "", action: "none" as const, detail: "piece body not cached" };
+          if (body && repair.action !== "none") {
+            pieceCache.set(f.pieceId, repair.code);
+            const span = pieceSpanInCode(finalCode, f.pieceId);
+            if (span) {
+              const spanRepair = exciseStrayFragment(finalCode.slice(span.start, span.end), f, theme.palette);
+              if (spanRepair.action !== "none") {
+                finalCode = finalCode.slice(0, span.start) + spanRepair.code + finalCode.slice(span.end);
+                strayExcised += 1;
+              }
+            }
+            strayFragmentEvents.push({ round, scene: f.scene, pieceId: f.pieceId, form: f.form, action: repair.action, detail: `${f.detail} → ${repair.detail}` });
+          } else {
+            strayFragmentEvents.push({ round, scene: f.scene, pieceId: f.pieceId, form: f.form, action: "none", detail: `${f.detail} (${repair.detail})` });
+          }
+        }
+      }
+      const strayThisRound = strayFragmentEvents.filter((e) => e.round === round);
+      if (strayThisRound.length > 0) {
+        if (strayExcised > 0) await fs.writeFile(path.join(GEN_DIR, "Composition.tsx"), finalCode, "utf8");
+        console.log(
+          `  stray-fragments: ${strayThisRound.length} [${strayThisRound.map((e) => `${e.pieceId}:${e.form}→${e.action}`).join(", ")}]`,
+        );
+      }
+
+      // Structural gates read the (possibly clamped/excised) final code.
       const structural = runStructuralGates(finalCode, script!);
+      // v15 (#4): stray fragments that could NOT be excised deterministically
+      // surface as structural advisories (they never route to regen).
+      for (const e of strayThisRound.filter((e) => e.action === "none")) {
+        structural.push({ scene: e.scene, key: "stray_fragment", detail: e.detail });
+      }
       // v11 (#5) logo-glyph count: >1 brand mark inside ONE hero mock is
       // overuse (cycle 2 s4 shipped a triple mark — drawn wordmark + stray
       // initial glyph — that the <Img>-based duplicate-logo gate is blind
@@ -2343,12 +2443,14 @@ const main = async (): Promise<void> => {
               action: "forced-lift",
               via: spanLift.via,
               targetToken: spanLift.targetToken,
+              interiorTextRepaints: spanLift.interiorTextRepaints,
               before: { spread: f.stats.spread, std: f.stats.stdDev },
               after: null,
               cleared: null,
             });
             console.warn(
-              `  [washout-lift] ${f.pieceId}: FORCED surface lift (${spanLift.via} → ${spanLift.targetToken ?? spanLift.targetHex}) — measured spread ${f.stats.spread}/std ${f.stats.stdDev}, panel ${panelColor ?? "(none opaque)"}`,
+              `  [washout-lift] ${f.pieceId}: FORCED surface lift (${spanLift.via} → ${spanLift.targetToken ?? spanLift.targetHex}) — measured spread ${f.stats.spread}/std ${f.stats.stdDev}, panel ${panelColor ?? "(none opaque)"}` +
+                `${spanLift.interiorTextRepaints > 0 ? ` · ${spanLift.interiorTextRepaints} interior text node(s) recolored (ghost-proofing)` : ""}`,
             );
             // Persist into the cached raw body so replays/reassembly keep it.
             const cached = pieceCache.get(f.pieceId);
@@ -2363,6 +2465,7 @@ const main = async (): Promise<void> => {
               action: "lift-noop-regen-routed",
               via: null,
               targetToken: null,
+              interiorTextRepaints: 0,
               before: { spread: f.stats.spread, std: f.stats.stdDev },
               after: null,
               cleared: null,
@@ -2435,6 +2538,39 @@ const main = async (): Promise<void> => {
           `${accentFill.errors.length ? ` · errors: ${accentFill.errors.join(" | ")}` : ""}`,
       );
 
+      // (b4) v15 (#1): OCCUPANCY BUDGET — measured void bands (pixel truth +
+      // anchor exemption) + card-interior furnish advisories. Void bands on
+      // quote/centered scenes BLOCK ("furnish the void"); split/stat/list voids
+      // and card interiors ADVISE.
+      const occupancy = await phase(`occupancy-r${round}`, () => assessOccupancy(measurements, sceneRegisters));
+      const occupancyBlocking = occupancy.findings.filter((f) => f.blocking);
+      for (const f of occupancy.findings.filter((f) => !f.blocking)) {
+        structural.push({ scene: f.scene, key: "occupancy_void_advisory", detail: f.detail });
+      }
+      for (const c of occupancy.cardAdvisories) {
+        structural.push({ scene: c.scene, key: "card_interior_occupancy", detail: c.detail });
+      }
+      console.log(
+        `  occupancy: ${occupancy.stats.length} scene(s) sampled · ${occupancy.findings.length} void(s)` +
+          `${occupancy.findings.length ? ` [${occupancy.findings.map((f) => `${f.pieceId} ${(f.runFracW * 100).toFixed(0)}%${f.blocking ? " BLOCK" : " adv"}`).join(", ")}]` : ""}` +
+          ` · ${occupancy.cardAdvisories.length} card-interior advisory` +
+          `${occupancy.errors.length ? ` · errors: ${occupancy.errors.join(" | ")}` : ""}`,
+      );
+
+      // (b5) v15 (#2): PER-TEXT-NODE CONTRAST — each text node vs its LOCAL
+      // sampled backdrop. <2.5:1 at ≥14px on a solid backdrop BLOCKS (the ghost
+      // class); 2.5-4.5:1 (and small-text) ADVISES.
+      const textContrast = await phase(`text-contrast-r${round}`, () => assessTextNodeContrast(measurements));
+      for (const a of textContrast.advisories) {
+        structural.push({ scene: a.scene, key: "text_contrast_advisory", detail: a.detail });
+      }
+      console.log(
+        `  text-contrast: ${textContrast.stats.length} node(s) under ceiling · ${textContrast.findings.length} blocking` +
+          `${textContrast.findings.length ? ` [${textContrast.findings.map((f) => `${f.pieceId} ${f.ratio.toFixed(2)}:1`).join(", ")}]` : ""}` +
+          ` · ${textContrast.advisories.length} advisory` +
+          `${textContrast.errors.length ? ` · errors: ${textContrast.errors.join(" | ")}` : ""}`,
+      );
+
       // (c) per-scene vision. (Sequence vision is detached — see below.)
       const vision = await phase(`vision-r${round}`, () => runVisionRound(measurements, script!, brandTruth));
 
@@ -2450,6 +2586,8 @@ const main = async (): Promise<void> => {
         vision,
         underscale,
         skeletonBlocking: skeletonBars.filter((f) => f.blocking),
+        occupancyVoids: occupancyBlocking,
+        textContrastBlocking: textContrast.findings,
         registers: sceneRegisters,
       });
       // v13 (#3): near-miss washout advisories ride along on any piece ALREADY
@@ -2457,6 +2595,17 @@ const main = async (): Promise<void> => {
       for (const a of contrast.advisories) {
         const existing = targets.get(a.pieceId);
         if (existing) existing.push(`[advisory/washout-near-miss] ${a.advisory}`);
+      }
+      // v15: occupancy + text-contrast advisories ride along on any piece
+      // already regenerating (never create a target).
+      for (const f of occupancy.findings.filter((f) => !f.blocking)) {
+        targets.get(f.pieceId)?.push(`[advisory/occupancy-void] ${f.repairInstruction}`);
+      }
+      for (const c of occupancy.cardAdvisories) {
+        targets.get(c.pieceId)?.push(`[advisory/card-interior] ${c.advisory}`);
+      }
+      for (const a of textContrast.advisories) {
+        targets.get(a.pieceId)?.push(`[advisory/text-contrast] ${a.repairInstruction}`);
       }
 
       gateRounds.push({
@@ -2477,6 +2626,19 @@ const main = async (): Promise<void> => {
         imgSwaps: imgSwapEvents.filter((e) => e.round === round),
         accentFill: { stats: accentFill.stats, findings: accentFill.findings, errors: accentFill.errors },
         edgeCrop: { initial: edgeCropInitial, residual: edgeCropResidual },
+        occupancy: {
+          stats: occupancy.stats,
+          findings: occupancy.findings,
+          cardAdvisories: occupancy.cardAdvisories,
+          errors: occupancy.errors,
+        },
+        textContrast: {
+          blocking: textContrast.findings,
+          advisories: textContrast.advisories,
+          stats: textContrast.stats,
+          errors: textContrast.errors,
+        },
+        strayFragments: strayFragmentEvents.filter((e) => e.round === round),
         vision,
         targets: [...targets.entries()].map(([pieceId, feedback]) => ({ pieceId, feedback })),
       });
@@ -2499,6 +2661,12 @@ const main = async (): Promise<void> => {
           washoutNearMiss: contrast.advisories.length,
           skeletonBarsAdvisory: skeletonBars.filter((f) => !f.blocking).length,
           skeletonBarsBlocking: skeletonBars.filter((f) => f.blocking).length,
+          occupancyVoidsBlocking: occupancyBlocking.length,
+          occupancyVoidsAdvisory: occupancy.findings.filter((f) => !f.blocking).length,
+          cardInteriorAdvisory: occupancy.cardAdvisories.length,
+          textContrastBlocking: textContrast.findings.length,
+          textContrastAdvisory: textContrast.advisories.length,
+          strayFragments: strayFragmentEvents.filter((e) => e.round === 0).length,
           structural: structural.length,
           rtBlocking: rt.blocking.length,
           visionSevereScenes: vision.filter((v) => v.severe.length > 0).map((v) => v.scene),
@@ -2515,6 +2683,8 @@ const main = async (): Promise<void> => {
       console.log(
         `  round ${round}: density ${density.length} · washout ${contrastRaw.findings.length}→${contrast.findings.length} residual (${washoutLiftEvents.filter((e) => e.round === round && e.action === "forced-lift").length} forced lift(s)) · near-miss ${contrast.advisories.length} · ` +
           `underscale ${underscale.length} · skeleton ${skeletonBars.length} · accent-fill ${accentFill.findings.length} · ` +
+          `occupancy ${occupancyBlocking.length} block/${occupancy.findings.filter((f) => !f.blocking).length} adv/${occupancy.cardAdvisories.length} card · ` +
+          `text-contrast ${textContrast.findings.length} block/${textContrast.advisories.length} adv · stray ${strayThisRound.length} · ` +
           `edge-crop ${edgeCropInitial.length}→${edgeCropResidual.length} residual · structural ${structural.length} · render-truth ${rt.findings.length} (${rt.blocking.length} blocking) · ` +
           `vision actionable ${vision.reduce((n, v) => n + v.actionable.length, 0)} (severe on [${vision.filter((v) => v.severe.length).map((v) => v.scene).join(", ")}]) · ` +
           `retry targets [${[...targets.keys()].join(", ") || "none"}]`,
@@ -2570,6 +2740,18 @@ const main = async (): Promise<void> => {
           const f = skeletonBars.find((s) => s.pieceId === pieceId);
           return { cls: "skeleton", value: f?.bars ?? 0, aux: f?.rows ?? 0, metric: `${f?.bars ?? 0} skeleton bar(s) in ${f?.rows ?? 0} row(s)` };
         }
+        // v15 (#1): occupancy void — progress = the void run SHRANK.
+        if (joined.includes("[occupancy/")) {
+          const f = occupancyBlocking.find((o) => o.pieceId === pieceId);
+          const pct = Math.round((f?.runFracW ?? 0) * 1000) / 10;
+          return { cls: "occupancy", value: pct, aux: 0, metric: `void run ${pct}% of frame width` };
+        }
+        // v15 (#2): text-contrast — progress = the worst ratio ROSE.
+        if (joined.includes("[text-contrast/")) {
+          const f = textContrast.findings.filter((t) => t.pieceId === pieceId).sort((a, b) => a.ratio - b.ratio)[0];
+          const r = Math.round((f?.ratio ?? 0) * 100) / 100;
+          return { cls: "text-contrast", value: r, aux: 0, metric: `worst text contrast ${r}:1` };
+        }
         const d = densityMetricOf(pieceId);
         const cls: FailureClass = joined.includes("[density/") ? "density" : "vision";
         return { cls, value: d.value, aux: d.aux, metric: `${d.value}el/${d.aux}tx` };
@@ -2593,6 +2775,10 @@ const main = async (): Promise<void> => {
             return cur.value > prev.value + 1; // painted union grew ≥1pt of canvas
           case "skeleton":
             return cur.value < prev.value || cur.aux < prev.aux; // fewer bars/rows
+          case "occupancy":
+            return cur.value < prev.value - 1; // void run shrank ≥1pt of width
+          case "text-contrast":
+            return cur.value > prev.value + 0.3; // worst ratio rose meaningfully
           default:
             return cur.value > prev.value || cur.aux > prev.aux; // el/tx grew
         }

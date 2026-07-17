@@ -1248,5 +1248,31 @@ await check("countBrandMarks: long crawl titles reduce to the first brand token;
   assert(countBrandMarks(clean, "Linear") === 0, "no marks → 0");
 });
 
+// ── v15 (#6): split-span binder tolerates ONE appended trailing punctuation ───
+// The cycle-6 residual: a headline split across 2 spans rendered "Config hell."
+// (an appended period) while the field is "Config hell" — the conservative
+// binder correctly declined. Now it binds the run, keeping the "." literal.
+check("bind-in-place (v15): split spans with ONE appended trailing punct bind (the 'built for you.' residual)", () => {
+  const dotted = `export const Section0 = () => (<h1><span>Config</span><span> hell.</span></h1>);`;
+  const r = bindLiteralCopyInPlace(dotted, copyScenes);
+  assert(r.code.includes("<span>{c.headline.slice(0, 6)}</span>"), `first span binds, got: ${r.code}`);
+  assert(r.code.includes("<span> {c.headline.slice(7, 11)}.</span>"), `final span binds with the '.' kept literal, got: ${r.code}`);
+  assert(r.bound.length === 1 && r.bound[0].field === "headline", `ledger: ${JSON.stringify(r.bound)}`);
+  // Render no-op: slice(7,11) = "hell", then the literal "." → " hell." (identical glyphs).
+  assert("Config hell".slice(7, 11) + "." === " hell.".trim(), "the bound expression reproduces the rendered text");
+});
+
+check("bind-in-place (v15): a NON-final (middle) appended punct does NOT bind — tolerance is final-segment-only", () => {
+  const mid = `export const Section0 = () => (<h1><span>Config.</span><span> hell</span></h1>);`;
+  const r = bindLiteralCopyInPlace(mid, copyScenes);
+  assert(r.code === mid && r.bound.length === 0, `mid-run punct must not bind, got: ${r.code}`);
+});
+
+check("bind-in-place (v15): two appended puncts still decline (only ONE tolerated)", () => {
+  const two = `export const Section0 = () => (<h1><span>Config</span><span> hell..</span></h1>);`;
+  const r = bindLiteralCopyInPlace(two, copyScenes);
+  assert(r.code === two && r.bound.length === 0, `double punct declines (TRAIL_PUNCT_RX matches one), got: ${r.code}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exitCode = 1;

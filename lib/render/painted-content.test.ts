@@ -23,10 +23,13 @@ import sharp from "sharp";
 import {
   assessFrameInk,
   assessEmptyBand,
+  assessEmptyColumnRun,
+  assessRegionInk,
   largestEmptyRun,
   verifyPaintedScenes,
   INK_FLOOR,
   QUADRANT_FLOOR,
+  COLUMN_INK_FLOOR,
 } from "./painted-content";
 
 let passed = 0;
@@ -360,6 +363,55 @@ await check("assessEmptyBand: thin bars across a row keep it filled (waveform ca
   // top gap [18,70)=52px=29% and bottom [110,162)=52px=29% — each under 30%; the
   // waveform band itself is NOT counted empty (proves thin bars register as ink).
   assert(r.bandFracH < 0.3, `waveform rows must read filled, got ${r.bandFracH.toFixed(2)} at ${r.startFracH.toFixed(2)}`);
+});
+
+// ── v15: assessEmptyColumnRun (the vertical twin of assessEmptyBand) ──────────
+const CW = 320;
+const CH = 200;
+const colFrame = (rects: { x: number; w: number; color?: { r: number; g: number; b: number } }[]): Promise<Buffer> =>
+  sharp({ create: { width: CW, height: CH, channels: 3, background: { r: 255, g: 255, b: 255 } } })
+    .composite(rects.map((r) => ({ input: { create: { width: r.w, height: CH, channels: 3, background: r.color ?? { r: 0, g: 0, b: 0 } } }, top: 0, left: r.x })))
+    .png()
+    .toBuffer();
+
+await check("assessEmptyColumnRun: left-only content leaves a wide RIGHT void", async () => {
+  const buf = await colFrame([{ x: 0, w: 128 }]); // 40% inked left, 60% void right
+  const r = await assessEmptyColumnRun(buf, { colInkFloor: COLUMN_INK_FLOOR });
+  assert(r.runFracW > 0.55 && r.runFracW < 0.65, `right void ~0.6, got ${r.runFracW.toFixed(2)}`);
+  assert(r.startFracW > 0.35 && Math.abs(r.endFracW - 1) < 0.05, `band right-anchored, got [${r.startFracW.toFixed(2)},${r.endFracW.toFixed(2)}]`);
+});
+
+await check("assessEmptyColumnRun: a fully-furnished frame reports a small run", async () => {
+  const buf = await colFrame([
+    { x: 20, w: 30 }, { x: 110, w: 30 }, { x: 200, w: 30 }, { x: 280, w: 30 },
+  ]);
+  const r = await assessEmptyColumnRun(buf, { colInkFloor: COLUMN_INK_FLOOR });
+  assert(r.runFracW < 0.23, `furnished → small run, got ${r.runFracW.toFixed(2)}`);
+});
+
+await check("assessEmptyColumnRun: a faint HORIZONTAL hairline (below the column floor) does NOT break a void", async () => {
+  // A 2px-tall rule across the void: each column it crosses carries 2/200 = 1%
+  // ink ≪ the 1.5% column floor, so the void stays contiguous.
+  const buf = await sharp({ create: { width: CW, height: CH, channels: 3, background: { r: 255, g: 255, b: 255 } } })
+    .composite([
+      { input: { create: { width: 128, height: CH, channels: 3, background: { r: 0, g: 0, b: 0 } } }, top: 0, left: 0 },
+      { input: { create: { width: 160, height: 2, channels: 3, background: { r: 0, g: 0, b: 0 } } }, top: 100, left: 140 },
+    ])
+    .png()
+    .toBuffer();
+  const r = await assessEmptyColumnRun(buf, { colInkFloor: COLUMN_INK_FLOOR });
+  assert(r.runFracW > 0.55, `hairline doesn't split the void, got ${r.runFracW.toFixed(2)}`);
+});
+
+await check("assessRegionInk: a painted region reports its ink share; a blank region ~0", async () => {
+  const buf = await colFrame([{ x: 0, w: 100 }]); // left ~31% black, white clearly dominant
+  const [inked, blank] = await assessRegionInk(buf, [
+    { x: 0, y: 0, w: 0.3, h: 1 },
+    { x: 0.6, y: 0, w: 0.4, h: 1 },
+  ]);
+  assert(inked > 0.9, `left region inked, got ${inked.toFixed(2)}`);
+  assert(blank < 0.05, `right region blank, got ${blank.toFixed(2)}`);
+  assert((await assessRegionInk(buf, [])).length === 0, "empty region list → empty result");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

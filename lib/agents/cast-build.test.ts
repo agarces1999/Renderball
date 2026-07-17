@@ -39,6 +39,8 @@ import {
   substituteImgAssetIds,
   ensureHeroSurfaceContrast,
   forceHeroSurfaceLift,
+  repaintInteriorTextForSurface,
+  themeFontFamilyNames,
   stripMaskedValueRuns,
   extractJsxTextSegments,
   isMetaTextSegment,
@@ -1384,6 +1386,85 @@ await check("castBuild end-to-end: hero binding theft rejects in-round; repair t
   assert(/binds scene copy it does not own/.test(heroCalls[1].user), "the repair prompt names the theft");
   assert(/c\.headline/.test(heroCalls[1].user), "the stolen field is named");
   assert(r.elementOutcomes.some((o) => o.pieceId === "s0.hero" && o.repaired && !o.failed), "repair recovered the hero");
+});
+
+// ─── (v15 #3) LIFT INTERIOR REPAINT — a lift never creates a ghost ───────────
+// Cycle-6 s0: a washout lift repainted a panel WHITE under WHITE text → a
+// white-on-white ghost. The invariant: forceHeroSurfaceLift recolors interior
+// text that would ghost against the NEW surface, in the SAME deterministic pass.
+
+/** Does any `color:` in `code` resolve within the ΔL floor of `surfaceHex`? */
+const anyGhostText = (code: string, surfaceHex: string, pal: Record<string, string>): boolean => {
+  const sl = parseInt(surfaceHex.slice(1, 3), 16) * 0.2126 + parseInt(surfaceHex.slice(3, 5), 16) * 0.7152 + parseInt(surfaceHex.slice(5, 7), 16) * 0.0722;
+  const rx = /(?<![A-Za-z-])color\s*:\s*(?:"(#[0-9a-fA-F]{6})"|([A-Z][A-Z0-9_]{2,}))/g;
+  for (let m = rx.exec(code); m; m = rx.exec(code)) {
+    const hex = m[1] ?? pal[m[2]];
+    if (!hex || !/^#[0-9a-fA-F]{6}$/.test(hex)) continue;
+    const l = parseInt(hex.slice(1, 3), 16) * 0.2126 + parseInt(hex.slice(3, 5), 16) * 0.7152 + parseInt(hex.slice(5, 7), 16) * 0.0722;
+    if (Math.abs(l - sl) < HERO_SURFACE_MIN_DELTA_L) return true;
+  }
+  return false;
+};
+
+await check("lift interior repaint: white text on a lifted-white panel is recolored — the ghost invariant holds", () => {
+  const body = `<div style={{ background: CARD_FILL }}><span style={{ color: "#ffffff" }}>Built for you</span></div>`;
+  const r = forceHeroSurfaceLift(body, washTheme, { canvasColor: "#101018" });
+  assert(r.lifted && r.targetHex === "#ffffff", `panel lifts to white, got ${JSON.stringify({ lifted: r.lifted, hex: r.targetHex })}`);
+  assert(r.interiorTextRepaints === 1, `the ghost text is recolored, got ${r.interiorTextRepaints}`);
+  assert(!/color: "#ffffff"/.test(r.code), `no white text survives on the white surface: ${r.code}`);
+  assert(!anyGhostText(r.code, "#ffffff", washTheme.palette), "INVARIANT: no text remains same-tone as the new surface");
+});
+
+await check("lift interior repaint: text that ALREADY contrasts the new surface is left untouched", () => {
+  const body = `<div style={{ background: CARD_FILL }}><span style={{ color: "#101018" }}>dark ink</span></div>`;
+  const r = forceHeroSurfaceLift(body, washTheme, { canvasColor: "#101018" });
+  assert(r.lifted && r.interiorTextRepaints === 0, `contrasting text stays, got ${r.interiorTextRepaints}`);
+  assert(/color: "#101018"/.test(r.code), "the dark ink survives verbatim");
+});
+
+await check("repaintInteriorTextForSurface: only standalone `color:` moves; backgroundColor / *Color props never do", () => {
+  const code = `<div style={{ backgroundColor: "#ffffff", borderColor: "#ffffff", color: "#ffffff" }}>x</div>`;
+  const r = repaintInteriorTextForSurface(code, "#ffffff", washTheme);
+  assert(r.repaints === 1, `exactly the one text color, got ${r.repaints}`);
+  assert(/backgroundColor: "#ffffff"/.test(r.code) && /borderColor: "#ffffff"/.test(r.code), "surface props untouched");
+  assert(!/[^A-Za-z-]color: "#ffffff"/.test(r.code), "the text color moved off white");
+  // A bare palette const text color resolves + recolors too.
+  const bareC = `<div style={{ color: WHITE }}>y</div>`;
+  const rb = repaintInteriorTextForSurface(bareC, "#ffffff", washTheme);
+  assert(rb.repaints === 1 && !/color: WHITE\b/.test(rb.code), `palette-const text recolors: ${rb.code}`);
+});
+
+// ─── (v15 #6a) font-family names join the meta-text vocabulary ────────────────
+const nibTheme: Theme = {
+  ...theme,
+  fonts: { display: '"Nib Pro", serif', body: '"Geist", sans-serif', mono: '"Geist Mono", monospace', fontFaceCss: "" },
+};
+
+await check("themeFontFamilyNames: distinctive first-family names extracted; generic keywords skipped", () => {
+  const names = themeFontFamilyNames(nibTheme);
+  assert(names.includes("Nib Pro") && names.includes("Geist") && names.includes("Geist Mono"), `got ${JSON.stringify(names)}`);
+  assert(!names.some((n) => /^(serif|sans-serif|monospace)$/i.test(n)), "generic stack keywords are not names");
+  // A purely-generic stack contributes nothing.
+  const generic: Theme = { ...theme, fonts: { display: "system-ui, sans-serif", body: "Arial, sans-serif", mono: "monospace", fontFaceCss: "" } };
+  assert(themeFontFamilyNames(generic).length === 0, `generic stacks yield no names, got ${JSON.stringify(themeFontFamilyNames(generic))}`);
+});
+
+await check("isMetaTextSegment: a font-family name leaking as chrome fires (the 'NIB PRO REGISTRATION' leak); real copy passes", () => {
+  const names = themeFontFamilyNames(nibTheme);
+  assert(isMetaTextSegment("NIB PRO REGISTRATION", names), "the font-name-as-chrome leak fires");
+  assert(isMetaTextSegment("Set in Geist Mono", names), "any face name leaking fires");
+  assert(!isMetaTextSegment("NIB PRO REGISTRATION"), "without the name vocab (no theme), it's just copy");
+  assert(!isMetaTextSegment("Built for the bold", names), "real brand copy never trips the name arm");
+  assert(!isMetaTextSegment("A nibble of progress", names), "a substring inside another word does not trip (word-bounded)");
+});
+
+await check("stripMetaText: a leaked font-name text node strips when theme names are supplied", () => {
+  const body = `<div><span>NIB PRO REGISTRATION</span><h1>Built for you</h1></div>`;
+  const withNames = stripMetaText(body, themeFontFamilyNames(nibTheme));
+  assert(withNames.stripped.length === 1 && !withNames.code.includes("NIB PRO"), `font-name node stripped: ${withNames.code}`);
+  assert(withNames.code.includes("Built for you"), "real copy survives");
+  const without = stripMetaText(body);
+  assert(without.stripped.length === 0, "without the name vocab the node is untouched (backward-compatible)");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

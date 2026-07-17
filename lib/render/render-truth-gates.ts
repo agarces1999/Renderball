@@ -359,13 +359,6 @@ export const findTextOverlap = (m: SceneMeasurement): RenderTruthFinding[] => {
 };
 
 // ── color/luminance helpers (WCAG relative luminance) ────────────────────────
-const parseRgb = (s: string): [number, number, number] | null => {
-  const m = /rgba?\(([^)]+)\)/.exec(s);
-  if (!m) return null;
-  const p = m[1].split(",").map((v) => parseFloat(v.trim()));
-  if (p.length < 3 || p.some((n) => Number.isNaN(n))) return null;
-  return [p[0], p[1], p[2]];
-};
 const relLum = (r: number, g: number, b: number): number => {
   const f = (c: number) => {
     const s = c / 255;
@@ -373,21 +366,26 @@ const relLum = (r: number, g: number, b: number): number => {
   };
   return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b);
 };
-const contrastRatio = (l1: number, l2: number): number =>
-  (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05);
 
 // Floors are deliberately lenient — these flag genuinely-broken (near-invisible)
 // content, not aesthetic borderline cases (false-negative direction).
-const TEXT_CONTRAST_FLOOR = 1.6; // text the same tone as its surface
 const LOGO_RANGE_FLOOR = 0.1; // logo whose luminance barely varies vs its card
-const MIN_TEXT_PX = 12;
 const MIN_LOGO = { w: 36, h: 18 };
 
 /**
- * Sampled-from-pixels contrast. Text: computed color vs the median luminance of
- * the box behind it. Logo image: internal luminance range (a washed-out logo on
- * a same-tone card barely varies). Needs the screenshot; sharp is dynamic-
- * imported so its absence degrades to no contrast findings (not a crash).
+ * Sampled-from-pixels contrast — LOGO ARM ONLY as of v15. Logo image: internal
+ * luminance range (a washed-out logo on a same-tone card barely varies).
+ *
+ * v15 RETIREMENT: the TEXT arm (computed color vs the mean luminance of the
+ * text's own box) is retired — the box mean averages the glyphs themselves in,
+ * so it false-fired on legible text (cycle-4 s4: "1.15:1" on a readable
+ * navy-on-cream headline) and under-fired on real ghosts. Per-text-node
+ * contrast against the sampled LOCAL backdrop (lib/render/text-contrast.ts,
+ * dominant-cluster sampling that excludes the glyphs) replaces it with a
+ * blocking arm + advisory band.
+ *
+ * Needs the screenshot; sharp is dynamic-imported so its absence degrades to
+ * no contrast findings (not a crash).
  */
 export const findContrast = async (
   m: SceneMeasurement,
@@ -450,20 +448,9 @@ export const findContrast = async (
           detail: `logo <img ${(e.src || "").slice(-28)}> nearly invisible against its surface (luminance range ${s.range.toFixed(3)} < ${LOGO_RANGE_FLOOR})`,
         });
       }
-    } else if (e.text.length >= 2 && e.fontSize >= MIN_TEXT_PX) {
-      const fg = parseRgb(e.color);
-      if (!fg) continue;
-      const s = await sampleBox(e.x, e.y, e.w, e.h);
-      if (!s) continue;
-      const ratio = contrastRatio(relLum(fg[0], fg[1], fg[2]), s.mean);
-      if (ratio < TEXT_CONTRAST_FLOOR) {
-        out.push({
-          scene: m.scene,
-          kind: "contrast",
-          detail: `text "${e.text.slice(0, 32)}" ~${ratio.toFixed(2)}:1 vs its surface (< ${TEXT_CONTRAST_FLOOR}:1)`,
-        });
-      }
     }
+    // v15: text nodes are judged by lib/render/text-contrast.ts (per-node
+    // local-backdrop sampling) — the whole-box text arm here is RETIRED.
   }
   return out;
 };
@@ -1022,6 +1009,330 @@ export const planEdgeCropMoves = (
     plan.moves.push({ pieceId, dx, dy });
   }
   return plan;
+};
+
+// ── stray motif fragments (v15 — dogfood cycle 6: the crossing lime rule) ────
+// Cycle-6 evidence (Robinhood): s2 shipped a thin lime rule CROSSING OUT of
+// the phone mock's edge onto the canvas, and s4 shipped an orphaned "100%"
+// progress bar floating mid-void, >100px from any other content of its piece.
+// Both are accent FRAGMENTS — thin painted bars that lost their anchor. Every
+// prior gate is blind: they're inside the frame (no overflow), tiny (no
+// density change), the right hue (no accent-fill), and textless (no
+// interior-clip). Measured truth:
+//   crossing — a thin painted bar intersecting one of its OWN piece's opaque
+//     panels while extending past that panel's edge by >30% of its own length
+//     (a rule that escapes its mock);
+//   isolated — a thin painted bar ≥80px (rect gap) from every other visible
+//     element of its piece (a fragment floating in the void).
+// Precision guards: connector/throughline pieces ARE thin rules by design —
+// exempt. When accent hexes are supplied, only accent-toned bars qualify
+// (neutral hairlines/dividers are grammar, not fragments). STRUCTURAL
+// (advisory) finding + a deterministic repair where safe: crossing bars CLIP
+// to the panel edge (a numeral rewrite), isolated childless bars REMOVE.
+
+/** Thin-bar geometry: the short axis at most / the long axis at least. */
+const STRAY_MAX_THIN_PX = 16;
+const STRAY_MIN_LONG_PX = 48;
+/** Crossing: overhang past the panel edge must exceed this frac of own length. */
+export const STRAY_CROSSING_FRAC = 0.3;
+/** …and this many absolute px (grazing contact never fires). */
+export const STRAY_CROSSING_MIN_PX = 24;
+/** Isolated: minimum rect-to-rect gap from ALL other piece content. */
+export const STRAY_ISOLATION_MIN_PX = 80;
+/** RGB distance for "accent-toned" when accent hexes are supplied. */
+const STRAY_ACCENT_RGB_DIST = 70;
+const STRAY_EXEMPT_PIECE_RX = /\.(connector|throughline)$/;
+
+export interface StrayFragmentFinding {
+  kind: "stray-fragment";
+  scene: number;
+  pieceId: string;
+  form: "crossing" | "isolated";
+  rect: { x: number; y: number; w: number; h: number };
+  bg: string;
+  /** crossing only: which panel edge is crossed + by how much. */
+  edge?: "left" | "right" | "top" | "bottom";
+  overhangPx?: number;
+  detail: string;
+}
+
+const rgbOf = (c: string): [number, number, number] | null => {
+  const hex = /^#([0-9a-fA-F]{6})$/.exec((c || "").trim());
+  if (hex) {
+    const n = parseInt(hex[1], 16);
+    return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+  }
+  const m = /rgba?\(([^)]+)\)/.exec(c || "");
+  if (!m) return null;
+  const p = m[1].split(",").map((v) => parseFloat(v.trim()));
+  if (p.length < 3 || p.slice(0, 3).some((n) => Number.isNaN(n))) return null;
+  return [p[0], p[1], p[2]];
+};
+
+const rgbDist = (a: [number, number, number], b: [number, number, number]): number =>
+  Math.sqrt((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2);
+
+const rectGap = (
+  a: { x: number; y: number; w: number; h: number },
+  b: { x: number; y: number; w: number; h: number },
+): number => {
+  const dx = Math.max(0, Math.max(a.x - (b.x + b.w), b.x - (a.x + a.w)));
+  const dy = Math.max(0, Math.max(a.y - (b.y + b.h), b.y - (a.y + a.h)));
+  return Math.sqrt(dx * dx + dy * dy);
+};
+
+const isThinPaintedBar = (e: MeasuredElement): boolean =>
+  !e.isImg &&
+  e.text.trim() === "" &&
+  e.hasTextDesc !== true &&
+  e.opacity > 0.1 &&
+  cssAlpha(e.bg) >= 0.5 &&
+  ((e.h <= STRAY_MAX_THIN_PX && e.w >= STRAY_MIN_LONG_PX) ||
+    (e.w <= STRAY_MAX_THIN_PX && e.h >= STRAY_MIN_LONG_PX));
+
+/** The visible (clip-aware) rect when the walk provides it. */
+const strayRect = (e: MeasuredElement): { x: number; y: number; w: number; h: number } =>
+  typeof e.vw === "number" && typeof e.vh === "number"
+    ? { x: e.vx ?? e.x, y: e.vy ?? e.y, w: e.vw, h: e.vh }
+    : { x: e.x, y: e.y, w: e.w, h: e.h };
+
+/** Thin accent bars that cross a panel's edge (their own piece's or a foreign
+ *  mock's — the cycle-6 rule was a THROUGHLINE bar escaping the hero's phone
+ *  panel) or float isolated from all their piece's content. Pure geometry on
+ *  measured rects. */
+export const findStrayFragments = (
+  m: SceneMeasurement,
+  accentHexes?: string[],
+): StrayFragmentFinding[] => {
+  if (m.error) return [];
+  const accents = (accentHexes ?? [])
+    .map(rgbOf)
+    .filter((c): c is [number, number, number] => c !== null);
+  const visible = m.elements.filter((e) => e.opacity > 0.05 && e.w > 0 && e.h > 0);
+  // Panels from ANY content piece — the crossing form is cross-piece-aware.
+  const panels = visible
+    .filter(
+      (p) =>
+        !!p.piece &&
+        p.pieceKind !== "atmosphere" &&
+        p.pieceKind !== "chrome" &&
+        p.opacity > 0.1 &&
+        (cssAlpha(p.bg) >= XP_MIN_PANEL_ALPHA || !!p.hasBgImage) &&
+        p.w * p.h >= XP_MIN_PANEL_AREA &&
+        p.w * p.h < EDGE_CROP_FULL_BLEED_FRAC * m.width * m.height,
+    )
+    .map((p) => ({ el: p, rect: strayRect(p) }));
+  const out: StrayFragmentFinding[] = [];
+  for (const e of visible) {
+    // Atmosphere bars are staging (dividers, frame lines) — never fragments.
+    if (!e.piece || e.pieceKind === "atmosphere" || e.pieceKind === "chrome") continue;
+    if (!isThinPaintedBar(e)) continue;
+    if (accents.length > 0) {
+      const bar = rgbOf(e.bg);
+      if (!bar || !accents.some((a) => rgbDist(bar, a) <= STRAY_ACCENT_RGB_DIST)) continue;
+    }
+    const r = strayRect(e);
+    if (r.w <= 0 || r.h <= 0) continue;
+    const horizontal = r.w >= r.h;
+    const ownLen = horizontal ? r.w : r.h;
+    if (ownLen < STRAY_MIN_LONG_PX) continue;
+    // (a) CROSSING: the bar SUBSTANTIVELY lives in a panel (long-axis
+    // intersection ≥25% of its length) yet overhangs that panel's edge by
+    // >30% of its length and ≥24px (grazing contact never fires).
+    let crossed: StrayFragmentFinding | null = null;
+    for (const { el: pEl, rect: p } of panels) {
+      if (pEl === e) continue;
+      const ix = Math.min(r.x + r.w, p.x + p.w) - Math.max(r.x, p.x);
+      const iy = Math.min(r.y + r.h, p.y + p.h) - Math.max(r.y, p.y);
+      if (ix <= 0 || iy <= 0) continue;
+      const alongAxis = horizontal ? ix : iy;
+      if (alongAxis < 0.25 * ownLen) continue; // touches, doesn't live there
+      const overs: { edge: "left" | "right" | "top" | "bottom"; px: number }[] = horizontal
+        ? [
+            { edge: "right", px: r.x + r.w - (p.x + p.w) },
+            { edge: "left", px: p.x - r.x },
+          ]
+        : [
+            { edge: "bottom", px: r.y + r.h - (p.y + p.h) },
+            { edge: "top", px: p.y - r.y },
+          ];
+      const worst = overs
+        .filter((o) => o.px > STRAY_CROSSING_FRAC * ownLen && o.px >= STRAY_CROSSING_MIN_PX)
+        .sort((a, b) => b.px - a.px)[0];
+      if (!worst) continue;
+      crossed = {
+        kind: "stray-fragment",
+        scene: m.scene,
+        pieceId: e.piece,
+        form: "crossing",
+        rect: r,
+        bg: e.bg,
+        edge: worst.edge,
+        overhangPx: Math.round(worst.px),
+        detail:
+          `scene ${m.scene}: a ${r.w}×${r.h} accent bar (piece ${e.piece}, bg ${e.bg}) CROSSES the ${worst.edge} ` +
+          `edge of ${pEl.piece === e.piece ? "its own" : `piece ${pEl.piece}'s`} panel by ${Math.round(worst.px)}px ` +
+          `(${Math.round((worst.px / ownLen) * 100)}% of its own length) — a rule escaping its mock onto the ` +
+          `canvas. Keep accent rules fully inside the surface they annotate.`,
+      };
+      break;
+    }
+    if (crossed) {
+      out.push(crossed);
+      continue;
+    }
+    // (b) ISOLATED: ≥80px from every other visible element of its piece.
+    // Connector/throughline pieces ARE thin rules by design — exempt here.
+    if (STRAY_EXEMPT_PIECE_RX.test(e.piece)) continue;
+    const others = visible.filter(
+      (o) => o !== e && o.piece === e.piece && (isPaintedForStray(o) || o.text.trim() !== ""),
+    );
+    if (others.length === 0) continue; // the bar IS the piece — a motif, not a fragment
+    const minGap = Math.min(...others.map((o) => rectGap(r, strayRect(o))));
+    if (minGap < STRAY_ISOLATION_MIN_PX) continue;
+    out.push({
+      kind: "stray-fragment",
+      scene: m.scene,
+      pieceId: e.piece,
+      form: "isolated",
+      rect: r,
+      bg: e.bg,
+      detail:
+        `scene ${m.scene}: a ${r.w}×${r.h} accent bar (piece ${e.piece}, bg ${e.bg}) floats ISOLATED — ` +
+        `${Math.round(minGap)}px from the nearest other content of its piece (floor ${STRAY_ISOLATION_MIN_PX}px). ` +
+        `An orphaned fragment mid-void: anchor it to real content or remove it.`,
+    });
+  }
+  return out;
+};
+
+const isPaintedForStray = (e: MeasuredElement): boolean =>
+  e.opacity > 0.05 && (e.isImg || cssAlpha(e.bg) >= 0.5 || !!e.hasBgImage);
+
+// ── deterministic stray-fragment repair (clip / remove where safe) ───────────
+// Best-effort, zero tokens, mirroring the edge-crop clamp posture: the repair
+// only applies when the fragment's authored style is UNAMBIGUOUSLY identifiable
+// in the piece's code (exactly one style span whose width/height literals match
+// the measured rect ±3px and whose background resolves to the measured color).
+// crossing → the long-axis dimension literal rewrites so the bar ends at the
+// panel edge (a numeral edit — safe with children). isolated → the element is
+// removed, but ONLY when it is self-closing or immediately-closed (childless);
+// anything ambiguous no-ops and the structural finding ships instead.
+
+export interface StrayRepairResult {
+  code: string;
+  action: "clipped" | "removed" | "none";
+  detail: string;
+}
+
+/** First balanced `{{ … }}` span starting at `from` (string-aware). */
+const balancedDoubleBrace = (s: string, from: number): { start: number; end: number } | null => {
+  if (s.slice(from, from + 2) !== "{{") return null;
+  let depth = 0;
+  let quote: string | null = null;
+  for (let i = from; i < s.length; i++) {
+    const c = s[i];
+    if (quote) {
+      if (c === "\\") i++;
+      else if (c === quote) quote = null;
+      continue;
+    }
+    if (c === '"' || c === "'" || c === "`") { quote = c; continue; }
+    if (c === "{") depth++;
+    else if (c === "}") {
+      depth--;
+      if (depth === 0) return { start: from, end: i + 1 };
+    }
+  }
+  return null;
+};
+
+export const exciseStrayFragment = (
+  pieceCode: string,
+  finding: StrayFragmentFinding,
+  palette?: Record<string, string>,
+): StrayRepairResult => {
+  const none = (why: string): StrayRepairResult => ({ code: pieceCode, action: "none", detail: why });
+  const wantBg = rgbOf(finding.bg);
+  if (!wantBg) return none("measured bg unparseable");
+  // Every style span whose width/height/background all match the measured rect.
+  const matches: { styleStart: number; styleEnd: number; span: string }[] = [];
+  const rx = /style\s*=\s*\{\{/g;
+  for (let m = rx.exec(pieceCode); m; m = rx.exec(pieceCode)) {
+    const open = pieceCode.indexOf("{{", m.index);
+    const bal = balancedDoubleBrace(pieceCode, open);
+    if (!bal) continue;
+    const span = pieceCode.slice(bal.start, bal.end);
+    const w = /\bwidth\s*:\s*(\d+(?:\.\d+)?)(?![\d.%\w])/.exec(span);
+    const h = /\bheight\s*:\s*(\d+(?:\.\d+)?)(?![\d.%\w])/.exec(span);
+    if (!w || !h) continue;
+    if (Math.abs(Number(w[1]) - finding.rect.w) > 3 || Math.abs(Number(h[1]) - finding.rect.h) > 3) continue;
+    const bgM = /\b(?:background|backgroundColor)\s*:\s*(?:(["'`])(#[0-9a-fA-F]{3,8}|rgba?\([^)]+\))\1|([A-Z][A-Z0-9_]{2,}))/.exec(span);
+    if (!bgM) continue;
+    const raw = bgM[2] ?? (bgM[3] && palette ? palette[bgM[3]] : undefined);
+    const got = raw ? rgbOf(raw) : null;
+    if (!got || rgbDist(got, wantBg) > 40) continue;
+    matches.push({ styleStart: bal.start, styleEnd: bal.end, span });
+  }
+  if (matches.length !== 1) return none(`${matches.length} matching style span(s) — ambiguous, no repair`);
+  const hit = matches[0];
+
+  if (finding.form === "crossing" && finding.overhangPx) {
+    const horizontal = finding.rect.w >= finding.rect.h;
+    const dim = horizontal ? "width" : "height";
+    const own = horizontal ? finding.rect.w : finding.rect.h;
+    const clipped = Math.max(8, Math.round(own - finding.overhangPx - 2));
+    const dimRx = new RegExp(`(\\b${dim}\\s*:\\s*)(\\d+(?:\\.\\d+)?)(?![\\d.%\\w])`);
+    const newSpan = hit.span.replace(dimRx, (_f, pre: string) => `${pre}${clipped}`);
+    if (newSpan === hit.span) return none("dimension literal not rewritable");
+    return {
+      code: pieceCode.slice(0, hit.styleStart) + newSpan + pieceCode.slice(hit.styleEnd),
+      action: "clipped",
+      detail: `${dim} ${own} → ${clipped}px (ends at the panel edge)`,
+    };
+  }
+
+  // isolated → remove, only when unambiguous and childless.
+  const tagStart = pieceCode.lastIndexOf("<", hit.styleStart);
+  if (tagStart === -1) return none("no enclosing tag found");
+  const tagName = /^<([A-Za-z][A-Za-z0-9]*)/.exec(pieceCode.slice(tagStart, tagStart + 40))?.[1];
+  if (!tagName) return none("enclosing tag unparseable");
+  // Scan for the tag's closing '>' (string/brace-aware past the style span).
+  let i = hit.styleEnd;
+  let quote: string | null = null;
+  let depth = 0;
+  for (; i < pieceCode.length; i++) {
+    const c = pieceCode[i];
+    if (quote) {
+      if (c === "\\") i++;
+      else if (c === quote) quote = null;
+      continue;
+    }
+    if (c === '"' || c === "'" || c === "`") quote = c;
+    else if (c === "{") depth++;
+    else if (c === "}") depth--;
+    else if (c === ">" && depth === 0) break;
+  }
+  if (i >= pieceCode.length) return none("tag never closes");
+  const selfClosing = pieceCode[i - 1] === "/";
+  let end = i + 1;
+  if (!selfClosing) {
+    const closer = `</${tagName}>`;
+    const rest = pieceCode.slice(i + 1);
+    if (!rest.startsWith(closer) && !/^\s*<\//.test(rest.slice(0, closer.length + 8))) {
+      return none("element has children — not removable");
+    }
+    const closeAt = pieceCode.indexOf(closer, i + 1);
+    if (closeAt === -1 || pieceCode.slice(i + 1, closeAt).trim() !== "") {
+      return none("element has children — not removable");
+    }
+    end = closeAt + closer.length;
+  }
+  return {
+    code: pieceCode.slice(0, tagStart) + pieceCode.slice(end),
+    action: "removed",
+    detail: `removed the orphaned ${finding.rect.w}×${finding.rect.h} <${tagName}> fragment`,
+  };
 };
 
 export interface RenderTruthOptions {

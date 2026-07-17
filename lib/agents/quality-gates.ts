@@ -1627,16 +1627,36 @@ const bindSplitSpanRuns = (
     // Align every non-whitespace segment against VALUE with a cursor walk.
     // Gaps in VALUE between segments must be whitespace-only (the separators
     // JSX already collapses between sibling elements).
+    type Span = { a: number; b: number; trailPunct?: string };
+    // v15 (#6): the FINAL content segment may carry ONE appended trailing
+    // punctuation char that the owned field lacks (the cycle-6 residual: a
+    // headline split into 2 spans rendering "built for you." bound to a field
+    // "…built for you"). We align that segment MINUS the punct, but ONLY when
+    // it consumes to VALUE's end, and re-emit the punct as a literal after the
+    // slice (identical glyphs render).
+    const TRAIL_PUNCT_RX = /^(.*\S)([.,!?;:])$/;
     let cursor = 0;
     let alignedCount = 0;
-    const spans: ({ a: number; b: number } | null)[] = segs.map((s) => {
+    const spans: (Span | null)[] = segs.map((s) => {
       const core = s.raw.trim();
       if (core.length === 0) return null; // whitespace-only — preserved verbatim
       const idx = value.indexOf(core, cursor);
-      if (idx < cursor || value.slice(cursor, idx).trim() !== "") return { a: -1, b: -1 };
-      cursor = idx + core.length;
-      alignedCount += 1;
-      return { a: idx, b: cursor };
+      if (idx >= cursor && value.slice(cursor, idx).trim() === "") {
+        cursor = idx + core.length;
+        alignedCount += 1;
+        return { a: idx, b: cursor };
+      }
+      const pm2 = TRAIL_PUNCT_RX.exec(core);
+      if (pm2) {
+        const core2 = pm2[1];
+        const idx2 = value.indexOf(core2, cursor);
+        if (idx2 >= cursor && value.slice(cursor, idx2).trim() === "" && idx2 + core2.length === value.length) {
+          cursor = value.length;
+          alignedCount += 1;
+          return { a: idx2, b: cursor, trailPunct: pm2[2] };
+        }
+      }
+      return { a: -1, b: -1 };
     });
     const misaligned = spans.some((s) => s !== null && s.a === -1);
     // Demand: full coverage of the value, ≥2 aligned segments (a single
@@ -1644,16 +1664,16 @@ const bindSplitSpanRuns = (
     if (misaligned || alignedCount < 2 || value.slice(cursor).trim() !== "") return full;
 
     count += 1;
+    const bindOne = (raw: string, span: Span): string => {
+      const lead = raw.slice(0, raw.length - raw.trimStart().length);
+      const trail = raw.slice(raw.trimEnd().length);
+      return `${lead}{${accessor}.slice(${span.a}, ${span.b})}${span.trailPunct ?? ""}${trail}`;
+    };
     const rebuilt = segs
       .map((s, si) => {
         const span = spans[si];
-        const bindOne = (raw: string, a: number, b: number): string => {
-          const lead = raw.slice(0, raw.length - raw.trimStart().length);
-          const trail = raw.slice(raw.trimEnd().length);
-          return `${lead}{${accessor}.slice(${a}, ${b})}${trail}`;
-        };
-        if (s.kind === "text") return span ? bindOne(s.raw, span.a, span.b) : s.raw;
-        return `${s.open}${span ? bindOne(s.raw, span.a, span.b) : s.raw}${s.close}`;
+        if (s.kind === "text") return span ? bindOne(s.raw, span) : s.raw;
+        return `${s.open}${span ? bindOne(s.raw, span) : s.raw}${s.close}`;
       })
       .join("");
     return `>${rebuilt}`;

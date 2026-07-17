@@ -109,6 +109,16 @@ export interface MeasuredElement {
   /** True when the element paints a background-image/gradient (computed
    *  backgroundColor alone is transparent for gradients). Optional. */
   hasBgImage?: boolean;
+  /** v15 — VISIBLE rect: the layout rect intersected with every clipping
+   *  ancestor's box (overflow hidden/clip/auto/scroll, incl. #rb-stage). A
+   *  layout box extending past an overflow-hidden panel reports its painted
+   *  extent here (getBoundingClientRect alone reports PHANTOM layout — the
+   *  cycle-6 s0 hero panel measured 822px wide while only 400px painted).
+   *  Optional: older fixtures predate it. */
+  vx?: number;
+  vy?: number;
+  vw?: number;
+  vh?: number;
 }
 
 export interface SceneMeasurement {
@@ -182,6 +192,18 @@ const PAGE_WALK = `(() => {
     for (let p = el.parentElement; p; p = p.parentElement) {
       if (recordedIx.has(p)) { parentIx = recordedIx.get(p); break; }
     }
+    // v15 — VISIBLE rect: intersect the layout rect with every clipping
+    // ancestor (overflow hidden/clip/auto/scroll). Layout boxes that extend
+    // past an overflow-hidden panel otherwise report phantom extents.
+    let vx0 = r.x, vy0 = r.y, vx1 = r.x + r.width, vy1 = r.y + r.height;
+    for (let a = el.parentElement; a; a = a.parentElement) {
+      const acs = getComputedStyle(a);
+      if (/(hidden|clip|auto|scroll)/.test(acs.overflow + " " + acs.overflowX + " " + acs.overflowY)) {
+        const ar = a.getBoundingClientRect();
+        vx0 = Math.max(vx0, ar.x); vy0 = Math.max(vy0, ar.y);
+        vx1 = Math.min(vx1, ar.x + ar.width); vy1 = Math.min(vy1, ar.y + ar.height);
+      }
+    }
     recordedIx.set(el, out.length);
     out.push({
       tag: el.tagName.toLowerCase(),
@@ -203,6 +225,8 @@ const PAGE_WALK = `(() => {
       parentIx,
       hasTextDesc: ((el.textContent || "").trim().length > 0),
       hasBgImage: !!(cs.backgroundImage && cs.backgroundImage !== "none"),
+      vx: Math.round(vx0), vy: Math.round(vy0),
+      vw: Math.round(Math.max(0, vx1 - vx0)), vh: Math.round(Math.max(0, vy1 - vy0)),
     });
   }
   return out;

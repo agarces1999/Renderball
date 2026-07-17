@@ -4,12 +4,14 @@
  */
 import { readFileSync } from "fs";
 import { join } from "path";
+import sharp from "sharp";
 import {
   runVisionGate,
   parseVerdict,
   buildRubric,
   buildSequenceRubric,
   judgeSequence,
+  stampSceneIndexBadge,
   extractPlannedElements,
   buildBrandColorPrompt,
   parseBrandFidelity,
@@ -313,6 +315,36 @@ await check("checkBrandColorFidelity: no name or empty palette → on-brand, no 
   const v1 = await checkBrandColorFidelity({ name: undefined }, ["#fff"], async () => { called = true; return "{}"; });
   const v2 = await checkBrandColorFidelity({ name: "X" }, [], async () => { called = true; return "{}"; });
   assert(v1.onBrand && v2.onBrand && !called, "skips the call when there's nothing to check");
+});
+
+// ── v15 (#5): sequence-judge index stamping ──────────────────────────────────
+await check("buildSequenceRubric: instructs the judge to use the burned-in SCENE badge, not position", () => {
+  const r = buildSequenceRubric(5, { name: "Superhuman", backgroundColor: "#0b0b1a" });
+  assert(/SCENE INDEX/.test(r) && /badge/i.test(r), "names the badge convention");
+  assert(/BOTTOM-LEFT/.test(r), "locates the badge away from the top-corner sanctioned chrome");
+  assert(/never critique|not part of the design/i.test(r), "tells the judge to ignore it aesthetically");
+});
+
+await check("stampSceneIndexBadge: burns a same-dimension badge that actually changes the frame", async () => {
+  const base = await sharp({ create: { width: 480, height: 270, channels: 3, background: { r: 12, g: 12, b: 26 } } }).png().toBuffer();
+  const stamped = await stampSceneIndexBadge(base, 3);
+  const bm = await sharp(base).metadata();
+  const sm = await sharp(stamped).metadata();
+  assert(sm.width === bm.width && sm.height === bm.height, `dims preserved ${sm.width}×${sm.height}`);
+  assert(!stamped.equals(base), "the badge modifies the buffer");
+  // The magenta badge lives in the bottom-left — sample a pixel there.
+  const { data } = await sharp(stamped).raw().toBuffer({ resolveWithObject: true });
+  const meta = await sharp(stamped).metadata();
+  const W = meta.width!;
+  const px = (x: number, y: number) => { const i = (y * W + x) * (meta.channels ?? 3); return [data[i], data[i + 1], data[i + 2]]; };
+  const [r, g, b] = px(Math.round(W * 0.05), Math.round((meta.height ?? 270) * 0.9));
+  assert(r > 180 && b > 180 && g < 120, `bottom-left carries magenta, got rgb(${r},${g},${b})`);
+});
+
+await check("stampSceneIndexBadge: a non-PNG buffer degrades to the original (never throws)", async () => {
+  const junk = Buffer.from("not an image");
+  const out = await stampSceneIndexBadge(junk, 0);
+  assert(out.equals(junk), "unreadable input returns unchanged");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

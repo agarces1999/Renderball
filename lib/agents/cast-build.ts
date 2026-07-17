@@ -515,11 +515,42 @@ const META_FIRST_PERSON_RX = /(?:^|[^\w])(?:I|my|we|our)(?:$|[^\w])/;
 const META_PLANNING_RX =
   /\b(?:cap|caps|capped|constrain(?:s|ed)?|clamp(?:s|ed)?|reposition(?:s|ed)?|resiz(?:e|es|ed)|shift(?:s|ed)?|shrink(?:s)?|reduc(?:e|es|ed)|overlap(?:s|ped|ping)?|exceed(?:s|ed)?|wrapper|bounds|width|coordinates?)\b/i;
 
-/** Is this rendered text segment self-referential build/repair prose? */
-export const isMetaTextSegment = (text: string): boolean => {
+/** Generic font-stack keywords that are NOT distinctive brand faces — never
+ *  treated as meta-text vocabulary (the leak class is the DISTINCTIVE display
+ *  face name surfaced as chrome, e.g. "NIB PRO"). */
+const GENERIC_FONT_RX =
+  /^(serif|sans-?serif|sans|monospace|mono|system-?ui|ui-(?:sans-serif|serif|monospace|rounded)|cursive|fantasy|inherit|initial|unset|-apple-system|BlinkMacSystemFont|Segoe UI|Roboto|Helvetica(?: Neue)?|Arial|Georgia|Times(?: New Roman)?|Courier(?: New)?|Verdana|Tahoma|emoji|math)$/i;
+
+const escapeRx = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/** v15 (#6): the DISTINCTIVE family names of a theme's faces (first family of
+ *  each stack, generic keywords skipped) — the vocabulary the meta-text gate
+ *  uses to catch a font-family name leaking as diegetic chrome (cycle-6 s4's
+ *  "NIB PRO REGISTRATION" label — Nib Pro is the DS display face). */
+export const themeFontFamilyNames = (theme: Theme): string[] => {
+  const out = new Set<string>();
+  for (const stack of [theme.fonts.display, theme.fonts.body, theme.fonts.mono]) {
+    const first = (stack || "").split(",")[0]?.trim().replace(/^['"]|['"]$/g, "").trim();
+    if (first && first.length >= 3 && !GENERIC_FONT_RX.test(first)) out.add(first);
+  }
+  return [...out];
+};
+
+/** A rendered segment that contains a theme font-family name as a word-bounded
+ *  phrase is the font-name-as-chrome leak. */
+const containsFontName = (text: string, fontNames: string[]): boolean => {
+  if (fontNames.length === 0) return false;
+  const rx = new RegExp(`\\b(?:${fontNames.map(escapeRx).join("|")})\\b`, "i");
+  return rx.test(text);
+};
+
+/** Is this rendered text segment self-referential build/repair prose (or, when
+ *  `fontNames` is supplied, a theme font-family name leaking as chrome)? */
+export const isMetaTextSegment = (text: string, fontNames: string[] = []): boolean => {
   const t = text.trim();
   if (t.length < 3) return false;
   if (META_TEXT_VOCAB_RX.test(t)) return true;
+  if (containsFontName(t, fontNames)) return true;
   return (
     t.length > META_TEXT_STRUCT_MIN_CHARS &&
     (META_PX_COORD_RX.test(t) || (META_FIRST_PERSON_RX.test(t) && META_PLANNING_RX.test(t)))
@@ -532,9 +563,10 @@ export const META_TEXT_REJECT_FRAC = 0.4;
 
 export const stripMetaText = (
   body: string,
+  fontNames: string[] = [],
 ): { code: string; stripped: string[]; reject: boolean } => {
   const segs = extractJsxTextSegments(body);
-  const flagged = segs.filter((s) => isMetaTextSegment(s.text));
+  const flagged = segs.filter((s) => isMetaTextSegment(s.text, fontNames));
   if (flagged.length === 0) return { code: body, stripped: [], reject: false };
   const totalTextLen = segs.reduce((n, s) => n + s.text.trim().length, 0);
   const flaggedLen = flagged.reduce((n, s) => n + s.text.trim().length, 0);
@@ -1082,6 +1114,12 @@ export interface ForcedLiftResult {
   via: "paint-rewrite" | "root-override" | null;
   targetHex: string | null;
   targetToken: string | null;
+  /** v15 (#3) — interior text nodes recolored in the SAME pass because they
+   *  would have ghosted against the NEW surface (the cycle-6 s0 white-on-white
+   *  ghost was a lift that repainted a panel white under white text). The
+   *  invariant this closes: a forced lift never CREATES a text-contrast
+   *  finding. 0 when the lift didn't fire or no interior text clashed. */
+  interiorTextRepaints: number;
 }
 
 /** Luminance (Rec.709, 0-255) of any css color value: #hex, rgb(), rgba().
@@ -1122,12 +1160,83 @@ const balancedStyleSpan = (s: string, from: number): { start: number; end: numbe
   return null;
 };
 
+/**
+ * v15 (#3) — LIFT INTERIOR REPAINT. After a forced surface lift repaints a
+ * panel to `surfaceHex`, any interior text whose OWN color now sits within
+ * ΔL<HERO_SURFACE_MIN_DELTA_L of that new surface would GHOST (the cycle-6 s0
+ * white-on-white headline was a lift that painted the panel white under white
+ * text). This recolors exactly those same-tone `color:` declarations to the
+ * palette ink most luminance-distant from the new surface — the minimal set
+ * that guarantees the invariant "a lift never creates a text-contrast finding".
+ *
+ * Scoped to same-tone-as-new-surface text only (never a blanket recolor): in
+ * the washed-out region that made the gate fire there are no strong contrasting
+ * chips, so collateral is negligible; a text that already contrasts the new
+ * surface is left untouched. Value form preserved (quoted hex ↔ quoted, bare
+ * palette const ↔ token). `color:` is matched standalone so background-color /
+ * border-color / camelCase *Color props are never touched.
+ */
+const COLOR_DECL_RX = /(?<![A-Za-z-])color\s*:\s*/g;
+export const repaintInteriorTextForSurface = (
+  code: string,
+  surfaceHex: string,
+  theme: Theme,
+): { code: string; repaints: number } => {
+  const surfaceL = cssLuminance709(surfaceHex);
+  if (typeof surfaceL !== "number") return { code, repaints: 0 };
+  // Ink = the palette token most luminance-distant from the new surface.
+  let ink: { token: string; hex: string; delta: number } | null = null;
+  for (const [token, hex] of Object.entries(theme.palette)) {
+    const l = cssLuminance709(hex);
+    if (typeof l !== "number") continue;
+    const delta = Math.abs(l - surfaceL);
+    if (!ink || delta > ink.delta) ink = { token, hex, delta };
+  }
+  const inkHex = ink && /^#/.test(ink.hex) ? ink.hex : surfaceL < 128 ? "#ffffff" : "#111111";
+  const inkToken = ink && ink.delta >= HERO_SURFACE_MIN_DELTA_L ? ink.token : null;
+
+  interface Site { start: number; end: number; quoted: boolean }
+  const sites: Site[] = [];
+  for (let m = COLOR_DECL_RX.exec(code); m; m = COLOR_DECL_RX.exec(code)) {
+    const at = m.index + m[0].length;
+    const c = code[at];
+    let raw: string | null = null;
+    let end = at;
+    let quoted = false;
+    if (c === '"' || c === "'") {
+      const close = code.indexOf(c, at + 1);
+      if (close === -1) continue;
+      raw = code.slice(at + 1, close);
+      end = close + 1;
+      quoted = true;
+    } else if (c === "`") {
+      continue; // template literal — too dynamic to resolve
+    } else {
+      const bare = /^[A-Za-z_$][A-Za-z0-9_$]*/.exec(code.slice(at, at + 48));
+      if (!bare) continue;
+      raw = bare[0] in theme.palette ? theme.palette[bare[0]] : null;
+      end = at + bare[0].length;
+      if (raw === null) continue; // unresolvable foreign const — leave it
+    }
+    const l = cssLuminance709(raw);
+    if (typeof l !== "number") continue;
+    if (Math.abs(l - surfaceL) < HERO_SURFACE_MIN_DELTA_L) sites.push({ start: at, end, quoted });
+  }
+  if (sites.length === 0) return { code, repaints: 0 };
+  let out = code;
+  for (const s of [...sites].reverse()) {
+    const replacement = s.quoted ? JSON.stringify(inkHex) : inkToken ?? JSON.stringify(inkHex);
+    out = out.slice(0, s.start) + replacement + out.slice(s.end);
+  }
+  return { code: out, repaints: sites.length };
+};
+
 export const forceHeroSurfaceLift = (
   body: string,
   theme: Theme,
   ctx: ForcedLiftContext = {},
 ): ForcedLiftResult => {
-  const noop: ForcedLiftResult = { code: body, lifted: false, via: null, targetHex: null, targetToken: null };
+  const noop: ForcedLiftResult = { code: body, lifted: false, via: null, targetHex: null, targetToken: null, interiorTextRepaints: 0 };
   const canvasRaw = ctx.canvasColor ?? theme.palette[tokenForRole(theme, "canvas")];
   const canvasLRaw = canvasRaw ? cssLuminance709(canvasRaw) : null;
   const canvasL = canvasLRaw === "dilute" ? null : canvasLRaw;
@@ -1143,6 +1252,13 @@ export const forceHeroSurfaceLift = (
   }
   if (!target || target.delta < HERO_SURFACE_MIN_DELTA_L) return noop;
   const targetHex = /^#/.test(target.hex) ? target.hex : canvasL < 128 ? "#ffffff" : "#111111";
+
+  // v15 (#3): every lift path funnels through here so interior text that would
+  // ghost against the NEW surface is recolored in the SAME deterministic pass.
+  const finish = (liftedCode: string, via: "paint-rewrite" | "root-override"): ForcedLiftResult => {
+    const rep = repaintInteriorTextForSurface(liftedCode, targetHex, theme);
+    return { code: rep.code, lifted: true, via, targetHex, targetToken: target!.name, interiorTextRepaints: rep.repaints };
+  };
 
   const measuredL = ctx.measuredPanelColor ? cssLuminance709(ctx.measuredPanelColor) : null;
 
@@ -1214,13 +1330,7 @@ export const forceHeroSurfaceLift = (
       }
     }
     if (!lift) lift = candidates[0];
-    return {
-      code: body.slice(0, lift.start) + JSON.stringify(targetHex) + body.slice(lift.end),
-      lifted: true,
-      via: "paint-rewrite",
-      targetHex,
-      targetToken: target.name,
-    };
+    return finish(body.slice(0, lift.start) + JSON.stringify(targetHex) + body.slice(lift.end), "paint-rewrite");
   }
 
   // Nothing parsed — override the piece root's primary panel: append a
@@ -1233,26 +1343,17 @@ export const forceHeroSurfaceLift = (
     if (span) {
       const inner = body.slice(span.start + 2, span.end - 2).trim().replace(/,\s*$/, "");
       const rebuilt = `{{ ${inner}${inner ? ", " : ""}background: ${JSON.stringify(targetHex)} }}`;
-      return {
-        code: body.slice(0, span.start) + rebuilt + body.slice(span.end),
-        lifted: true,
-        via: "root-override",
-        targetHex,
-        targetToken: target.name,
-      };
+      return finish(body.slice(0, span.start) + rebuilt + body.slice(span.end), "root-override");
     }
   }
   // No style object anywhere — give the first opening tag one.
   const tagM = /<([A-Za-z][A-Za-z0-9]*)\b/.exec(body);
   if (tagM) {
     const insertAt = tagM.index + tagM[0].length;
-    return {
-      code: body.slice(0, insertAt) + ` style={{ background: ${JSON.stringify(targetHex)} }}` + body.slice(insertAt),
-      lifted: true,
-      via: "root-override",
-      targetHex,
-      targetToken: target.name,
-    };
+    return finish(
+      body.slice(0, insertAt) + ` style={{ background: ${JSON.stringify(targetHex)} }}` + body.slice(insertAt),
+      "root-override",
+    );
   }
   return noop;
 };
@@ -1964,7 +2065,7 @@ export const castBuild = async (
       // (d6) META-TEXT LEAK gate (v11): self-referential repair prose rendered
       // as JSX text nodes strips deterministically; a body DOMINATED by its
       // own reasoning rejects for a fresh emission.
-      const meta = stripMetaText(raw);
+      const meta = stripMetaText(raw, themeFontFamilyNames(theme));
       if (meta.reject) {
         return {
           ok: false,

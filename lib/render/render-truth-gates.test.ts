@@ -19,6 +19,9 @@ import {
   planEdgeCropMoves,
   hexLuminance,
   assessCanvasBrightness,
+  findStrayFragments,
+  exciseStrayFragment,
+  STRAY_ISOLATION_MIN_PX,
   EDGE_CROP_FRAC,
   EDGE_CLAMP_OVERSIZE_FRAC,
   INTERIOR_CLIP_FRAC,
@@ -532,6 +535,85 @@ await check("findInteriorClip: tiny pieces (no panel-scale union) and measure-er
   assert(findInteriorClip(m).length === 0, "sub-panel unions never fire");
   const err = { ...scene(1, []), error: "boom" };
   assert(findInteriorClip(err).length === 0, "measure-error scenes skip");
+});
+
+// ── v15 (#4): stray motif fragments ──────────────────────────────────────────
+// Measured bg is always the browser's computed rgb()/rgba() (never hex); the
+// accent list stays hex (rgbOf parses both). Excise, by contrast, matches the
+// hex/const literals in the emitted CODE.
+const panel = (p: Partial<MeasuredElement>): MeasuredElement =>
+  el({ piece: "s2.hero", pieceKind: "diegetic", bg: "rgb(17,17,17)", x: 200, y: 200, w: 600, h: 600, ...p });
+const bar = (p: Partial<MeasuredElement>): MeasuredElement =>
+  el({ piece: "s2.hero", pieceKind: "diegetic", bg: "rgb(204,255,0)", h: 6, w: 400, ...p });
+
+await check("findStrayFragments: a thin accent bar CROSSING its panel's right edge fires (the cycle-6 lime rule)", () => {
+  const m = scene(2, [panel({}), bar({ x: 600, y: 400 })]); // panel right=800, bar right=1000 → overhang 200 (50%)
+  const r = findStrayFragments(m, ["#ccff00"]);
+  assert(r.length === 1 && r[0].form === "crossing" && r[0].edge === "right", `got ${JSON.stringify(r)}`);
+  assert(r[0].overhangPx === 200, `overhang 200px, got ${r[0].overhangPx}`);
+});
+
+await check("findStrayFragments: a bar fully INSIDE its panel is clean (grazing/contained never fires)", () => {
+  const m = scene(2, [panel({}), bar({ x: 300, y: 400, w: 300 })]); // 300-600 inside 200-800
+  assert(findStrayFragments(m, ["#ccff00"]).length === 0, "contained bar is grammar, not a fragment");
+});
+
+await check("findStrayFragments: an ISOLATED accent bar (>80px from all its piece content) fires + connector/throughline exempt", () => {
+  const far = el({ piece: "s4.hero", pieceKind: "diegetic", tag: "span", text: "hi", x: 900, y: 900, w: 200, h: 40 });
+  const orphan = bar({ piece: "s4.hero", bg: "rgb(255,0,0)", w: 200, h: 6, x: 100, y: 100 });
+  const iso = findStrayFragments(scene(4, [far, orphan]), ["#ff0000"]);
+  assert(iso.length === 1 && iso[0].form === "isolated", `isolated fires: ${JSON.stringify(iso)}`);
+  // Same geometry on a throughline piece is EXEMPT (throughlines ARE thin rules).
+  const thru = findStrayFragments(scene(4, [
+    { ...far, piece: "s4.throughline" },
+    { ...orphan, piece: "s4.throughline" },
+  ]), ["#ff0000"]);
+  assert(thru.length === 0, `throughline exempt: ${JSON.stringify(thru)}`);
+});
+
+await check("findStrayFragments: with accent hexes supplied, a NEUTRAL hairline never fires (dividers are grammar)", () => {
+  const m = scene(2, [panel({}), bar({ x: 600, y: 400, bg: "rgb(136,136,136)" })]);
+  assert(findStrayFragments(m, ["#ccff00"]).length === 0, "neutral bar excluded when accent-filtered");
+  // …but WITHOUT an accent list, geometry alone still flags it.
+  assert(findStrayFragments(m).length === 1, "no accent filter → geometry fires");
+});
+
+await check("findStrayFragments: the bar IS the whole piece (no other content) → a motif, not a fragment", () => {
+  const solo = bar({ piece: "s1.hero", bg: "rgb(255,0,0)", w: 200, h: 6, x: 100, y: 100 });
+  assert(findStrayFragments(scene(1, [solo]), ["#ff0000"]).length === 0, "a lone bar-piece is a motif");
+});
+
+await check("exciseStrayFragment: a CROSSING bar clips its long-axis dimension to end at the panel edge", () => {
+  const code = `<div style={{ position: "absolute", width: 400, height: 6, background: "#ccff00" }} />`;
+  const finding = findStrayFragments(scene(2, [panel({}), bar({ x: 600, y: 400 })]), ["#ccff00"])[0];
+  const r = exciseStrayFragment(code, finding);
+  assert(r.action === "clipped", `clipped, got ${r.action}: ${r.detail}`);
+  assert(/width: 198\b/.test(r.code), `width 400→198 (400-200-2), got: ${r.code}`);
+});
+
+await check("exciseStrayFragment: an ISOLATED self-closing childless bar is REMOVED; a childful one is not", () => {
+  const finding = findStrayFragments(scene(4, [
+    el({ piece: "s4.hero", pieceKind: "diegetic", tag: "span", text: "hi", x: 900, y: 900, w: 200, h: 40 }),
+    bar({ piece: "s4.hero", bg: "rgb(255,0,0)", w: 200, h: 6, x: 100, y: 100 }),
+  ]), ["#ff0000"])[0];
+  const selfClose = `<span/><div style={{ width: 200, height: 6, background: "#ff0000" }} /><span/>`;
+  const r = exciseStrayFragment(selfClose, finding);
+  assert(r.action === "removed" && !/#ff0000/.test(r.code), `removed, got ${r.action}: ${r.code}`);
+  const childful = `<div style={{ width: 200, height: 6, background: "#ff0000" }}>oops</div>`;
+  assert(exciseStrayFragment(childful, finding).action === "none", "childful element is never removed");
+});
+
+await check("exciseStrayFragment: ambiguous (2 matching spans) and palette-const backgrounds", () => {
+  const finding = findStrayFragments(scene(2, [panel({}), bar({ x: 600, y: 400 })]), ["#ccff00"])[0];
+  const two = `<div style={{ width: 400, height: 6, background: "#ccff00" }} /><i style={{ width: 400, height: 6, background: "#ccff00" }} />`;
+  assert(exciseStrayFragment(two, finding).action === "none", "2 matches → ambiguous, no repair");
+  const bareConst = `<div style={{ width: 400, height: 6, background: ACCENT }} />`;
+  const r = exciseStrayFragment(bareConst, finding, { ACCENT: "#ccff00" });
+  assert(r.action === "clipped" && /width: 198\b/.test(r.code), `palette-resolved bg clips: ${r.action} ${r.code}`);
+});
+
+await check("STRAY_ISOLATION_MIN_PX is the calibrated 80px floor", () => {
+  assert(STRAY_ISOLATION_MIN_PX === 80, `floor is 80, got ${STRAY_ISOLATION_MIN_PX}`);
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

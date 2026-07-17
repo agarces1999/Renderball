@@ -244,6 +244,7 @@ export type SequenceJudge = (imagesB64: string[], prompt: string) => Promise<str
 export const buildSequenceRubric = (sceneCount: number, brand: BrandTruth): string => {
   const lines = [
     `You are a brutally honest brand-video QA reviewer judging a WHOLE video, not one frame. You are given ${sceneCount} frames IN ORDER: image 1 is scene 0 (the opening), image ${sceneCount} is scene ${sceneCount - 1} (the closing/CTA). Each frame already passed single-frame QA — judge ONLY how they work as a SEQUENCE.`,
+    `SCENE INDEX: every frame carries a burned-in magenta "SCENE N" badge in its BOTTOM-LEFT corner. That badge is the AUTHORITATIVE scene number — when you name a scene in a finding, use the badge number, never guess from position (image order can mislead). The badge is a QA marker overlaid for you: it is NOT part of the design — never critique, report, or count it as a repeated element.`,
     "Check:",
     `- Atmosphere monotony: flag when 3 or more scenes share the same background treatment — the same centered radial glow, the same gradient wash, the same vignette, the same floating-dot field in the same spot. Name the scenes (e.g. "scenes 0, 2, 3 all use the same centered radial glow").${
       brand.backgroundColor
@@ -301,6 +302,50 @@ export const judgeSequence = async (
   return issues
     .filter((issue) => !isSanctionedChromeFinding(issue))
     .map((issue) => ({ scene: SEQUENCE_SCENE, scope: "sequence" as const, issue }));
+};
+
+/**
+ * v15 (#5) — SEQUENCE-JUDGE INDEX STAMPING. Cycle-6's sequence verdict swapped
+ * scenes 0 and 4 (it mapped "Start investing today" to scene 0 and the problem
+ * statement to scene 4 — reversed vs the actual frames), threading WRONG
+ * guidance into regens. The runner sends frames sorted by scene; the model
+ * still loses the mapping. This burns an unambiguous magenta "SCENE N" badge
+ * into the BOTTOM-LEFT corner of each frame before it is judged, so the verdict
+ * can cite the badge instead of inferring position. Bottom-left deliberately —
+ * the video's own sanctioned chrome lives top-left (wordmark) / top-right
+ * (pill), so the badge can never be mistaken for it.
+ *
+ * Best-effort: sharp is dynamic-imported; its absence (or any decode failure)
+ * returns the original buffer unchanged — the badge is a robustness aid, never
+ * a hard dependency of the sequence pass.
+ */
+export const stampSceneIndexBadge = async (png: Buffer, sceneIndex: number): Promise<Buffer> => {
+  const sharpMod = await import("sharp").catch(() => null);
+  if (!sharpMod) return png;
+  const sharp = sharpMod.default;
+  try {
+    const meta = await sharp(png).metadata();
+    const W = meta.width ?? 1920;
+    const H = meta.height ?? 1080;
+    const bh = Math.max(28, Math.round(H * 0.06));
+    const bw = Math.max(120, Math.round(W * 0.15));
+    const pad = Math.round(H * 0.02);
+    const x = pad;
+    const y = H - bh - pad;
+    const fs = Math.round(bh * 0.5);
+    const svg =
+      `<svg width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg">` +
+      `<rect x="${x}" y="${y}" width="${bw}" height="${bh}" rx="6" fill="#ff00ff" stroke="#000000" stroke-width="3"/>` +
+      `<text x="${x + bw / 2}" y="${y + bh / 2}" font-family="monospace" font-size="${fs}" font-weight="700" ` +
+      `fill="#000000" text-anchor="middle" dominant-baseline="central">SCENE ${sceneIndex}</text>` +
+      `</svg>`;
+    return await sharp(png)
+      .composite([{ input: Buffer.from(svg), top: 0, left: 0 }])
+      .png()
+      .toBuffer();
+  } catch {
+    return png;
+  }
 };
 
 // ─── Brand-fidelity backstop (crawl-independent) ─────────────────────
