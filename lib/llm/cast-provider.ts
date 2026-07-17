@@ -77,7 +77,9 @@ export const castConfigured = (): boolean => KEY().length > 0;
 // accepted); `thinking: {enabled, budget_tokens}` separates reasoning into
 // reasoning_content. `reasoning_effort` WITHOUT the thinking param leaks CoT
 // into visible content on this serving — never send it bare to Fireworks.
-const isFireworksModel = (model: string): boolean => model.startsWith("accounts/fireworks/");
+/** Exported: cast-build sizes provider-aware token caps off it (Cerebras
+ *  pre-debits max_completion_tokens against TPM; Fireworks does not). */
+export const isFireworksModel = (model: string): boolean => model.startsWith("accounts/fireworks/");
 
 interface WireConfig {
   url: string;

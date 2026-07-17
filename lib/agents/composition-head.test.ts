@@ -31,8 +31,13 @@ import {
   parseCompositionJson,
   HEAD_MAX_TOKENS,
   HEAD_EFFORT,
+  WORKED_EXAMPLE,
   type CompositionHeadCall,
 } from "./composition-head";
+// The one place this suite touches schema-validator: proving the prompt's own
+// worked example passes the REAL contract it advertises (never injected into
+// composition-head itself — the module stays validator-free by injection).
+import { checkSceneComposition } from "./schema-validator";
 import type { Script, Scene, SceneComposition } from "../../src/schema";
 
 let passed = 0;
@@ -163,6 +168,43 @@ await check("system: ONE worked example, branded ILLUSTRATIVE, copying = validat
   assert(system.includes("ILLUSTRATIVE — your values must come from this script's content and brand"), "illustrative note");
   assert(system.includes("copying any example value is a validation failure"), "copying named a validation failure");
   assert((system.match(/WORKED EXAMPLE/g) ?? []).length === 1, "exactly ONE example (more = more leakage surface)");
+});
+
+await check("system: the bookend-hero density contract + interior/ownsCopy ownership rule are STATED (retry audit classes 1+9)", () => {
+  assert(system.includes("AT LEAST 4 of a hero's items must CARRY TEXT"), "hero text-bearing floor stated");
+  assert(system.includes("NESTED structure"), "nested-structure demand stated");
+  assert(system.includes("must NEVER contain the text of any copy field an element ownsCopy"), "the ownership rule the validator enforces is stated");
+  assert(system.includes("reference the WIDGET, not the words"), "widget-not-words phrasing present");
+  assert(system.includes("no interior[] item anywhere in the scene may restate it"), "ownsCopy bullet amended");
+});
+
+await check("the Brewline worked example COMPLIES with the contract the prompt states (validator-verified)", () => {
+  // The prompt's own exemplar must pass the validator it advertises (retry
+  // audit class 9: blueprint attempt-1 failed 100% of builds on a rule the
+  // prompt itself modeled violating). Attach the example to a synthetic
+  // Brewline scene whose content carries the fields the example owns.
+  const example = JSON.parse(WORKED_EXAMPLE) as SceneComposition[];
+  const brewScene = [{
+    index: 0,
+    label: "Checkout",
+    visual_concept: "The Brewline checkout in a phone frame, editorial stack left.",
+    content: {
+      eyebrow: "NEVER RUN DRY",
+      headline: "Your next bag ships itself",
+      lede: "Fresh beans on your schedule, not the store's.",
+      asset_ids: [],
+    },
+    composition: example[0],
+  }] as unknown as Scene[];
+  const errors = checkSceneComposition(brewScene);
+  assert(errors.length === 0, `the worked example must pass its own contract, got ${JSON.stringify(errors)}`);
+  // The hero's text-bearing floor is met with margin (all 6 items carry text).
+  const hero = example[0].elements.find((e) => e.role === "hero")!;
+  const textBearing = hero.interior.filter((i) => /\d/.test(i) || /["'“”‘’][^"'“”‘’]*["'“”‘’]/.test(i)).length;
+  assert(textBearing >= 4, `hero example must model ≥4 text-bearing items, got ${textBearing}`);
+  // No interior anywhere retypes the owned eyebrow/headline/lede text.
+  const copyEl = example[0].elements.find((e) => e.role === "copy")!;
+  assert(!copyEl.interior.some((i) => /NEVER RUN DRY/i.test(i)), "the copy element must reference the widget, not the words");
 });
 
 await check("user: THIS script's material — brand, palette, notes, narrative, every scene", () => {

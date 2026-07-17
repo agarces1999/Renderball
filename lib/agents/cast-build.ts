@@ -43,7 +43,7 @@
  */
 import type { Script, ElementSpec } from "../../src/schema";
 import type { Theme, SceneManifest, Piece } from "../edit/piece-model";
-import { castCall, type CastEffort } from "../llm/cast-provider";
+import { castCall, isFireworksModel, type CastEffort } from "../llm/cast-provider";
 import { composeSceneLayout, CANVAS, type Aspect, type ElementSlot, type ScenePlan } from "./layout-composer";
 import { normalizeElementColors, assessAccentPresence, hexToRgb, rgbToHsl, isNeutral } from "./normalize-element";
 import { assembleComposition } from "./assemble";
@@ -91,6 +91,15 @@ export interface CastBuildResult {
      *  incoming theme (see neutralizeInk). */
     inkCorrected: boolean;
   };
+  /**
+   * Per-element outcome — which pieces shipped the MODEL's body (repaired or
+   * not) and which shipped the PLACEHOLDER. Callers that cache emissions must
+   * invalidate entries for failed pieces (acceptance v7 run-1 swap bug: a
+   * syntax-valid but gate-failed emission stayed cached while the placeholder
+   * shipped, so every later round regenerated against a body that never
+   * rendered and re-measured the placeholder's byte-identical density).
+   */
+  elementOutcomes: { pieceId: string; failed: boolean; repaired: boolean }[];
 }
 
 // ─── Per-slot output ceilings ───────────────────────────────────────────────
@@ -99,7 +108,8 @@ export interface CastBuildResult {
  * Honest per-slot output caps. Cerebras PRE-DEBITS max_completion_tokens
  * against the TPM bucket BEFORE generating (see cast-provider.ts) — a lazy
  * 40k cap on a 3k element starves the rest of the burst — so each slot gets
- * the measured shape of its workload and nothing more.
+ * the measured shape of its workload and nothing more. The HERO cap is
+ * PROVIDER-AWARE (see maxTokensFor): the pre-debit is real on Cerebras only.
  */
 const MAX_TOKENS_BY_SLOT: Record<string, number> = {
   // 3500, not 2000 (acceptance v6 poisoned-cache postmortem, 2026-07-16):
@@ -109,14 +119,26 @@ const MAX_TOKENS_BY_SLOT: Record<string, number> = {
   atmosphere: 3500, // gradient washes / glow / grain — compact
   connector: 3000, // the full-bleed SVG connector system (≥12 primitives)
   copy: 2500, // the editorial text stack
-  // The diegetic visual — the dense one. Enriched-brief mocks measured ~5.7k
-  // tokens out at effort medium (audit-matrix condition E); Cerebras
-  // pre-debits this cap against TPM, so 6000 is the honest measured shape,
-  // not lazy headroom.
-  hero: 6000,
   throughline: 1500, // one small motif
 };
-const maxTokensFor = (slotId: string): number => MAX_TOKENS_BY_SLOT[slotId] ?? 4000;
+/** The diegetic visual on CEREBRAS — the honest measured shape (~5.7k tok
+ *  enriched-brief mocks, audit-matrix condition E) under a REAL pre-debit:
+ *  Cerebras debits max_completion_tokens from the TPM bucket before
+ *  generating, so an inflated cap starves the rest of the burst. */
+export const HERO_MAX_TOKENS_CEREBRAS = 6000;
+/** The hero cap on FIREWORKS (retry audit class 8): Fireworks has NO
+ *  pre-debit — an unused ceiling costs nothing there — and v7 run 2 wasted
+ *  37s truncating a rich hero at exactly 6000. 11000 covers the measured
+ *  rich-hero + repair shape with honest headroom. Repairs share this cap. */
+export const HERO_MAX_TOKENS_FIREWORKS = 11000;
+
+export const maxTokensFor = (slotId: string, model?: string): number => {
+  if (slotId === "hero") {
+    const effective = model ?? process.env.RB_CAST_MODEL ?? "gpt-oss-120b";
+    return isFireworksModel(effective) ? HERO_MAX_TOKENS_FIREWORKS : HERO_MAX_TOKENS_CEREBRAS;
+  }
+  return MAX_TOKENS_BY_SLOT[slotId] ?? 4000;
+};
 
 /**
  * Reasoning-effort routing, measured on gpt-oss (parity audit 2026-07-15):
@@ -355,6 +377,113 @@ export const stripColorMutationFilters = (body: string): { code: string; strippe
     },
   );
   return { code: out, stripped };
+};
+
+/**
+ * (d2) PRE-RENDER hero density gate (retry audit class 1). The hollow-bookend
+ * hero class (scene 0/4 logo/CTA bookends measuring 1el/0tx post-render) was
+ * the single largest retry sink: each one cost a full render+vision gate
+ * round (44-100s) when the emission itself already proved the hollowness.
+ * This computes the density probe's ARITHMETIC (element descendants +
+ * non-empty text nodes — density-gates.ts countElementDescendants/
+ * countTextNodes) statically on the emitted JSX, so a hollow hero fails
+ * INSIDE the cast round and triggers the existing ~10s surgical repair.
+ *
+ * Counting rules (string-aware, brace-tolerant):
+ *   - elements: every `<Tag` open outside string literals (closing tags
+ *     excluded); tags inside map callbacks / conditionals count once.
+ *   - text: JSX text runs between tags (string contents masked first so
+ *     `>`/`<` inside style strings cannot fabricate runs), plus `{c.*}`
+ *     bindings, plus quoted-literal child expressions (`{"$18.50"}`), plus
+ *     the items of quoted-string ARRAYS when the body maps over data (the
+ *     rows-from-an-array idiom).
+ * The estimate UNDER-counts SSR truth for mapped content (each item counts
+ * once, not per render) — conservative-safe on rich bodies, and still an
+ * order of magnitude above the hollow class (1el/0tx vs the ≥15el/≥4tx bar).
+ */
+export const PRE_RENDER_HERO_MIN_ELEMENTS = 15;
+export const PRE_RENDER_HERO_MIN_TEXT = 4;
+
+export const staticJsxDensity = (body: string): { elements: number; textNodes: number } => {
+  // String-masked copy: literal contents → spaces (offsets preserved) so tag
+  // and text scans can't be fooled by `<`/`>` inside strings.
+  let masked = "";
+  let quote: string | null = null;
+  for (let i = 0; i < body.length; i++) {
+    const ch = body[i];
+    if (quote) {
+      if (ch === "\\") { masked += "  "; i++; continue; }
+      if (ch === quote) { quote = null; masked += ch; continue; }
+      masked += ch === "\n" ? "\n" : " ";
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === "`") quote = ch;
+    masked += ch;
+  }
+  // Open tags only — `</` closings and `<` comparisons never match `<Letter`.
+  const elements = (masked.match(/<[A-Za-z]/g) ?? []).length;
+  let textNodes = 0;
+  // JSX text runs between tags (no braces/tags inside the run).
+  for (const m of masked.matchAll(/>([^<>{}]+)</g)) {
+    if (/[\p{L}\p{N}]{2,}/u.test(m[1])) textNodes++;
+  }
+  // {c.*} bindings — each is a rendered text node.
+  textNodes += (body.match(/\{\s*c\.[A-Za-z]/g) ?? []).length;
+  // Quoted-literal child expressions: {"Ships Thursday"} / {'62%'} / {`…`}.
+  for (const m of body.matchAll(/\{\s*(["'`])((?:(?!\1)[^\\]|\\.)*)\1\s*\}/g)) {
+    if (/[\p{L}\p{N}]{2,}/u.test(m[2])) textNodes++;
+  }
+  // Data-array strings rendered via .map(…): count each word-bearing item.
+  if (/\.map\s*\(/.test(body)) {
+    for (const arr of body.matchAll(/\[\s*(?:["'][^"'\n]{0,120}["']\s*,\s*)+["'][^"'\n]{0,120}["']\s*\]/g)) {
+      for (const s of arr[0].matchAll(/["']([^"'\n]*)["']/g)) {
+        if (/[\p{L}\p{N}]{2,}/u.test(s[1])) textNodes++;
+      }
+    }
+  }
+  return { elements, textNodes };
+};
+
+/**
+ * (d3) PRE-RENDER img-src gate + asset-id substitution (retry audit class 1,
+ * img-src arm). The render-time whitelist (density-gates clause d) caught raw
+ * asset ids like "site_img_0" only AFTER a full render round; here the same
+ * whitelist runs on the emission, and KNOWN asset ids are SUBSTITUTED with
+ * their crawled URLs from the script manifest at zero tokens — the model
+ * naming a real asset by id is correct behavior, not a defect. Unknown
+ * non-fetchable srcs remain a gate failure (→ the in-round repair). Only
+ * quoted-string src forms are judged; expression srcs (src={LOGO_SRC}) are
+ * bindings the assembler/injectLogoSrc owns.
+ */
+export const FETCHABLE_SRC_RX = /^(https?:|data:|\/)/;
+
+export const substituteImgAssetIds = (
+  body: string,
+  imagesById: Map<string, string>,
+): { code: string; substituted: string[]; bad: string[] } => {
+  const substituted: string[] = [];
+  const bad: string[] = [];
+  const resolve = (raw: string): string | null => {
+    if (FETCHABLE_SRC_RX.test(raw)) return null; // already fetchable
+    const url = imagesById.get(raw);
+    if (url && FETCHABLE_SRC_RX.test(url)) {
+      substituted.push(raw);
+      return url;
+    }
+    if (!bad.includes(raw)) bad.push(raw);
+    return null;
+  };
+  // src="X" / src='X'
+  let code = body.replace(/(\bsrc=)("([^"]*)"|'([^']*)')/g, (m, pre: string, _q: string, d?: string, s?: string) => {
+    const url = resolve(d ?? s ?? "");
+    return url === null ? m : `${pre}${JSON.stringify(url)}`;
+  });
+  // src={"X"} / src={'X'} / src={`X`}
+  code = code.replace(/(\bsrc=\{\s*)(["'`])([^"'`]*)\2(\s*\})/g, (m, pre: string, _q: string, raw: string, post: string) => {
+    const url = resolve(raw);
+    return url === null ? m : `${pre}${JSON.stringify(url)}${post}`;
+  });
+  return { code, substituted, bad };
 };
 
 /**
@@ -1145,6 +1274,12 @@ export const castBuild = async (
 
   // ── 3+4. Fire ALL calls through the semaphore; per result: extract →
   //         hue-lock → fragment-verify → one repair → placeholder ──────────
+  // Known image assets by id — the pre-render img gate substitutes these for
+  // raw asset-id srcs (site_logo, site_og_image, site_img_N…) at zero tokens.
+  const imagesById = new Map<string, string>(
+    (script.assets?.images ?? []).map((img) => [img.id, img.src]),
+  );
+
   const runElement = async (job: ElementJob): Promise<ElementOutcome> => {
     let tokens = 0;
     const model = modelFor(job.slot.id);
@@ -1168,7 +1303,7 @@ export const castBuild = async (
     > => {
       let text: string;
       try {
-        const res = await caller({ system, user, maxTokens: maxTokensFor(job.slot.id), effort, model });
+        const res = await caller({ system, user, maxTokens: maxTokensFor(job.slot.id, model), effort, model });
         tokens += res.outputTokens;
         text = res.text;
       } catch (err) {
@@ -1183,6 +1318,21 @@ export const castBuild = async (
       let body = rewriteKeyframeInterpolations(raw, theme.keyframes).code;
       body = stripCanvasSelfPositioning(body, job.slot.bounds).code;
       body = stripColorMutationFilters(body).code;
+      // (d3) img-src gate: known asset ids substitute deterministically;
+      // unknown non-fetchable srcs fail here (in-round repair) instead of at
+      // the post-render whitelist a full gate round later.
+      const imgs = substituteImgAssetIds(body, imagesById);
+      body = imgs.code;
+      if (imgs.bad.length > 0) {
+        return {
+          ok: false,
+          raw,
+          error:
+            `non-fetchable <Img> src(s): ${imgs.bad.map((b) => JSON.stringify(b === "" ? "(empty)" : b)).join(", ")} — ` +
+            `only https:/data://-rooted srcs render (raw asset ids resolve to a blank rectangle). ` +
+            `Use the asset URLs given in the brief, or draw the visual as styled DOM instead of an <Img>`,
+        };
+      }
       const fonts = normalizeFontBindings(body, theme, job.slot.id);
       body = fonts.code;
       const { code: locked, changes } = normalizeElementColors(body, palette);
@@ -1199,6 +1349,24 @@ export const castBuild = async (
           raw,
           error: `element renders copy it does not own: ${rejectable.map((v) => JSON.stringify(v)).join(", ")} — those fields belong to another element (ownership is fixed by the layout contract); remove that text entirely`,
         };
+      }
+      // (d2) PRE-RENDER hero density gate: the hollow-bookend class fails
+      // inside the cast round (~10s repair) instead of a 44-100s render+
+      // vision gate round. Measured on the stripped/normalized body so
+      // stolen copy can't pad the count.
+      if (job.slot.id === "hero") {
+        const density = staticJsxDensity(guard.code);
+        if (density.elements < PRE_RENDER_HERO_MIN_ELEMENTS || density.textNodes < PRE_RENDER_HERO_MIN_TEXT) {
+          return {
+            ok: false,
+            raw,
+            error:
+              `hero interior too thin: statically measured ~${density.elements} element(s) / ~${density.textNodes} text value(s) — ` +
+              `the hero floor is ≥${PRE_RENDER_HERO_MIN_ELEMENTS} nested elements AND ≥${PRE_RENDER_HERO_MIN_TEXT} concrete visible text values ` +
+              `(rows, chips, labels, timestamps, values that belong to the product). Rebuild this element as a real product ` +
+              `artifact with a furnished interior — every inventory item in the brief visibly present, plus supporting diegetic chrome`,
+          };
+        }
       }
       const compileErr = await verifyFragment(guard.code);
       if (compileErr) return { ok: false, raw, error: compileErr };
@@ -1274,5 +1442,6 @@ export const castBuild = async (
       fontRewrites: outcomes.reduce((n, o) => n + o.fontRewrites, 0),
       inkCorrected: inkGuard.corrected,
     },
+    elementOutcomes: outcomes.map((o) => ({ pieceId: o.pieceId, failed: o.failed, repaired: o.repaired })),
   };
 };

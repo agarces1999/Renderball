@@ -499,6 +499,31 @@ const formatToViewingContext = (
   return null;
 };
 
+/**
+ * The COMPUTED per-scene beat floor (retry audit class 6). The validator
+ * (checkScriptRichness) rejects any scene whose latest timed beat lands under
+ * 0.5× its duration — a rule the prompt states but the model measurably
+ * cannot arithmetic on the fly (v5-v7: beat-coverage rejects on most first
+ * attempts). This works the arithmetic FOR the model at the even split and
+ * states the recompute rule for uneven boundaries. Exported for tests.
+ */
+export const beatFloorLines = (durationSeconds: number, momentCount: number): string[] => {
+  const d = durationSeconds / Math.max(1, momentCount);
+  const f = (n: number): string => (Math.round(n * 10) / 10).toFixed(1);
+  const lines = [
+    `BEAT-COVERAGE ARITHMETIC (computed for THIS brief — a validator rejects any scene under its floor):`,
+    `- Rule: per scene, the LATEST timed beat you write ("at X.Xs" / "from X.Xs" — infinite-loop start times count) must be ≥0.5× that scene's duration D; target ≥0.6×D.`,
+    `- At an even ${momentCount}-way split of ${durationSeconds}s, each scene runs D=${f(d)}s:`,
+    ...Array.from({ length: momentCount }, (_, i) => {
+      const start = d * i;
+      const end = d * (i + 1);
+      return `    Scene ${i} runs ${f(start)}-${f(end)}s (D=${f(d)}s): your latest timed beat must be ≥0.5×${f(d)} = ${f(d * 0.5)}s, target ≥0.6×${f(d)} = ${f(d * 0.6)}s.`;
+    }),
+    `- If you allocate time differently (you should — weight by content), REDO this arithmetic with YOUR D per scene BEFORE writing its Animations list, and write the absolute timestamps. Beats are scene-relative (each scene's clock starts at 0).`,
+  ];
+  return lines;
+};
+
 export const buildUserMessage = (brief: AgentBrief): string => {
   const momentCount = brief.moment_count;
   const isFreeform = !!brief.freeform_prompt && !brief.moments;
@@ -526,6 +551,12 @@ export const buildUserMessage = (brief: AgentBrief): string => {
     `- WEIGHT signals: longer descriptions, more animation cues, bolder creativity, more on-screen content → more time. Intros, transitions, simple holds → less time.`,
     `- Floor: every section gets at least ${Math.min(3, Math.max(1, Math.floor(brief.duration_seconds / momentCount)))} seconds (a moment needs time to land). Ceiling: no section exceeds ${Math.floor(brief.duration_seconds * 0.5)} seconds (50% of total).`,
     `- ALL TIMING IN VISUAL_CONCEPT PROSE MUST BE IN SECONDS. Write "From Xs to Ys:" or "at 2.4s". Never reference frame counts.`,
+    "",
+    // Retry audit class 6: the beat-coverage rule lived in the prompt but the
+    // model flubbed the per-scene arithmetic on every first attempt — so the
+    // COMPUTED floor is injected here, worked per scene at the even split,
+    // with the recompute rule for uneven boundaries.
+    ...beatFloorLines(brief.duration_seconds, momentCount),
     "",
   ];
 

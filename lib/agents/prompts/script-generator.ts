@@ -298,7 +298,7 @@ Example B — three-pillar with sustained motion:
 
 > Composition: Three vertical glass-card panels arranged horizontally with equal spacing, each thin-outlined in brand-purple. Each panel holds a label at top (in the brand sans, weight 600, ~22px) and a semantic icon-metaphor below — a lock for custody, interlocking gears for rules, an arrow-flow for movement. A small caption 'Built for scale' sits centered below the trio. Faint vertical light rays at low contrast wash the dark backdrop.
 >
-> Animations: Panel 1 (custody) enters with scaleIn from below at 0s. Panel 2 (rules) same animation at 0.8s. Panel 3 (movement) same at 1.6s. Each panel breathes infinitely (3s loop, scale 1→1.02→1) starting 0.3s after its own entry. Caption fadeRise at 3.5s, duration 0.7s. Light rays loop infinite (8s sweep, translateY -20→0→20).
+> Animations: Panel 1 (custody) enters with scaleIn from below at 0s. Panel 2 (rules) same animation at 0.8s. Panel 3 (movement) same at 1.6s. The panels breathe infinite (3s loop, scale 1→1.02→1) from 0.3s, 1.1s and 1.9s respectively. Caption fadeRise at 3.5s, duration 0.7s. Light rays loop infinite (8s sweep, translateY -20→0→20) from 0s.
 
 Example C — CTA with cinematic close:
 
@@ -318,7 +318,7 @@ Example C — CTA with cinematic close:
 
 ### Pacing rule (HARD)
 
-**Every section MUST include at least 2 infinite-loop sustained motions** running through the section's full duration. Examples: "Radial backdrop pulse loops infinite (4s breathe cycle) from 0s", "Three accent dots drift infinite with sin-based motion at varied speeds from 0s", "Hero card breathes infinite (5s loop, scale 1→1.015→1) from 1s after its entry settles". Without sustained motion, the section freezes after its entry beats and feels broken.
+**Every section MUST include at least 2 infinite-loop sustained motions** running through the section's full duration. Examples: "Radial backdrop pulse loops infinite (4s breathe cycle) from 0s", "Three accent dots drift infinite with sin-based motion at varied speeds from 0s", "Hero card breathes infinite (5s loop, scale 1→1.015→1) from 1.8s". Without sustained motion, the section freezes after its entry beats and feels broken. Every timing you write is an ABSOLUTE "at X.Xs" / "from X.Xs" within the scene — never relative phrasing like "at end-0.5s", "0.3s after its entry", or "+0.3s per tile"; compute the absolute timestamp and write it.
 
 **Section-duration sanity check (NUMERIC — verify before writing):**
 
@@ -430,7 +430,7 @@ Agent 2 has codified archetypes for all of these. Specify the archetype by name 
 These show the diegetic-UI move applied to different scene intents and product categories. Each picks a chrome that matches the brand's domain — a developer tool uses an IDE, a consumer app uses a phone mockup, an AI product uses chat bubbles, an analytics product uses a dashboard.
 
 **Example A — Developer-tool product demo (IDE + terminal, 6s scene):**
-> Composition: A VS-Code-style IDE window fills the left half of the canvas with macOS traffic-light controls in the top-left, file path 'index.ts' in the gutter, and dark theme (#1E1E1E). Code lines fill the editor area in monospace with syntax highlighting — keywords in brand-accent, strings in green, comments in gray. A type-completion popup sits next to the cursor showing suggested SDK methods. A small green checkmark + 'compiled in 0.4s' badge sit in the gutter. A terminal panel occupies the right half showing CLI output ending with an HTTP 200 status and '38ms' response time.\nAnimations: IDE window enters with fadeRise at 0s, duration 0.8s. Code lines typewriter-reveal from 1s with 0.15s line stagger, total 2.4s. Type-completion popup scaleIn at 2.3s, duration 0.3s. Green checkmark draws via stroke-dasharray at 3.7s, duration 0.6s. Compiled badge fadeRise at 3.9s. Terminal panel slides in from right at 5s, duration 0.7s. Terminal output lines fadeRise with 0.1s stagger from 5.5s. Response-time metric '38ms' fadeRise at end-0.5s.
+> Composition: A VS-Code-style IDE window fills the left half of the canvas with macOS traffic-light controls in the top-left, file path 'index.ts' in the gutter, and dark theme (#1E1E1E). Code lines fill the editor area in monospace with syntax highlighting — keywords in brand-accent, strings in green, comments in gray. A type-completion popup sits next to the cursor showing suggested SDK methods. A small green checkmark + 'compiled in 0.4s' badge sit in the gutter. A terminal panel occupies the right half showing CLI output ending with an HTTP 200 status and '38ms' response time.\nAnimations: IDE window enters with fadeRise at 0s, duration 0.8s. Code lines typewriter-reveal from 1s with 0.15s line stagger, total 2.4s. Type-completion popup scaleIn at 2.3s, duration 0.3s. Green checkmark draws via stroke-dasharray at 3.7s, duration 0.6s. Compiled badge fadeRise at 3.9s. Terminal panel slides in from right at 5s, duration 0.7s. Terminal output lines fadeRise with 0.1s stagger from 5.5s. Response-time metric '38ms' fadeRise at 5.5s.
 > content: {
 >   eyebrow: "DEVELOPER EXPERIENCE",
 >   headline: "Type-safe by default",
@@ -454,7 +454,7 @@ These show the diegetic-UI move applied to different scene intents and product c
 > }
 
 **Example C — Analytics product walkthrough (dashboard, 7s scene):**
-> Composition: A full dashboard chrome fills the canvas — a left sidebar with nav items in the brand's neutral, a top-right time-range pill 'Last 30 days', three KPI tiles arranged horizontally in the main area (each a glass card with label, large brand-display value, and a delta arrow), a bar-chart visualization beneath the tiles, and an annotation arrow + tooltip in brand-accent pointing at one tile.\nAnimations: Dashboard chrome fadeRise at 0s, duration 1s. KPI tiles cascade in from below with 0.4s stagger starting at 1.7s (each tile: scaleIn + fadeRise, duration 0.5s). Delta arrows fadeIn with each tile +0.3s. Bar-chart bars rise from baseline with 0.1s left-to-right stagger from 4s. Annotation arrow + tooltip fadeRise at 6s. Tooltip loops infinite breathe (2s cycle, scale 1→1.02) from 6.5s.
+> Composition: A full dashboard chrome fills the canvas — a left sidebar with nav items in the brand's neutral, a top-right time-range pill 'Last 30 days', three KPI tiles arranged horizontally in the main area (each a glass card with label, large brand-display value, and a delta arrow), a bar-chart visualization beneath the tiles, and an annotation arrow + tooltip in brand-accent pointing at one tile.\nAnimations: Dashboard chrome fadeRise at 0s, duration 1s. KPI tiles cascade in from below with 0.4s stagger starting at 1.7s (each tile: scaleIn + fadeRise, duration 0.5s). Delta arrows fadeIn at 2s, 2.4s and 2.8s (0.3s behind each tile). Bar-chart bars rise from baseline with 0.1s left-to-right stagger from 4s. Annotation arrow + tooltip fadeRise at 6s. Tooltip loops infinite breathe (2s cycle, scale 1→1.02) from 6.5s.
 > content: {
 >   eyebrow: "ANALYTICS",
 >   headline: "[product name] in action",
@@ -567,28 +567,33 @@ Structure (30s, 16:9, slow pacing, 5 scenes):
 
 Scene 0 (0-4s) — "Brand mark":
 - description: "Establish brand identity and set the calm, considered tone for the announcement."
-- visual_concept: "A faint radial glow in the brand's navy-to-purple sits behind a centered logo that fades in with a spring scale. The brand wordmark appears below with a slow letter-spacing reveal, and a thin horizontal accent bar in brand-purple draws in from left underneath. Two small decorative dots drift across the dark backdrop at different depths."
+- visual_concept: "Composition: A centered logo sits above the brand wordmark with a thin horizontal accent bar in brand-purple beneath, all held in a faint navy-to-purple radial glow; the meta row (Series / Date) sits small along the base, and two decorative dots sit at varied depths in the dark backdrop.\nAnimations: Logo scaleIn at 0s (spring, duration 0.7s). Wordmark letter-spacing settle at 0.9s, duration 0.8s. Accent bar drawWidth 0→100% at 1.8s, duration 0.7s. Meta row fadeRise at 2.6s. The lockup glow breathes infinite (4s cycle) from 0s; the two backdrop dots drift infinite at varied depths from 0s."
 - content: { eyebrow: "ANNOUNCING", headline: "[Brand]", caption: "A message from the team", meta: [{label:"Series",value:"B"},{label:"Date",value:"Today"}], asset_ids: ["site_favicon"] }
+- (beat check: D=4s → latest beat 2.6s = 65% ≥ the 60% target ✓)
 
 Scene 1 (4-10s) — "The raise":
 - description: "Deliver the core news: a $20M Series B."
-- visual_concept: "A large headline 'We raised $20M' enters with each word rising from below at a small stagger; the words land with a subtle letter-spacing settle. A brand-color underline draws in below 'raised' specifically, anchoring the verb. Background: a slow vertical drift of faint navy bars provides atmosphere without distraction."
+- visual_concept: "Composition: A large display headline 'We raised $20M' sits center with a brand-purple accent bar anchoring the word 'raised'; the lede sits beneath, and below it a slim ledger strip of three round-history rows — 'Seed · 2023', 'Series A · 2024', 'Series B · Today' — each row a small label chip beside a value. Faint navy bars drift vertically behind at low contrast.\nAnimations: Headline words fadeRise with 0.12s stagger from 0s. Accent bar drawWidth at 1.4s, duration 0.8s. Lede fadeRise at 2.6s. Ledger rows cascade in with 0.25s stagger from 3.4s. Caption fadeRise at 4.4s. The background navy bars drift infinite upward (11s loop) from 0s."
 - content: { eyebrow: "THE NEWS", headline: "We raised $20M", lede: "Series B led by Sequoia to accelerate the platform.", caption: "Closed earlier this month", asset_ids: [] }
+- (beat check: D=6s → latest beat 4.4s = 73% ✓)
 
 Scene 2 (10-18s) — "Stat reveal":
 - description: "Ground the raise in valuation context — show the 2x via animation."
-- visual_concept: "A counter ticks from 0 to 2 over four seconds, displayed in a very large font centered. The 'x' character holds steady to the right of the count. Once the count lands on 2, a brand-color accent bar draws in beneath, and the subtitle 'valuation doubled' fades in below. A drifting soft blob of brand-purple sits in the upper-right at 6% opacity providing sustained atmosphere."
+- visual_concept: "Composition: A giant counter ticks from 0 to 2 center-frame with the multiplier glyph steady at its right, a brand-purple accent bar and a thin hairline baseline beneath it, and the caption 'valuation doubled' below; a soft purple blob sits upper-right at low opacity.\nAnimations: Counter ticks 0→2 from 0.4s over 2.8s. Accent bar drawWidth at 3.4s, duration 0.6s. Caption fadeRise at 4.4s. Lede fadeRise at 5.4s. Hairline baseline extends by 20% at 6.6s. The corner blob drifts infinite (9s loop) from 0s."
 - content: { eyebrow: "THE STORY", headline: "2x", caption: "valuation doubled", lede: "From Series A to Series B in 14 months, with the same team.", illustration: "stat-counter", asset_ids: [] }
+- (beat check: D=8s → latest beat 6.6s = 83% ✓ — a late accent beat added exactly because the concept was beat-thin)
 
 Scene 3 (18-24s) — "Led by Sequoia":
 - description: "Surface the investor credibility marker."
-- visual_concept: "Centered headline 'Led by Sequoia' enters with a soft fade and a small upward translate. A thin Sequoia-red accent dot pulses gently to the left of the headline, slowly breathing through the scene. Background: faint horizontal scan lines drift at low contrast suggesting infrastructure / depth."
+- visual_concept: "Composition: Centered headline 'Led by Sequoia' with a small accent dot at its left; beneath it a trust-bar row of three investor wordmark tiles in muted frames; faint horizontal scan lines sit behind at low contrast.\nAnimations: Headline fadeRise at 0s, duration 0.5s. Trust-bar tiles cascade in with 0.3s stagger from 1.2s. Lede fadeRise at 2.8s. Tile frames sharpen to full opacity at 3.9s. The accent dot breathes infinite (3s cycle) from 0.6s; the scan lines drift infinite (12s sweep) from 0s."
 - content: { eyebrow: "INVESTORS", headline: "Led by Sequoia", lede: "Joined by existing investors Accel and Index Ventures.", asset_ids: [] }
+- (beat check: D=6s → latest beat 3.9s = 65% ✓)
 
 Scene 4 (24-30s) — "CTA":
 - description: "Drive readers to the announcement page."
-- visual_concept: "The CTA text 'Read the announcement' enters with a spring scale; beneath it, a brand-color accent bar draws in left-to-right; below that, the URL fades up. The brand logo sits in the upper-left corner with a steady soft glow. The whole canvas slowly zooms in 1.0 → 1.03 for a cinematic close, and a soft radial pulse breathes behind everything."
+- visual_concept: "Composition: The CTA 'Read the announcement' dominates center with a bright accent bar beneath and the URL below in brand monospace; the brand logo holds the upper-left corner with a soft glow, and two small dots sit deep in the backdrop.\nAnimations: CTA scaleIn at 0s (spring, duration 0.7s). Accent bar drawWidth at 0.9s, duration 0.8s. URL fadeRise at 1.9s. Caption fadeRise at 3s. Logo glow intensifies at 4.2s. The whole canvas zooms 1.0→1.03 from 0s across the full 6s; the backdrop dots drift infinite at varied depths from 0s."
 - content: { headline: "Read the announcement", cta: { primary: "Read the announcement", secondary: "[announcement URL]" }, caption: "Full letter from the founders", asset_ids: ["site_favicon"] }
+- (beat check: D=6s → latest beat 4.2s = 70% ✓)
 
 ## Worked example — purpose: "TikTok story for our Black Friday sale"
 
@@ -602,20 +607,24 @@ narrative:
 Structure (15s, 9:16, fast pacing, 4 scenes):
 
 Scene 0 (0-3s) — "30%":
-- visual_concept: "A massive '30%' slams into center with a spring scale and tiny screen-shake. The '%' sign arrives a beat after the '30' for staggered impact. A brand-color flash pulses behind the number on impact, then settles to a sustained low-opacity glow. Confetti-like dots burst outward and slowly drift through the background."
+- visual_concept: "Composition: A massive '30%' counter dominates center with the '%' glyph offset a beat behind the digits; a brand-color flash ring sits behind the number, and confetti dots scatter through the backdrop.\nAnimations: The '30' slams in with spring scaleIn at 0s; the '%' lands at 0.4s with a screen-shake frame. Flash ring expands at 0.6s, duration 0.4s. Caption 'OFF' stamps at 1.2s. Lede fadeRise at 1.9s. Confetti dots burst at 0.6s then drift infinite through the backdrop from 1s."
 - content: { eyebrow: "BLACK FRIDAY", headline: "30%", caption: "OFF", lede: "One day only — site-wide.", illustration: "stat-counter", asset_ids: [] }
+- (beat check: D=3s → latest beat 1.9s = 63% ✓)
 
 Scene 1 (3-7s) — "OFF EVERYTHING":
-- visual_concept: "Block-letter 'OFF EVERYTHING' stamps in word by word with a sharp impact frame on each word — 'OFF' first, then 'EVERYTHING'. Each word arrives with a tiny screen-shake and an accent bar that flashes briefly underneath. Background: rapid-cycling brand-color bands sweeping diagonally provide urgent energy."
+- visual_concept: "Composition: Block-letter 'OFF EVERYTHING' stamps across center in two word groups, each with a short accent bar beneath; diagonal brand-color bands sweep behind, and a three-chip row ('No exclusions' / 'No code' / 'Stacks with rewards') sits along the lower third.\nAnimations: 'OFF' stamps at 0s with a shake frame; 'EVERYTHING' stamps at 0.5s. Accent bars flash at 0.7s and 1.1s. Chip row cascades in with 0.15s stagger from 1.8s. Chips settle to full opacity at 2.6s. The diagonal bands sweep infinite (7s loop) from 0s."
 - content: { headline: "OFF EVERYTHING", lede: "No exclusions. No code needed. Stacked discounts welcome.", bullets: ["No exclusions", "No code", "Stacks with rewards"], asset_ids: [] }
+- (beat check: D=4s → latest beat 2.6s = 65% ✓)
 
 Scene 2 (7-11s) — "24 hours only":
-- visual_concept: "A countdown-style block displays '24' in huge type with 'HOURS ONLY' stamped below in a tighter type. A thin brand-color progress bar at the bottom of the screen fills rapidly across the duration, suggesting urgency. The whole scene has a subtle red pulse breathing behind it."
+- visual_concept: "Composition: A countdown block shows '24' in huge type with 'HOURS ONLY' stamped beneath in tighter type; a thin brand-color progress bar runs the bottom edge draining left to right, and a brand-color pulse ring sits behind the block.\nAnimations: The '24' counter stamps at 0s; 'HOURS ONLY' at 0.5s. Progress bar drains from 0.8s over 2.6s. Caption fadeRise at 2.5s. The pulse ring breathes infinite (2.5s cycle) from 0s."
 - content: { eyebrow: "TIME LEFT", headline: "24", caption: "HOURS ONLY", lede: "Ends midnight PT.", illustration: "sparkline", asset_ids: [] }
+- (beat check: D=4s → latest beat 2.5s = 63% ✓)
 
 Scene 3 (11-15s) — "CTA":
-- visual_concept: "'Shop now' stamps in center with a spring scale, and below it the URL 'acme.com/bf' fades up with a letter-spacing reveal. A bright brand-color underline draws in beneath 'Shop now' on impact, and confetti dots burst outward from center then drift slowly through the background as the scene holds."
+- visual_concept: "Composition: 'Shop now' stamps center with a bright accent bar beneath; the URL 'acme.com/bf' sits below in monospace, a corner logo chip holds upper-left, and confetti dots scatter through the backdrop.\nAnimations: 'Shop now' spring scaleIn at 0s. Accent bar draws at 0.6s, duration 0.5s. URL fadeRise at 1.3s. Caption fadeRise at 2s. Logo chip glow intensifies at 2.7s. Confetti dots drift infinite at varied speeds from 0.8s."
 - content: { headline: "Shop now", cta: { primary: "Shop now", secondary: "acme.com/bf" }, caption: "Free shipping on orders $50+", asset_ids: [] }
+- (beat check: D=4s → latest beat 2.7s = 68% ✓)
 
 ## Worked example — purpose: "Product launch for a developer-facing API"
 
@@ -637,7 +646,7 @@ Scene 0 (0-3s) — "Brand mark":
 
 Scene 1 (3-9s) — "The thesis":
 - description: "Establish what this is and what it's for in one sentence."
-- visual_concept: "Composition: A serif display headline 'Built for the way engineers actually work' sits centered upper-third. A brand-color accent bar sits directly beneath. A lede line in brand sans sits below the bar. Three small accent dots sit at varied positions in the background.\nAnimations: Headline words fadeRise with 0.15s per-word stagger from 0s, total 1.5s. Accent bar drawWidth 0→full at 2s, duration 1.2s, ease-out-cubic. Lede fadeRise at 3.4s, duration 0.7s, final opacity 0.85. Three dots drift infinite with sin/cos motion at varied speeds + depths."
+- visual_concept: "Composition: A serif display headline 'Built for the way engineers actually work' sits centered upper-third. A brand-color accent bar sits directly beneath, and a faint sparkline trend arcs behind the headline at low contrast. A lede line in brand sans sits below the bar. Three small accent dots sit at varied positions in the background.\nAnimations: Headline words fadeRise with 0.15s per-word stagger from 0s, total 1.5s. Accent bar drawWidth 0→full at 2s, duration 1.2s, ease-out-cubic. Lede fadeRise at 3.4s, duration 0.7s, final opacity 0.85. Sparkline redraws its arc at 4.2s. Three dots drift infinite with sin/cos motion at varied speeds + depths from 0s."
 - content: { eyebrow: "THE THESIS", headline: "Built for the way engineers actually work", lede: "[one-sentence lede about the product]", bullets: ["Type-safe by default", "Zero-config setup", "Predictable latency"], asset_ids: [] }
 
 Scene 2 (9-16s) — "In the editor":
@@ -647,7 +656,7 @@ Scene 2 (9-16s) — "In the editor":
 
 Scene 3 (16-21s) — "At runtime":
 - description: "Show the API call running and the result landing."
-- visual_concept: "Composition: The IDE window sits on the left half of the canvas; the right half holds a terminal panel with a brand-color prompt and monospace output. The terminal shows '$ [the brand's CLI command]' at the top, a multi-line structured response below ending in an HTTP 200 status indicator in green, and a '38ms' response-time metric at the bottom with a brand-color underline.\nAnimations: IDE compresses from full-width to 50% at 0s, duration 0.8s. Terminal panel slides in from right at 0.4s, duration 0.6s. Terminal command typewriter-reveal at 1s, duration 0.8s. Response lines fadeRise with 0.1s per-line stagger from 1.8s. HTTP 200 indicator scaleIn at 2.7s. Response-time metric fadeRise at 3s. Underline drawWidth 0→full at 3.3s, duration 0.5s."
+- visual_concept: "Composition: The IDE window sits on the left half of the canvas; the right half holds a terminal panel with a brand-color prompt and monospace output rows. The terminal shows '$ [the brand's CLI command]' at the top, multi-line structured response rows below ending in a green 'HTTP 200' status badge, and a '38ms' response-time metric at the bottom with a brand-color underline.\nAnimations: IDE compresses from full-width to 50% at 0s, duration 0.8s. Terminal panel slides in from right at 0.4s, duration 0.6s. Terminal command typewriter-reveal at 1s, duration 0.8s. Response rows fadeRise with 0.1s per-line stagger from 1.8s. 'HTTP 200' badge scaleIn at 2.7s. Response-time metric fadeRise at 3s. Underline drawWidth 0→full at 3.3s, duration 0.5s."
 - content: { eyebrow: "AT RUNTIME", headline: "Predictable latency", lede: "Structured responses in monospace, every call traced end-to-end.", bullets: ["HTTP 200 · 38ms p50", "Idempotent retries", "Built-in observability"], caption: "$ [the brand's CLI command]", asset_ids: [] }
 
 Scene 4 (21-24s) — "CTA":

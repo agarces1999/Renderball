@@ -101,8 +101,12 @@ export const HEAD_EFFORT = "high" as const;
  * content. The system prompt brands it ILLUSTRATIVE and names copying a
  * validation failure — the template-example leakage defect, made a stated
  * contract violation instead of an accident waiting to happen.
+ *
+ * Exported so tests can assert the example COMPLIES with the contract the
+ * prompt states (retry audit class 9: the prompt's own exemplar must pass the
+ * validator it advertises — hero text-bearing floor, no owned-copy retyping).
  */
-const WORKED_EXAMPLE = JSON.stringify(
+export const WORKED_EXAMPLE = JSON.stringify(
   [
     {
       elements: [
@@ -110,7 +114,7 @@ const WORKED_EXAMPLE = JSON.stringify(
           role: "hero",
           subject: "the Brewline mobile checkout screen in a rounded phone frame",
           interior: [
-            'order row "Colombia Huila 12oz — $18.50"',
+            'order row "Colombia Huila 12oz — $18.50" inside the cart panel',
             'delivery chip "Ships Thursday, Feb 12"',
             'subscription toggle ON, labeled "Every 2 weeks"',
             'price line "Subtotal $18.50 · Shipping FREE"',
@@ -123,7 +127,7 @@ const WORKED_EXAMPLE = JSON.stringify(
         {
           role: "copy",
           subject: "the editorial stack left of the phone: eyebrow, headline, lede",
-          interior: ['eyebrow "NEVER RUN DRY" in mono caps', "headline in display type", "lede at reading size beneath"],
+          interior: ["eyebrow line in mono caps", "headline in display type", "lede at reading size beneath"],
           ownsCopy: ["eyebrow", "headline", "lede"],
           motion: "the headline rises as one block, then holds",
         },
@@ -164,8 +168,8 @@ export const buildCompositionPrompt = (
     `     connector = a full-bleed SVG relationship system — cast it ONLY when the scene's concept is genuinely relational (flow, network, convergence, scatter).`,
     `     throughline = the recurring cross-scene motif — cast it in EVERY scene when the script's narrative names a throughline.`,
     `   - subject: what the element IS, concretely. Name the artifact ("the Acme billing dashboard in a browser frame"), never a vague gesture ("some UI", "a visual").`,
-    `   - interior: the interior inventory — SHORT concrete items the element must visibly contain. A hero needs AT LEAST 6. EVERY item carries a REAL value authored for THIS brand and THIS scene — a label, number, name, timestamp, or state drawn from (or plausibly extending) this script's content. NEVER sample or placeholder values ("$XX", "Item 1", "Company name", lorem) — the builders ship your values verbatim, so a placeholder here ships as a placeholder on screen.`,
-    `   - ownsCopy: the scene content fields (eyebrow, headline, lede, bullets, caption, meta, cta) this element EXCLUSIVELY renders. Be explicit on every element — an empty array means it owns nothing. Ownership is exclusive: no field appears on two elements, and the headline is owned EXACTLY once per scene.`,
+    `   - interior: the interior inventory — SHORT concrete items the element must visibly contain. A hero needs AT LEAST 6, and AT LEAST 4 of a hero's items must CARRY TEXT — quoted micro-copy or a concrete value (a chip, timestamp, label, price, metric: 'status chip "Rendering — 5 of 8"'); a text-free logo/glow/CTA-shape inventory renders a hollow scene and is a validation failure. The inventory should imply NESTED structure (rows inside panels, chips inside rows), never six floating fragments. EVERY item carries a REAL value authored for THIS brand and THIS scene — a label, number, name, timestamp, or state drawn from (or plausibly extending) this script's content. NEVER sample or placeholder values ("$XX", "Item 1", "Company name", lorem) — the builders ship your values verbatim, so a placeholder here ships as a placeholder on screen. And interior items must NEVER contain the text of any copy field an element ownsCopy — the owning element renders those words exactly once; reference the WIDGET, not the words ("the CTA pill in the accent", never the CTA's text). A validator rejects interiors that retype owned copy.`,
+    `   - ownsCopy: the scene content fields (eyebrow, headline, lede, bullets, caption, meta, cta) this element EXCLUSIVELY renders. Be explicit on every element — an empty array means it owns nothing. Ownership is exclusive: no field appears on two elements, and the headline is owned EXACTLY once per scene. An owned field's TEXT lives only in the owner's render — no interior[] item anywhere in the scene may restate it.`,
     `   - motion: ONE sustained motion beat, tied BY NAME to an item in that element's interior list ("the progress bar fills to 62% as the status chip ticks over").`,
     `2. atmosphere — this scene's atmosphere treatment in at least 6 words. It MUST differ from the adjacent scenes' treatments: vary the mechanism (wash vs bands vs rays vs grain), not just the adjective.`,
     ``,

@@ -234,6 +234,33 @@ check("a scene with no cta is a no-op for the duplication check", () => {
   assert(r.ok, `expected ok, got ${JSON.stringify(r)}`);
 });
 
+// ── Stat-register headlines (retry audit class 5) ────────────────────────────
+// The 'stat' register MANDATES bare-numeral headlines (src/schema.ts) and the
+// prompt's worked examples model them ("30%", "24") — but isReadableText's
+// ≥2-alnum floor rejected the single-digit class on every attempt (the
+// recurring headline-"4" reject). Pure numerals now pass; emoji still fail.
+check("stat headline: a pure numeral '4' passes validateScript", () => {
+  const r = validateScript(scriptWithCta("4", undefined), RICHNESS_OFF);
+  assert(r.ok, `expected ok for the bare-numeral stat headline, got ${JSON.stringify(r)}`);
+});
+
+check("stat headline: numeral+suffix forms pass ('30%', '3x', '10×', '135+')", () => {
+  for (const h of ["30%", "3x", "10×", "135+", "24"]) {
+    const r = validateScript(scriptWithCta(h, undefined), RICHNESS_OFF);
+    assert(r.ok, `expected ok for "${h}", got ${JSON.stringify(r)}`);
+  }
+});
+
+check("stat headline: emoji-only '🔥' still fails readability", () => {
+  const r = validateScript(scriptWithCta("🔥", undefined), RICHNESS_OFF);
+  assert(!r.ok && /not readable/.test(r.error), `expected the readability reject, got ${JSON.stringify(r)}`);
+});
+
+check("stat headline: symbol-only and mixed-garbage forms still fail ('%', 'x4x🔥' passes as readable)", () => {
+  const pct = validateScript(scriptWithCta("%", undefined), RICHNESS_OFF);
+  assert(!pct.ok && /not readable/.test(pct.error), `bare '%' has no numeral — must fail, got ${JSON.stringify(pct)}`);
+});
+
 // ── Visual richness: every scene needs a diegetic element (findTypeOnlyScenes) ──
 // Fixtures mirror the real specimens: Fuse ② manifesto (01KV37AP…) scenes 0/2
 // are type-only and MUST flag; its scenes 1/3/4 and all Tailscale (01KTVZE8…)
@@ -568,6 +595,40 @@ check("anti-copy: two scenes sharing a phrase stay clean (threshold is 3)", () =
   assert(!e.some((x) => /atmosphere phrase/.test(x)), `got ${JSON.stringify(e)}`);
 });
 
+// — anti-copy mechanics vocab (retry audit class 2) — the prompt MANDATES the
+//   loop idiom, so its scaffold syntax must not count as copy-paste. The
+//   observed false-positive grams ("breathes infinite loop scale", "breathe
+//   infinite cycle opacity", "drift infinite with sin" — run 2's TERMINAL
+//   reference fallback) must pass; real content copy-paste must still fail.
+check("anti-copy: the mandated loop idiom on DIFFERENT subjects no longer collides ('breathes infinite loop scale')", () => {
+  const e = checkScriptRichness([
+    richScene("The hero card breathes infinite (5s loop, scale 1→1.02) from 1s."),
+    richScene("The gauge ring breathes infinite (4s loop, scale 1→1.05) from 0s."),
+    richScene("The logo badge breathes infinite (3s loop, scale 1→1.01) from 2s."),
+  ]);
+  assert(!e.some((x) => /atmosphere phrase/.test(x)), `mechanics scaffold must not read as copy-paste, got ${JSON.stringify(e)}`);
+});
+
+check("anti-copy: 'breathe infinite cycle opacity' / 'drift infinite with sin' scaffold across scenes passes", () => {
+  const e = checkScriptRichness([
+    richScene("The glow arcs breathe infinite (4s cycle, opacity 0.2→0.5) from 0s."),
+    richScene("The rim shadows breathe infinite (6s cycle, opacity 0.1→0.4) from 1s."),
+    richScene("The band edges breathe infinite (3s cycle, opacity 0.3→0.6) from 0.5s."),
+    richScene("Two ember sparks drift infinite with sin motion from 0s."),
+    richScene("Five paper scraps drift infinite with sin motion from 1s."),
+  ]);
+  assert(!e.some((x) => /atmosphere phrase/.test(x)), `scaffold grams must not fire, got ${JSON.stringify(e)}`);
+});
+
+check("anti-copy: REAL content copy-paste still fails ('faint radial glow behind' x3)", () => {
+  const stamp = (from: number) =>
+    richScene(`A faint radial glow behind the panel loops infinite from ${from}s.`);
+  const e = checkScriptRichness([stamp(0), stamp(1), stamp(2)]);
+  const f = e.find((x) => /share the same atmosphere phrase/.test(x));
+  assert(!!f, `real copy-paste must still fire, got ${JSON.stringify(e)}`);
+  assert(/faint radial glow/.test(f!), `expected the content gram quoted, got ${f}`);
+});
+
 // — the real thin specimen: gpt-oss's HubSpot script (full-pipeline spike;
 //   summarized in .data/full-spike/build-report.json under "script") —
 //   Fails beat coverage in ALL scenes, furnishing in scene 1 ("three window
@@ -616,10 +677,20 @@ check("THIN specimen: 'three window mockups' flagged as a bare container", () =>
   assert(!!f && f.includes('"three window mockups"'), `expected the bare container quoted, got ${JSON.stringify(e)}`);
 });
 
-check("THIN specimen: copy-pasted fallback atmosphere fires anti-copy across ≥3 scenes", () => {
-  const f = checkScriptRichness(GPT_OSS_THIN).find((x) => /share the same atmosphere phrase/.test(x));
-  assert(!!f, "expected the anti-copy error");
-  assert(/drift infinite|pulse loops infinite/.test(f!), `expected the copied signature quoted, got ${f}`);
+check("THIN specimen: mechanics-vocab fix — its shared grams were the MANDATED loop scaffold, no longer anti-copy", () => {
+  // Legitimately changed by the retry root-cause audit (class 2): the
+  // specimen's cross-scene grams ("drift infinite with sin", "pulse loops
+  // infinite") are the prompt-mandated idiom's syntax; its real content
+  // duplication ("two decorative dots … slow sinusoidal motion") spans only
+  // 2 scenes — under the ≥3 threshold. Beat coverage + furnishing still
+  // catch the specimen (asserted above); anti-copy no longer misfires.
+  const e = checkScriptRichness(GPT_OSS_THIN);
+  assert(
+    !e.some((x) => /share the same atmosphere phrase/.test(x)),
+    `mechanics scaffold must not fire anti-copy, got ${JSON.stringify(e.filter((x) => /atmosphere/.test(x)))}`,
+  );
+  assert(e.some((x) => /timed beat/.test(x)) && e.some((x) => /interior detail/.test(x)),
+    "the specimen must still be caught by beat coverage + furnishing");
 });
 
 check("THIN specimen: the floor is NOT what catches it (fails are beat/furnishing/anti-copy)", () => {
@@ -836,6 +907,57 @@ check("composition boundary: a 5-item hero fails, 6 passes", () => {
   );
   // 6 items = the good fixture itself, asserted clean above.
   assert(checkSceneComposition(duoGood()).length === 0, "6 items must pass");
+});
+
+// — 2b) bookend-hero density contract (retry audit class 1): the hero interior
+//        must carry ≥4 items bearing quoted text or concrete values. Every
+//        hero blueprint with ≥2 quoted-text items rendered past the density
+//        floor; text-free logo/CTA-bookend inventories produced the hollow
+//        scene-0/4 heroes that dominated gate-round spend. —
+check("composition: a text-free bookend hero inventory fails the ≥4 text-bearing floor", () => {
+  const s = duoGood();
+  sceneOf(s, 0).composition.elements[0].interior = [
+    "oversized brand wordmark centered",
+    "soft radial glow behind the mark",
+    "accent underline bar beneath",
+    "corner logo chip upper left",
+    "drifting confetti field behind",
+    "pill-shaped CTA surface bottom center",
+  ];
+  const e = checkSceneComposition(s);
+  assert(
+    e.some((x) => /Scene 0 hero: only 0 of 6 interior item\(s\) carry quoted text or a concrete value/.test(x) && /≥4 text-bearing/.test(x)),
+    `expected the text-bearing floor error, got ${JSON.stringify(e)}`,
+  );
+});
+
+check("composition: exactly 4 text-bearing hero items pass (duoGood scene 0 = the boundary)", () => {
+  // duoGood scene 0's hero carries exactly 4 text-bearing items (XP bar
+  // 340/500, streak flame '7', hearts 4/5, crown level 12) + 2 text-free.
+  const e = checkSceneComposition(duoGood());
+  assert(!e.some((x) => /text-bearing/.test(x)), `4 text-bearing items must pass, got ${JSON.stringify(e)}`);
+  // Removing one text-bearing item (3 left) fails.
+  const s = duoGood();
+  sceneOf(s, 0).composition.elements[0].interior[0] = "green progress arc sweeping the rim";
+  const f = checkSceneComposition(s);
+  assert(
+    f.some((x) => /Scene 0 hero: only 3 of 6/.test(x) && /text-bearing/.test(x)),
+    `3 text-bearing items must fail, got ${JSON.stringify(f)}`,
+  );
+});
+
+check("composition: quoted micro-copy counts as text-bearing (no digit needed)", () => {
+  const s = duoGood();
+  sceneOf(s, 0).composition.elements[0].interior = [
+    'status chip "Nivel completado"',
+    'toast "Racha protegida" sliding in',
+    'tab label "Historias" active',
+    'button "Continuar" in feather green',
+    "owl mascot mid-hop celebration",
+    "confetti burst behind the card",
+  ];
+  const e = checkSceneComposition(s);
+  assert(!e.some((x) => /text-bearing/.test(x)), `4 quoted items must satisfy the floor, got ${JSON.stringify(e)}`);
 });
 
 check("composition: generic filler interior items are rejected ('some data rows', 'sample content')", () => {

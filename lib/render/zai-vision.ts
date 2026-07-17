@@ -53,6 +53,54 @@ export interface ZaiVisionResult {
 }
 
 /**
+ * Fallback extraction for the EMPTY-content class (retry root-cause audit
+ * class 3, 2026-07-16): on long multi-image judgments GLM burns the token
+ * budget thinking and returns `content: ""` while the drafted verdict sits
+ * complete inside `reasoning_content`. 3/5 acceptance builds shipped with
+ * sequence-QA blind on exactly this. Scans the reasoning for top-level
+ * `{…}` spans (string-aware, brace-balanced) and returns the LAST one that
+ * parses as JSON — the model's final draft. Null when none parses.
+ */
+export const extractJsonFromReasoning = (reasoning: string): string | null => {
+  let best: string | null = null;
+  let i = 0;
+  while (i < reasoning.length) {
+    const start = reasoning.indexOf("{", i);
+    if (start === -1) break;
+    let depth = 0;
+    let inStr = false;
+    let end = -1;
+    for (let j = start; j < reasoning.length; j++) {
+      const ch = reasoning[j];
+      if (inStr) {
+        if (ch === "\\") j++;
+        else if (ch === '"') inStr = false;
+        continue;
+      }
+      if (ch === '"') inStr = true;
+      else if (ch === "{") depth++;
+      else if (ch === "}") {
+        depth--;
+        if (depth === 0) {
+          end = j;
+          break;
+        }
+      }
+    }
+    if (end === -1) break; // unbalanced tail — nothing more to find
+    const span = reasoning.slice(start, end + 1);
+    try {
+      JSON.parse(span);
+      best = span; // keep scanning — the LAST parseable object wins
+    } catch {
+      /* not JSON — keep scanning */
+    }
+    i = end + 1;
+  }
+  return best;
+};
+
+/**
  * Send ONE screenshot + prompt to GLM-5V-Turbo on the native endpoint. Returns
  * the model text + token usage. Throws on HTTP/timeout error so the advisory
  * vision gate can skip the scene. A 60s AbortController guard guarantees a hung
@@ -70,13 +118,16 @@ export const callZaiVision = async (
   // task, can burn the ENTIRE token budget on reasoning and return empty content.
   // For deterministic extraction (color roles) pass disableThinking:true so it
   // answers directly. Judgment tasks (the QA gate) keep thinking on.
-  opts: { disableThinking?: boolean; maxTokens?: number } = {},
+  // timeoutMs: default 60s. The 5-image sequence judgment measurably needs
+  // more (retry audit class 3: the 60s guard killed it mid-generation) —
+  // that call site passes 120_000.
+  opts: { disableThinking?: boolean; maxTokens?: number; timeoutMs?: number } = {},
 ): Promise<ZaiVisionResult> => {
   const toUrl = (img: string) =>
     /^(data:|https?:)/i.test(img) ? img : `data:image/png;base64,${img}`;
   const urls = (Array.isArray(image) ? image : [image]).map(toUrl);
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 60_000);
+  const timer = setTimeout(() => ctrl.abort(), opts.timeoutMs ?? 60_000);
   try {
     const resp = await fetch(zaiNativeUrl(), {
       method: "POST",
@@ -105,12 +156,19 @@ export const callZaiVision = async (
       throw new Error(`z.ai vision ${resp.status}: ${body.slice(0, 200)}`);
     }
     const json = (await resp.json()) as {
-      choices?: { message?: { content?: string } }[];
+      choices?: { message?: { content?: string; reasoning_content?: string } }[];
       usage?: { prompt_tokens?: number; completion_tokens?: number };
     };
     const u = json.usage ?? {};
+    const msg = json.choices?.[0]?.message ?? {};
+    let text = msg.content ?? "";
+    // Empty-content fallback (retry audit class 3): the drafted verdict often
+    // sits complete inside reasoning_content when thinking ate the budget.
+    if (!text.trim() && typeof msg.reasoning_content === "string" && msg.reasoning_content.trim()) {
+      text = extractJsonFromReasoning(msg.reasoning_content) ?? "";
+    }
     return {
-      text: json.choices?.[0]?.message?.content ?? "",
+      text,
       usage: {
         ...EMPTY_USAGE,
         input_tokens: u.prompt_tokens ?? 0,

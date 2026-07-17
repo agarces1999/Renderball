@@ -407,7 +407,24 @@ export const countInteriorSpecifics = (visualConcept: string): number => {
 // signature. Normalization strips hex colors and numbers so "(4s cycle)" vs
 // "(3s cycle)" can't hide a copied phrase; unit leftovers (s/ms/px/deg/x/em)
 // are dropped so they don't fabricate junk grams.
-const ATMOS_UNIT_TOKENS = new Set(["s", "ms", "px", "x", "deg", "em"]);
+//
+// MOTION-MECHANICS VOCAB (retry root-cause audit, 2026-07-16 — class 2): the
+// prompt MANDATES the loop idiom ("≥2 infinite-loop sustained motions",
+// "loops infinite (Ns cycle)"), so its canonical scaffold syntax — infinite/
+// loop/cycle/breathe/drift/opacity/scale/sin/from/at/duration/ease — is
+// PROMPT-REQUIRED plumbing, not authored content. Counting it made obedience
+// look like plagiarism: run 2's TERMINAL reference fallback was the gram
+// "breathes infinite loop scale" — three different scenes each writing the
+// mandated idiom correctly. These tokens are dropped before grams form, so
+// 4-grams compare CONTENT words only ("faint radial glow behind" copied
+// across 3 scenes still fails; "drift infinite with sin" no longer can).
+const ATMOS_UNIT_TOKENS = new Set([
+  "s", "ms", "px", "x", "deg", "em",
+  // motion-mechanics scaffold (prompt-mandated loop idiom)
+  "infinite", "loop", "loops", "looping", "cycle", "opacity", "scale",
+  "breathe", "breathes", "breathing", "drift", "drifts", "sin",
+  "from", "at", "duration", "ease",
+]);
 
 const motionGrams = (visualConcept: string): Set<string> => {
   const grams = new Set<string>();
@@ -543,6 +560,13 @@ const ROLES_HINT = COMPOSITION_ROLES.join("|");
 
 /** A hero element must name at least this many interior items. */
 export const HERO_INTERIOR_MIN = 6;
+/** …of which at least this many must carry quoted text or a concrete value
+ *  (retry root-cause audit, class 1: every hero blueprint with ≥2 quoted-text
+ *  interior items rendered past the density floor; text-free logo/CTA-bookend
+ *  specs produced the hollow scene-0/4 heroes that dominated gate-round
+ *  spend). Diegetic micro-copy — chips, timestamps, labels, values — NOT the
+ *  words of any copy field an element ownsCopy. */
+export const HERO_TEXT_ITEMS_MIN = 4;
 /** composition.atmosphere must be at least this many words. */
 export const ATMOSPHERE_MIN_WORDS = 6;
 /** Motion must quote a token of at least this length from the element's OWN interior. */
@@ -730,6 +754,17 @@ export const checkSceneComposition = (scenes: Scene[]): string[] => {
         if (interior.length < HERO_INTERIOR_MIN) {
           errors.push(
             `Scene ${i} hero: ${interior.length} interior item(s) — a hero needs ≥${HERO_INTERIOR_MIN} concrete interior items, real values authored for this brand and scene.`,
+          );
+        }
+        // Bookend-hero density contract (retry audit class 1): the interior
+        // must SAY things — ≥4 items carrying quoted text or a concrete
+        // value. Text-free logo/CTA-bookend inventories render hollow.
+        const textBearing = interior.filter(
+          (item) => /\d/.test(item) || QUOTED_VALUE_RX.test(item),
+        ).length;
+        if (textBearing < HERO_TEXT_ITEMS_MIN) {
+          errors.push(
+            `Scene ${i} hero: only ${textBearing} of ${interior.length} interior item(s) carry quoted text or a concrete value — a hero needs ≥${HERO_TEXT_ITEMS_MIN} text-bearing items (chips, timestamps, labels, values with real micro-copy).`,
           );
         }
         for (const item of interior) {
@@ -1174,12 +1209,17 @@ export const validateScript = (
           error: `Section ${idx} missing required content.headline. Every section needs a hero text string (the main thing the viewer reads).`,
         };
       }
-    } else if (!isReadableText(headline.trim())) {
+    } else if (!isReadableText(headline.trim()) && !STAT_HEADLINE_RX.test(headline.trim())) {
+      // STAT_HEADLINE_RX (retry audit class 5): the 'stat' register MANDATES
+      // bare-numeral headlines (src/schema.ts SceneRegister — "one massive
+      // number/metric") and the prompt's own worked examples model them
+      // ("30%", "24", "2x") — so a pure-numeral headline like "4" is valid
+      // by design, while emoji/symbol-only headlines still fail.
       return {
         ok: false,
-        error: `Section ${idx} content.headline "${headline}" is not readable. Must contain at least 2 letters/digits.`,
+        error: `Section ${idx} content.headline "${headline}" is not readable. Must contain at least 2 letters/digits (a pure numeral like "24" or "3x" is allowed for stat scenes).`,
       };
-    } else {
+    } else if (isReadableText(headline.trim())) {
       const problem = headlineProblem(headline);
       if (problem) {
         return { ok: false, error: `Section ${idx} content.headline ${problem}` };
@@ -1328,6 +1368,14 @@ export const validateScript = (
  * agent (e.g., 2.6666666 vs 8/3).
  */
 const approxEqual = (a: number, b: number): boolean => Math.abs(a - b) < 0.001;
+
+/**
+ * A pure-numeral stat headline ("4", "24", "30%", "3x", "10×", "135+") — the
+ * shape the 'stat' register mandates. isReadableText demands ≥2 letters/digits,
+ * which rejected the single-digit class ("4") on every attempt (retry audit
+ * class 5: a recurring schema/prompt-vs-validator self-contradiction).
+ */
+const STAT_HEADLINE_RX = /^\p{N}+[%x×+]?$/u;
 
 /**
  * Returns true if `text` is something a viewer can read.

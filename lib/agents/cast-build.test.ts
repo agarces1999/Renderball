@@ -34,6 +34,13 @@ import {
   modelFor,
   effortFor,
   wantsConnector,
+  maxTokensFor,
+  staticJsxDensity,
+  substituteImgAssetIds,
+  PRE_RENDER_HERO_MIN_ELEMENTS,
+  PRE_RENDER_HERO_MIN_TEXT,
+  HERO_MAX_TOKENS_CEREBRAS,
+  HERO_MAX_TOKENS_FIREWORKS,
   type CastBuildInput,
 } from "./cast-build";
 import { verifyCompilable } from "./code-extraction";
@@ -127,9 +134,22 @@ const NON_CHROME_IDS = [
 // brand-orange-family and must survive untouched (keeps normalizedColors
 // exact at 1). The hero also smuggles in the post-pass defect classes: the
 // UNOWNED lede as a verbatim text node (copy owns it) and a filter:invert.
-const HERO_TEAL = `<div style={{ width: "100%", height: "100%", background: PANEL_BG, borderRadius: 16, border: "1px solid", borderColor: HAIRLINE }}>
+// Hero fixtures are RICH (≥15 elements / ≥4 static text values) because the
+// v8 pre-render density gate now rejects hollow heroes in-round — a thin
+// fixture would placeholder every hero and mask the defects under test.
+const HERO_TEAL = `<div style={{ width: "100%", height: "100%", background: PANEL_BG, borderRadius: 16, border: "1px solid", borderColor: HAIRLINE, padding: 24 }}>
+  <div style={{ display: "flex", gap: 8 }}>
+    <span style={{ color: INK }}>Deals pipeline</span>
+    <span style={{ color: INK }}>Q3 review</span>
+    <span style={{ color: ACCENT }}>Live</span>
+  </div>
   <svg viewBox="0 0 100 60" style={{ width: "100%" }}><path d="M0 50 L30 20 L60 35 L100 5" stroke="#2dd4bf" fill="none" strokeWidth="2" /></svg>
   <div>${LEDE}</div>
+  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+    <div style={{ display: "flex", gap: 10 }}><span>Renewal — Borealis</span><span>$12,500</span><span>Won</span></div>
+    <div style={{ display: "flex", gap: 10 }}><span>Pilot — Halcyon</span><span>$8,900</span><span>Open</span></div>
+    <div style={{ display: "flex", gap: 10 }}><span>Upsell — Meridian</span><span>$21,300</span><span>Won</span></div>
+  </div>
   <div style={{ filter: "invert(1)", opacity: 0.6 }} />
 </div>`;
 const COPY_BODY = `<div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
@@ -140,9 +160,21 @@ const BROKEN = `<div style={{ background: BG }}`; // unclosed opening tag — ca
 const FIXED_ATMOS = `<div style={{ position: "absolute", inset: 0, background: "radial-gradient(circle at 30% 20%, rgba(255,122,89,0.16), transparent 60%)" }} />`;
 // s1.hero self-positions its root at CANVAS coordinates (stat hero bounds are
 // 780×520 at (1020,280) — left 1020 > w 780 is the canvas-scale tell). The
-// post-pass must rebase it to the wrapper origin.
-const SELF_POS_HERO = `<div style={{ position: "absolute", left: 1020, top: 280, width: 780, height: 520, background: PANEL_BG, borderRadius: 12 }}>
+// post-pass must rebase it to the wrapper origin. Rich interior for the same
+// reason as HERO_TEAL (the pre-render density gate).
+const SELF_POS_HERO = `<div style={{ position: "absolute", left: 1020, top: 280, width: 780, height: 520, background: PANEL_BG, borderRadius: 12, padding: 20 }}>
   <span style={{ fontFamily: FONT_MONO, fontSize: 13, color: INK }}>Deals pipeline</span>
+  <div style={{ display: "flex", gap: 12 }}>
+    <div><span>Win rate</span><span>64%</span></div>
+    <div><span>Cycle</span><span>9 days</span></div>
+    <div><span>Coverage</span><span>3.1x</span></div>
+  </div>
+  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+    <div style={{ display: "flex", gap: 10 }}><span>Renewal — Borealis</span><span>Won</span></div>
+    <div style={{ display: "flex", gap: 10 }}><span>Pilot — Halcyon</span><span>Open</span></div>
+    <div style={{ display: "flex", gap: 10 }}><span>Upsell — Meridian</span><span>Won</span></div>
+    <div style={{ display: "flex", gap: 10 }}><span>Intro — Southpaw</span><span>New</span></div>
+  </div>
 </div>`;
 // s2.copy interpolates a shared keyframe name as a JS identifier — the
 // measured gpt-oss defect (passes esbuild, ReferenceError at render).
@@ -153,6 +185,23 @@ const CONNECTOR_BODY = `<svg viewBox="0 0 1920 1080" style={{ position: "absolut
   <circle cx="1700" cy="500" r="6" fill={ACCENT} />
 </svg>`;
 const DEFAULT_BODY = `<div style={{ width: "100%", height: "100%" }} />`;
+// The default HERO body for builds that don't test hero-specific defects —
+// rich enough to clear the pre-render density gate, no font bindings (so
+// root-injection expectations hold), no off-palette colors.
+const RICH_HERO_DEFAULT = `<div style={{ width: "100%", height: "100%", background: PANEL_BG, borderRadius: 12, padding: 20 }}>
+  <div style={{ display: "flex", gap: 8 }}>
+    <span>Build console</span>
+    <span>rb-2041</span>
+    <span>Live</span>
+  </div>
+  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+    <div style={{ display: "flex", gap: 10 }}><span>choreograph</span><span>41ms</span></div>
+    <div style={{ display: "flex", gap: 10 }}><span>hue-lock</span><span>12 rewrites</span></div>
+    <div style={{ display: "flex", gap: 10 }}><span>assemble</span><span>ok</span></div>
+    <div style={{ display: "flex", gap: 10 }}><span>render</span><span>queued</span></div>
+  </div>
+  <div style={{ height: 6, width: "62%", background: ACCENT, borderRadius: 3 }} />
+</div>`;
 
 const cannedFor = (id: string, nth: number): string => {
   if (id === "s0.hero") return HERO_TEAL; // proves hue-locking + unowned-copy + filter guards
@@ -449,7 +498,8 @@ const COMPOSED_COPY_S0 = `<div style={{ display: "flex", flexDirection: "column"
   <p data-content-path="lede" style={{ fontFamily: FONT_BODY, fontSize: 28, margin: 0, color: INK }}>{c.lede}</p>
   <div>Approve the arc first</div>
 </div>`;
-const composedCanned = (id: string): string => (id === "s0.copy" ? COMPOSED_COPY_S0 : DEFAULT_BODY);
+const composedCanned = (id: string): string =>
+  id === "s0.copy" ? COMPOSED_COPY_S0 : id.endsWith(".hero") ? RICH_HERO_DEFAULT : DEFAULT_BODY;
 
 const cfake = makeFakeCaller(composedCanned);
 const cresult = await castBuild(
@@ -584,7 +634,8 @@ const SERIF_COPY = `<div style={{ display: "flex", flexDirection: "column", gap:
   <h1 data-content-path="headline" style={{ fontFamily: "Georgia, serif", fontSize: 88, margin: 0, color: INK }}>{c.headline}</h1>
   <p data-content-path="lede" style={{ fontFamily: "Georgia, serif", fontSize: 28, margin: 0, color: INK }}>${LEDE}</p>
 </div>`;
-const mixedCanned = (id: string): string => (id === "s0.copy" ? SERIF_COPY : DEFAULT_BODY);
+const mixedCanned = (id: string): string =>
+  id === "s0.copy" ? SERIF_COPY : id.endsWith(".hero") ? RICH_HERO_DEFAULT : DEFAULT_BODY;
 
 process.env.RB_CAST_MODEL_HERO = "zai-glm-4.7";
 process.env.RB_CAST_MODEL_LEAVES = "gemma-4-31b";
@@ -786,6 +837,110 @@ await check("stripColorMutationFilters: invert/hue-rotate stripped, benign filte
   assert(r.stripped === 2, `2 strips expected, got ${r.stripped}`);
   assert(!r.code.includes("invert(") && !r.code.includes("hue-rotate("), "mutating filters gone");
   assert(r.code.includes('filter: "blur(8px)"'), "benign blur survives");
+});
+
+// ─── v8 pre-render gates (retry audit: hollow bookend heroes + img srcs) ─────
+
+console.log("\ncast-build v8 pre-render gates (static hero density + img srcs + provider caps)");
+
+await check("staticJsxDensity: hollow bookend bodies measure an order of magnitude under the floor", () => {
+  const hollow = staticJsxDensity('<div style={{ width: "100%", height: "100%" }}><Img src="https://x.com/logo.svg" /><div style={{ opacity: 0.4 }} /></div>');
+  assert(hollow.elements < PRE_RENDER_HERO_MIN_ELEMENTS, `hollow body must be under the element floor, got ${hollow.elements}`);
+  assert(hollow.textNodes < PRE_RENDER_HERO_MIN_TEXT, `hollow body has no text, got ${hollow.textNodes}`);
+});
+
+await check("staticJsxDensity: rich fixture bodies clear the floor; strings can't fabricate tags/text", () => {
+  const rich = staticJsxDensity(HERO_TEAL);
+  assert(rich.elements >= PRE_RENDER_HERO_MIN_ELEMENTS, `HERO_TEAL must clear the element floor, got ${rich.elements}`);
+  assert(rich.textNodes >= PRE_RENDER_HERO_MIN_TEXT, `HERO_TEAL must clear the text floor, got ${rich.textNodes}`);
+  // A style string containing "<div>fake</div>" is masked — no phantom counts.
+  const masked = staticJsxDensity('<div style={{ content: "<div>fake</div> <b>x</b>" }} />');
+  assert(masked.elements === 1, `string contents must be masked, got ${masked.elements} elements`);
+  assert(masked.textNodes === 0, `string contents must not count as text, got ${masked.textNodes}`);
+});
+
+await check("staticJsxDensity: {c.*} bindings, quoted child expressions and mapped data arrays count as text", () => {
+  const r = staticJsxDensity(
+    '<div><h1>{c.headline}</h1><span>{"$18.50"}</span>' +
+    '{["Chip alpha", "Chip beta", "Chip gamma"].map((t) => <em key={t}>{t}</em>)}</div>',
+  );
+  // 1 c-binding + 1 quoted expression + 3 array items = 5 text values.
+  assert(r.textNodes === 5, `5 text values expected, got ${r.textNodes}`);
+  assert(r.elements === 4, `div+h1+span+em = 4 open tags, got ${r.elements}`);
+});
+
+await check("substituteImgAssetIds: known ids substituted in every src form; fetchable srcs untouched; unknown = bad", () => {
+  const images = new Map([
+    ["site_logo", "https://cdn.brand.com/logo.svg"],
+    ["site_img_0", "https://cdn.brand.com/shot0.png"],
+  ]);
+  const r = substituteImgAssetIds(
+    '<div><Img src="site_logo" /><img src={"site_img_0"} /><Img src={`site_img_9`} />' +
+    '<Img src="https://ok.com/a.png" /><Img src={LOGO_SRC} /><img src="" /></div>',
+    images,
+  );
+  assert(r.code.includes('src="https://cdn.brand.com/logo.svg"'), "quoted-attr id substituted");
+  assert(r.code.includes('src={"https://cdn.brand.com/shot0.png"}'), "expression-string id substituted");
+  assert(r.substituted.length === 2, `2 substitutions expected, got ${JSON.stringify(r.substituted)}`);
+  assert(r.bad.includes("site_img_9") && r.bad.includes(""), `unknown id + empty src reported bad, got ${JSON.stringify(r.bad)}`);
+  assert(r.code.includes('src="https://ok.com/a.png"') && r.code.includes("src={LOGO_SRC}"), "fetchable + expression srcs untouched");
+});
+
+await check("maxTokensFor is provider-aware: hero 11000 on Fireworks, 6000 on Cerebras; other slots unchanged", () => {
+  assert(maxTokensFor("hero", "accounts/fireworks/routers/glm-5p2-fast") === HERO_MAX_TOKENS_FIREWORKS, "Fireworks hero → 11000 (no TPM pre-debit there)");
+  assert(maxTokensFor("hero", "gpt-oss-120b") === HERO_MAX_TOKENS_CEREBRAS, "Cerebras hero → 6000 (pre-debit is real)");
+  assert(maxTokensFor("hero") === HERO_MAX_TOKENS_CEREBRAS, "no model, no env → the gpt-oss default");
+  process.env.RB_CAST_MODEL = "accounts/fireworks/models/glm-5p2";
+  try {
+    assert(maxTokensFor("hero") === HERO_MAX_TOKENS_FIREWORKS, "RB_CAST_MODEL drives the cap when there is no per-call model");
+  } finally {
+    delete process.env.RB_CAST_MODEL;
+  }
+  assert(maxTokensFor("atmosphere") === 3500 && maxTokensFor("copy") === 2500, "non-hero caps unchanged");
+});
+
+await check("build-level: a hollow hero fails the pre-render density gate → repair → placeholder; outcomes report it", async () => {
+  const hollowCanned = (id: string): string => (id === "s0.hero" ? DEFAULT_BODY : cannedFor(id, 2));
+  const f = makeFakeCaller(hollowCanned);
+  const r = await castBuild(input, { caller: f.caller as never, concurrency: 4 });
+  const heroCalls = f.log.filter((l) => l.id === "s0.hero");
+  assert(heroCalls.length === 2, `hollow hero must earn the in-round repair, got ${heroCalls.length} call(s)`);
+  assert(/hero interior too thin: statically measured/.test(heroCalls[1].user), "repair prompt carries the static density error");
+  const outcome = r.elementOutcomes.find((o) => o.pieceId === "s0.hero");
+  assert(!!outcome && outcome.failed, "elementOutcomes must report the failed hero (cache-invalidation signal)");
+  assert(r.elementOutcomes.length === r.telemetry.elements, "one outcome per element call");
+});
+
+await check("build-level: a raw asset-id <Img> src is substituted from the script manifest at zero repair cost", async () => {
+  const withAsset = JSON.parse(JSON.stringify(script)) as Script;
+  (withAsset.assets as { images: unknown[] }).images = [
+    { id: "site_logo", src: "https://cdn.brand.com/logo.svg", width: 512, height: 512, format: "svg", license_id: "lic", alt_text: "logo" },
+  ];
+  const IMG_HERO = HERO_TEAL.replace("<svg viewBox", '<Img src="site_logo" /><svg viewBox');
+  const f = makeFakeCaller((id, nth) => (id === "s0.hero" ? IMG_HERO : cannedFor(id, nth)));
+  const r = await castBuild({ ...input, script: withAsset }, { caller: f.caller as never, concurrency: 4 });
+  assert(r.code.includes('src="https://cdn.brand.com/logo.svg"'), "asset id resolved to the crawled URL");
+  assert(!r.code.includes('src="site_logo"'), "the raw id never ships");
+  assert(f.log.filter((l) => l.id === "s0.hero").length === 1, "substitution is deterministic — no repair burned");
+});
+
+await check("build-level: an UNKNOWN non-fetchable src is a gate failure routed to the repair", async () => {
+  const BAD_IMG_HERO = HERO_TEAL.replace("<svg viewBox", '<Img src="site_img_7" /><svg viewBox');
+  const f = makeFakeCaller((id, nth) => (id === "s0.hero" && nth === 1 ? BAD_IMG_HERO : cannedFor(id, 2)));
+  const r = await castBuild(input, { caller: f.caller as never, concurrency: 4 });
+  const heroCalls = f.log.filter((l) => l.id === "s0.hero");
+  assert(heroCalls.length === 2, `bad src must earn the in-round repair, got ${heroCalls.length}`);
+  assert(/non-fetchable <Img> src\(s\): "site_img_7"/.test(heroCalls[1].user), "repair prompt names the bad src");
+  assert(!r.code.includes('src="site_img_7"'), "the blank-rectangle src never ships");
+});
+
+await check("elementOutcomes: clean build reports zero failed, repaired flags match telemetry", async () => {
+  const f = makeFakeCaller();
+  const r = await castBuild(input, { caller: f.caller as never, concurrency: 4 });
+  assert(r.elementOutcomes.filter((o) => o.failed).length === r.telemetry.failures, "failed count matches telemetry");
+  assert(r.elementOutcomes.filter((o) => o.repaired).length === r.telemetry.repairs, "repaired count matches telemetry");
+  assert(r.elementOutcomes.some((o) => o.pieceId === "s2.throughline" && o.failed), "the broken-through-repair piece is named");
+  assert(r.elementOutcomes.some((o) => o.pieceId === "s1.atmosphere" && o.repaired && !o.failed), "the recovered piece is named");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);
