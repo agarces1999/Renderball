@@ -100,70 +100,30 @@
  */
 import { promises as fs } from "fs";
 import path from "path";
-import { castBuild, neutralizeInk, forceHeroSurfaceLift, type CastBuildResult } from "../lib/agents/cast-build";
-import { findBrokenRenderedImages, swapBrokenImagesForWordmark } from "../lib/render/image-integrity";
+import { neutralizeInk, type CastBuildResult } from "../lib/agents/cast-build";
 import { castCall, castConfigured, type CastResult } from "../lib/llm/cast-provider";
 import { generateComposition, type CompositionCaller } from "../lib/agents/composition-head";
 import type { Theme } from "../lib/edit/piece-model";
 import type { Script, Scene } from "../src/schema";
 import { stripCodeFence, verifyCompilable } from "../lib/agents/code-extraction";
-import { injectLogoSrc } from "../lib/agents/logo-inject";
-import { finalizeUndefinedRefs, assessInvalidLucideImports } from "../lib/agents/finalize-refs";
-import { measureScenes, type SceneMeasurement } from "../lib/render/measure-scene";
+import { type SceneMeasurement } from "../lib/render/measure-scene";
+import { type RenderTruthKind } from "../lib/render/render-truth-gates";
 import {
-  findRenderTruthFailures,
-  findEdgeCroppedPieces,
-  planEdgeCropMoves,
-  hexLuminance,
-  findStrayFragments,
-  exciseStrayFragment,
-  type EdgeCropFinding,
-  type RenderTruthFinding,
-  type RenderTruthKind,
-  type SlotTerritory,
-  type StrayFragmentFinding,
-} from "../lib/render/render-truth-gates";
-import { assessOccupancy, type OccupancyVoidFinding } from "../lib/render/occupancy";
-import { assessTextNodeContrast, type TextContrastFinding } from "../lib/render/text-contrast";
-import { clampPieceOffsets } from "../lib/agents/assemble";
-import {
-  assessDensity,
-  renderSectionsForAnalysis,
-  parseHtmlStructure,
-  pieceStats,
-  maxDomDepth,
-  gradientSignatures,
-  imgSrcs,
   DIEGETIC_MIN_ELEMENTS,
   DIEGETIC_MIN_TEXT_NODES,
   HERO_MIN_ELEMENTS,
   HERO_MIN_TEXT_NODES,
   DEPTH_FLOOR,
   MIN_GRADIENT_SIGNATURES,
-  MAX_SCENES_PER_SIGNATURE,
-  IMG_SRC_WHITELIST,
-  type DensityFinding,
-  type HtmlNode,
 } from "../lib/render/density-gates";
 import {
-  assessHeroWashout,
   WASHOUT_SPREAD_FLOOR,
   WASHOUT_STDDEV_FLOOR,
   HERO_UNDERSCALE_MIN_FRAC,
-  findHeroUnderscale,
   type HeroContrastResult,
   type HeroLuminanceStats,
-  type HeroWashoutFinding,
-  type HeroWashoutNearMiss,
-  type HeroUnderscaleFinding,
 } from "../lib/render/hero-contrast";
-import { findSkeletonBars, type SkeletonBarFinding } from "../lib/render/skeleton-bars";
-import {
-  assessAccentFill,
-  ACCENT_FILL_MAX_FRAC,
-  type AccentFillFinding,
-  type AccentFillResult,
-} from "../lib/render/accent-fill";
+import { ACCENT_FILL_MAX_FRAC, type AccentFillResult } from "../lib/render/accent-fill";
 import {
   buildRubric,
   parseVerdict,
@@ -198,29 +158,34 @@ import {
   findUngroundedMockValues,
 } from "../lib/agents/schema-validator";
 import {
-  findOverflowingElements,
-  findDuplicateLogos,
-  countBrandMarks,
-  hasCornerLogoSuppression,
-  findUndefinedJsxComponents,
-  findUnboundCopy,
-  bindLiteralCopyInPlace,
-  findPlaceholderData,
-  findProvidedComponentRedefinitions,
-  type AspectRatio,
-} from "../lib/agents/quality-gates";
-import { sectionRanges } from "../lib/agents/section-splice";
-import {
   IMG_SHIM_SOURCE,
   PIECE_SHIM_SOURCE,
   VIDEO_SHIM_SOURCE,
   LOTTIE_SHIM_SOURCE,
   BRAND_CHROME_SOURCE,
 } from "../lib/render/build-wrapper";
-import { makeFontFetcher, inlineFontFaces } from "../lib/render/font-inline";
 import { loadBrief, DEV_OWNER_ID, type StoredBrief } from "../lib/store";
 import { withDbRetry } from "../lib/db";
 import { ulid } from "../lib/ulid";
+import {
+  runQualityLoop,
+  type QualityLoopTransport,
+  type FailureClass,
+  type StructuralFinding,
+  type SceneVisionVerdict,
+  type BrandTruthLite,
+  type DensityProfile,
+  type SceneDensityProfile,
+  type GateRoundReport,
+  type EdgeCropEvent,
+  type WashoutLiftEvent,
+  type ImgSwapEvent,
+  type StrayFragmentEvent,
+  type BindCopyEvent,
+  type NoProgressEvent,
+  type CacheBustEvent,
+  type LoopScript,
+} from "../lib/render/quality-loop";
 
 // ── params ───────────────────────────────────────────────────────────────────
 
@@ -411,155 +376,23 @@ const countVisionCall = (): void => {
   zaiCalls += 1;
 };
 
-// ── caching + feedback caller for castBuild (a8's, verbatim) ─────────────────
+// ── report sinks for the shared quality loop (v16: the caching caller, piece
+// cache, class-matched breaker, and gate battery all live in
+// lib/render/quality-loop.ts — runQualityLoop; these arrays receive the loop's
+// returned telemetry so writeOut + the gallery are unchanged) ────────────────
 
-const pieceCache = new Map<string, string>();
-let pieceTargets = new Map<string, string[]>();
-let castRoundLabel = "cast-r0";
 /** v11 (#7): the detached sequence verdict, persisted into the run context the
  *  moment it lands — every SUBSEQUENT regen prompt carries these as negative
- *  guidance ("sequence notes to avoid"). Advisory: never re-routes targets. */
+ *  guidance ("sequence notes to avoid"). Read by the loop via getSequenceNotes;
+ *  set here by the detached sequence judge (fireSequenceDetached). */
 let sequenceNotes: string[] = [];
-const sequenceNotesBlock = (): string[] =>
-  sequenceNotes.length === 0
-    ? []
-    : [
-        ``,
-        `════ SEQUENCE NOTES TO AVOID (advisory — a video-wide judge flagged these across ALL scenes) ════`,
-        ...sequenceNotes.map((n) => `- ${n}`),
-        `Do not repeat these video-wide patterns in your rebuild (vary the archetype/atmosphere rather than restaging the same composition).`,
-      ];
-
 const stopLengthEvents: { label: string; cap: number; retryCap: number; recovered: boolean }[] = [];
-const cacheBustEvents: { pieceId: string; reason: string }[] = [];
-/** v12 (#1): CLASS-MATCHED retry history — progress is judged on the finding
- *  class that targeted the piece, not a proxy metric. v13 adds hero-scale
- *  (painted-union %) and skeleton (qualifying bar count). */
-type FailureClass = "washout" | "render-truth" | "accent-fill" | "density" | "vision" | "hero-scale" | "skeleton" | "occupancy" | "text-contrast";
-const regenHistory = new Map<string, { cls: FailureClass; value: number; aux: number; escalated: boolean }>();
-const noProgressEvents: {
-  pieceId: string;
-  round: number;
-  action: "escalated" | "accepted-and-flagged";
-  cls: FailureClass;
-  metric: string;
-  /** accept-and-flag only: the residual finding shipped, verbatim head. */
-  finding?: string;
-}[] = [];
-/** v12 (#2): the washout gate→backstop closure ledger — every washout finding
- *  MUST land here as a forced lift or an explicit regen route (the invariant). */
-const washoutLiftEvents: {
-  round: number;
-  pieceId: string;
-  action: "forced-lift" | "lift-noop-regen-routed";
-  via: "paint-rewrite" | "root-override" | null;
-  targetToken: string | null;
-  /** v15 (#3): interior text nodes recolored in the same lift pass so the new
-   *  surface can't ghost them (the cycle-6 white-on-white headline class). */
-  interiorTextRepaints: number;
-  before: { spread: number; std: number };
-  after: { spread: number; std: number } | null;
-  cleared: boolean | null;
-}[] = [];
-/** v12 (#4): broken rendered images swapped to the text wordmark. */
-const imgSwapEvents: { round: number; scene: number; pieceId: string; src: string; via: string }[] = [];
-/** v15 (#4): stray accent fragments (crossing/isolated bars) — deterministic
- *  clip/remove where safe, else recorded as a structural advisory. */
-const strayFragmentEvents: {
-  round: number;
-  scene: number;
-  pieceId: string;
-  form: "crossing" | "isolated";
-  action: "clipped" | "removed" | "none";
-  detail: string;
-}[] = [];
-/** v13 (#5): bind-in-place ledger — literal copy mounts converted to bound
- *  c.<field> references at finalize time (render no-op; editor lever). */
-const bindCopyEvents: { round: number; scene: number; field: string; accessor: string; count: number }[] = [];
-const ESCALATION_MARK = "[NO-PROGRESS ESCALATION]";
-
-const verifyFragmentCheap = (body: string): Promise<string | null> =>
-  verifyCompilable(`const __CastPiece = () => (\n<div>\n${body}\n</div>\n);`);
-
-const cachingCaller: typeof castCall = async (call) => {
-  const pieceId = /piece id "([^"]+)"/.exec(call.user)?.[1] ?? "?";
-  const feedback = pieceTargets.get(pieceId);
-  let cached = pieceCache.get(pieceId);
-  const isRepair = call.user.includes("Your previous attempt failed");
-  const isTransportRepair = isRepair && call.user.includes("(the call itself failed)");
-  if (isTransportRepair && cached !== undefined) {
-    callLog.push({ label: `${castRoundLabel}:${pieceId}:transport-repair-replayed-cache`, model: "(cache)", secs: 0, in: 0, out: 0, stop: "cached-replay", cached: true });
-    console.warn(`  [cache] ${pieceId}: repair caused by a failed CALL, not a failed body — cached emission replayed, entry kept`);
-    return { text: cached, thinking: "", inputTokens: 0, outputTokens: 0, seconds: 0, stopReason: "cached-replay" };
-  }
-  if (isRepair && cached !== undefined) {
-    pieceCache.delete(pieceId);
-    cached = undefined;
-    cacheBustEvents.push({ pieceId, reason: "repair call — cached emission failed cast-build's full element gate; entry busted" });
-    console.warn(`  [cache-bust] ${pieceId}: cached emission disproven by a repair call — model hit fresh`);
-  }
-  if (!feedback && !isRepair && cached !== undefined) {
-    callLog.push({ label: `${castRoundLabel}:${pieceId}`, model: "(cache)", secs: 0, in: 0, out: 0, stop: "cached-replay", cached: true });
-    return { text: cached, thinking: "", inputTokens: 0, outputTokens: 0, seconds: 0, stopReason: "cached-replay" };
-  }
-  const escalated = !!feedback && feedback[0].startsWith(ESCALATION_MARK);
-  const user = feedback
-    ? escalated
-      ? [
-          call.user,
-          ``,
-          `════ NO-PROGRESS ESCALATION ════`,
-          ...feedback,
-          ...sequenceNotesBlock(),
-          ``,
-          `Ignore everything you produced for this element before — do NOT emit a variant of it. Re-emit this element FRESH from the brief above: the blueprint inventory is authoritative and every named item must be visibly present, nested inside real structure.`,
-          `Output ONLY component code — NEVER narrate your reasoning, plan, or these findings as rendered text nodes (a deterministic gate rejects any element whose text nodes speak about wrappers, QA findings, or px coordinates).`,
-        ].join("\n")
-      : [
-          call.user,
-          ``,
-          `════ YOUR PREVIOUS VERSION FAILED PRODUCTION QA ════`,
-          `The production gates measured your previous version of THIS element on the rendered frame and found these defects. Rebuild the element fixing EVERY finding while honoring the brief above:`,
-          ...feedback.map((f) => `- ${f}`),
-          ...sequenceNotesBlock(),
-          ``,
-          `--- YOUR PREVIOUS VERSION ---`,
-          (cached ?? "(none survived)").slice(0, 6000),
-          ``,
-          `Emit ONLY the corrected JSX for this element.`,
-          `Output ONLY component code — NEVER narrate your reasoning, plan, or these findings as rendered text nodes (a deterministic gate rejects any element whose text nodes speak about wrappers, QA findings, or px coordinates).`,
-        ].join("\n")
-    : call.user;
-  try {
-    const label = `${castRoundLabel}:${pieceId}${feedback ? (escalated ? ":escalation" : ":regen") : ""}${isRepair ? ":repair" : ""}`;
-    const res = await budgetedCast(label, {
-      system: call.system,
-      user,
-      maxTokens: call.maxTokens,
-      model: call.model ?? FIREWORKS_GLM_FAST,
-      ...(call.effort ? { effort: call.effort } : {}),
-    });
-    const stripped = stripCodeFence(res.text);
-    const sane =
-      res.stopReason !== "length" &&
-      stripped.trim().length >= 8 &&
-      stripped.includes("<") &&
-      !/^\s*(?:import|export)\b/.test(stripped);
-    if (sane && (await verifyFragmentCheap(stripped)) === null) {
-      pieceCache.set(pieceId, stripped);
-    } else if (res.text) {
-      cacheBustEvents.push({ pieceId, reason: `emission not cache-worthy (stop=${res.stopReason}, sane=${sane}) — entry NOT populated` });
-    }
-    return res;
-  } catch (e) {
-    if (feedback && cached !== undefined) {
-      callLog.push({ label: `${castRoundLabel}:${pieceId}:regen-failed-kept-previous`, model: "(cache)", secs: 0, in: 0, out: 0, stop: "regen-failed", cached: true });
-      console.warn(`  [retry] ${pieceId}: regen call failed (${e instanceof Error ? e.message.split("\n")[0] : e}) — previous body kept`);
-      return { text: cached, thinking: "", inputTokens: 0, outputTokens: 0, seconds: 0, stopReason: "regen-failed-replayed-previous" };
-    }
-    throw e;
-  }
-};
+const cacheBustEvents: CacheBustEvent[] = [];
+const noProgressEvents: NoProgressEvent[] = [];
+const washoutLiftEvents: WashoutLiftEvent[] = [];
+const imgSwapEvents: ImgSwapEvent[] = [];
+const strayFragmentEvents: StrayFragmentEvent[] = [];
+const bindCopyEvents: BindCopyEvent[] = [];
 
 // ── small utilities (a8's, verbatim) ─────────────────────────────────────────
 
@@ -637,38 +470,6 @@ const cssKeyframeBlock = (css: string, name: string): string | null => {
     }
   }
   return null;
-};
-
-/** Alpha of a css rgb()/rgba() color (opaque hex/rgb → 1; unparseable → 0). */
-const cssAlphaOf = (color: string): number => {
-  if (/^#/.test(color?.trim() ?? "")) return 1;
-  const m = /rgba?\(([^)]+)\)/.exec(color || "");
-  if (!m) return 0;
-  const p = m[1].split(",").map((v) => parseFloat(v.trim()));
-  return p.length >= 4 ? (Number.isNaN(p[3]) ? 1 : p[3]) : 1;
-};
-
-/** The span of ONE piece's wrapper + own body inside the ASSEMBLED composition:
- *  from its `data-piece` wrapper's opening `<div` to just before the NEXT
- *  data-piece wrapper (child pieces included — they carry their own markers) or
- *  the Section's <Chrome mount. Used by the v12 forced washout lift to rewrite
- *  a hero's paints in-place without re-running the assembler. */
-const pieceSpanInCode = (code: string, pieceId: string): { start: number; end: number } | null => {
-  const marker = `data-piece=${JSON.stringify(pieceId)}`;
-  const at = code.indexOf(marker);
-  if (at === -1) return null;
-  const start = code.lastIndexOf("<div", at);
-  if (start === -1) return null;
-  const nextMarker = code.indexOf("data-piece=", at + marker.length);
-  const nextChrome = code.indexOf("<Chrome sceneIndex=", at + marker.length);
-  let end = code.length;
-  if (nextMarker !== -1) {
-    // The next wrapper's `<div` sits just before its data-piece attr.
-    const wrapperOpen = code.lastIndexOf("<div", nextMarker);
-    end = wrapperOpen > start ? wrapperOpen : nextMarker;
-  }
-  if (nextChrome !== -1 && nextChrome < end) end = nextChrome;
-  return { start, end };
 };
 
 // ── loose script shape ───────────────────────────────────────────────────────
@@ -1114,127 +915,9 @@ const fallbackThemeFromCrawl = (
   };
 };
 
-// ── density profile (a8's) ───────────────────────────────────────────────────
-
-interface SceneDensityProfile {
-  scene: number;
-  ssrError?: string;
-  bestDiegetic: { id: string; elements: number; textNodes: number } | null;
-  diegeticPass: boolean;
-  hero: { id: string; elements: number; textNodes: number } | null;
-  heroPass: boolean;
-  depth: number;
-  depthPass: boolean;
-  gradientSignatures: string[];
-  badImgSrcs: string[];
-  pieces: { id: string; elements: number; textNodes: number }[];
-}
-interface DensityProfile {
-  scenes: SceneDensityProfile[];
-  distinctSignatures: number;
-  repeated: { signature: string; scenes: number[] }[];
-  varietyPass: boolean;
-}
-
-const buildDensityProfile = (code: string, script: unknown): DensityProfile => {
-  const renders = renderSectionsForAnalysis(code, script);
-  const scenes: SceneDensityProfile[] = [];
-  const bySig = new Map<string, number[]>();
-  for (const r of renders) {
-    if (r.html == null) {
-      scenes.push({ scene: r.scene, ssrError: r.error, bestDiegetic: null, diegeticPass: false, hero: null, heroPass: false, depth: 0, depthPass: false, gradientSignatures: [], badImgSrcs: [], pieces: [] });
-      continue;
-    }
-    const roots: (HtmlNode | string)[] = parseHtmlStructure(r.html);
-    const pieces = pieceStats(roots);
-    const diegetics = pieces.filter((p) => p.kind === "diegetic");
-    const best = diegetics.slice().sort((a, b) => b.elements + b.textNodes * 2 - (a.elements + a.textNodes * 2))[0] ?? null;
-    const heroes = pieces.filter((p) => p.id.endsWith(".hero"));
-    const hero = heroes[0] ?? null;
-    const sigs = [...gradientSignatures(roots)];
-    for (const sig of sigs) bySig.set(sig, [...(bySig.get(sig) ?? []), r.scene]);
-    scenes.push({
-      scene: r.scene,
-      bestDiegetic: best ? { id: best.id, elements: best.elements, textNodes: best.textNodes } : null,
-      diegeticPass: !!diegetics.find((p) => p.elements >= DIEGETIC_MIN_ELEMENTS && p.textNodes >= DIEGETIC_MIN_TEXT_NODES),
-      hero: hero ? { id: hero.id, elements: hero.elements, textNodes: hero.textNodes } : null,
-      heroPass: heroes.length === 0 || heroes.every((h) => h.elements >= HERO_MIN_ELEMENTS && h.textNodes >= HERO_MIN_TEXT_NODES),
-      depth: maxDomDepth(roots),
-      depthPass: maxDomDepth(roots) >= DEPTH_FLOOR,
-      gradientSignatures: sigs,
-      badImgSrcs: imgSrcs(roots).filter((src) => !IMG_SRC_WHITELIST.test(src)),
-      pieces: pieces.map((p) => ({ id: p.id, elements: p.elements, textNodes: p.textNodes })),
-    });
-  }
-  const repeated = [...bySig.entries()]
-    .filter(([, list]) => new Set(list).size > MAX_SCENES_PER_SIGNATURE)
-    .map(([signature, list]) => ({ signature, scenes: [...new Set(list)].sort((a, b) => a - b) }));
-  return {
-    scenes: scenes.sort((a, b) => a.scene - b.scene),
-    distinctSignatures: bySig.size,
-    repeated,
-    varietyPass: bySig.size >= MIN_GRADIENT_SIGNATURES && repeated.length === 0,
-  };
-};
-
-// ── structural gates (a8's) ──────────────────────────────────────────────────
-
-interface StructuralFinding { scene: number; key: string; detail: string }
-
-const runStructuralGates = (composition: string, script: LooseScript): StructuralFinding[] => {
-  const out: StructuralFinding[] = [];
-  const ranges = sectionRanges(composition);
-  const scenesContaining = (needle: string): number[] =>
-    ranges.filter((r) => composition.slice(r.start, r.end).includes(needle)).map((r) => r.index);
-  const attributed = (needle: string): number[] => {
-    const hits = scenesContaining(needle);
-    return hits.length > 0 ? hits : [-1];
-  };
-  for (const name of findProvidedComponentRedefinitions(composition)) {
-    for (const scene of attributed(`const ${name}`))
-      out.push({ scene, key: "provided_component_redefined", detail: `${name} is a PROVIDED component — re-creating provided components is rejected.` });
-  }
-  for (const p of findPlaceholderData(composition)) {
-    out.push({ scene: p.section, key: "placeholder_data", detail: `Placeholder/unresolved data on screen: ${p.token} (…${p.context}…). Every price, stat, and label must be a CONCRETE literal.` });
-  }
-  for (const icon of assessInvalidLucideImports(composition)) {
-    for (const scene of attributed(`<${icon}`))
-      out.push({ scene, key: "invalid_lucide_imports", detail: `Invalid lucide-react import — ${icon} does not exist in lucide-react and will crash the render.` });
-  }
-  for (const tag of findUndefinedJsxComponents(composition)) {
-    for (const scene of attributed(`<${tag}`))
-      out.push({ scene, key: "undefined_jsx_components", detail: `Undefined JSX component <${tag}> — resolves to undefined at runtime → white screen.` });
-  }
-  for (const u of findUnboundCopy(composition, (script.scenes ?? []) as never)) {
-    out.push({ scene: u.scene, key: "unbound_copy", detail: `Baked-in script copy — scene ${u.scene} ${u.field} ("${u.excerpt}") is retyped as literal JSX instead of bound via c.${u.field}.` });
-  }
-  const aspect = (script.config?.aspect_ratio ?? "16:9") as AspectRatio;
-  for (const w of findOverflowingElements(composition, aspect)) {
-    for (const scene of attributed(String(w)))
-      out.push({ scene, key: "overflow_crop", detail: `Off-canvas crop — element with width ${w}px crosses the ${aspect} canvas edge.` });
-  }
-  const logoCount = findDuplicateLogos(composition);
-  if (logoCount > 1 && !hasCornerLogoSuppression(composition)) {
-    const re = /<Img\b[^>]*\bsrc=\{?\s*["'`]?[^}"'`>\s]*logo/i;
-    const hits = ranges.filter((r) => re.test(composition.slice(r.start, r.end))).map((r) => r.index);
-    for (const scene of hits.length > 0 ? hits : [-1])
-      out.push({ scene, key: "duplicate_logo", detail: `Duplicate brand logo — the logo image appears at ${logoCount} sites; Chrome already carries the brand mark on every scene.` });
-  }
-  return out;
-};
-
 // ── per-scene vision (a8's, budget-aware) ────────────────────────────────────
-
-interface SceneVisionVerdict {
-  scene: number;
-  ok: boolean;
-  issues: string[];
-  actionable: string[];
-  severe: string[];
-  error?: string;
-}
-
-interface BrandTruthLite { name?: string; backgroundColor?: string; accent?: string; fonts?: string[] }
+// (the density profile, structural gates, and finding→piece routing moved to
+//  lib/render/quality-loop.ts — the shared module both callers drive.)
 
 const runVisionRound = async (
   measurements: SceneMeasurement[],
@@ -1316,173 +999,6 @@ const runSequenceRound = async (
   return findings;
 };
 
-// ── finding → piece routing (a8's) ───────────────────────────────────────────
-
-const PIECE_ID_RX = /\bs\d+\.(?:hero|copy|atmosphere|connector|throughline)\b/g;
-const VISION_COPY_RX = /\b(head(?:line)?|lede|bullet|caption|copy|paragraph|typograph|font|wall of type|text\b)/i;
-const VISION_ATMOS_RX = /\b(background|canvas|atmosphere|glow|gradient|vignette|grain|wash)\b/i;
-
-const computeTargets = (args: {
-  validPieceIds: Set<string>;
-  density: DensityFinding[];
-  profile: DensityProfile;
-  rtBlocking: RenderTruthFinding[];
-  washout: HeroWashoutFinding[];
-  accentFill: AccentFillFinding[];
-  edgeCropResidual: EdgeCropFinding[];
-  vision: SceneVisionVerdict[];
-  /** v13 (#2): blocking hero-underscale on centered/quote scenes. */
-  underscale?: HeroUnderscaleFinding[];
-  /** v13 (#4): BLOCKING skeleton-bar findings only (advisories never route). */
-  skeletonBlocking?: SkeletonBarFinding[];
-  /** v15 (#1): BLOCKING occupancy voids (quote/centered scenes). */
-  occupancyVoids?: OccupancyVoidFinding[];
-  /** v15 (#2): BLOCKING per-text-node contrast findings (the ghost class). */
-  textContrastBlocking?: TextContrastFinding[];
-  /** Per-scene script registers — v11 (#4): barbell repair is register-aware. */
-  registers?: (string | undefined)[];
-}): Map<string, string[]> => {
-  const { validPieceIds, density, profile, rtBlocking, washout, accentFill, edgeCropResidual, vision, underscale, skeletonBlocking, occupancyVoids, textContrastBlocking, registers } = args;
-  const targets = new Map<string, string[]>();
-  const add = (pieceId: string, sceneFallback: number, feedback: string): void => {
-    let id = pieceId;
-    if (!validPieceIds.has(id)) id = `s${sceneFallback}.hero`;
-    if (!validPieceIds.has(id)) return;
-    targets.set(id, [...(targets.get(id) ?? []), feedback]);
-  };
-
-  const measureErrorScenes = new Map<number, string[]>();
-  for (const f of density) {
-    if (f.kind === "density-measure-error" && f.scene >= 0) {
-      measureErrorScenes.set(f.scene, [...(measureErrorScenes.get(f.scene) ?? []), `${f.detail}`]);
-    }
-  }
-  for (const f of rtBlocking) {
-    if (f.kind === "measure-error" && f.scene >= 0) {
-      measureErrorScenes.set(f.scene, [...(measureErrorScenes.get(f.scene) ?? []), `${f.detail}`]);
-    }
-  }
-  for (const [scene, details] of measureErrorScenes) {
-    const scenePieces = [...validPieceIds].filter((id) => id.startsWith(`s${scene}.`));
-    const feedback = [
-      `[render-truth/measure-error → FULL SCENE RE-CAST] scene ${scene} failed to render ENTIRELY: ${[...new Set(details)].join(" · ")}.`,
-      `The assembled Section${scene} component threw at render time, so every element in this scene is being regenerated (yours included — the defect may live in any of them).`,
-      `Re-emit this element as fully SELF-CONTAINED, render-safe JSX: define inline (inside this element) every array/object you index; never index a possibly-undefined value (no data[0] on data that might not exist); no references to variables this element does not itself define (beyond the provided design-system consts and components); balanced tags; valid inline styles.`,
-    ].join("\n");
-    for (const id of scenePieces) add(id, scene, feedback);
-  }
-
-  for (const f of density) {
-    if (f.kind === "thin-diegetic" || f.kind === "shallow-dom") {
-      add(`s${f.scene}.hero`, f.scene, `[density/${f.kind}] ${f.detail}\n${f.repairInstruction}`);
-    } else if (f.kind === "thin-hero") {
-      const named = /"(s\d+\.[^"]*hero)"/.exec(f.detail)?.[1];
-      add(named ?? `s${f.scene}.hero`, f.scene, `[density/thin-hero] ${f.detail}\n${f.repairInstruction}`);
-    } else if (f.kind === "img-src") {
-      const badTokens = [...f.detail.matchAll(/"([^"]{1,60})"/g)].map((m) => m[1]);
-      let owner: string | null = null;
-      for (const [pieceId, body] of pieceCache) {
-        if (!pieceId.startsWith(`s${f.scene}.`)) continue;
-        if (badTokens.some((t) => body.includes(t))) { owner = pieceId; break; }
-      }
-      add(owner ?? `s${f.scene}.hero`, f.scene, `[density/img-src] ${f.detail}\n${f.repairInstruction}`);
-    }
-  }
-  const monotony = density.filter((f) => f.kind === "atmosphere-monotony");
-  if (monotony.length > 0) {
-    const scenesToVary = new Set<number>();
-    for (const rep of profile.repeated) for (const s of rep.scenes.slice(MAX_SCENES_PER_SIGNATURE)) scenesToVary.add(s);
-    if (scenesToVary.size === 0 && profile.distinctSignatures < MIN_GRADIENT_SIGNATURES) {
-      scenesToVary.add(1);
-      scenesToVary.add(3);
-    }
-    const fb = monotony.map((f) => `[density/atmosphere-monotony] ${f.detail}\n${f.repairInstruction}`).join("\n");
-    for (const s of scenesToVary) {
-      add(`s${s}.atmosphere`, s, `${fb}\nTHIS scene (${s}) must get a visibly DIFFERENT atmospheric treatment from the other scenes — change the gradient geometry (type, origin, angle, stops), not the brand colors.`);
-    }
-  }
-  for (const f of washout) {
-    add(f.pieceId, f.scene, `[hero-contrast/hero-washout] ${f.detail}\n${f.repairInstruction}`);
-  }
-  // v13 (#2): hero-underscale routes to the named hero (blocking) — "the
-  // artifact owns the frame — scale it up".
-  for (const f of underscale ?? []) {
-    add(f.pieceId, f.scene, `[hero-scale/hero-underscale] ${f.detail}\n${f.repairInstruction}`);
-  }
-  // v13 (#4): skeleton-bar rows — only the BLOCKING (≥2 rows) arm routes.
-  for (const f of skeletonBlocking ?? []) {
-    add(f.pieceId, f.scene, `[structural/skeleton_bars] ${f.detail}\n${f.repairInstruction}`);
-  }
-  // v15 (#1): occupancy void — BLOCKING voids route to the scene hero to
-  // furnish the abandoned region (advisory voids ride along, see the caller).
-  for (const f of occupancyVoids ?? []) {
-    add(f.pieceId, f.scene, `[occupancy/occupancy-void] ${f.detail}\n${f.repairInstruction}`);
-  }
-  // v15 (#2): per-text-node contrast — BLOCKING ghost text routes to its own
-  // piece to recolor the text (never the surface).
-  for (const f of textContrastBlocking ?? []) {
-    add(f.pieceId, f.scene, `[text-contrast/text-contrast] ${f.detail}\n${f.repairInstruction}`);
-  }
-  // v10: accent-as-fill routes to the named hero (blocking).
-  for (const f of accentFill) {
-    add(f.pieceId, f.scene, `[accent-fill/accent-as-fill] ${f.detail}\n${f.repairInstruction}`);
-  }
-  // v10: edge-crop RESIDUALS only — everything clampable was already clamped
-  // deterministically before this round's downstream gates ran.
-  for (const f of edgeCropResidual) {
-    add(f.pieceId, f.scene, `[render-truth/piece-edge-crop] ${f.detail}\n${f.repairInstruction}`);
-  }
-  for (const f of rtBlocking) {
-    if (f.kind === "measure-error" || f.scene < 0) continue;
-    const named = (f.detail.match(PIECE_ID_RX) ?? []).filter((id) => !/\.chrome$/.test(id));
-    if (named.length > 0) {
-      for (const id of new Set(named)) {
-        let fb = `[render-truth/${f.kind}] ${f.detail}`;
-        // v12 (#3): cross-piece collisions route BOTH pieces with ROLE-SPLIT
-        // instructions — the mock shrinks into its own slot, the copy takes an
-        // opaque panel (cycle 3's s1 interleave regen'd both pieces 3 rounds
-        // with the same undifferentiated instruction and never converged).
-        if (f.kind === "cross-piece-overlap") {
-          if (/\.hero$/.test(id)) {
-            fb += `\nYOUR ROLE IN THE FIX (${id}): your mock must NOT own the full canvas — keep EVERY row, label, and panel strictly inside your own wrapper (width/height 100% max, overflow hidden). Content extending under the neighboring copy column is the defect; shrink or crop the shell so the copy column is untouched canvas.`;
-          } else if (/\.copy$/.test(id)) {
-            fb += `\nYOUR ROLE IN THE FIX (${id}): set the ENTIRE copy stack on ONE opaque panel — a solid palette-token surface (contrasting the canvas) with real padding behind every line — so the column owns a readable surface whatever sits behind it; keep all text inside your wrapper.`;
-          }
-        }
-        add(id, f.scene, fb);
-      }
-    } else if (f.kind === "barbell") {
-      // v11 (#4): register-aware barbell repair. On a FULL-BLEED scene the
-      // hero owns the frame — the empty band is the hero's under-furnished
-      // interior, so the fix routes to the HERO with a vertical-fill
-      // instruction. Other registers keep the copy-column routing.
-      const register = registers?.[f.scene];
-      if (register === "full-bleed") {
-        add(
-          `s${f.scene}.hero`,
-          f.scene,
-          `[render-truth/barbell] ${f.detail}\nThis is a FULL-BLEED scene: your element IS the frame — populate the empty band named above with interior items in the same diegetic register (a nav/chrome band, rows, floating chips, a footer meta strip), spreading real content across the FULL frame height. Do NOT just stretch a top cluster and a bottom cluster further apart.`,
-        );
-      } else {
-        add(`s${f.scene}.copy`, f.scene, `[render-truth/barbell] ${f.detail}`);
-      }
-    } else {
-      const slot = f.kind === "canvas-brightness" ? "atmosphere" : "hero";
-      add(`s${f.scene}.${slot}`, f.scene, `[render-truth/${f.kind}] ${f.detail}`);
-    }
-  }
-  for (const v of vision) {
-    for (const issue of v.severe) {
-      const slot = VISION_COPY_RX.test(issue) && !/mock|dashboard|window|panel|chart/i.test(issue)
-        ? "copy"
-        : VISION_ATMOS_RX.test(issue) && !/mock|dashboard|window|panel|chart|logo|image/i.test(issue)
-          ? "atmosphere"
-          : "hero";
-      add(`s${v.scene}.${slot}`, v.scene, `[vision] ${issue}`);
-    }
-  }
-  return targets;
-};
 
 // ── report shapes ────────────────────────────────────────────────────────────
 
@@ -1501,57 +1017,6 @@ interface ScriptAttemptRow {
   salvaged: boolean;
 }
 interface BlueprintAttemptRow { attempt: number; secs: number; tokensIn: number; tokensOut: number; stop: string | null; errors: string[] }
-
-interface EdgeCropEvent {
-  round: number;
-  pieceId: string;
-  action: "clamped" | "clamp-skipped" | "clamp-refused-regen-routed" | "residual-after-clamp";
-  detail: string;
-}
-
-interface GateRoundReport {
-  round: number;
-  llmCallsThisRound: number;
-  castTelemetry: CastBuildResult["telemetry"] | null;
-  density: DensityFinding[];
-  profile: DensityProfile;
-  structural: StructuralFinding[];
-  renderTruthAll: RenderTruthFinding[];
-  renderTruthBlocking: RenderTruthFinding[];
-  heroContrast: { stats: HeroLuminanceStats[]; findings: HeroWashoutFinding[]; errors: string[] };
-  /** v13 (#3): near-miss washout advisories (never blocking). */
-  washoutNearMiss: HeroWashoutNearMiss[];
-  /** v13 (#2): blocking hero-underscale findings (centered/quote scenes). */
-  heroUnderscale: HeroUnderscaleFinding[];
-  /** v13 (#4): skeleton-bar findings (advisory + blocking). */
-  skeletonBars: SkeletonBarFinding[];
-  /** v12 (#2): washout findings BEFORE the forced lift (the gate's raw fire). */
-  washoutsAtGate: number;
-  /** v12 (#2): this round's forced-lift ledger entries. */
-  washoutLifts: (typeof washoutLiftEvents)[number][];
-  /** v12 (#4): this round's broken-image swaps. */
-  imgSwaps: (typeof imgSwapEvents)[number][];
-  accentFill: { stats: AccentFillResult["stats"]; findings: AccentFillFinding[]; errors: string[] };
-  edgeCrop: { initial: EdgeCropFinding[]; residual: EdgeCropFinding[] };
-  /** v15 (#1): occupancy void bands + card-interior advisories. */
-  occupancy: {
-    stats: import("../lib/render/occupancy").OccupancySceneStat[];
-    findings: OccupancyVoidFinding[];
-    cardAdvisories: import("../lib/render/occupancy").CardOccupancyAdvisory[];
-    errors: string[];
-  };
-  /** v15 (#2): per-text-node contrast findings (blocking + advisory). */
-  textContrast: {
-    blocking: TextContrastFinding[];
-    advisories: TextContrastFinding[];
-    stats: import("../lib/render/text-contrast").TextContrastStat[];
-    errors: string[];
-  };
-  /** v15 (#4): stray-fragment excise/advisory events this round. */
-  strayFragments: (typeof strayFragmentEvents)[number][];
-  vision: SceneVisionVerdict[];
-  targets: { pieceId: string; feedback: string[] }[];
-}
 
 interface RowCell { scene: number; png?: string; label: string; note: string }
 
@@ -2114,11 +1579,8 @@ const main = async (): Promise<void> => {
       signatureAccent,
       aspect,
     };
-    let castResult: CastBuildResult | null = null;
     let finalCode = "";
     let round = 0;
-    let genDirReady = false;
-    const fetchFont = makeFontFetcher();
     castStartS = nowS();
 
     // v11 (#7): the sequence verdict fires DETACHED as soon as the first
@@ -2157,690 +1619,89 @@ const main = async (): Promise<void> => {
         });
     };
 
-    while (true) {
-      castRoundLabel = `cast-r${round}`;
-      const callsBefore = totalLlmCalls;
-      try {
-        castResult = await phase(`cast-r${round}`, () => castBuild(castInput, { caller: cachingCaller }));
-      } catch (e) {
-        console.error(`  castBuild THREW on round ${round}: ${e instanceof Error ? e.message : e}`);
-        finalize[`castRound${round}Error`] = e instanceof Error ? e.message : String(e);
-        pieceTargets = new Map();
-        break;
-      }
-      pieceTargets = new Map();
-      roundTelemetry.push(castResult.telemetry);
-      for (const o of castResult.elementOutcomes) {
-        if (o.failed && pieceCache.has(o.pieceId)) {
-          pieceCache.delete(o.pieceId);
-          cacheBustEvents.push({ pieceId: o.pieceId, reason: "element gate failed through repair — placeholder shipped; cached emission disproven" });
-          console.warn(`  [cache-bust] ${o.pieceId}: placeholder shipped — stale emission evicted`);
-        }
-      }
-      console.log(
-        `  cast r${round}: ${castResult.telemetry.elements} elements · ${castResult.telemetry.repairs} repairs · ${castResult.telemetry.failures} placeholders · ` +
-          `${castResult.telemetry.tokensOut} tok out · ${castResult.telemetry.normalizedColors} hue-locked · ${castResult.telemetry.heroSurfaceCorrections} hero-surface lift(s) · ` +
-          `${castResult.telemetry.metaTextStrips} meta-text strip(s) · ${castResult.telemetry.wallSeconds}s · ${totalLlmCalls - callsBefore} LLM calls`,
-      );
-
-      finalCode = await phase(`finalize-r${round}`, async () => {
-        let code = injectLogoSrc(castResult!.code, logoSrc);
-        // Brand @font-face srcs are cross-origin on a fresh brand — inline to
-        // data: URLs so the measure/vision path renders the REAL faces.
-        const fonts = await inlineFontFaces(code, fetchFont);
-        code = fonts.code;
-        const fin = await finalizeUndefinedRefs(code);
-        // v13 (#5): BIND-IN-PLACE — literal copy retypes convert to bound
-        // c.<field> references (render no-op by construction: whole-node
-        // exact matches only; every Section declares `const c = …content`).
-        // Applied to the ASSEMBLED code each round (deterministic, idempotent,
-        // re-applies after every reassembly like the clamps); cached piece
-        // bodies stay untouched. Every downstream gate + SSR + measurement
-        // this round validates the transformed code.
-        const bind = bindLiteralCopyInPlace(fin.code, script!.scenes);
-        for (const b of bind.bound) bindCopyEvents.push({ round, ...b });
-        if (bind.bound.length > 0) {
-          console.log(
-            `  [bind-in-place] ${bind.bound.reduce((n, b) => n + b.count, 0)} literal copy mount(s) → bound refs [${bind.bound.map((b) => `s${b.scene}.${b.field}`).join(", ")}]`,
-          );
-        }
-        finalize[`r${round}`] = { logoInjected: Boolean(logoSrc), fontsInlined: fonts.inlined.length, fontsFailed: fonts.failed, added: fin.added, stubbed: fin.stubbed, neutralized: fin.neutralized, copyBound: bind.bound.reduce((n, b) => n + b.count, 0) };
-        return bind.code;
-      });
-
-      if (!genDirReady) {
-        await fs.rm(GEN_DIR, { recursive: true, force: true });
-        await fs.mkdir(GEN_DIR, { recursive: true });
-        // Shims from build-wrapper's canonical sources — no reference build.
-        await fs.writeFile(path.join(GEN_DIR, "Img.tsx"), IMG_SHIM_SOURCE, "utf8");
-        await fs.writeFile(path.join(GEN_DIR, "Piece.tsx"), PIECE_SHIM_SOURCE, "utf8");
-        await fs.writeFile(path.join(GEN_DIR, "Video.tsx"), VIDEO_SHIM_SOURCE, "utf8");
-        await fs.writeFile(path.join(GEN_DIR, "Lottie.tsx"), LOTTIE_SHIM_SOURCE, "utf8");
-        await fs.writeFile(path.join(GEN_DIR, "BrandChrome.tsx"), BRAND_CHROME_SOURCE, "utf8");
-        genDirReady = true;
-      }
-      await fs.writeFile(path.join(GEN_DIR, "Composition.tsx"), finalCode, "utf8");
-      await fs.writeFile(path.join(GEN_DIR, "script.json"), JSON.stringify(script, null, 2), "utf8");
-
-      // (a) density gates — blocking, including the per-hero floor.
-      const density = await phase(`density-r${round}`, async () => assessDensity(finalCode, script));
-      profile = buildDensityProfile(finalCode, script);
-      console.log(`  density: ${density.length} blocking finding(s) [${density.map((f) => f.kind).join(", ") || "clean"}] · distinct sigs ${profile.distinctSignatures} · depths [${profile.scenes.map((s) => s.depth).join(", ")}]`);
-
-      // (b) measure, then the v10 piece-edge-crop arm: deterministic CLAMP in
-      // the assembled code + ONE re-measure, so every downstream gate (render-
-      // truth, contrast, accent, vision) judges the repositioned frame. Only
-      // residuals the clamp couldn't fix route to a regen.
-      let measurements = await phase(`measure-r${round}`, () => measureScenes(GEN_DIR, script, GEN_DIR));
-
-      // v12 (#4): BROKEN-IMAGE swap — any measured <img> whose decoded
-      // naturalWidth is 0 renders as a broken-image glyph regardless of URL
-      // "fetchability" (cycle 3: three differently-corrupted logo data: URIs).
-      // Deterministic, zero tokens: the mount swaps to a text wordmark in the
-      // display face; the cached bodies get the same transform so replays keep
-      // it; ONE re-measure so every downstream gate judges the repaired frame.
-      const brokenImgs = findBrokenRenderedImages(measurements);
-      if (brokenImgs.length > 0) {
-        const srcs = brokenImgs.map((b) => b.src);
-        const swap = swapBrokenImagesForWordmark(finalCode, srcs, BRAND);
-        for (const b of brokenImgs) {
-          const via = swap.swapped.find((s) => s.src === b.src)?.via ?? "unswappable";
-          imgSwapEvents.push({ round, scene: b.scene, pieceId: b.pieceId, src: b.src.slice(0, 120), via });
-          console.warn(
-            `  [img-broken] scene ${b.scene} ${b.pieceId || "(chrome)"}: <img> decoded naturalWidth=0 (src …${b.src.slice(-48)}) — ${
-              via === "unswappable" ? "no swappable mount found (finding ships)" : `swapped to the "${BRAND}" text wordmark (${via})`
-            }`,
-          );
-        }
-        if (swap.swapped.length > 0) {
-          finalCode = swap.code;
-          await fs.writeFile(path.join(GEN_DIR, "Composition.tsx"), finalCode, "utf8");
-          for (const [pid, cachedBody] of pieceCache) {
-            const s2 = swapBrokenImagesForWordmark(cachedBody, srcs, BRAND, { constSource: finalCode });
-            if (s2.swapped.length > 0) pieceCache.set(pid, s2.code);
-          }
-          measurements = await phase(`measure-imgswap-r${round}`, () => measureScenes(GEN_DIR, script, GEN_DIR));
-        }
-      }
-
-      const edgeCropInitial = measurements.flatMap((m) => findEdgeCroppedPieces(m));
-      let edgeCropResidual: EdgeCropFinding[] = [];
-      if (edgeCropInitial.length > 0) {
-        // v11 (#3) clamp-vs-slot rule: a piece OVERSIZED for its slot (>25%
-        // over on the overflow axis) or whose clamped position would land on
-        // a neighbor's territory routes DIRECTLY to regen — cycle 2's blind
-        // clamp relocated an oversized hero into the copy column and cost a
-        // cross-piece round.
-        const canvasDims = { w: measurements[0]?.width ?? 1920, h: measurements[0]?.height ?? 1080 };
-        const slotTerritories: SlotTerritory[] = castResult.scenes.flatMap((s) =>
-          s.pieces.map((p) => ({
-            pieceId: p.id,
-            scene: s.scene,
-            kind: p.kind,
-            bounds: { x: p.bounds.x, y: p.bounds.y, w: p.bounds.w, h: p.bounds.h },
-          })),
-        );
-        const plan = planEdgeCropMoves(edgeCropInitial, slotTerritories, canvasDims, EDGE_CLAMP_MARGIN_PX);
-        for (const r of plan.regens) {
-          edgeCropEvents.push({ round, pieceId: r.pieceId, action: "clamp-refused-regen-routed", detail: `${r.reason}: ${r.detail}` });
-          console.warn(`  [edge-crop] ${r.pieceId}: clamp REFUSED (${r.reason}) — routed directly to regen`);
-        }
-        const clamp = clampPieceOffsets(finalCode, plan.moves);
-        for (const a of clamp.applied) {
-          edgeCropEvents.push({ round, pieceId: a.pieceId, action: "clamped", detail: `wrapper ${a.from.left},${a.from.top} → ${a.to.left},${a.to.top}` });
-          console.log(`  [edge-crop] ${a.pieceId}: wrapper clamped ${a.from.left},${a.from.top} → ${a.to.left},${a.to.top} (deterministic, zero tokens)`);
-        }
-        for (const s of clamp.skipped) {
-          edgeCropEvents.push({ round, pieceId: s.pieceId, action: "clamp-skipped", detail: s.reason });
-          console.warn(`  [edge-crop] ${s.pieceId}: clamp skipped — ${s.reason}`);
-        }
-        if (clamp.applied.length > 0) {
-          finalCode = clamp.code;
-          await fs.writeFile(path.join(GEN_DIR, "Composition.tsx"), finalCode, "utf8");
-          measurements = await phase(`measure-clamped-r${round}`, () => measureScenes(GEN_DIR, script, GEN_DIR));
-        }
-        edgeCropResidual = measurements.flatMap((m) => findEdgeCroppedPieces(m));
-        // Regen-routed pieces stay measured-cropped (never moved) — swap in
-        // the planner's sharper repair instruction on their residual finding.
-        for (const r of plan.regens) {
-          const residual = edgeCropResidual.find((f) => f.pieceId === r.pieceId);
-          if (residual) {
-            residual.detail = `${residual.detail} Clamp refused: ${r.detail}.`;
-            residual.repairInstruction = r.repairInstruction;
-          }
-        }
-        for (const f of edgeCropResidual) {
-          edgeCropEvents.push({ round, pieceId: f.pieceId, action: "residual-after-clamp", detail: f.detail });
-        }
-        console.log(
-          `  edge-crop: ${edgeCropInitial.length} initial [${edgeCropInitial.map((f) => `${f.pieceId}:${f.edge}+${f.overflowPx}px`).join(", ")}] · ` +
-            `${clamp.applied.length} clamped · ${plan.regens.length} clamp-refused → regen · ${edgeCropResidual.length} residual${edgeCropResidual.length ? ` [${edgeCropResidual.map((f) => f.pieceId).join(", ")}] → routed to regen` : ""}`,
-        );
-      }
-      finalMeasurements = measurements;
-
-      // (b6) v15 (#4): STRAY MOTIF FRAGMENTS — thin accent bars crossing a
-      // panel edge or floating isolated from their piece. Deterministic
-      // clip/remove where the authored span is unambiguous, else a structural
-      // advisory. Advisory posture: no regen target, no extra measure pass; the
-      // excise applies to finalCode + the cache (next round self-heals) and the
-      // shipped Composition.tsx is rewritten only if something changed.
-      let strayExcised = 0;
-      for (const m of measurements) {
-        for (const f of findStrayFragments(m, accentHexes)) {
-          const body = pieceCache.get(f.pieceId);
-          const repair = body ? exciseStrayFragment(body, f, theme.palette) : { code: "", action: "none" as const, detail: "piece body not cached" };
-          if (body && repair.action !== "none") {
-            pieceCache.set(f.pieceId, repair.code);
-            const span = pieceSpanInCode(finalCode, f.pieceId);
-            if (span) {
-              const spanRepair = exciseStrayFragment(finalCode.slice(span.start, span.end), f, theme.palette);
-              if (spanRepair.action !== "none") {
-                finalCode = finalCode.slice(0, span.start) + spanRepair.code + finalCode.slice(span.end);
-                strayExcised += 1;
-              }
-            }
-            strayFragmentEvents.push({ round, scene: f.scene, pieceId: f.pieceId, form: f.form, action: repair.action, detail: `${f.detail} → ${repair.detail}` });
-          } else {
-            strayFragmentEvents.push({ round, scene: f.scene, pieceId: f.pieceId, form: f.form, action: "none", detail: `${f.detail} (${repair.detail})` });
-          }
-        }
-      }
-      const strayThisRound = strayFragmentEvents.filter((e) => e.round === round);
-      if (strayThisRound.length > 0) {
-        if (strayExcised > 0) await fs.writeFile(path.join(GEN_DIR, "Composition.tsx"), finalCode, "utf8");
-        console.log(
-          `  stray-fragments: ${strayThisRound.length} [${strayThisRound.map((e) => `${e.pieceId}:${e.form}→${e.action}`).join(", ")}]`,
-        );
-      }
-
-      // Structural gates read the (possibly clamped/excised) final code.
-      const structural = runStructuralGates(finalCode, script!);
-      // v15 (#4): stray fragments that could NOT be excised deterministically
-      // surface as structural advisories (they never route to regen).
-      for (const e of strayThisRound.filter((e) => e.action === "none")) {
-        structural.push({ scene: e.scene, key: "stray_fragment", detail: e.detail });
-      }
-      // v11 (#5) logo-glyph count: >1 brand mark inside ONE hero mock is
-      // overuse (cycle 2 s4 shipped a triple mark — drawn wordmark + stray
-      // initial glyph — that the <Img>-based duplicate-logo gate is blind
-      // to). Finding (advisory): surfaces in the gate log + report.
-      for (const [pieceId, body] of pieceCache) {
-        if (!/\.hero$/.test(pieceId)) continue;
-        const marks = countBrandMarks(body, BRAND);
-        if (marks > 1) {
-          const scene = Number(/^s(\d+)\./.exec(pieceId)?.[1] ?? -1);
-          structural.push({
-            scene,
-            key: "logo_glyph_count",
-            detail: `${pieceId} carries ${marks} brand marks (drawn wordmarks/initial glyphs/logo mounts) — the chrome already carries the corner mark; a hero mock shows the brand at most once.`,
-          });
-        }
-      }
-      // v12 (#4): broken rendered images (measured naturalWidth === 0) —
-      // structural finding img_broken; the mount was already swapped to the
-      // text wordmark deterministically where a swap site existed.
-      for (const ev of imgSwapEvents.filter((e) => e.round === round)) {
-        structural.push({
-          scene: ev.scene,
-          key: "img_broken",
-          detail: `broken <img> (decoded naturalWidth 0) in ${ev.pieceId || "(chrome)"} — src …${ev.src.slice(-60)}; ${
-            ev.via === "unswappable" ? "NO swappable mount found" : `swapped deterministically to the "${BRAND}" text wordmark (${ev.via})`
-          }.`,
-        });
-      }
-      const rt = await phase(`render-truth-r${round}`, () =>
-        findRenderTruthFailures(measurements, {
-          brandBackground: canvasPlan.background,
-          blockingKinds: BLOCKING_KINDS,
-          registers: script!.scenes.map((s) => s.register),
-        }),
-      );
-
-      // (b2) hero-washout — deterministic contrast on the hero regions.
-      const contrastRaw = await phase(`hero-contrast-r${round}`, () => assessHeroWashout(measurements));
-      console.log(
-        `  hero-contrast: ${contrastRaw.stats.length} hero region(s) sampled · ${contrastRaw.findings.length} washout(s)` +
-          `${contrastRaw.findings.length ? ` [${contrastRaw.findings.map((f) => f.pieceId).join(", ")}]` : ""}` +
-          `${contrastRaw.errors.length ? ` · errors: ${contrastRaw.errors.join(" | ")}` : ""}`,
-      );
-
-      // v12 (#2): GATE→BACKSTOP CLOSURE — the washout gate FIRED, so force the
-      // surface lift NOW with the MEASURED colors (cycle 3's s4.hero washed out
-      // all 3 rounds while the static backstop no-op'd on unparseable styles).
-      // Deterministic-first, exactly like the edge-crop clamp: rewrite the
-      // hero's dominant canvas-toned paint (or override the piece root) to the
-      // max-|ΔL| palette token, re-measure, and only route RESIDUALS to regen —
-      // with an explicit lighten/darken instruction. Invariant: every washout
-      // finding produces a lift or an explicit regen — never a no-op.
-      let contrast = contrastRaw;
-      if (contrastRaw.findings.length > 0) {
-        let anyLifted = false;
-        for (const f of contrastRaw.findings) {
-          const m = measurements.find((mm) => mm.scene === f.scene);
-          // Measured dominant panel color inside the washed-out hero region:
-          // the largest opaque-painted element of the piece.
-          let panelColor: string | undefined;
-          let bestArea = 0;
-          for (const e of m?.elements ?? []) {
-            if (e.piece !== f.pieceId || e.opacity <= 0.05) continue;
-            if (cssAlphaOf(e.bg) < 0.5) continue;
-            const area = e.w * e.h;
-            if (area > bestArea) {
-              bestArea = area;
-              panelColor = e.bg;
-            }
-          }
-          const liftCtx = { measuredPanelColor: panelColor, canvasColor: canvasPlan.background };
-          const span = pieceSpanInCode(finalCode, f.pieceId);
-          const spanLift = span ? forceHeroSurfaceLift(finalCode.slice(span.start, span.end), theme, liftCtx) : null;
-          if (span && spanLift?.lifted) {
-            finalCode = finalCode.slice(0, span.start) + spanLift.code + finalCode.slice(span.end);
-            anyLifted = true;
-            washoutLiftEvents.push({
-              round,
-              pieceId: f.pieceId,
-              action: "forced-lift",
-              via: spanLift.via,
-              targetToken: spanLift.targetToken,
-              interiorTextRepaints: spanLift.interiorTextRepaints,
-              before: { spread: f.stats.spread, std: f.stats.stdDev },
-              after: null,
-              cleared: null,
-            });
-            console.warn(
-              `  [washout-lift] ${f.pieceId}: FORCED surface lift (${spanLift.via} → ${spanLift.targetToken ?? spanLift.targetHex}) — measured spread ${f.stats.spread}/std ${f.stats.stdDev}, panel ${panelColor ?? "(none opaque)"}` +
-                `${spanLift.interiorTextRepaints > 0 ? ` · ${spanLift.interiorTextRepaints} interior text node(s) recolored (ghost-proofing)` : ""}`,
-            );
-            // Persist into the cached raw body so replays/reassembly keep it.
-            const cached = pieceCache.get(f.pieceId);
-            if (cached) {
-              const bodyLift = forceHeroSurfaceLift(cached, theme, liftCtx);
-              if (bodyLift.lifted) pieceCache.set(f.pieceId, bodyLift.code);
-            }
-          } else {
-            washoutLiftEvents.push({
-              round,
-              pieceId: f.pieceId,
-              action: "lift-noop-regen-routed",
-              via: null,
-              targetToken: null,
-              interiorTextRepaints: 0,
-              before: { spread: f.stats.spread, std: f.stats.stdDev },
-              after: null,
-              cleared: null,
-            });
-            console.warn(`  [washout-lift] ${f.pieceId}: lift unavailable (${span ? "no liftable paint/root" : "piece span not found"}) — routing to regen with an explicit direction`);
-          }
-        }
-        if (anyLifted) {
-          await fs.writeFile(path.join(GEN_DIR, "Composition.tsx"), finalCode, "utf8");
-          measurements = await phase(`measure-washout-lift-r${round}`, () => measureScenes(GEN_DIR, script, GEN_DIR));
-          finalMeasurements = measurements;
-          contrast = await phase(`hero-contrast-relift-r${round}`, () => assessHeroWashout(measurements));
-          for (const ev of washoutLiftEvents.filter((e) => e.round === round && e.action === "forced-lift")) {
-            const st = contrast.stats.find((s) => s.pieceId === ev.pieceId);
-            ev.after = st ? { spread: st.spread, std: st.stdDev } : null;
-            ev.cleared = !contrast.findings.some((ff) => ff.pieceId === ev.pieceId);
-            console.log(
-              `  [washout-lift] ${ev.pieceId}: re-measured spread ${st?.spread ?? "?"}/std ${st?.stdDev ?? "?"} — ${ev.cleared ? "CLEARED (zero tokens)" : "residual → regen"}`,
-            );
-          }
-        }
-        // Residual washouts regen with an EXPLICIT direction (the invariant's
-        // regen arm): the measured canvas tells us which way to push.
-        const canvasLum = hexLuminance(canvasPlan.background);
-        const lightCanvas = canvasLum !== null && canvasLum > 0.5;
-        for (const f of contrast.findings) {
-          f.repairInstruction +=
-            ` EXPLICIT DIRECTION: the scene canvas ${canvasPlan.background} is ${lightCanvas ? "LIGHT" : "DARK"} — repaint your primary panel/surface decisively ${lightCanvas ? "DARKER" : "LIGHTER"} than the canvas (a flat, opaque, high-|ΔL| surface), never another near-canvas tone.`;
-        }
-      }
-      finalContrast = contrast;
-      // v13 (#3): near-miss advisories log (never blocking; appended to any
-      // regen of the piece after targets are computed).
-      if (contrast.advisories.length > 0) {
-        console.log(
-          `  washout-near-miss (advisory): [${contrast.advisories.map((a) => `${a.pieceId} sp${a.stats.spread}/sd${a.stats.stdDev}`).join(", ")}]`,
-        );
-      }
-
-      // (b2b) v13 (#2): hero-underscale — painted-union floor on centered/quote
-      // heroes, judged on the SAME (possibly lifted/re-measured) frame the
-      // other gates see. Blocking; routed "the artifact owns the frame".
-      const sceneRegisters = script!.scenes.map((s) => s.register);
-      const underscale = findHeroUnderscale(measurements, sceneRegisters);
-      console.log(
-        `  hero-underscale: ${underscale.length} finding(s)` +
-          `${underscale.length ? ` [${underscale.map((f) => `${f.pieceId} painted ${(f.paintedFrac * 100).toFixed(2)}% < ${HERO_UNDERSCALE_MIN_FRAC * 100}%`).join(", ")}]` : ""}`,
-      );
-
-      // (b2c) v13 (#4): skeleton-bar detector — measured loading-skeleton rows.
-      // Advisory at 1 row (structural finding), blocking at ≥2 rows in a piece.
-      const skeletonBars = measurements.flatMap((m) => findSkeletonBars(m));
-      for (const f of skeletonBars) {
-        structural.push({ scene: f.scene, key: "skeleton_bars", detail: f.detail });
-      }
-      if (skeletonBars.length > 0) {
-        console.log(
-          `  skeleton-bars: [${skeletonBars.map((f) => `${f.pieceId} ${f.rows} row(s)/${f.bars} bars${f.blocking ? " BLOCKING" : ""}`).join(", ")}]`,
-        );
-      }
-
-      // (b3) accent-as-fill (v10) — proportion discipline on the hero regions:
-      // the brand accent is punctuation, never a panel fill.
-      const accentFill = await phase(`accent-fill-r${round}`, () => assessAccentFill(measurements, accentHexes));
-      finalAccentFill = accentFill;
-      console.log(
-        `  accent-fill: ${accentFill.stats.length} hero region(s) probed vs [${accentHexes.join(", ")}] · ` +
-          `largest-rect fracs [${accentFill.stats.map((s) => `${s.pieceId} ${(s.largestRectFrac * 100).toFixed(1)}%`).join(", ") || "none"}] · ` +
-          `${accentFill.findings.length} accent-as-fill${accentFill.findings.length ? ` [${accentFill.findings.map((f) => f.pieceId).join(", ")}]` : ""}` +
-          `${accentFill.errors.length ? ` · errors: ${accentFill.errors.join(" | ")}` : ""}`,
-      );
-
-      // (b4) v15 (#1): OCCUPANCY BUDGET — measured void bands (pixel truth +
-      // anchor exemption) + card-interior furnish advisories. Void bands on
-      // quote/centered scenes BLOCK ("furnish the void"); split/stat/list voids
-      // and card interiors ADVISE.
-      const occupancy = await phase(`occupancy-r${round}`, () => assessOccupancy(measurements, sceneRegisters));
-      const occupancyBlocking = occupancy.findings.filter((f) => f.blocking);
-      for (const f of occupancy.findings.filter((f) => !f.blocking)) {
-        structural.push({ scene: f.scene, key: "occupancy_void_advisory", detail: f.detail });
-      }
-      for (const c of occupancy.cardAdvisories) {
-        structural.push({ scene: c.scene, key: "card_interior_occupancy", detail: c.detail });
-      }
-      console.log(
-        `  occupancy: ${occupancy.stats.length} scene(s) sampled · ${occupancy.findings.length} void(s)` +
-          `${occupancy.findings.length ? ` [${occupancy.findings.map((f) => `${f.pieceId} ${(f.runFracW * 100).toFixed(0)}%${f.blocking ? " BLOCK" : " adv"}`).join(", ")}]` : ""}` +
-          ` · ${occupancy.cardAdvisories.length} card-interior advisory` +
-          `${occupancy.errors.length ? ` · errors: ${occupancy.errors.join(" | ")}` : ""}`,
-      );
-
-      // (b5) v15 (#2): PER-TEXT-NODE CONTRAST — each text node vs its LOCAL
-      // sampled backdrop. <2.5:1 at ≥14px on a solid backdrop BLOCKS (the ghost
-      // class); 2.5-4.5:1 (and small-text) ADVISES.
-      const textContrast = await phase(`text-contrast-r${round}`, () => assessTextNodeContrast(measurements));
-      for (const a of textContrast.advisories) {
-        structural.push({ scene: a.scene, key: "text_contrast_advisory", detail: a.detail });
-      }
-      console.log(
-        `  text-contrast: ${textContrast.stats.length} node(s) under ceiling · ${textContrast.findings.length} blocking` +
-          `${textContrast.findings.length ? ` [${textContrast.findings.map((f) => `${f.pieceId} ${f.ratio.toFixed(2)}:1`).join(", ")}]` : ""}` +
-          ` · ${textContrast.advisories.length} advisory` +
-          `${textContrast.errors.length ? ` · errors: ${textContrast.errors.join(" | ")}` : ""}`,
-      );
-
-      // (c) per-scene vision. (Sequence vision is detached — see below.)
-      const vision = await phase(`vision-r${round}`, () => runVisionRound(measurements, script!, brandTruth));
-
-      const validPieceIds = new Set(castResult.scenes.flatMap((s) => s.pieces.filter((p) => p.kind !== "chrome").map((p) => p.id)));
-      const targets = computeTargets({
-        validPieceIds,
-        density,
-        profile,
-        rtBlocking: rt.blocking,
-        washout: contrast.findings,
-        accentFill: accentFill.findings,
-        edgeCropResidual,
-        vision,
-        underscale,
-        skeletonBlocking: skeletonBars.filter((f) => f.blocking),
-        occupancyVoids: occupancyBlocking,
-        textContrastBlocking: textContrast.findings,
-        registers: sceneRegisters,
-      });
-      // v13 (#3): near-miss washout advisories ride along on any piece ALREADY
-      // being regenerated — they never create a target and never block.
-      for (const a of contrast.advisories) {
-        const existing = targets.get(a.pieceId);
-        if (existing) existing.push(`[advisory/washout-near-miss] ${a.advisory}`);
-      }
-      // v15: occupancy + text-contrast advisories ride along on any piece
-      // already regenerating (never create a target).
-      for (const f of occupancy.findings.filter((f) => !f.blocking)) {
-        targets.get(f.pieceId)?.push(`[advisory/occupancy-void] ${f.repairInstruction}`);
-      }
-      for (const c of occupancy.cardAdvisories) {
-        targets.get(c.pieceId)?.push(`[advisory/card-interior] ${c.advisory}`);
-      }
-      for (const a of textContrast.advisories) {
-        targets.get(a.pieceId)?.push(`[advisory/text-contrast] ${a.repairInstruction}`);
-      }
-
-      gateRounds.push({
-        round,
-        llmCallsThisRound: totalLlmCalls - callsBefore,
-        castTelemetry: castResult.telemetry,
-        density,
-        profile,
-        structural,
-        renderTruthAll: rt.findings,
-        renderTruthBlocking: rt.blocking,
-        heroContrast: { stats: contrast.stats, findings: contrast.findings, errors: contrast.errors },
-        washoutNearMiss: contrast.advisories,
-        heroUnderscale: underscale,
-        skeletonBars,
-        washoutsAtGate: contrastRaw.findings.length,
-        washoutLifts: washoutLiftEvents.filter((e) => e.round === round),
-        imgSwaps: imgSwapEvents.filter((e) => e.round === round),
-        accentFill: { stats: accentFill.stats, findings: accentFill.findings, errors: accentFill.errors },
-        edgeCrop: { initial: edgeCropInitial, residual: edgeCropResidual },
-        occupancy: {
-          stats: occupancy.stats,
-          findings: occupancy.findings,
-          cardAdvisories: occupancy.cardAdvisories,
-          errors: occupancy.errors,
+    // ── the SHARED quality loop (v16, task #205): castBuild + the full gate
+    // battery + deterministic repairs + class-matched breaker + retry ladder
+    // now live in lib/render/quality-loop.ts (runQualityLoop). The spike wires
+    // its transport (budgetedCast / fast router), its budget-aware vision, its
+    // detached sequence judge, its genDir shims, and its report sinks; the loop
+    // is byte-for-byte the SAME code the PRODUCT path (run-preview-build under
+    // RB_BUILD_MODE=cast) runs. ──
+    let callsAtLastRound = totalLlmCalls;
+    const loop = await runQualityLoop(
+      {
+        castInput,
+        script: script as unknown as LoopScript,
+        genDir: GEN_DIR,
+        brand: BRAND,
+        logoSrc,
+        canvasBackground: canvasPlan.background,
+        accentHexes,
+        brandTruth,
+        registers: script!.scenes.map((s) => s.register),
+        maxRetryRounds: MAX_RETRY_ROUNDS,
+        blockingKinds: BLOCKING_KINDS,
+        edgeClampMarginPx: EDGE_CLAMP_MARGIN_PX,
+        defaultCastModel: FIREWORKS_GLM_FAST,
+      },
+      {
+        transport: ((a) =>
+          budgetedCast(a.label, {
+            system: a.system,
+            user: a.user,
+            maxTokens: a.maxTokens,
+            model: a.model ?? FIREWORKS_GLM_FAST,
+            ...(a.effort ? { effort: a.effort } : {}),
+          })) as QualityLoopTransport,
+        runPerSceneVision: (measurements) => runVisionRound(measurements, script!, brandTruth),
+        ensureGenDir: async () => {
+          await fs.rm(GEN_DIR, { recursive: true, force: true });
+          await fs.mkdir(GEN_DIR, { recursive: true });
+          await fs.writeFile(path.join(GEN_DIR, "Img.tsx"), IMG_SHIM_SOURCE, "utf8");
+          await fs.writeFile(path.join(GEN_DIR, "Piece.tsx"), PIECE_SHIM_SOURCE, "utf8");
+          await fs.writeFile(path.join(GEN_DIR, "Video.tsx"), VIDEO_SHIM_SOURCE, "utf8");
+          await fs.writeFile(path.join(GEN_DIR, "Lottie.tsx"), LOTTIE_SHIM_SOURCE, "utf8");
+          await fs.writeFile(path.join(GEN_DIR, "BrandChrome.tsx"), BRAND_CHROME_SOURCE, "utf8");
+          await fs.writeFile(path.join(GEN_DIR, "script.json"), JSON.stringify(script, null, 2), "utf8");
         },
-        textContrast: {
-          blocking: textContrast.findings,
-          advisories: textContrast.advisories,
-          stats: textContrast.stats,
-          errors: textContrast.errors,
+        writeComposition: async (code) => {
+          await fs.writeFile(path.join(GEN_DIR, "Composition.tsx"), code, "utf8");
         },
-        strayFragments: strayFragmentEvents.filter((e) => e.round === round),
-        vision,
-        targets: [...targets.entries()].map(([pieceId, feedback]) => ({ pieceId, feedback })),
-      });
-      // v11 (#7): first frames on disk → fire the detached sequence judge now.
-      fireSequenceDetached(measurements, round);
-      if (round === 0) {
-        report.round0 = {
-          passed: targets.size === 0,
-          targets: [...targets.keys()],
-          density: density.length,
-          washoutsAtGate: contrastRaw.findings.length,
-          washoutsLifted: washoutLiftEvents.filter((e) => e.round === 0 && e.action === "forced-lift").length,
-          washouts: contrast.findings.length,
-          accentFills: accentFill.findings.length,
-          brokenImgs: imgSwapEvents.filter((e) => e.round === 0).length,
-          edgeCropsInitial: edgeCropInitial.length,
-          edgeCropsClamped: edgeCropEvents.filter((e) => e.round === 0 && e.action === "clamped").length,
-          edgeCropsResidual: edgeCropResidual.length,
-          heroUnderscale: underscale.length,
-          washoutNearMiss: contrast.advisories.length,
-          skeletonBarsAdvisory: skeletonBars.filter((f) => !f.blocking).length,
-          skeletonBarsBlocking: skeletonBars.filter((f) => f.blocking).length,
-          occupancyVoidsBlocking: occupancyBlocking.length,
-          occupancyVoidsAdvisory: occupancy.findings.filter((f) => !f.blocking).length,
-          cardInteriorAdvisory: occupancy.cardAdvisories.length,
-          textContrastBlocking: textContrast.findings.length,
-          textContrastAdvisory: textContrast.advisories.length,
-          strayFragments: strayFragmentEvents.filter((e) => e.round === 0).length,
-          structural: structural.length,
-          rtBlocking: rt.blocking.length,
-          visionSevereScenes: vision.filter((v) => v.severe.length > 0).map((v) => v.scene),
-        };
-        console.log(
-          targets.size === 0
-            ? "  ★★★ ROUND 0 PASSED — every blocking gate clean on the first cast"
-            : `  ROUND 0 FAILED — ${targets.size} retry target(s): [${[...targets.keys()].join(", ")}]`,
-        );
-      }
-      previewEndS = nowS();
-      await writeOut();
-
-      console.log(
-        `  round ${round}: density ${density.length} · washout ${contrastRaw.findings.length}→${contrast.findings.length} residual (${washoutLiftEvents.filter((e) => e.round === round && e.action === "forced-lift").length} forced lift(s)) · near-miss ${contrast.advisories.length} · ` +
-          `underscale ${underscale.length} · skeleton ${skeletonBars.length} · accent-fill ${accentFill.findings.length} · ` +
-          `occupancy ${occupancyBlocking.length} block/${occupancy.findings.filter((f) => !f.blocking).length} adv/${occupancy.cardAdvisories.length} card · ` +
-          `text-contrast ${textContrast.findings.length} block/${textContrast.advisories.length} adv · stray ${strayThisRound.length} · ` +
-          `edge-crop ${edgeCropInitial.length}→${edgeCropResidual.length} residual · structural ${structural.length} · render-truth ${rt.findings.length} (${rt.blocking.length} blocking) · ` +
-          `vision actionable ${vision.reduce((n, v) => n + v.actionable.length, 0)} (severe on [${vision.filter((v) => v.severe.length).map((v) => v.scene).join(", ")}]) · ` +
-          `retry targets [${[...targets.keys()].join(", ") || "none"}]`,
-      );
-
-      if (targets.size === 0) {
-        console.log(`  all scene-scoped blocking gates clean — done after round ${round}`);
-        break;
-      }
-      // v12 (#1): CLASS-MATCHED NO-PROGRESS BREAKER — one escalation, then
-      // accept-and-flag. Progress is measured on the finding CLASS that
-      // targeted the piece, not a proxy: cycle 3 escalated a 148el/54tx hero
-      // for "density unmoved" when its real failure was cross-piece overlap
-      // (and the escalation's fresh emission made render-truth WORSE, 3→13).
-      const densityMetricOf = (pieceId: string): { value: number; aux: number } => {
-        const sceneIdx = Number(/^s(\d+)\./.exec(pieceId)?.[1] ?? -1);
-        const st = profile?.scenes.find((s) => s.scene === sceneIdx)?.pieces.find((pp) => pp.id === pieceId);
-        return { value: st?.elements ?? 0, aux: st?.textNodes ?? 0 };
-      };
-      const classMetricOf = (
-        pieceId: string,
-        feedback: string[],
-      ): { cls: FailureClass; value: number; aux: number; metric: string } => {
-        const joined = feedback.join("\n");
-        if (joined.includes("[hero-contrast/hero-washout]")) {
-          const st = contrast.stats.find((s) => s.pieceId === pieceId);
-          return { cls: "washout", value: st?.spread ?? 0, aux: st?.stdDev ?? 0, metric: `spread ${st?.spread ?? 0}/std ${st?.stdDev ?? 0}` };
-        }
-        if (joined.includes("[render-truth/")) {
-          const sceneIdx = Number(/^s(\d+)\./.exec(pieceId)?.[1] ?? -1);
-          let count =
-            rt.blocking.filter((f) => f.detail.includes(pieceId)).length +
-            edgeCropResidual.filter((f) => f.pieceId === pieceId).length;
-          if (count === 0) {
-            // Scene-fallback-routed findings (no piece named in the detail).
-            count = rt.blocking.filter((f) => f.scene === sceneIdx && !(f.detail.match(PIECE_ID_RX) ?? []).length).length;
-          }
-          return { cls: "render-truth", value: count, aux: 0, metric: `${count} blocking render-truth finding(s) on this piece` };
-        }
-        if (joined.includes("[accent-fill/")) {
-          const st = accentFill.stats.find((s) => s.pieceId === pieceId);
-          const frac = Math.round((st?.largestRectFrac ?? 0) * 1000) / 10;
-          return { cls: "accent-fill", value: frac, aux: 0, metric: `largest accent rect ${frac}% of piece` };
-        }
-        // v13 (#2): hero-underscale — progress = the painted union GREW.
-        if (joined.includes("[hero-scale/")) {
-          const f = underscale.find((u) => u.pieceId === pieceId);
-          const pct = Math.round((f?.paintedFrac ?? 0) * 1000) / 10;
-          return { cls: "hero-scale", value: pct, aux: 0, metric: `painted union ${pct}% of canvas` };
-        }
-        // v13 (#4): skeleton bars — progress = fewer qualifying bars.
-        if (joined.includes("[structural/skeleton_bars]")) {
-          const f = skeletonBars.find((s) => s.pieceId === pieceId);
-          return { cls: "skeleton", value: f?.bars ?? 0, aux: f?.rows ?? 0, metric: `${f?.bars ?? 0} skeleton bar(s) in ${f?.rows ?? 0} row(s)` };
-        }
-        // v15 (#1): occupancy void — progress = the void run SHRANK.
-        if (joined.includes("[occupancy/")) {
-          const f = occupancyBlocking.find((o) => o.pieceId === pieceId);
-          const pct = Math.round((f?.runFracW ?? 0) * 1000) / 10;
-          return { cls: "occupancy", value: pct, aux: 0, metric: `void run ${pct}% of frame width` };
-        }
-        // v15 (#2): text-contrast — progress = the worst ratio ROSE.
-        if (joined.includes("[text-contrast/")) {
-          const f = textContrast.findings.filter((t) => t.pieceId === pieceId).sort((a, b) => a.ratio - b.ratio)[0];
-          const r = Math.round((f?.ratio ?? 0) * 100) / 100;
-          return { cls: "text-contrast", value: r, aux: 0, metric: `worst text contrast ${r}:1` };
-        }
-        const d = densityMetricOf(pieceId);
-        const cls: FailureClass = joined.includes("[density/") ? "density" : "vision";
-        return { cls, value: d.value, aux: d.aux, metric: `${d.value}el/${d.aux}tx` };
-      };
-      /** Same-class progress: did the class's own measurement actually move? */
-      const isClassProgress = (
-        cls: FailureClass,
-        prev: { value: number; aux: number },
-        cur: { value: number; aux: number },
-      ): boolean => {
-        switch (cls) {
-          case "washout":
-            // The gate's own numbers must rise meaningfully (measurement noise
-            // on a re-rendered frame stays within ~2-3 luminance points).
-            return cur.value > prev.value + 4 || cur.aux > prev.aux + 2;
-          case "render-truth":
-            return cur.value < prev.value; // fewer blocking findings on the piece
-          case "accent-fill":
-            return cur.value < prev.value - 2; // largest-rect frac shrank
-          case "hero-scale":
-            return cur.value > prev.value + 1; // painted union grew ≥1pt of canvas
-          case "skeleton":
-            return cur.value < prev.value || cur.aux < prev.aux; // fewer bars/rows
-          case "occupancy":
-            return cur.value < prev.value - 1; // void run shrank ≥1pt of width
-          case "text-contrast":
-            return cur.value > prev.value + 0.3; // worst ratio rose meaningfully
-          default:
-            return cur.value > prev.value || cur.aux > prev.aux; // el/tx grew
-        }
-      };
-      for (const [pieceId, feedback] of [...targets.entries()]) {
-        const cur = classMetricOf(pieceId, feedback);
-        const prev = regenHistory.get(pieceId);
-        if (!prev) {
-          regenHistory.set(pieceId, { cls: cur.cls, value: cur.value, aux: cur.aux, escalated: false });
-          continue;
-        }
-        if (prev.cls !== cur.cls) {
-          // The previously-failing class is FIXED — a different class firing
-          // now is progress by definition; track the new class (escalation
-          // budget stays spent if it was spent — one escalation per piece).
-          console.log(`  [no-progress] ${pieceId}: failure class moved ${prev.cls} → ${cur.cls} (the ${prev.cls} defect was fixed) — regen continues on the new class`);
-          regenHistory.set(pieceId, { cls: cur.cls, value: cur.value, aux: cur.aux, escalated: prev.escalated });
-          continue;
-        }
-        if (isClassProgress(cur.cls, prev, cur)) {
-          regenHistory.set(pieceId, { cls: cur.cls, value: cur.value, aux: cur.aux, escalated: prev.escalated });
-          continue;
-        }
-        if (!prev.escalated) {
-          pieceCache.delete(pieceId);
-          cacheBustEvents.push({ pieceId, reason: `no-progress escalation (${cur.cls}) — cached emission evicted for a FRESH re-emission` });
-          targets.set(pieceId, [
-            `${ESCALATION_MARK} two consecutive rounds measured this piece failing the SAME class — ${cur.cls} (${cur.metric}, unmoved) — a repaired variant of the previous approach is NOT working.`,
-            `The previous round's failures, verbatim:`,
-            ...feedback,
-          ]);
-          noProgressEvents.push({ pieceId, round, action: "escalated", cls: cur.cls, metric: cur.metric });
-          regenHistory.set(pieceId, { cls: cur.cls, value: cur.value, aux: cur.aux, escalated: true });
-          console.warn(`  [no-progress] ${pieceId}: ${cur.cls} unmoved (${cur.metric}) — ESCALATED to a fresh full emission (cache busted, blueprint authoritative)`);
-        } else {
-          targets.delete(pieceId);
-          noProgressEvents.push({
-            pieceId,
-            round,
-            action: "accepted-and-flagged",
-            cls: cur.cls,
-            metric: cur.metric,
-            finding: feedback[0]?.slice(0, 220),
-          });
-          console.warn(`  [no-progress] ${pieceId}: escalation did not move ${cur.cls} (${cur.metric}) — ACCEPTED AND FLAGGED (residual finding ships honestly in the report)`);
-        }
-      }
-      if (targets.size === 0) {
-        console.log(`  every remaining target was accept-and-flagged by the no-progress breaker — done after round ${round}`);
-        break;
-      }
-      if (round >= MAX_RETRY_ROUNDS) {
-        console.warn(`  targets remain [${[...targets.keys()].join(", ")}] but the ${MAX_RETRY_ROUNDS}-round retry budget is spent — shipping with residual findings (honest)`);
-        break;
-      }
-      if (budgetExhausted || totalLlmCalls >= TOTAL_LLM_CEILING) {
-        console.warn(`  total LLM ceiling reached — shipping with residual findings (honest)`);
-        break;
-      }
-      pieceTargets = targets;
-      round += 1;
-    }
+        shouldStopForBudget: () => budgetExhausted || totalLlmCalls >= TOTAL_LLM_CEILING,
+        getSequenceNotes: () => sequenceNotes,
+        phase,
+        onCacheReplay: ({ label, kind }) =>
+          callLog.push({ label, model: "(cache)", secs: 0, in: 0, out: 0, stop: kind, cached: true }),
+        onFinalize: (r, info) => {
+          finalize[`r${r}`] = info;
+        },
+        onRoundComplete: async ({ gateRound, round: r, measurements, round0 }) => {
+          gateRound.llmCallsThisRound = totalLlmCalls - callsAtLastRound;
+          callsAtLastRound = totalLlmCalls;
+          gateRounds.push(gateRound);
+          if (gateRound.castTelemetry) roundTelemetry.push(gateRound.castTelemetry);
+          if (round0) report.round0 = round0;
+          fireSequenceDetached(measurements, r);
+          previewEndS = nowS();
+          await writeOut();
+        },
+        log: (m) => console.log(m),
+        warn: (m) => console.warn(m),
+      },
+    );
+    finalCode = loop.finalCode;
+    finalMeasurements = loop.finalMeasurements;
+    round = loop.rounds;
+    profile = loop.profile;
+    finalContrast = loop.finalContrast;
+    finalAccentFill = loop.finalAccentFill;
+    cacheBustEvents.push(...loop.events.cacheBustEvents);
+    noProgressEvents.push(...loop.events.noProgressEvents);
+    washoutLiftEvents.push(...loop.events.washoutLiftEvents);
+    imgSwapEvents.push(...loop.events.imgSwapEvents);
+    strayFragmentEvents.push(...loop.events.strayFragmentEvents);
+    bindCopyEvents.push(...loop.events.bindCopyEvents);
+    edgeCropEvents.push(...loop.events.edgeCropEvents);
+    if (loop.castRoundError) finalize[`castRound${loop.castRoundError.round}Error`] = loop.castRoundError.error;
 
     if (finalCode) await fs.writeFile(path.join(OUT_DIR, "Composition.dogfood.tsx"), finalCode, "utf8");
 

@@ -1,0 +1,5 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "noEmit": true, "types": ["node"] },
+  "include": ["scripts/dogfood-spike.ts", "scripts/cycle8-product-path.ts", "lib/**/*", "src/**/*"]
+}

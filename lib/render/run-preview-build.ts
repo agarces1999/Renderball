@@ -1,4 +1,5 @@
 import path from "path";
+import { promises as fs } from "fs";
 import { loadScript, loadBriefByScriptId } from "../store";
 import {
   buildAnimatedSections,
@@ -6,27 +7,57 @@ import {
   regenerateScene,
   repairSceneRenderErrors,
 } from "../agents/pipeline";
-import { writeGeneratedFiles } from "./build-wrapper";
+import {
+  writeGeneratedFiles,
+  IMG_SHIM_SOURCE,
+  PIECE_SHIM_SOURCE,
+  VIDEO_SHIM_SOURCE,
+  LOTTIE_SHIM_SOURCE,
+  BRAND_CHROME_SOURCE,
+} from "./build-wrapper";
 import { decomposeGenDir } from "../agents/lego-store";
 import { verifyScenesRender } from "./ssr-render";
 import { measureScenes } from "./measure-scene";
-import { findRenderTruthFailures, measureOutDir } from "./render-truth-gates";
-import { resolveCanvasPlan } from "../crawl/brand-identity";
+import { findRenderTruthFailures, measureOutDir, type RenderTruthKind } from "./render-truth-gates";
+import { resolveCanvasPlan, signatureWithLogoFallback } from "../crawl/brand-identity";
 import { preflightBrandTruth } from "../crawl/brand-truth";
 import { repairRenderTruth } from "./render-truth-repair";
 import {
   runVisionGate,
   makeVisionJudge,
   checkBrandColorFidelity,
+  buildRubric,
+  parseVerdict,
+  isSanctionedChromeFinding,
   type VisionFinding,
 } from "./vision-gate";
 import { MODELS, VISION_MODEL } from "../anthropic";
 import { callZaiVision, callZaiText } from "./zai-vision";
-import { recordUsage, costUsd, addUsage, EMPTY_USAGE } from "../usage";
+import { recordUsage, costUsd, addUsage, EMPTY_USAGE, type Usage } from "../usage";
 import { tallyGateFires, recordGateTelemetry } from "./gate-telemetry";
 import { recordMeteredUsage } from "../entitlement";
 import { assertZaiAvailable, ZaiUnavailableError } from "../zai-breaker";
 import { BuildTimeline } from "../agents/build-timeline";
+import { runQualityLoop, type SceneVisionVerdict, type GateRoundReport, type LoopScript, type BrandTruthLite } from "./quality-loop";
+import { deriveCrawlTheme } from "./crawl-theme";
+import { castCall, castConfigured } from "../llm/cast-provider";
+import { neutralizeInk } from "../agents/cast-build";
+import { generateComposition, type CompositionCaller } from "../agents/composition-head";
+import { checkSceneComposition } from "../agents/schema-validator";
+import type { Script, Scene } from "../../src/schema";
+
+/** The measured render-truth failures that BLOCK a build (shared by the
+ *  monolithic repair gate, the vision-loop re-gate, and the cast quality loop). */
+const BLOCKING_RENDER_TRUTH_KINDS: RenderTruthKind[] = [
+  "overflow", "measure-error", "barbell", "cross-piece-overlap", "canvas-brightness", "stranded-hero",
+];
+/** v10 edge-crop clamp breath — a clamped piece never sits flush to the edge. */
+const EDGE_CLAMP_MARGIN_PX = 12;
+const CAST_MAX_RETRY_ROUNDS = 2;
+/** The cast path's hard cumulative-spend ceiling (mirrors the monolithic $10). */
+const CAST_SPEND_CEILING_USD = 10;
+const CAST_SEVERE_RX =
+  /unreadable|clipped|cut ?off|overlap|invisible|missing|broken|empty|flat|illegible|placeholder|masked|blank|loading|frozen|nav bar|pagination/i;
 
 export type BuildRouteResult = {
   status: number;
@@ -127,6 +158,25 @@ export async function runPreviewBuild(
   // end — the 57-min HubSpot run was unattributable because the only phase
   // data lived in discarded console logs. Never again.
   const timeline = new BuildTimeline();
+
+  // ── RB_BUILD_MODE=cast: the LEGO product path (head → cast → assemble →
+  // runQualityLoop) instead of the monolithic buildAnimatedSections. Unset →
+  // production behavior UNCHANGED (the monolithic path stays default until the
+  // cast path is validated). Task #205 (cycle 8) — the entire piece-level gate
+  // battery the dogfood loop built lives ONLY in the cast path.
+  if (process.env.RB_BUILD_MODE === "cast") {
+    return runCastPreviewBuild({
+      script,
+      brief,
+      scriptId,
+      ownerId,
+      genDir: path.join(process.cwd(), "src", "generated", scriptId),
+      timeline,
+      buildT0,
+      brandTruthDegraded,
+    });
+  }
+
   const result = await buildAnimatedSections(
     buildAgentInputFromBrief(brief, script),
     { timeline },
@@ -630,4 +680,320 @@ export async function runPreviewBuild(
       },
     },
   };
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type LoadedScript = any;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type LoadedBrief = any;
+
+/**
+ * The LEGO product path (RB_BUILD_MODE=cast). Derives a deterministic theme
+ * from the crawl, runs the composition head (best-effort blueprints), then
+ * drives castBuild + the SHARED runQualityLoop — the exact piece-level gate
+ * battery the dogfood loop built (washout+lift, hero-underscale, skeleton,
+ * accent-fill, edge-crop+clamp, broken-img+swap, logo-glyph, occupancy,
+ * text-contrast, stray-fragment, per-piece render-truth, class-matched breaker,
+ * bind-in-place, per-scene vision). Preserves production's spend ceiling, usage
+ * telemetry, entitlement metering, gen-dir persistence, gate telemetry, and the
+ * lego decompose — nothing about the surrounding contract changes.
+ */
+async function runCastPreviewBuild(args: {
+  script: LoadedScript;
+  brief: LoadedBrief;
+  scriptId: string;
+  ownerId: string;
+  genDir: string;
+  timeline: BuildTimeline;
+  buildT0: number;
+  brandTruthDegraded: string[] | undefined;
+}): Promise<BuildRouteResult> {
+  const { script, brief, scriptId, ownerId, genDir, timeline, buildT0, brandTruthDegraded } = args;
+  const model = MODELS.codingAgentBuild;
+
+  if (!castConfigured()) {
+    return {
+      status: 500,
+      body: { error: "RB_BUILD_MODE=cast but the cast provider is not configured (RB_CAST_KEY missing)", stage: "cast-config" },
+    };
+  }
+
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const be: any = brief?.brand_extract?.ok ? brief.brand_extract : undefined;
+    const canvasPlan = resolveCanvasPlan(be);
+    const signature =
+      signatureWithLogoFallback(be?.palette ?? [], be?.theme_color, be?.logo_color) ??
+      be?.theme_color ??
+      (be?.palette ?? [])[0] ??
+      "#666666";
+    const brand = (be?.title as string | undefined)?.trim() || "Brand";
+    const derived = deriveCrawlTheme(be, canvasPlan.background, canvasPlan.mode, signature, be?.palette ?? []);
+    const inkGuard = neutralizeInk(derived.theme);
+    const theme = inkGuard.theme;
+
+    const userLogo = brief?.brand_files?.find((f: { is_logo?: boolean }) => f.is_logo);
+    const logoSrc: string | undefined =
+      userLogo?.url ?? be?.logo_hd ?? be?.apple_touch_icon ?? be?.favicon ?? undefined;
+
+    const aspect = (["16:9", "9:16", "1:1"].includes(script.config?.aspect_ratio ?? "")
+      ? script.config!.aspect_ratio
+      : "16:9") as "16:9" | "9:16" | "1:1";
+
+    // ── spend tracking against the $10 ceiling (glm-5.2 pricing, the build model) ──
+    let castUsage: Usage = { ...EMPTY_USAGE };
+    const track = (r: { inputTokens: number; outputTokens: number }): void => {
+      castUsage = addUsage(castUsage, {
+        input_tokens: r.inputTokens,
+        output_tokens: r.outputTokens,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+      });
+    };
+    const overCeiling = (): boolean => costUsd(model, castUsage) >= CAST_SPEND_CEILING_USD;
+
+    // ── HEAD: composition blueprints (best-effort — castBuild builds fine
+    // without them; on any failure we proceed with un-composed scenes). ──
+    let composedScript: LoadedScript = script;
+    timeline.mark("cast:head:start");
+    try {
+      const headCaller: CompositionCaller = async (call) => {
+        const r = await castCall({
+          system: call.system,
+          user: call.user,
+          maxTokens: call.maxTokens,
+          effort: call.effort === "none" ? "low" : call.effort,
+        });
+        track(r);
+        return { text: r.text };
+      };
+      const composed = await generateComposition({
+        script: script as unknown as Script,
+        caller: headCaller,
+        validate: (scenes: Scene[]) => checkSceneComposition(scenes),
+        brandName: brand,
+        paletteHint: `canvas ${canvasPlan.background} (${canvasPlan.mode}), signature accent ${signature}, brand palette: ${(be?.palette ?? []).join(", ")}`,
+        designNotes: `Design system consts available downstream: PALETTE (CANVAS/INK/ACCENT/MUTED/SOFT_NEUTRAL/CARD_FILL/WHITE), shared keyframes (glowBreathe, drift1-3, drawWidth, fadeRise, scaleIn). Fonts: display ${theme.fonts.display}, body ${theme.fonts.body}.`,
+      });
+      composedScript = { ...script, scenes: composed.scenes };
+      console.log(`[preview/build:cast] composition head: ${composed.attempts} attempt(s)`);
+    } catch (err) {
+      console.warn("[preview/build:cast] composition head failed — building with un-composed scenes:", err);
+    }
+    timeline.mark("cast:head:done");
+
+    const accentHexes = [
+      ...new Set(
+        [derived.signatureAccent, theme.palette.ACCENT].filter(
+          (h): h is string => typeof h === "string" && /^#[0-9a-fA-F]{3,8}$/.test(h),
+        ),
+      ),
+    ];
+    const brandTruth = {
+      name: brand,
+      backgroundColor: canvasPlan.background,
+      accent: signature,
+      fonts: [be?.font_roles?.display, be?.font_roles?.body].filter((f: unknown): f is string => !!f),
+    };
+
+    // ── per-scene vision (advisory driver of severe→regen targets) ──
+    let visionUsage: Usage = { ...EMPTY_USAGE };
+    let visionRan = false;
+    const runPerSceneVision =
+      process.env.RB_VISION_GATE === "off"
+        ? undefined
+        : async (
+            measurements: { scene: number; screenshotPath?: string }[],
+            scr: LoopScript,
+            bt: BrandTruthLite,
+          ): Promise<SceneVisionVerdict[]> => {
+            const withShots = measurements.filter(
+              (m): m is { scene: number; screenshotPath: string } => !!m.screenshotPath,
+            );
+            const judged = await Promise.allSettled(
+              withShots.map(async (m) => {
+                visionRan = true;
+                const b64 = (await fs.readFile(m.screenshotPath)).toString("base64");
+                const rubric = buildRubric(bt, scr.scenes[m.scene]?.visual_concept);
+                const { text, usage } = await callZaiVision(b64, rubric);
+                visionUsage = addUsage(visionUsage, usage);
+                const verdict = parseVerdict(text);
+                const actionable = verdict.issues.filter((issue) => !isSanctionedChromeFinding(issue));
+                return {
+                  scene: m.scene,
+                  ok: verdict.ok || actionable.length === 0,
+                  issues: verdict.issues,
+                  actionable,
+                  severe: actionable.filter((issue) => CAST_SEVERE_RX.test(issue)),
+                } satisfies SceneVisionVerdict;
+              }),
+            );
+            const out: SceneVisionVerdict[] = [];
+            for (const [k, r] of judged.entries()) {
+              if (r.status === "fulfilled") out.push(r.value);
+              else out.push({ scene: withShots[k]?.scene ?? -1, ok: true, issues: [], actionable: [], severe: [], error: String(r.reason).slice(0, 200) });
+            }
+            return out.sort((a, b) => a.scene - b.scene);
+          };
+
+    timeline.mark("cast:loop:start");
+    const loop = await runQualityLoop(
+      {
+        castInput: {
+          script: composedScript as unknown as Script,
+          theme,
+          palette: derived.paletteHexes,
+          signatureAccent: derived.signatureAccent,
+          aspect,
+        },
+        script: composedScript as unknown as LoopScript,
+        genDir,
+        brand,
+        logoSrc,
+        canvasBackground: canvasPlan.background,
+        accentHexes,
+        brandTruth,
+        registers: (composedScript.scenes ?? []).map((s: { register?: string }) => s.register),
+        maxRetryRounds: CAST_MAX_RETRY_ROUNDS,
+        blockingKinds: BLOCKING_RENDER_TRUTH_KINDS,
+        edgeClampMarginPx: EDGE_CLAMP_MARGIN_PX,
+        defaultCastModel: process.env.RB_CAST_MODEL,
+      },
+      {
+        transport: async (a) => {
+          const r = await castCall({
+            system: a.system,
+            user: a.user,
+            maxTokens: a.maxTokens,
+            model: a.model,
+            effort: a.effort,
+            json: a.json,
+          });
+          track(r);
+          return r;
+        },
+        runPerSceneVision,
+        ensureGenDir: async () => {
+          await fs.mkdir(genDir, { recursive: true });
+          await fs.writeFile(path.join(genDir, "Img.tsx"), IMG_SHIM_SOURCE, "utf8");
+          await fs.writeFile(path.join(genDir, "Piece.tsx"), PIECE_SHIM_SOURCE, "utf8");
+          await fs.writeFile(path.join(genDir, "Video.tsx"), VIDEO_SHIM_SOURCE, "utf8");
+          await fs.writeFile(path.join(genDir, "Lottie.tsx"), LOTTIE_SHIM_SOURCE, "utf8");
+          await fs.writeFile(path.join(genDir, "BrandChrome.tsx"), BRAND_CHROME_SOURCE, "utf8");
+          await fs.writeFile(path.join(genDir, "script.json"), JSON.stringify(composedScript, null, 2), "utf8");
+        },
+        writeComposition: async (code) => {
+          await fs.writeFile(path.join(genDir, "Composition.tsx"), code, "utf8");
+        },
+        shouldStopForBudget: overCeiling,
+        log: (m) => console.log(m),
+        warn: (m) => console.warn(m),
+      },
+    );
+    timeline.mark(`cast:loop:done (${loop.rounds + 1} round(s), round0 ${loop.round0?.passed ? "clean" : "failed"})`);
+
+    if (loop.castRoundError) {
+      await recordUsage({ op: "build", model, scriptId, url: brief?.brand_kit_url, usage: castUsage, failed: true });
+      return {
+        status: 500,
+        body: { error: `cast build failed: ${loop.castRoundError.error}`, stage: "cast-build" },
+      };
+    }
+
+    // ── canonical persistence (identical layout to the MP4 path). The cast
+    // composition is self-contained (theme inlined), so designCode is empty. ──
+    const warnings = brandTruthDegraded?.length
+      ? { brand_truth_degraded: brandTruthDegraded }
+      : undefined;
+    await writeGeneratedFiles(genDir, {
+      designCode: "",
+      code: loop.finalCode,
+      script: composedScript,
+      warnings,
+      assetManifest: undefined,
+    });
+
+    // ── usage + entitlement metering (build-model spend = head + cast + repairs) ──
+    await recordUsage({ op: "build", model, scriptId, url: brief?.brand_kit_url, usage: castUsage });
+    await recordMeteredUsage({
+      ownerId,
+      operation: "build",
+      model,
+      costUsd: costUsd(model, castUsage),
+      inputTokens: castUsage.input_tokens,
+      outputTokens: castUsage.output_tokens,
+    });
+    let visionCostUsd = 0;
+    if (visionRan && (visionUsage.input_tokens || visionUsage.output_tokens)) {
+      visionCostUsd = costUsd(VISION_MODEL, visionUsage);
+      await recordUsage({ op: "vision-qa", model: VISION_MODEL, scriptId, url: brief?.brand_kit_url, usage: visionUsage });
+    }
+
+    // ── gate telemetry (fire-rate is the gate-deletion criterion) ──
+    const fires: Record<string, number> = {};
+    const residual: Record<string, number> = {};
+    const tallyRound = (g: GateRoundReport | undefined, into: Record<string, number>): void => {
+      if (!g) return;
+      const bump = (k: string, n = 1): void => { if (n > 0) into[k] = (into[k] ?? 0) + n; };
+      for (const f of g.density) bump(`density/${f.kind}`);
+      for (const f of g.renderTruthBlocking) bump(`render-truth/${f.kind}`);
+      bump("hero-washout", g.heroContrast.findings.length);
+      bump("hero-underscale", g.heroUnderscale.length);
+      bump("accent-fill", g.accentFill.findings.length);
+      bump("edge-crop", g.edgeCrop.residual.length);
+      bump("occupancy-void", g.occupancy.findings.filter((x) => x.blocking).length);
+      bump("text-contrast", g.textContrast.blocking.length);
+      bump("skeleton", g.skeletonBars.filter((s) => s.blocking).length);
+      for (const v of g.vision) bump("vision", v.severe.length);
+    };
+    tallyRound(loop.gateRounds[0], fires);
+    tallyRound(loop.gateRounds[loop.gateRounds.length - 1], residual);
+    await recordGateTelemetry({
+      scriptId,
+      fires,
+      residual,
+      repairSteps: loop.rounds,
+      firstPassClean: loop.round0?.passed ?? false,
+      buildWallMs: Date.now() - buildT0,
+    });
+
+    // ── build timeline (best-effort) ──
+    try {
+      await fs.writeFile(path.join(genDir, "build-timeline.json"), JSON.stringify(timeline.toJSON(), null, 2));
+    } catch { /* attribution is never worth failing a build over */ }
+
+    // ── LEGO engine: split into editable per-piece artifacts for the editor. ──
+    try {
+      const lego = await decomposeGenDir(genDir);
+      console.log(`[preview/build:cast] lego decompose: ${lego.ok ? `${lego.pieces} pieces` : `skipped (${lego.reason})`}`);
+    } catch (err) {
+      console.warn("[preview/build:cast] lego decompose skipped:", err);
+    }
+
+    return {
+      status: 200,
+      body: {
+        ok: true,
+        scriptId,
+        mode: "cast",
+        usage: castUsage,
+        warnings,
+        totalCostUsd: Number((costUsd(model, castUsage) + visionCostUsd).toFixed(6)),
+        round0: loop.round0,
+        rounds: loop.rounds + 1,
+        gate_summary: {
+          firstPassClean: loop.round0?.passed ?? false,
+          fires,
+          residual,
+          noProgress: loop.events.noProgressEvents,
+        },
+      },
+    };
+  } catch (err) {
+    console.error("[preview/build:cast] build threw:", err);
+    return {
+      status: 500,
+      body: { error: err instanceof Error ? err.message : String(err), stage: "cast" },
+    };
+  }
 }
