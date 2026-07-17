@@ -1,7 +1,25 @@
 /**
- * DOGFOOD RUNNER (v10) — the acceptance8 pipeline, GENERALIZED to any stored
+ * DOGFOOD RUNNER (v11) — the acceptance8 pipeline, GENERALIZED to any stored
  * brief. Same stack, same gates, same retry discipline; the Klarna-specific
  * scaffolding (reference build, v7 comparison rows) is gone or optional.
+ *
+ * v11 (dogfood cycle 3 batch):
+ *   - META-TEXT LEAK gate (cast-build stripMetaText): reasoning prose rendered
+ *     as JSX text nodes strips deterministically at the element gate; a body
+ *     dominated by its own reasoning rejects (cycle-2 s2's shipped paragraph).
+ *   - Unowned-copy BINDING check (cast-build stripUnownedBindings): c.<field>
+ *     references for unowned fields strip/reject in-round; the literal value
+ *     guard widens to eyebrow/caption/cta with punct/case variants (cycle-2
+ *     s4's duplicated headline+CTA class).
+ *   - CLAMP-VS-SLOT routing (render-truth-gates planEdgeCropMoves): a piece
+ *     >25% oversized for its slot, or whose clamp would land on a neighbor's
+ *     territory, routes DIRECTLY to regen (cycle-2's clamp ricochet).
+ *   - Full-bleed vertical-fill clause at the composition head + register-aware
+ *     barbell repair (full-bleed barbells route to the HERO).
+ *   - Logo-glyph count finding (>1 brand mark per hero mock) + interior-clip
+ *     advisory (text protruding >30% past its piece union).
+ *   - The detached sequence verdict fires on round-0 frames and THREADS into
+ *     round-1+ regen prompts as "sequence notes to avoid".
  *
  * v10 (dogfood cycle 2 batch):
  *   - ACCENT-AS-FILL blocking gate (lib/render/accent-fill.ts): the largest
@@ -65,9 +83,11 @@ import { measureScenes, type SceneMeasurement } from "../lib/render/measure-scen
 import {
   findRenderTruthFailures,
   findEdgeCroppedPieces,
+  planEdgeCropMoves,
   type EdgeCropFinding,
   type RenderTruthFinding,
   type RenderTruthKind,
+  type SlotTerritory,
 } from "../lib/render/render-truth-gates";
 import { clampPieceOffsets } from "../lib/agents/assemble";
 import {
@@ -137,6 +157,7 @@ import {
 import {
   findOverflowingElements,
   findDuplicateLogos,
+  countBrandMarks,
   hasCornerLogoSuppression,
   findUndefinedJsxComponents,
   findUnboundCopy,
@@ -351,6 +372,19 @@ const countVisionCall = (): void => {
 const pieceCache = new Map<string, string>();
 let pieceTargets = new Map<string, string[]>();
 let castRoundLabel = "cast-r0";
+/** v11 (#7): the detached sequence verdict, persisted into the run context the
+ *  moment it lands — every SUBSEQUENT regen prompt carries these as negative
+ *  guidance ("sequence notes to avoid"). Advisory: never re-routes targets. */
+let sequenceNotes: string[] = [];
+const sequenceNotesBlock = (): string[] =>
+  sequenceNotes.length === 0
+    ? []
+    : [
+        ``,
+        `════ SEQUENCE NOTES TO AVOID (advisory — a video-wide judge flagged these across ALL scenes) ════`,
+        ...sequenceNotes.map((n) => `- ${n}`),
+        `Do not repeat these video-wide patterns in your rebuild (vary the archetype/atmosphere rather than restaging the same composition).`,
+      ];
 
 const stopLengthEvents: { label: string; cap: number; retryCap: number; recovered: boolean }[] = [];
 const cacheBustEvents: { pieceId: string; reason: string }[] = [];
@@ -390,8 +424,10 @@ const cachingCaller: typeof castCall = async (call) => {
           ``,
           `════ NO-PROGRESS ESCALATION ════`,
           ...feedback,
+          ...sequenceNotesBlock(),
           ``,
           `Ignore everything you produced for this element before — do NOT emit a variant of it. Re-emit this element FRESH from the brief above: the blueprint inventory is authoritative and every named item must be visibly present, nested inside real structure.`,
+          `Output ONLY component code — NEVER narrate your reasoning, plan, or these findings as rendered text nodes (a deterministic gate rejects any element whose text nodes speak about wrappers, QA findings, or px coordinates).`,
         ].join("\n")
       : [
           call.user,
@@ -399,11 +435,13 @@ const cachingCaller: typeof castCall = async (call) => {
           `════ YOUR PREVIOUS VERSION FAILED PRODUCTION QA ════`,
           `The production gates measured your previous version of THIS element on the rendered frame and found these defects. Rebuild the element fixing EVERY finding while honoring the brief above:`,
           ...feedback.map((f) => `- ${f}`),
+          ...sequenceNotesBlock(),
           ``,
           `--- YOUR PREVIOUS VERSION ---`,
           (cached ?? "(none survived)").slice(0, 6000),
           ``,
           `Emit ONLY the corrected JSX for this element.`,
+          `Output ONLY component code — NEVER narrate your reasoning, plan, or these findings as rendered text nodes (a deterministic gate rejects any element whose text nodes speak about wrappers, QA findings, or px coordinates).`,
         ].join("\n")
     : call.user;
   try {
@@ -1165,8 +1203,10 @@ const computeTargets = (args: {
   accentFill: AccentFillFinding[];
   edgeCropResidual: EdgeCropFinding[];
   vision: SceneVisionVerdict[];
+  /** Per-scene script registers — v11 (#4): barbell repair is register-aware. */
+  registers?: (string | undefined)[];
 }): Map<string, string[]> => {
-  const { validPieceIds, density, profile, rtBlocking, washout, accentFill, edgeCropResidual, vision } = args;
+  const { validPieceIds, density, profile, rtBlocking, washout, accentFill, edgeCropResidual, vision, registers } = args;
   const targets = new Map<string, string[]>();
   const add = (pieceId: string, sceneFallback: number, feedback: string): void => {
     let id = pieceId;
@@ -1242,8 +1282,23 @@ const computeTargets = (args: {
     const named = (f.detail.match(PIECE_ID_RX) ?? []).filter((id) => !/\.chrome$/.test(id));
     if (named.length > 0) {
       for (const id of new Set(named)) add(id, f.scene, `[render-truth/${f.kind}] ${f.detail}`);
+    } else if (f.kind === "barbell") {
+      // v11 (#4): register-aware barbell repair. On a FULL-BLEED scene the
+      // hero owns the frame — the empty band is the hero's under-furnished
+      // interior, so the fix routes to the HERO with a vertical-fill
+      // instruction. Other registers keep the copy-column routing.
+      const register = registers?.[f.scene];
+      if (register === "full-bleed") {
+        add(
+          `s${f.scene}.hero`,
+          f.scene,
+          `[render-truth/barbell] ${f.detail}\nThis is a FULL-BLEED scene: your element IS the frame — populate the empty band named above with interior items in the same diegetic register (a nav/chrome band, rows, floating chips, a footer meta strip), spreading real content across the FULL frame height. Do NOT just stretch a top cluster and a bottom cluster further apart.`,
+        );
+      } else {
+        add(`s${f.scene}.copy`, f.scene, `[render-truth/barbell] ${f.detail}`);
+      }
     } else {
-      const slot = f.kind === "canvas-brightness" ? "atmosphere" : f.kind === "barbell" ? "copy" : "hero";
+      const slot = f.kind === "canvas-brightness" ? "atmosphere" : "hero";
       add(`s${f.scene}.${slot}`, f.scene, `[render-truth/${f.kind}] ${f.detail}`);
     }
   }
@@ -1281,7 +1336,7 @@ interface BlueprintAttemptRow { attempt: number; secs: number; tokensIn: number;
 interface EdgeCropEvent {
   round: number;
   pieceId: string;
-  action: "clamped" | "clamp-skipped" | "residual-after-clamp";
+  action: "clamped" | "clamp-skipped" | "clamp-refused-regen-routed" | "residual-after-clamp";
   detail: string;
 }
 
@@ -1405,7 +1460,7 @@ const main = async (): Promise<void> => {
 
   const report: Record<string, unknown> = {
     experiment:
-      `DOGFOOD CYCLE ${CYCLE} (v10 batch): generalized acceptance8 runner on brief ${BRIEF_ID} (${TAG}) — accent-as-fill blocking gate + accent-is-punctuation head clause, piece-edge-crop (composer bottom reserve + measured check + deterministic clamp), fully-detached sequence vision (skip after first abort), area-weighted hero surface contrast, canvas-agnostic washout contract (light-canvas arm), narrow ungrounded mock-value deny-list, attempt-1 blueprint negative example. Same budget and retry discipline as acceptance8.`,
+      `DOGFOOD CYCLE ${CYCLE} (v11 batch): generalized acceptance8 runner on brief ${BRIEF_ID} (${TAG}) — META-TEXT LEAK gate (leaked reasoning prose stripped/rejected at the element gate), unowned-copy BINDING check (c.<field> theft + widened value coverage), clamp-vs-slot routing (oversized/neighbor-invading pieces regen directly), full-bleed vertical-fill head clause + register-aware barbell repair, logo-glyph count finding, interior-clip advisory, sequence verdict threaded in-run into regen prompts. All v10 gates retained; same budget and retry discipline as acceptance8.`,
     briefId: BRIEF_ID,
     tag: TAG,
     cycle: CYCLE,
@@ -1415,6 +1470,7 @@ const main = async (): Promise<void> => {
       heroWashout: `hero-contrast: hero region luminance spread<${WASHOUT_SPREAD_FLOOR} AND stdDev<${WASHOUT_STDDEV_FLOOR} → hero-washout (blocking), routed to the named hero`,
       v9: `washout killed at the HEAD (composition contract + checkSceneComposition mirror + cast-build ensureHeroSurfaceContrast backstop); register runs ≥3 rejected at script validation`,
       v10: `accent-as-fill: largest flat accent rect in a hero region ≤${ACCENT_FILL_MAX_FRAC * 100}% of the piece area (blocking); piece-edge-crop: measured pieces clipping canvas bottom/right >2% of own size → deterministic clamp, residuals blocking; hero surface contrast area-weighted (≥25% painted weight); washout static mirror canvas-AGNOSTIC (light canvas → dark surface); sequence vision detached + skip-after-abort`,
+      v11: `meta-text leak: rendered text segments carrying repair vocabulary/coordinate-math prose strip deterministically at the element gate (dominant prose = reject); unowned-copy BINDING check: c.<field> references for unowned fields strip/reject in-round (+ value coverage widened to eyebrow/caption/cta, trailing-punct + case variants); clamp-vs-slot: oversized (>25% over slot) or neighbor-invading clamps route regen directly; full-bleed barbell routes to the HERO with a vertical-fill instruction (head carries the matching clause); logo-glyph count >1 per hero mock = finding; interior-clip advisory (text protruding >30% past its piece union); detached sequence verdict fires on round-0 frames and threads into round-1+ regen prompts`,
     },
     terminalError: null,
   };
@@ -1810,6 +1866,42 @@ const main = async (): Promise<void> => {
     const fetchFont = makeFontFetcher();
     castStartS = nowS();
 
+    // v11 (#7): the sequence verdict fires DETACHED as soon as the first
+    // round's frames exist — still never awaited on the critical path — so
+    // its notes can land IN-RUN and thread into round-1+ regen prompts as
+    // negative guidance (archetype repetition / atmosphere monotony are
+    // scene-level properties that persist across regen rounds, so a round-0
+    // verdict stays true for later rounds).
+    let sequenceStartS: number | null = null;
+    let sequenceLandedAtS: number | null = null;
+    let sequenceJudgedRound: number | null = null;
+    let sequenceDone: Promise<VisionFinding[] | null> | null = null;
+    const fireSequenceDetached = (measurements: SceneMeasurement[], atRound: number): void => {
+      if (sequenceDone || !measurements.some((m) => m.screenshotPath)) return;
+      sequenceStartS = nowS();
+      sequenceJudgedRound = atRound;
+      console.log(`\n▶ sequence-vision-detached (t=${sequenceStartS}s — fired on round-${atRound} frames, off the critical path)`);
+      sequenceDone = runSequenceRound(measurements, brandTruth)
+        .then((f) => {
+          sequenceLandedAtS = nowS();
+          sequenceNotes = f
+            .filter((x) => !x.issue.startsWith("SEQUENCE-JUDGE-ERROR:"))
+            .map((x) => x.issue);
+          if (sequenceNotes.length > 0) {
+            console.log(
+              `  sequence verdict landed (t=${sequenceLandedAtS}s, detached) — ${sequenceNotes.length} note(s) threaded into every subsequent regen prompt as "sequence notes to avoid"`,
+            );
+          }
+          return f;
+        })
+        .catch((e) => {
+          sequenceAborted = true;
+          console.warn(`  sequence vision threw (detached, advisory): ${e instanceof Error ? e.message.split("\n")[0] : e}`);
+          sequenceLandedAtS = nowS();
+          return [] as VisionFinding[];
+        });
+    };
+
     while (true) {
       castRoundLabel = `cast-r${round}`;
       const callsBefore = totalLlmCalls;
@@ -1832,7 +1924,8 @@ const main = async (): Promise<void> => {
       }
       console.log(
         `  cast r${round}: ${castResult.telemetry.elements} elements · ${castResult.telemetry.repairs} repairs · ${castResult.telemetry.failures} placeholders · ` +
-          `${castResult.telemetry.tokensOut} tok out · ${castResult.telemetry.normalizedColors} hue-locked · ${castResult.telemetry.heroSurfaceCorrections} hero-surface lift(s) · ${castResult.telemetry.wallSeconds}s · ${totalLlmCalls - callsBefore} LLM calls`,
+          `${castResult.telemetry.tokensOut} tok out · ${castResult.telemetry.normalizedColors} hue-locked · ${castResult.telemetry.heroSurfaceCorrections} hero-surface lift(s) · ` +
+          `${castResult.telemetry.metaTextStrips} meta-text strip(s) · ${castResult.telemetry.wallSeconds}s · ${totalLlmCalls - callsBefore} LLM calls`,
       );
 
       finalCode = await phase(`finalize-r${round}`, async () => {
@@ -1873,14 +1966,26 @@ const main = async (): Promise<void> => {
       const edgeCropInitial = measurements.flatMap((m) => findEdgeCroppedPieces(m));
       let edgeCropResidual: EdgeCropFinding[] = [];
       if (edgeCropInitial.length > 0) {
-        const moves = new Map<string, { pieceId: string; dx: number; dy: number }>();
-        for (const f of edgeCropInitial) {
-          const mv = moves.get(f.pieceId) ?? { pieceId: f.pieceId, dx: 0, dy: 0 };
-          if (f.edge === "bottom") mv.dy = -(f.overflowPx + EDGE_CLAMP_MARGIN_PX);
-          else mv.dx = -(f.overflowPx + EDGE_CLAMP_MARGIN_PX);
-          moves.set(f.pieceId, mv);
+        // v11 (#3) clamp-vs-slot rule: a piece OVERSIZED for its slot (>25%
+        // over on the overflow axis) or whose clamped position would land on
+        // a neighbor's territory routes DIRECTLY to regen — cycle 2's blind
+        // clamp relocated an oversized hero into the copy column and cost a
+        // cross-piece round.
+        const canvasDims = { w: measurements[0]?.width ?? 1920, h: measurements[0]?.height ?? 1080 };
+        const slotTerritories: SlotTerritory[] = castResult.scenes.flatMap((s) =>
+          s.pieces.map((p) => ({
+            pieceId: p.id,
+            scene: s.scene,
+            kind: p.kind,
+            bounds: { x: p.bounds.x, y: p.bounds.y, w: p.bounds.w, h: p.bounds.h },
+          })),
+        );
+        const plan = planEdgeCropMoves(edgeCropInitial, slotTerritories, canvasDims, EDGE_CLAMP_MARGIN_PX);
+        for (const r of plan.regens) {
+          edgeCropEvents.push({ round, pieceId: r.pieceId, action: "clamp-refused-regen-routed", detail: `${r.reason}: ${r.detail}` });
+          console.warn(`  [edge-crop] ${r.pieceId}: clamp REFUSED (${r.reason}) — routed directly to regen`);
         }
-        const clamp = clampPieceOffsets(finalCode, [...moves.values()]);
+        const clamp = clampPieceOffsets(finalCode, plan.moves);
         for (const a of clamp.applied) {
           edgeCropEvents.push({ round, pieceId: a.pieceId, action: "clamped", detail: `wrapper ${a.from.left},${a.from.top} → ${a.to.left},${a.to.top}` });
           console.log(`  [edge-crop] ${a.pieceId}: wrapper clamped ${a.from.left},${a.from.top} → ${a.to.left},${a.to.top} (deterministic, zero tokens)`);
@@ -1895,18 +2000,43 @@ const main = async (): Promise<void> => {
           measurements = await phase(`measure-clamped-r${round}`, () => measureScenes(GEN_DIR, script, GEN_DIR));
         }
         edgeCropResidual = measurements.flatMap((m) => findEdgeCroppedPieces(m));
+        // Regen-routed pieces stay measured-cropped (never moved) — swap in
+        // the planner's sharper repair instruction on their residual finding.
+        for (const r of plan.regens) {
+          const residual = edgeCropResidual.find((f) => f.pieceId === r.pieceId);
+          if (residual) {
+            residual.detail = `${residual.detail} Clamp refused: ${r.detail}.`;
+            residual.repairInstruction = r.repairInstruction;
+          }
+        }
         for (const f of edgeCropResidual) {
           edgeCropEvents.push({ round, pieceId: f.pieceId, action: "residual-after-clamp", detail: f.detail });
         }
         console.log(
           `  edge-crop: ${edgeCropInitial.length} initial [${edgeCropInitial.map((f) => `${f.pieceId}:${f.edge}+${f.overflowPx}px`).join(", ")}] · ` +
-            `${clamp.applied.length} clamped · ${edgeCropResidual.length} residual${edgeCropResidual.length ? ` [${edgeCropResidual.map((f) => f.pieceId).join(", ")}] → routed to regen` : ""}`,
+            `${clamp.applied.length} clamped · ${plan.regens.length} clamp-refused → regen · ${edgeCropResidual.length} residual${edgeCropResidual.length ? ` [${edgeCropResidual.map((f) => f.pieceId).join(", ")}] → routed to regen` : ""}`,
         );
       }
       finalMeasurements = measurements;
 
       // Structural gates read the (possibly clamped) final code.
       const structural = runStructuralGates(finalCode, script!);
+      // v11 (#5) logo-glyph count: >1 brand mark inside ONE hero mock is
+      // overuse (cycle 2 s4 shipped a triple mark — drawn wordmark + stray
+      // initial glyph — that the <Img>-based duplicate-logo gate is blind
+      // to). Finding (advisory): surfaces in the gate log + report.
+      for (const [pieceId, body] of pieceCache) {
+        if (!/\.hero$/.test(pieceId)) continue;
+        const marks = countBrandMarks(body, BRAND);
+        if (marks > 1) {
+          const scene = Number(/^s(\d+)\./.exec(pieceId)?.[1] ?? -1);
+          structural.push({
+            scene,
+            key: "logo_glyph_count",
+            detail: `${pieceId} carries ${marks} brand marks (drawn wordmarks/initial glyphs/logo mounts) — the chrome already carries the corner mark; a hero mock shows the brand at most once.`,
+          });
+        }
+      }
       const rt = await phase(`render-truth-r${round}`, () =>
         findRenderTruthFailures(measurements, {
           brandBackground: canvasPlan.background,
@@ -1948,6 +2078,7 @@ const main = async (): Promise<void> => {
         accentFill: accentFill.findings,
         edgeCropResidual,
         vision,
+        registers: script!.scenes.map((s) => s.register),
       });
 
       gateRounds.push({
@@ -1965,6 +2096,8 @@ const main = async (): Promise<void> => {
         vision,
         targets: [...targets.entries()].map(([pieceId, feedback]) => ({ pieceId, feedback })),
       });
+      // v11 (#7): first frames on disk → fire the detached sequence judge now.
+      fireSequenceDetached(measurements, round);
       if (round === 0) {
         report.round0 = {
           passed: targets.size === 0,
@@ -2058,28 +2191,15 @@ const main = async (): Promise<void> => {
 
     if (finalCode) await fs.writeFile(path.join(OUT_DIR, "Composition.dogfood.tsx"), finalCode, "utf8");
 
-    // Sequence vision — ONCE, advisory, FULLY DETACHED (v10). Fired here and
-    // never awaited before the gallery/report: those are written with a
-    // pending marker, and the verdict PATCHES them in when/if it lands. The
-    // recorded wall never includes this call. Deliberately NOT phase-wrapped —
-    // a phase mark that lands after the report is written would be lost.
-    const sequenceStartS = nowS();
-    let sequenceLandedAtS: number | null = null;
-    let sequenceDone: Promise<VisionFinding[] | null>;
-    if (finalMeasurements.some((m) => m.screenshotPath)) {
-      console.log(`\n▶ sequence-vision-detached (t=${sequenceStartS}s — off the critical path)`);
-      sequenceDone = runSequenceRound(finalMeasurements, brandTruth)
-        .then((f) => {
-          sequenceLandedAtS = nowS();
-          return f;
-        })
-        .catch((e) => {
-          sequenceAborted = true;
-          console.warn(`  sequence vision threw (detached, advisory): ${e instanceof Error ? e.message.split("\n")[0] : e}`);
-          sequenceLandedAtS = nowS();
-          return [] as VisionFinding[];
-        });
-    } else {
+    // Sequence vision — ONCE, advisory, FULLY DETACHED (v10; v11 fires it
+    // in-loop on the FIRST round's frames so the verdict can thread into
+    // later regen prompts — see fireSequenceDetached). This is only the
+    // fallback for a run whose loop never produced frames. Never awaited
+    // before the gallery/report: those are written with a pending marker,
+    // and the verdict PATCHES them in when/if it lands. The recorded wall
+    // never includes this call.
+    if (!sequenceDone) fireSequenceDetached(finalMeasurements, round);
+    if (!sequenceDone) {
       console.warn("  no screenshots — sequence vision skipped");
       sequenceDone = Promise.resolve([] as VisionFinding[]);
     }
@@ -2314,13 +2434,15 @@ const main = async (): Promise<void> => {
 </head>
 <body>
   <h1>Dogfood cycle ${esc(CYCLE)} — ${esc(BRAND)} (brief ${esc(BRIEF_ID)})</h1>
-  <div class="banner"><b>V10 BATCH:</b> accent-as-fill blocking gate (largest flat accent rect in a hero ≤${ACCENT_FILL_MAX_FRAC * 100}%
-  of the piece) + "accent is punctuation" head clause · piece-edge-crop class (composer bottom reserve +
-  measured bottom/right clip check + deterministic wrapper clamp, regen only for residuals) · sequence vision
-  FULLY DETACHED (report+gallery ship first, verdict patches in; one abort = skip) · area-weighted hero
-  surface contrast (a token chip no longer vouches for a washed-out hero) · CANVAS-AGNOSTIC washout contract
-  (light canvas → dark/saturated hero surface — the Glossier arm) · narrow ungrounded mock-value deny-list
-  (EST-dates / %-OFF vs grounding) · attempt-1 blueprint negative example. Pipeline otherwise identical to v9.</div>
+  <div class="banner"><b>V11 BATCH:</b> META-TEXT LEAK gate (leaked reasoning prose in JSX text nodes strips
+  deterministically at the element gate; prose-dominated emissions reject — the cycle-2 s2 class) ·
+  unowned-copy BINDING check (c.&lt;field&gt; references for unowned fields strip/reject in-round; value
+  coverage widened to eyebrow/caption/cta with trailing-punct + case variants — the cycle-2 s4 duplicate
+  class) · clamp-vs-slot routing (a piece &gt;25% oversized for its slot, or whose clamp would land on a
+  neighbor's territory, regens directly — no more clamp ricochets) · full-bleed vertical-fill head clause +
+  register-aware barbell repair (full-bleed barbells route to the HERO) · logo-glyph count finding (&gt;1
+  brand mark per hero mock) · interior-clip advisory (text protruding &gt;30% past its piece union) ·
+  sequence verdict fires on round-0 frames and threads into round-1+ regen prompts. All v10 gates retained.</div>
   <div class="sub">${esc(headline)}</div>
   <div class="sub">${esc(summary)}</div>
   <div class="sub">wall: script→preview ${wall.scriptToPreviewSeconds ?? "—"}s · cast wall ${wall.castWallSeconds}s · run total ${wall.totalRunSeconds.toFixed(1)}s ·
@@ -2427,9 +2549,11 @@ ${rowGrid(sceneCells)}
       j.sequenceDetached = {
         startedAtS: sequenceStartS,
         landedAtS: sequenceLandedAtS,
+        judgedOnRound: sequenceJudgedRound,
+        notesThreadedIntoRegens: sequenceNotes,
         hardStopped: landed === null,
         offCriticalPath: true,
-        note: "wall.totalRunSeconds was finalized BEFORE this verdict landed — sequence vision is never on the wall",
+        note: "v11: fired detached on the FIRST round's frames; if the verdict landed before later regen rounds, its notes were threaded into those regen prompts as negative guidance. wall.totalRunSeconds never includes it.",
       };
       // The vision spend that settled after the report was written.
       j.budget = { totalLlmCalls, ceiling: TOTAL_LLM_CEILING, budgetExhausted, visionCalls: zaiCalls };

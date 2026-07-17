@@ -29,6 +29,7 @@ export type RenderTruthKind =
   | "dead-region"
   | "canvas-brightness"
   | "stranded-hero"
+  | "interior-clip"
   | "measure-error";
 
 export interface RenderTruthFinding {
@@ -809,6 +810,199 @@ export const findEdgeCroppedPieces = (m: SceneMeasurement): EdgeCropFinding[] =>
   return out;
 };
 
+// ── interior clip (v11 — dogfood cycle 2: price chips cut mid-glyph) ─────────
+// Cycle 2 s2 shipped mock price chips ("$36.0", "4.8") clipped at their
+// panel's edge — inside the frame, so every edge gate was blind. Measured
+// truth: a text element sticking out past the union of its OWN piece's other
+// elements by more than a third of its own width/height reads as content
+// falling off its panel. ADVISORY by design: overhang is also a legitimate
+// design pattern (badges breaking a card edge), so this surfaces the defect
+// for the report/regen feedback without risking a wrongful blocking round.
+
+/** Fraction of its own width/height a text element may extend past its
+ *  piece's other-elements union before the advisory fires. */
+export const INTERIOR_CLIP_FRAC = 0.3;
+const IC_MIN_TEXT_LEN = 2;
+const IC_MIN_SIBLING_AREA = 40_000; // the reduced union must be a real panel
+const IC_MAX_PER_SCENE = 4;
+
+/** Text elements protruding past their own piece's union (computed WITHOUT
+ *  the element itself) by > INTERIOR_CLIP_FRAC of their own size. */
+export const findInteriorClip = (m: SceneMeasurement): RenderTruthFinding[] => {
+  if (m.error) return [];
+  const byPiece = new Map<string, MeasuredElement[]>();
+  for (const e of m.elements) {
+    if (!e.piece || e.opacity <= 0.05) continue;
+    byPiece.set(e.piece, [...(byPiece.get(e.piece) ?? []), e]);
+  }
+  const out: RenderTruthFinding[] = [];
+  for (const [pieceId, els] of byPiece) {
+    if (els.length < 3) continue; // a union of one sibling is not a panel
+    for (const e of els) {
+      if (out.length >= IC_MAX_PER_SCENE) return out;
+      if (e.isImg || e.text.trim().length < IC_MIN_TEXT_LEN) continue;
+      const siblings = els.filter((s) => s !== e);
+      const x1 = Math.min(...siblings.map((s) => s.x));
+      const y1 = Math.min(...siblings.map((s) => s.y));
+      const x2 = Math.max(...siblings.map((s) => s.x + s.w));
+      const y2 = Math.max(...siblings.map((s) => s.y + s.h));
+      if ((x2 - x1) * (y2 - y1) < IC_MIN_SIBLING_AREA) continue;
+      // The element must be MOSTLY inside (its center within the union) —
+      // fully-outside elements are their own composition, not a clip.
+      const cx = e.x + e.w / 2;
+      const cy = e.y + e.h / 2;
+      if (cx < x1 || cx > x2 || cy < y1 || cy > y2) continue;
+      const overs: { edge: string; px: number; own: number }[] = [
+        { edge: "right", px: e.x + e.w - x2, own: e.w },
+        { edge: "left", px: x1 - e.x, own: e.w },
+        { edge: "bottom", px: e.y + e.h - y2, own: e.h },
+        { edge: "top", px: y1 - e.y, own: e.h },
+      ];
+      const worst = overs.filter((o) => o.own > 0 && o.px / o.own > INTERIOR_CLIP_FRAC).sort((a, b) => b.px / b.own - a.px / a.own)[0];
+      if (!worst) continue;
+      out.push({
+        scene: m.scene,
+        kind: "interior-clip",
+        detail:
+          `text "${e.text.slice(0, 24)}" (piece ${pieceId}) protrudes ${Math.round(worst.px)}px past its piece's ` +
+          `${worst.edge} edge — ${Math.round((worst.px / worst.own) * 100)}% of its own ${worst.edge === "right" || worst.edge === "left" ? "width" : "height"} ` +
+          `sticks out of the panel (likely clipped mid-glyph). Keep interior values fully inside their panel.`,
+      });
+    }
+  }
+  return out;
+};
+
+// ── clamp-vs-slot planner (v11 — dogfood cycle 2: the s2.hero clamp ricochet) ─
+// Cycle 2's deterministic edge-crop clamp moved an OVERSIZED piece (content
+// ~1266px in a 768px slot) leftward into the copy column — trading an edge
+// crop for a cross-piece straddle and costing a full extra gate round. The
+// clamp is only the cheapest true fix when the piece actually FITS its slot
+// and the move lands on free canvas. This planner decides, per finding:
+//   - content exceeds the slot by > EDGE_CLAMP_OVERSIZE_FRAC on the overflow
+//     axis → the piece is mis-sized, not mis-placed: route DIRECT REGEN
+//     ("fill the wrapper, never exceed it") and never clamp;
+//   - the clamped position would NEWLY intersect another piece's declared
+//     slot territory → route DIRECT REGEN (a clamp that invades a neighbor
+//     converts one defect into a worse one);
+//   - otherwise → the deterministic move (assemble.ts clampPieceOffsets).
+
+/** A piece's measured union may exceed its declared slot on the overflow axis
+ *  by at most this factor before clamping is refused (regen instead). */
+export const EDGE_CLAMP_OVERSIZE_FRAC = 1.25;
+/** New neighbor-slot intersection must exceed this many px on BOTH axes to
+ *  count as an invasion (grazing contact is not a collision). */
+const CLAMP_INVASION_TOL_PX = 8;
+
+export interface SlotTerritory {
+  pieceId: string;
+  scene: number;
+  kind: string;
+  bounds: { x: number; y: number; w: number; h: number };
+}
+
+export interface EdgeCropRegenRoute {
+  pieceId: string;
+  scene: number;
+  reason: "oversized-for-slot" | "clamp-would-invade-neighbor";
+  detail: string;
+  repairInstruction: string;
+}
+
+export interface EdgeCropMovePlan {
+  moves: { pieceId: string; dx: number; dy: number }[];
+  regens: EdgeCropRegenRoute[];
+}
+
+const intersect1D = (a1: number, a2: number, b1: number, b2: number): number =>
+  Math.min(a2, b2) - Math.max(a1, b1);
+
+const invades = (
+  u: { x: number; y: number; w: number; h: number },
+  s: { x: number; y: number; w: number; h: number },
+): boolean =>
+  intersect1D(u.x, u.x + u.w, s.x, s.x + s.w) > CLAMP_INVASION_TOL_PX &&
+  intersect1D(u.y, u.y + u.h, s.y, s.y + s.h) > CLAMP_INVASION_TOL_PX;
+
+/**
+ * Plan deterministic clamp moves vs direct-regen routes for a round's
+ * edge-crop findings. `slots` are the layout composer's declared territories
+ * (SceneManifest piece bounds); `canvas` sizes the full-bleed exemption.
+ */
+export const planEdgeCropMoves = (
+  findings: EdgeCropFinding[],
+  slots: SlotTerritory[],
+  canvas: { w: number; h: number },
+  marginPx: number,
+): EdgeCropMovePlan => {
+  const plan: EdgeCropMovePlan = { moves: [], regens: [] };
+  const byPiece = new Map<string, EdgeCropFinding[]>();
+  for (const f of findings) byPiece.set(f.pieceId, [...(byPiece.get(f.pieceId) ?? []), f]);
+
+  for (const [pieceId, fs] of byPiece) {
+    const scene = fs[0].scene;
+    const union = fs[0].union;
+    const slot = slots.find((s) => s.pieceId === pieceId && s.scene === scene);
+
+    // (a) Oversized for its slot on the overflow axis → regen, never clamp.
+    if (slot) {
+      const oversized = fs.find(
+        (f) =>
+          (f.edge === "right" && union.w > slot.bounds.w * EDGE_CLAMP_OVERSIZE_FRAC) ||
+          (f.edge === "bottom" && union.h > slot.bounds.h * EDGE_CLAMP_OVERSIZE_FRAC),
+      );
+      if (oversized) {
+        const axis = oversized.edge === "right" ? "wide" : "tall";
+        const own = oversized.edge === "right" ? union.w : union.h;
+        const slotDim = oversized.edge === "right" ? slot.bounds.w : slot.bounds.h;
+        plan.regens.push({
+          pieceId,
+          scene,
+          reason: "oversized-for-slot",
+          detail: `content ~${Math.round(own)}px ${axis} in a ${Math.round(slotDim)}px slot (>${Math.round((EDGE_CLAMP_OVERSIZE_FRAC - 1) * 100)}% over) — repositioning cannot fix a mis-sized piece`,
+          repairInstruction:
+            `Your content is ~${Math.round(own)}px ${axis} but the slot is ${Math.round(slotDim)}px — content is WIDER than its slot. ` +
+            `Rebuild the element to FILL the wrapper and never exceed it: width/height 100%, interior laid out within the wrapper's own bounds, no fixed px sizes larger than the slot.`,
+        });
+        continue;
+      }
+    }
+
+    // Compose the move exactly as the clamp loop would.
+    let dx = 0;
+    let dy = 0;
+    for (const f of fs) {
+      if (f.edge === "bottom") dy = -(f.overflowPx + marginPx);
+      else dx = -(f.overflowPx + marginPx);
+    }
+
+    // (b) The moved union must not NEWLY land on a neighbor's territory.
+    const moved = { x: union.x + dx, y: union.y + dy, w: union.w, h: union.h };
+    const neighbors = slots.filter(
+      (s) =>
+        s.scene === scene &&
+        s.pieceId !== pieceId &&
+        !EDGE_CROP_EXEMPT_KINDS.has(s.kind) &&
+        s.bounds.w * s.bounds.h < EDGE_CROP_FULL_BLEED_FRAC * canvas.w * canvas.h,
+    );
+    const invaded = neighbors.find((s) => invades(moved, s.bounds) && !invades(union, s.bounds));
+    if (invaded) {
+      plan.regens.push({
+        pieceId,
+        scene,
+        reason: "clamp-would-invade-neighbor",
+        detail: `the ${dx || dy}px clamp would move this piece onto "${invaded.pieceId}"'s territory (slot ${invaded.bounds.x},${invaded.bounds.y} ${invaded.bounds.w}×${invaded.bounds.h})`,
+        repairInstruction:
+          `Repositioning this piece would collide with "${invaded.pieceId}" — rebuild the element's content to fit INSIDE its own wrapper instead: ` +
+          `fill the wrapper (width/height 100%), keep every interior item within the wrapper's bounds, and keep a visible margin above the frame edge.`,
+      });
+      continue;
+    }
+    plan.moves.push({ pieceId, dx, dy });
+  }
+  return plan;
+};
+
 export interface RenderTruthOptions {
   /** Which checks block. dead-region defaults to advisory (composition taste). */
   blockingKinds?: RenderTruthKind[];
@@ -842,6 +1036,7 @@ export const findRenderTruthFailures = async (
     findings.push(...findTextOverlap(m));
     findings.push(...findCrossPieceOverlap(m));
     findings.push(...findStrandedHero(m, opts.registers?.[m.scene]));
+    findings.push(...findInteriorClip(m));
     findings.push(...(await findEmptyBand(m)));
     findings.push(...(await findContrast(m)));
     findings.push(...(await findDeadRegion(m)));

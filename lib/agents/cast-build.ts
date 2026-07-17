@@ -94,6 +94,9 @@ export interface CastBuildResult {
      *  token because every flat panel sat within ΔL<15 of the canvas
      *  (see ensureHeroSurfaceContrast — the deterministic washout backstop). */
     heroSurfaceCorrections: number;
+    /** Meta-text segments (leaked reasoning prose rendered as JSX text nodes)
+     *  stripped from shipped bodies (v11 — the cycle-2 s2 leak class). */
+    metaTextStrips: number;
   };
   /**
    * Per-element outcome — which pieces shipped the MODEL's body (repaired or
@@ -336,16 +339,30 @@ export const stripUnownedCopy = (
   const residual: string[] = [];
   for (const value of unownedValues) {
     const v = value.trim();
-    if (!v || !body.includes(v)) continue;
-    const esc = escapeRegExp(v);
-    const next = body
-      .replace(new RegExp(`>\\s*${esc}\\s*<`, "g"), "><") // >VALUE<
-      .replace(new RegExp(`>\\s*\\{\\s*(["'\`])${esc}\\1\\s*\\}\\s*<`, "g"), "><"); // >{"VALUE"}<
+    if (!v) continue;
+    // v11: also match the value minus trailing punctuation, case-insensitively
+    // (dogfood cycle 2 s4: the hero retyped "Come as you are" with the period
+    // in a nested accent span — the exact-value node never existed — and the
+    // eyebrow retyped in a different case). The variant strips/rejects the
+    // SAME theft the exact form was built for; a case-different exact-length
+    // retype is still the owner's copy painted twice.
+    const bare = v.replace(/[.!?…:,;]+$/u, "").trim();
+    const variants = [...new Set([v, bare].filter((x) => x.length >= 3))];
+    const present = (src: string): boolean =>
+      variants.some((x) => new RegExp(escapeRegExp(x), "i").test(src));
+    if (!present(body)) continue;
+    let next = body;
+    for (const x of variants) {
+      const esc = escapeRegExp(x);
+      next = next
+        .replace(new RegExp(`>\\s*${esc}\\s*<`, "gi"), "><") // >VALUE<
+        .replace(new RegExp(`>\\s*\\{\\s*(["'\`])${esc}\\1\\s*\\}\\s*<`, "gi"), "><"); // >{"VALUE"}<
+    }
     if (next !== body) {
       stripped.push(v);
       body = next;
     }
-    if (body.includes(v)) residual.push(v);
+    if (present(body)) residual.push(v);
   }
   return { code: body, stripped, residual };
 };
@@ -398,6 +415,135 @@ export const stripMaskedValueRuns = (body: string): { code: string; stripped: nu
     return "•";
   });
   return { code, stripped };
+};
+
+/**
+ * (d6) META-TEXT LEAK detector + strip (v11 — dogfood cycle 2, worst defect).
+ * A regen emitted its chain-of-reasoning ("Looking at the QA findings: the
+ * headline text … My wrapper is 720px wide starting at x=120 … I cap content
+ * width at ~480px") as VISIBLE JSX text nodes. It compiled (prose is a legal
+ * JSX text child), PADDED the density metrics, and vision called the scene
+ * clean — so the only reliable arm is deterministic and PRE-RENDER, at the
+ * element gate.
+ *
+ * Detection is vocabulary + structure on the piece's rendered TEXT SEGMENTS
+ * (leading prose before the first tag, and `>text<` runs between tags —
+ * expressions/attributes/strings are masked by the walk, so style values and
+ * CSS never false-fire):
+ *   - VOCABULARY: self-referential repair speech — "QA findings", "my
+ *     wrapper", piece-id tokens (s2.hero), coordinate math prose ("720px
+ *     wide", "at x=120"), first-person planning verbs ("I cap", "I
+ *     constrain"), "previous attempt/version", "max-width" as prose.
+ *   - STRUCTURE: a sentence-length segment (>120 chars) carrying px
+ *     coordinates or first-person planning language — reasoning prose is
+ *     long; brand copy that long never talks in px or plans in first person.
+ * Repair posture: STRIP flagged segments deterministically (zero tokens).
+ * Only a body whose flagged prose dominates its text (the emission IS the
+ * reasoning) rejects to the surgical repair — a fresh emission beats
+ * surgery on a husk. Calibrated on the cycle-2 s2 leak (MUST fire) and every
+ * prior clean build (MUST pass) — see cast-build.test.ts.
+ */
+export interface JsxTextSegment {
+  start: number;
+  end: number;
+  text: string;
+}
+
+/** JSX text runs of a fragment: leading text before the first tag plus
+ *  between-tag runs, split on `{…}` expressions, with strings inside
+ *  tags/expressions quote-masked. Segments with <3 letters are dropped. */
+export const extractJsxTextSegments = (body: string): JsxTextSegment[] => {
+  const segs: JsxTextSegment[] = [];
+  let depth = 0; // brace depth (JSX expressions / style objects)
+  let quote: string | null = null;
+  let inTag = false;
+  let segStart = 0;
+  const flush = (end: number): void => {
+    if (end <= segStart) return;
+    const text = body.slice(segStart, end);
+    if (/[A-Za-z]{3,}/.test(text)) segs.push({ start: segStart, end, text });
+  };
+  for (let i = 0; i < body.length; i++) {
+    const ch = body[i];
+    if (quote) {
+      if (ch === "\\") i++;
+      else if (ch === quote) quote = null;
+      continue;
+    }
+    if (inTag || depth > 0) {
+      // Block comments ({/* … */} and /* … */ inside style objects) skip
+      // whole: a prose apostrophe inside a comment ("the scene's glow")
+      // would otherwise open quote mode and desync the walk.
+      if (ch === "/" && body[i + 1] === "*") {
+        const close = body.indexOf("*/", i + 2);
+        i = close === -1 ? body.length : close + 1;
+        continue;
+      }
+      if (ch === '"' || ch === "'" || ch === "`") quote = ch;
+      else if (ch === "{") depth++;
+      else if (ch === "}") {
+        depth--;
+        if (depth === 0 && !inTag) segStart = i + 1; // expression closed — resume text
+      } else if (ch === ">" && depth === 0 && inTag) {
+        inTag = false;
+        segStart = i + 1;
+      }
+      continue;
+    }
+    // Text territory (outside tags, outside expressions). Quotes here are
+    // prose apostrophes, never string delimiters.
+    if (ch === "<") {
+      flush(i);
+      inTag = true;
+    } else if (ch === "{") {
+      flush(i);
+      depth = 1;
+    }
+  }
+  flush(body.length);
+  return segs;
+};
+
+/** Self-referential repair vocabulary — any hit in a rendered text segment is
+ *  meta-text by construction (no brand copy speaks piece-ids or wrapper px). */
+export const META_TEXT_VOCAB_RX =
+  /\bQA (?:finding|gate|feedback)|\bmy wrapper\b|\bthe wrapper (?:is|was|ends|starts|owns)\b|\bprevious (?:attempt|version|output)\b|\bblocking finding|\bs\d+\.(?:hero|copy|atmosphere|connector|throughline)\b|\bdata-content-path\b|\b\d+px (?:wide|tall|high)\b|\bat x=-?\d+|\bat y=-?\d+|\b[xy]=-?\d+(?:px)?\b|\bI (?:cap|capped|constrain|clamp|reposition|re-?emit|shift|shrink|reduce)\b|\bLooking at the (?:QA|findings?|brief|blueprint)\b|\bmax-width\b|\boverlapping the (?:panel|slot|column)\b/;
+
+const META_TEXT_STRUCT_MIN_CHARS = 120;
+const META_PX_COORD_RX = /\b\d+(?:\.\d+)?px\b|\b[xy]\s*=\s*-?\d+/;
+const META_FIRST_PERSON_RX = /(?:^|[^\w])(?:I|my|we|our)(?:$|[^\w])/;
+const META_PLANNING_RX =
+  /\b(?:cap|caps|capped|constrain(?:s|ed)?|clamp(?:s|ed)?|reposition(?:s|ed)?|resiz(?:e|es|ed)|shift(?:s|ed)?|shrink(?:s)?|reduc(?:e|es|ed)|overlap(?:s|ped|ping)?|exceed(?:s|ed)?|wrapper|bounds|width|coordinates?)\b/i;
+
+/** Is this rendered text segment self-referential build/repair prose? */
+export const isMetaTextSegment = (text: string): boolean => {
+  const t = text.trim();
+  if (t.length < 3) return false;
+  if (META_TEXT_VOCAB_RX.test(t)) return true;
+  return (
+    t.length > META_TEXT_STRUCT_MIN_CHARS &&
+    (META_PX_COORD_RX.test(t) || (META_FIRST_PERSON_RX.test(t) && META_PLANNING_RX.test(t)))
+  );
+};
+
+/** Fraction above which flagged prose DOMINATES the body's rendered text —
+ *  the emission is the reasoning; reject for a fresh emission over surgery. */
+export const META_TEXT_REJECT_FRAC = 0.4;
+
+export const stripMetaText = (
+  body: string,
+): { code: string; stripped: string[]; reject: boolean } => {
+  const segs = extractJsxTextSegments(body);
+  const flagged = segs.filter((s) => isMetaTextSegment(s.text));
+  if (flagged.length === 0) return { code: body, stripped: [], reject: false };
+  const totalTextLen = segs.reduce((n, s) => n + s.text.trim().length, 0);
+  const flaggedLen = flagged.reduce((n, s) => n + s.text.trim().length, 0);
+  const reject = totalTextLen > 0 && flaggedLen / totalTextLen > META_TEXT_REJECT_FRAC;
+  let code = body;
+  for (const s of [...flagged].reverse()) {
+    code = code.slice(0, s.start) + code.slice(s.end);
+  }
+  return { code, stripped: flagged.map((s) => s.text.trim().slice(0, 160)), reject };
 };
 
 /**
@@ -923,6 +1069,7 @@ const buildElementSystem = (theme: Theme): string => {
     `The scene's shared design system is already in scope as module consts. Emit ONLY the JSX for this ONE element.`,
     `HARD RULES:`,
     `- Output ONLY JSX — no imports, no exports, no prose, no markdown fence, nothing at module scope.`,
+    `- Output ONLY component code — NEVER narrate your reasoning, plan, QA analysis, or coordinate math as text: any first-person or layout-math sentence in a JSX text node ships VISIBLY on the frame and is rejected by a deterministic gate. Every text node is the artwork's own copy.`,
     `- Your JSX is inlined into a positioned wrapper div at the exact BOUNDS in the brief. FILL the wrapper (width/height 100%; text flows inside its max width). NEVER position yourself with canvas coordinates — the wrapper owns placement.`,
     `- Paint ONLY with the palette roles the brief grants, via the const names below. Never invent colors — off-vocabulary hues are rewritten.`,
     `- The brand accent is PUNCTUATION — chips, rules, badges, highlights, small buttons, data moments. NEVER paint a panel, card background, or any large region with the accent: a deterministic gate rejects any element where one flat accent-colored rectangle dominates the piece.`,
@@ -1075,18 +1222,28 @@ const copyLines = (content: SceneContent | undefined, owned: string[]): string[]
  *  element on its mere presence is a guaranteed false positive (measured:
  *  acceptance v7 run 1 placeholdered s0.hero THREE rounds running on it,
  *  shipping a washout). Exact-node STRIPPING still applies to every value;
- *  only unambiguous copy (≥2 words or ≥12 chars) can reject an element. */
+ *  only unambiguous copy (≥2 words or ≥12 chars) can reject an element —
+ *  and never a bare-domain value (v11: "glossier.com" belongs in a mock's
+ *  URL bar and diegetic footer; stripping exact nodes is enough there). */
 export const UNOWNED_REJECT_MIN_WORDS = 2;
 export const UNOWNED_REJECT_MIN_CHARS = 12;
+export const isUrlLikeValue = (v: string): boolean =>
+  /^(?:https?:\/\/)?[a-z0-9-]+(?:\.[a-z0-9-]+)+(?:\/\S*)?$/i.test(v.trim());
 export const isRejectableUnownedCopy = (v: string): boolean => {
   const t = v.trim();
+  if (isUrlLikeValue(t)) return false;
   return t.split(/\s+/).filter(Boolean).length >= UNOWNED_REJECT_MIN_WORDS || t.length >= UNOWNED_REJECT_MIN_CHARS;
 };
 
-/** The scene copy VALUES (headline/lede/bullets — the measured leak fields) a
- *  slot does NOT own. These are what the unowned-copy guard hunts for in the
- *  slot's generated body: ownership lives in the slot's contentFields. */
-const unownedCopyValues = (content: SceneContent | undefined, owned: string[]): string[] => {
+/** The unowned-value subset whose RESIDUALS may reject an element: the
+ *  distinctive editorial fields (headline/lede/bullets/cta.primary). The
+ *  v11-widened fields (eyebrow/caption/cta.secondary) are strip-only —
+ *  eyebrows are short generic phrases ("THE RANGE") that legitimately occur
+ *  embedded in diegetic mock text, so their residuals never reject. */
+export const rejectableUnownedCopyValues = (
+  content: SceneContent | undefined,
+  owned: string[],
+): string[] => {
   const c = (content ?? {}) as Record<string, unknown>;
   const out: string[] = [];
   for (const field of ["headline", "lede"]) {
@@ -1096,7 +1253,120 @@ const unownedCopyValues = (content: SceneContent | undefined, owned: string[]): 
   if (!owned.includes("bullets") && Array.isArray(c.bullets)) {
     for (const bItem of c.bullets) if (typeof bItem === "string" && bItem.trim()) out.push(bItem.trim());
   }
+  if (!owned.includes("cta") && c.cta && typeof c.cta === "object") {
+    const cta = c.cta as { primary?: string };
+    if (typeof cta.primary === "string" && cta.primary.trim()) out.push(cta.primary.trim());
+  }
   return out;
+};
+
+/** The scene copy VALUES a slot does NOT own. v11 widens coverage beyond
+ *  headline/lede/bullets to eyebrow/caption/cta (dogfood cycle 2: s4's hero
+ *  retyped the headline AND the CTA — the CTA sailed through because cta was
+ *  never in this list). These are what the unowned-copy guard hunts for in
+ *  the slot's generated body: ownership lives in the slot's contentFields /
+ *  the composition's ownsCopy. */
+export const unownedCopyValues = (content: SceneContent | undefined, owned: string[]): string[] => {
+  const c = (content ?? {}) as Record<string, unknown>;
+  const out: string[] = [];
+  for (const field of ["headline", "lede", "eyebrow", "caption"]) {
+    const v = c[field];
+    if (!owned.includes(field) && typeof v === "string" && v.trim()) out.push(v.trim());
+  }
+  if (!owned.includes("bullets") && Array.isArray(c.bullets)) {
+    for (const bItem of c.bullets) if (typeof bItem === "string" && bItem.trim()) out.push(bItem.trim());
+  }
+  if (!owned.includes("cta") && c.cta && typeof c.cta === "object") {
+    const cta = c.cta as { primary?: string; secondary?: string };
+    if (typeof cta.primary === "string" && cta.primary.trim()) out.push(cta.primary.trim());
+    if (typeof cta.secondary === "string" && cta.secondary.trim()) out.push(cta.secondary.trim());
+  }
+  return out;
+};
+
+// ─── Unowned-copy BINDING check (v11) ───────────────────────────────────────
+// Dogfood cycle 2 s4: the hero RETYPED the headline + CTA inside its dark
+// panel — duplicated copy on the frame. stripUnownedCopy sees literal VALUES;
+// it is blind to `{c.<field>}` BINDINGS (the binding renders the owner's text
+// verbatim at runtime with no literal to match). Ownership truth is ownsCopy
+// (composition) / slot.contentFields (fallback) — a piece referencing a copy
+// binding it does not own forks the copy by construction. Exact binding
+// child-expressions strip deterministically; residual references (attributes,
+// template interpolations) reject to the in-round repair.
+
+/** Top-level copy fields whose bindings the guard polices. */
+export const COPY_BINDING_FIELDS = ["eyebrow", "headline", "lede", "bullets", "caption", "meta", "cta", "texts"] as const;
+
+/** The copy fields (present in this scene's content) a slot does NOT own —
+ *  the binding-guard's hunt list. */
+export const unownedBindingFields = (content: SceneContent | undefined, owned: string[]): string[] => {
+  const c = (content ?? {}) as Record<string, unknown>;
+  return COPY_BINDING_FIELDS.filter((f) => c[f] !== undefined && c[f] !== null && !owned.includes(f));
+};
+
+/** Does this expression reference the `c.<field>` binding (c.field, c?.field,
+ *  c["field"], c.field[0], c.field.map…)? */
+const bindingRxFor = (field: string): RegExp =>
+  new RegExp(`\\bc\\s*(?:\\.|\\?\\.)\\s*${field}\\b|\\bc\\s*\\[\\s*["'\`]${field}["'\`]\\s*\\]`);
+
+/**
+ * Strip JSX child expressions that reference unowned copy bindings; report
+ * fields whose references survive (non-child positions) as residual. A child
+ * expression is a balanced `{…}` span sitting in text position (between `>`
+ * and `<`), e.g. `{c.headline}` or `{lastWordAccent(c.headline, ACCENT)}`.
+ */
+export const stripUnownedBindings = (
+  body: string,
+  fields: string[],
+): { code: string; stripped: string[]; residual: string[] } => {
+  const hunted = fields.filter((f) => bindingRxFor(f).test(body));
+  if (hunted.length === 0) return { code: body, stripped: [], residual: [] };
+
+  // Balanced child-expression spans: `{…}` whose preceding non-space char is
+  // `>` and following non-space char is `<` — pure text-position expressions.
+  const spans: { start: number; end: number }[] = [];
+  for (let i = 0; i < body.length; i++) {
+    if (body[i] !== "{") continue;
+    const before = body.slice(0, i).replace(/\s+$/, "");
+    if (!before.endsWith(">")) continue;
+    let depth = 0;
+    let quote: string | null = null;
+    let end = -1;
+    for (let j = i; j < body.length; j++) {
+      const ch = body[j];
+      if (quote) {
+        if (ch === "\\") j++;
+        else if (ch === quote) quote = null;
+        continue;
+      }
+      if (ch === '"' || ch === "'" || ch === "`") quote = ch;
+      else if (ch === "{") depth++;
+      else if (ch === "}") {
+        depth--;
+        if (depth === 0) {
+          end = j;
+          break;
+        }
+      }
+    }
+    if (end === -1) continue;
+    const after = body.slice(end + 1).replace(/^\s+/, "");
+    if (!after.startsWith("<")) continue;
+    spans.push({ start: i, end: end + 1 });
+    i = end;
+  }
+
+  const strippedFields = new Set<string>();
+  let code = body;
+  for (const span of [...spans].reverse()) {
+    const expr = code.slice(span.start, span.end);
+    const hits = hunted.filter((f) => bindingRxFor(f).test(expr));
+    if (hits.length === 0) continue;
+    for (const f of hits) strippedFields.add(f);
+    code = code.slice(0, span.start) + code.slice(span.end);
+  }
+  const residual = hunted.filter((f) => bindingRxFor(f).test(code));
+  return { code, stripped: [...strippedFields], residual };
 };
 
 // ─── Composition-blueprint consumption ──────────────────────────────────────
@@ -1311,6 +1581,8 @@ interface ElementOutcome {
   colorRewrites: number;
   fontRewrites: number;
   heroSurfaceCorrected: boolean;
+  /** Meta-text segments (leaked reasoning prose) stripped from the shipped body. */
+  metaTextStrips: number;
 }
 
 const round2 = (n: number): number => Math.round(n * 100) / 100;
@@ -1432,10 +1704,11 @@ export const castBuild = async (
     // Verbatim copy this element does NOT own. Ownership lives in the slot —
     // and when the scene carries a composition, the spec's explicit ownsCopy
     // is the stronger source of truth (see ownedCopyFields).
-    const unowned = unownedCopyValues(
-      script.scenes[job.sceneIndex]?.content,
-      ownedCopyFields(script.scenes[job.sceneIndex], job.slot),
-    );
+    const jobContent = script.scenes[job.sceneIndex]?.content;
+    const jobOwned = ownedCopyFields(script.scenes[job.sceneIndex], job.slot);
+    const unowned = unownedCopyValues(jobContent, jobOwned);
+    const unownedRejectable = new Set(rejectableUnownedCopyValues(jobContent, jobOwned));
+    const unownedBindings = unownedBindingFields(jobContent, jobOwned);
 
     // One attempt: call, extract, deterministic post-passes, hue-lock,
     // syntax-verify. A transport throw (castCall retries internally first) is
@@ -1444,7 +1717,7 @@ export const castBuild = async (
     const attempt = async (
       user: string,
     ): Promise<
-      | { ok: true; body: string; rewrites: number; fontRewrites: number; heroSurface: boolean }
+      | { ok: true; body: string; rewrites: number; fontRewrites: number; heroSurface: boolean; metaStrips: number }
       | { ok: false; raw: string; error: string }
     > => {
       let text: string;
@@ -1459,9 +1732,29 @@ export const castBuild = async (
       if (raw.length < 8 || !raw.includes("<") || /^\s*(?:import|export)\b/.test(raw)) {
         return { ok: false, raw, error: "output is not a JSX fragment (empty, no markup, or a module)" };
       }
+      // (d6) META-TEXT LEAK gate (v11): self-referential repair prose rendered
+      // as JSX text nodes strips deterministically; a body DOMINATED by its
+      // own reasoning rejects for a fresh emission.
+      const meta = stripMetaText(raw);
+      if (meta.reject) {
+        return {
+          ok: false,
+          raw,
+          error:
+            `element rendered its own reasoning/QA analysis as visible text (${meta.stripped
+              .slice(0, 2)
+              .map((s) => JSON.stringify(s.slice(0, 90)))
+              .join(", ")}…) — output ONLY component code; NEVER narrate reasoning, coordinate math, or QA findings as text nodes`,
+        };
+      }
+      if (meta.stripped.length > 0) {
+        console.warn(
+          `[cast-build] ${job.pieceId}: ${meta.stripped.length} meta-text segment(s) stripped (leaked reasoning prose: ${JSON.stringify(meta.stripped[0].slice(0, 80))})`,
+        );
+      }
       // Deterministic post-passes — each closes a measured defect class at
       // zero tokens (see the pass docs above), BEFORE the fragment gate.
-      let body = rewriteKeyframeInterpolations(raw, theme.keyframes).code;
+      let body = rewriteKeyframeInterpolations(meta.code, theme.keyframes).code;
       body = stripCanvasSelfPositioning(body, job.slot.bounds).code;
       body = stripColorMutationFilters(body).code;
       // (d5) masked bullet-runs ("●●●") collapse to a single bullet — the
@@ -1491,7 +1784,7 @@ export const castBuild = async (
       // reject (isRejectableUnownedCopy) — a bare brand-name token inside a
       // mock's own chrome is diegetic, not theft.
       const guard = stripUnownedCopy(locked, unowned);
-      const rejectable = guard.residual.filter(isRejectableUnownedCopy);
+      const rejectable = guard.residual.filter((v) => unownedRejectable.has(v) && isRejectableUnownedCopy(v));
       if (rejectable.length > 0) {
         return {
           ok: false,
@@ -1499,14 +1792,34 @@ export const castBuild = async (
           error: `element renders copy it does not own: ${rejectable.map((v) => JSON.stringify(v)).join(", ")} — those fields belong to another element (ownership is fixed by the layout contract); remove that text entirely`,
         };
       }
+      // (v11) Unowned-copy BINDING check: `{c.<field>}` references for fields
+      // this element does not own render the owner's text twice at runtime —
+      // exact child expressions strip deterministically; residual references
+      // reject to the in-round repair.
+      const bindGuard = stripUnownedBindings(guard.code, unownedBindings);
+      if (bindGuard.residual.length > 0) {
+        return {
+          ok: false,
+          raw,
+          error:
+            `element binds scene copy it does not own: ${bindGuard.residual.map((f) => `c.${f}`).join(", ")} — ` +
+            `those content fields belong to another element (ownership is fixed by the layout contract); ` +
+            `remove every reference to them (render your OWN diegetic values instead)`,
+        };
+      }
+      if (bindGuard.stripped.length > 0) {
+        console.warn(
+          `[cast-build] ${job.pieceId}: unowned copy binding(s) stripped: ${bindGuard.stripped.map((f) => `c.${f}`).join(", ")}`,
+        );
+      }
       // (d2) PRE-RENDER hero density gate: the hollow-bookend class fails
       // inside the cast round (~10s repair) instead of a 44-100s render+
       // vision gate round. Measured on the stripped/normalized body so
       // stolen copy can't pad the count.
-      let finalBody = guard.code;
+      let finalBody = bindGuard.code;
       let heroSurface = false;
       if (job.slot.id === "hero") {
-        const density = staticJsxDensity(guard.code);
+        const density = staticJsxDensity(bindGuard.code);
         if (density.elements < PRE_RENDER_HERO_MIN_ELEMENTS || density.textNodes < PRE_RENDER_HERO_MIN_TEXT) {
           return {
             ok: false,
@@ -1522,7 +1835,7 @@ export const castBuild = async (
         // the canvas's own luminance band ships a washout — lift the primary
         // panel to the theme's contrast token deterministically (zero tokens)
         // instead of paying a render+vision gate round to discover it.
-        const surface = ensureHeroSurfaceContrast(guard.code, theme);
+        const surface = ensureHeroSurfaceContrast(bindGuard.code, theme);
         if (surface.corrected) {
           finalBody = surface.code;
           heroSurface = true;
@@ -1539,12 +1852,13 @@ export const castBuild = async (
         rewrites: changes.reduce((n, ch) => n + ch.count, 0),
         fontRewrites: fonts.rewrites + (fonts.injected ? 1 : 0),
         heroSurface,
+        metaStrips: meta.stripped.length,
       };
     };
 
     const first = await attempt(job.brief);
     if (first.ok) {
-      return { pieceId: job.pieceId, body: first.body, outputTokens: tokens, repaired: false, failed: false, colorRewrites: first.rewrites, fontRewrites: first.fontRewrites, heroSurfaceCorrected: first.heroSurface };
+      return { pieceId: job.pieceId, body: first.body, outputTokens: tokens, repaired: false, failed: false, colorRewrites: first.rewrites, fontRewrites: first.fontRewrites, heroSurfaceCorrected: first.heroSurface, metaTextStrips: first.metaStrips };
     }
 
     // ONE surgical repair: the same brief + the broken output + the exact
@@ -1557,15 +1871,15 @@ export const castBuild = async (
         "Your previous attempt failed:",
         first.raw ? `--- previous attempt ---\n${first.raw}` : "(the call itself failed)",
         `--- error ---\n${first.error}`,
-        "Emit corrected JSX only.",
+        "Emit corrected JSX only — output ONLY component code; never narrate your reasoning, plan, or coordinate math as rendered text nodes.",
       ].join("\n"),
     );
     if (second.ok) {
-      return { pieceId: job.pieceId, body: second.body, outputTokens: tokens, repaired: true, failed: false, colorRewrites: second.rewrites, fontRewrites: second.fontRewrites, heroSurfaceCorrected: second.heroSurface };
+      return { pieceId: job.pieceId, body: second.body, outputTokens: tokens, repaired: true, failed: false, colorRewrites: second.rewrites, fontRewrites: second.fontRewrites, heroSurfaceCorrected: second.heroSurface, metaTextStrips: second.metaStrips };
     }
 
     console.warn(`[cast-build] ${job.pieceId}: broken through repair — shipping placeholder (${second.error.slice(0, 120)})`);
-    return { pieceId: job.pieceId, body: placeholderBody(theme, job.slot), outputTokens: tokens, repaired: false, failed: true, colorRewrites: 0, fontRewrites: 0, heroSurfaceCorrected: false };
+    return { pieceId: job.pieceId, body: placeholderBody(theme, job.slot), outputTokens: tokens, repaired: false, failed: true, colorRewrites: 0, fontRewrites: 0, heroSurfaceCorrected: false, metaTextStrips: 0 };
   };
 
   const outcomes = await Promise.all(jobs.map((job) => limiter.with(() => runElement(job))));
@@ -1606,6 +1920,7 @@ export const castBuild = async (
       fontRewrites: outcomes.reduce((n, o) => n + o.fontRewrites, 0),
       inkCorrected: inkGuard.corrected,
       heroSurfaceCorrections: outcomes.filter((o) => o.heroSurfaceCorrected).length,
+      metaTextStrips: outcomes.reduce((n, o) => n + o.metaTextStrips, 0),
     },
     elementOutcomes: outcomes.map((o) => ({ pieceId: o.pieceId, failed: o.failed, repaired: o.repaired })),
   };

@@ -201,6 +201,31 @@ export const findDuplicateLogos = (code: string): number => {
   return (code.match(re) || []).length;
 };
 
+// ─── Brand-mark (logo glyph) count per hero mock (v11) ──────────────
+//
+// Dogfood cycle 2 s4 shipped a TRIPLE brand mark — chrome corner logo +
+// a boxed wordmark in the hero's nav mock + a stray brand-initial glyph —
+// and findDuplicateLogos passed it because the extra marks were DRAWN
+// (text wordmarks/glyphs), not <Img> logo mounts. This counts every brand
+// mark inside ONE element fragment (a hero body):
+//   - <Img> logo mounts (the findDuplicateLogos pattern),
+//   - JSX text nodes EXACTLY equal to the brand name (a drawn wordmark),
+//   - single-character text nodes equal to the brand initial (a glyph
+//     stand-in — "G" for Glossier).
+// Exact-node matching keeps diegetic mentions (the brand name inside a URL
+// bar or a longer label) out of the count. Chrome carries the sanctioned
+// corner mark on every scene, so a hero carrying >1 of its own is overuse.
+export const countBrandMarks = (fragment: string, brandName: string): number => {
+  const word = (brandName ?? "").trim().split(/\s+/)[0]?.replace(/[^\p{L}\p{N}&-]/gu, "") ?? "";
+  if (word.length < 2) return findDuplicateLogos(fragment);
+  const esc = word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  let count = findDuplicateLogos(fragment);
+  count += (fragment.match(new RegExp(`>\\s*${esc}\\s*<`, "gi")) || []).length;
+  const initial = word[0].toUpperCase().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  count += (fragment.match(new RegExp(`>\\s*${initial}\\s*<`, "g")) || []).length;
+  return count;
+};
+
 // ─── Eyebrow/kicker duplication (QA B3) ──────────────────────────────
 //
 // The per-scene editorial eyebrow (e.g. "THE CHALLENGE", "COMIENZA EL DÍA")

@@ -176,6 +176,8 @@ export const buildCompositionPrompt = (
     ``,
     `ACCENT DISCIPLINE: the brand accent is PUNCTUATION — chips, rules, badges, highlights, small buttons, data moments — never a panel fill. No interior item may describe a large accent-colored surface: an accent-filled panel, slab, column, or half-frame ships as a flat color block and a deterministic gate rejects it.`,
     ``,
+    `FULL-BLEED VERTICAL FILL: on a "full-bleed" register scene the hero IS the frame — its interior inventory must populate the FULL frame height, not one horizontal band. Name at least one interior item that lives in the UPPER third of the frame and one in the LOWER third (a nav/chrome band, floating product chips, a footer meta strip, an oversized backdrop texture). A full-bleed hero whose furniture clusters in the middle ships a huge empty band (the barbell defect) and fails a blocking gate.`,
+    ``,
     `CONCRETENESS ON ATTEMPT 1, by example — BAD: 'product card placeholder "A1"' (the word "placeholder" and the fake token both ship on screen, and both are validation failures). GOOD: 'product card "Mountain Water 12-pack — $14.99"'. Author the GOOD form the FIRST time — repair rounds are the expensive path.`,
     ``,
     `ADJACENT-SCENE VARIETY: adjacent scenes must not read as the same layout archetype more than 2 in a row — vary the hero's ARTIFACT TYPE (browser mock, phone frame, dashboard, chart panel, terminal, physical-object tableau) and its implied placement side scene to scene, so no three consecutive scenes ship the same split composition.`,

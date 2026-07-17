@@ -29,6 +29,7 @@ import {
   countAccentBorders,
   findUnboundCopy,
   assessThroughlinePresence,
+  countBrandMarks,
 } from "./quality-gates";
 
 let passed = 0;
@@ -1060,6 +1061,28 @@ check("assessThroughlinePresence: still fires when the motif is genuinely absent
   const script = { narrative: { throughline: "a ticket travels" }, scenes: [{}, {}, {}, {}, {}] };
   const r = assessThroughlinePresence(`<div data-throughline="x" />`, script);
   assert(r !== null && r.tagged === 1, `1/5 must still fire, got ${JSON.stringify(r)}`);
+});
+
+// ─── Brand-mark (logo glyph) count per hero mock (v11) ───────────────────────
+
+await check("countBrandMarks: drawn wordmark + initial glyph + <Img> logo all count (the cycle-2 s4 triple)", () => {
+  // The measured s4 shape: a boxed GLOSSIER nav wordmark + a stray G glyph.
+  const hero = `<div>\n  <div style={{ border: "1px solid" }}>GLOSSIER</div>\n  <span style={{ fontSize: 64 }}>G</span>\n  <span>Shop</span>\n</div>`;
+  assert(countBrandMarks(hero, "Glossier") === 2, `wordmark + glyph = 2, got ${countBrandMarks(hero, "Glossier")}`);
+  const withImg = hero + `<Img src={LOGO_SRC ?? "https://cdn.x/logo.svg"} />`;
+  assert(countBrandMarks(withImg, "Glossier") === 3, "an <Img> logo mount adds a third");
+});
+
+await check("countBrandMarks: diegetic mentions inside longer text never count (URL bars, footers)", () => {
+  const hero = `<div>\n  <span>glossier.com</span>\n  <span>Shop the world of Glossier</span>\n  <div>GLOSSIER</div>\n</div>`;
+  assert(countBrandMarks(hero, "Glossier") === 1, `only the exact wordmark node counts, got ${countBrandMarks(hero, "Glossier")}`);
+});
+
+await check("countBrandMarks: long crawl titles reduce to the first brand token; single-word interiors unaffected", () => {
+  const hero = `<div><div>Linear</div><span>L</span></div>`;
+  assert(countBrandMarks(hero, "Linear — Plan and build products") === 2, "first token of a long title is the mark");
+  const clean = `<div><span>Issue tracking</span><span>Cycle 24</span></div>`;
+  assert(countBrandMarks(clean, "Linear") === 0, "no marks → 0");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

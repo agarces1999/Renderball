@@ -15,9 +15,15 @@ import {
   findEmptyBand,
   findEdgeCroppedPieces,
   findRenderTruthFailures,
+  findInteriorClip,
+  planEdgeCropMoves,
   hexLuminance,
   assessCanvasBrightness,
   EDGE_CROP_FRAC,
+  EDGE_CLAMP_OVERSIZE_FRAC,
+  INTERIOR_CLIP_FRAC,
+  type EdgeCropFinding,
+  type SlotTerritory,
 } from "./render-truth-gates";
 import type { SceneMeasurement, MeasuredElement } from "./measure-scene";
 
@@ -375,6 +381,122 @@ await check("edge-crop: atmosphere/chrome and full-canvas treatments are exempt;
   assert(findEdgeCroppedPieces(m).length === 0, "exempt kinds + canvas treatments never fire");
   const err = { ...scene(4, [el({ piece: "s4.hero", pieceKind: "diegetic", x: 0, y: 900, w: 500, h: 400 })]), error: "boom" };
   assert(findEdgeCroppedPieces(err).length === 0, "measure-error scenes skip (fail-closed elsewhere)");
+});
+
+// ─── clamp-vs-slot planner (v11 #3 — the cycle-2 s2.hero clamp ricochet) ─────
+
+const cropFinding = (p: Partial<EdgeCropFinding>): EdgeCropFinding => ({
+  kind: "piece-edge-crop", scene: 2, pieceId: "s2.hero", blocking: true, edge: "right",
+  overflowPx: 100, union: { x: 1100, y: 200, w: 800, h: 500 }, detail: "d", repairInstruction: "r", ...p,
+});
+const slot = (p: Partial<SlotTerritory>): SlotTerritory => ({
+  pieceId: "s2.hero", scene: 2, kind: "diegetic", bounds: { x: 1092, y: 200, w: 768, h: 560 }, ...p,
+});
+const CANVAS_DIMS = { w: 1920, h: 1080 };
+
+await check("planEdgeCropMoves: OVERSIZED piece (cycle-2 shape — ~1266px in a 768px slot) routes regen, never clamps", () => {
+  const f = cropFinding({ overflowPx: 438, union: { x: 1092, y: 200, w: 1266, h: 500 } });
+  const plan = planEdgeCropMoves([f], [slot({})], CANVAS_DIMS, 12);
+  assert(plan.moves.length === 0, "no clamp for a mis-sized piece");
+  assert(plan.regens.length === 1 && plan.regens[0].reason === "oversized-for-slot", `regen routed: ${JSON.stringify(plan.regens)}`);
+  assert(/1266px wide in a 768px slot/.test(plan.regens[0].detail), "detail names the measured vs slot widths");
+  assert(/~1266px wide/.test(plan.regens[0].repairInstruction) && /768px/.test(plan.regens[0].repairInstruction), "instruction carries both sizes");
+  assert(/never exceed it/i.test(plan.regens[0].repairInstruction), "instruction demands fill-the-wrapper");
+  assert(1266 > 768 * EDGE_CLAMP_OVERSIZE_FRAC, "fixture is genuinely over the 25% oversize line");
+});
+
+await check("planEdgeCropMoves: clamp landing on a NEIGHBOR's territory routes regen instead", () => {
+  // Piece fits its slot (echoes cycle 2: the s2.hero clamp shoved it into the
+  // copy column) but the move crosses onto the copy slot.
+  const f = cropFinding({ overflowPx: 438, union: { x: 1220, y: 240, w: 700, h: 480 } });
+  const slots = [
+    slot({ bounds: { x: 1152, y: 200, w: 768, h: 560 } }),
+    slot({ pieceId: "s2.copy", kind: "text", bounds: { x: 120, y: 240, w: 720, h: 560 } }),
+  ];
+  const plan = planEdgeCropMoves([f], slots, CANVAS_DIMS, 12);
+  assert(plan.moves.length === 0, "no clamp when the move invades a neighbor");
+  assert(plan.regens.length === 1 && plan.regens[0].reason === "clamp-would-invade-neighbor", `got ${JSON.stringify(plan.regens)}`);
+  assert(/s2\.copy/.test(plan.regens[0].detail), "the invaded neighbor is named");
+});
+
+await check("planEdgeCropMoves: a fitting piece over free canvas clamps exactly as v10 did (bottom+right combine)", () => {
+  const fs2 = [
+    cropFinding({ pieceId: "s4.hero", scene: 4, edge: "bottom", overflowPx: 40, union: { x: 1100, y: 640, w: 700, h: 480 } }),
+    cropFinding({ pieceId: "s4.hero", scene: 4, edge: "right", overflowPx: 20, union: { x: 1100, y: 640, w: 700, h: 480 } }),
+  ];
+  const slots = [
+    slot({ pieceId: "s4.hero", scene: 4, bounds: { x: 1092, y: 560, w: 768, h: 480 } }),
+    slot({ pieceId: "s4.copy", scene: 4, kind: "text", bounds: { x: 120, y: 240, w: 720, h: 560 } }),
+  ];
+  const plan = planEdgeCropMoves(fs2, slots, CANVAS_DIMS, 12);
+  assert(plan.regens.length === 0, "clean move, no regen");
+  assert(plan.moves.length === 1 && plan.moves[0].dy === -52 && plan.moves[0].dx === -32, `combined move with margin: ${JSON.stringify(plan.moves)}`);
+});
+
+await check("planEdgeCropMoves: atmosphere/full-bleed neighbors never count as invaded territory", () => {
+  const f = cropFinding({ overflowPx: 50, union: { x: 1160, y: 240, w: 760, h: 480 } });
+  const slots = [
+    slot({ bounds: { x: 1092, y: 200, w: 768, h: 560 } }),
+    slot({ pieceId: "s2.atmosphere", kind: "atmosphere", bounds: { x: 0, y: 0, w: 1920, h: 1080 } }),
+    slot({ pieceId: "s2.throughline", kind: "diegetic", bounds: { x: 0, y: 0, w: 1920, h: 1080 } }), // full-bleed treatment
+  ];
+  const plan = planEdgeCropMoves([f], slots, CANVAS_DIMS, 12);
+  assert(plan.moves.length === 1 && plan.regens.length === 0, `full-bleed neighbors exempt: ${JSON.stringify(plan)}`);
+});
+
+await check("planEdgeCropMoves: an ALREADY-overlapping neighbor doesn't block the clamp (only NEW invasions do)", () => {
+  // Declared overlap exists pre-move (e.g. hero over the connector's corner);
+  // the clamp only makes it no worse — still a legal deterministic move.
+  const f = cropFinding({ overflowPx: 30, union: { x: 1130, y: 240, w: 760, h: 480 } });
+  const slots = [
+    slot({ bounds: { x: 1092, y: 200, w: 768, h: 560 } }),
+    slot({ pieceId: "s2.badge", kind: "diegetic", bounds: { x: 1100, y: 250, w: 200, h: 200 } }),
+  ];
+  const plan = planEdgeCropMoves([f], slots, CANVAS_DIMS, 12);
+  assert(plan.moves.length === 1 && plan.regens.length === 0, `pre-existing overlap tolerated: ${JSON.stringify(plan)}`);
+});
+
+// ─── interior clip advisory (v11 #6 — cycle-2 s2 price chips cut mid-glyph) ──
+
+/** A hero panel (3 siblings forming a big union) + one chip. */
+const interiorScene = (chip: MeasuredElement): SceneMeasurement =>
+  scene(2, [
+    el({ piece: "s2.hero", pieceKind: "diegetic", x: 1100, y: 200, w: 700, h: 500, bg: "rgb(255,255,255)" }),
+    el({ piece: "s2.hero", pieceKind: "diegetic", tag: "span", text: "Futuredew", x: 1130, y: 240, w: 200, h: 24, fontSize: 14 }),
+    el({ piece: "s2.hero", pieceKind: "diegetic", tag: "span", text: "serum + oil", x: 1130, y: 280, w: 200, h: 24, fontSize: 12 }),
+    chip,
+  ]);
+
+await check("findInteriorClip: a price chip protruding >30% of its width past the panel edge fires (advisory)", () => {
+  // Panel union (without the chip) ends at x=1800; the chip is 120 wide with
+  // 60px (50%) sticking out — the cycle-2 "$36.0" mid-glyph class.
+  const chip = el({ piece: "s2.hero", pieceKind: "diegetic", tag: "span", text: "$36.00", x: 1740, y: 300, w: 120, h: 24, fontSize: 12 });
+  const r = findInteriorClip(interiorScene(chip));
+  assert(r.length === 1 && r[0].kind === "interior-clip", `got ${JSON.stringify(r)}`);
+  assert(/\$36\.0/.test(r[0].detail) && /right/.test(r[0].detail), "names the clipped value and edge");
+  assert(0.5 > INTERIOR_CLIP_FRAC, "fixture is genuinely over the 30% line");
+});
+
+await check("findInteriorClip: chips fully inside, mild overhang, and fully-outside elements never fire", () => {
+  const inside = el({ piece: "s2.hero", tag: "span", text: "$36.00", x: 1600, y: 300, w: 120, h: 24 });
+  assert(findInteriorClip(interiorScene(inside)).length === 0, "inside → clean");
+  // 24px of 120 (20%) overhang — a sanctioned badge-breaks-the-edge pattern.
+  const mild = el({ piece: "s2.hero", tag: "span", text: "$36.00", x: 1704, y: 300, w: 120, h: 24 });
+  assert(findInteriorClip(interiorScene(mild)).length === 0, "≤30% overhang → clean");
+  // Center outside the union = its own composition, not a clip.
+  const outside = el({ piece: "s2.hero", tag: "span", text: "$36.00", x: 1810, y: 300, w: 120, h: 24 });
+  assert(findInteriorClip(interiorScene(outside)).length === 0, "fully-outside → clean");
+});
+
+await check("findInteriorClip: tiny pieces (no panel-scale union) and measure-error scenes are skipped", () => {
+  const m = scene(1, [
+    el({ piece: "s1.badge", tag: "span", text: "hello", x: 0, y: 0, w: 60, h: 20 }),
+    el({ piece: "s1.badge", tag: "span", text: "world", x: 40, y: 0, w: 60, h: 20 }),
+    el({ piece: "s1.badge", x: 0, y: 0, w: 80, h: 30 }),
+  ]);
+  assert(findInteriorClip(m).length === 0, "sub-panel unions never fire");
+  const err = { ...scene(1, []), error: "boom" };
+  assert(findInteriorClip(err).length === 0, "measure-error scenes skip");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

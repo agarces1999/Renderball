@@ -39,6 +39,15 @@ import {
   substituteImgAssetIds,
   ensureHeroSurfaceContrast,
   stripMaskedValueRuns,
+  extractJsxTextSegments,
+  isMetaTextSegment,
+  stripMetaText,
+  unownedCopyValues,
+  rejectableUnownedCopyValues,
+  unownedBindingFields,
+  stripUnownedBindings,
+  isUrlLikeValue,
+  META_TEXT_REJECT_FRAC,
   HERO_SURFACE_MIN_DELTA_L,
   HERO_SURFACE_MIN_CONTRAST_FRAC,
   PRE_RENDER_HERO_MIN_ELEMENTS,
@@ -354,7 +363,8 @@ await check("repair path: broken-then-fixed element recovered, prompt carried th
   assert(result.code.includes("radial-gradient(circle at 30% 20%"), "the REPAIRED atmosphere body shipped");
   const repairCall = fake.log.filter((l) => l.id === "s1.atmosphere")[1];
   assert(!!repairCall, "a second (repair) call was made for s1.atmosphere");
-  assert(repairCall.user.includes("Emit corrected JSX only."), "repair prompt asks for corrected JSX only");
+  assert(repairCall.user.includes("Emit corrected JSX only"), "repair prompt asks for corrected JSX only");
+  assert(/never narrate your reasoning/.test(repairCall.user), "repair prompt bans narrated reasoning (v11 meta-text leak class)");
   assert(repairCall.user.includes("--- previous attempt ---"), "repair prompt quotes the broken output");
 });
 
@@ -1068,6 +1078,245 @@ await check("elementOutcomes: clean build reports zero failed, repaired flags ma
   assert(r.elementOutcomes.filter((o) => o.repaired).length === r.telemetry.repairs, "repaired count matches telemetry");
   assert(r.elementOutcomes.some((o) => o.pieceId === "s2.throughline" && o.failed), "the broken-through-repair piece is named");
   assert(r.elementOutcomes.some((o) => o.pieceId === "s1.atmosphere" && o.repaired && !o.failed), "the recovered piece is named");
+});
+
+// ─── (d6) META-TEXT LEAK gate (v11 — dogfood cycle 2 s2 class) ───────────────
+
+// The ACTUAL leaked prose that shipped on Glossier scene 2 (cycle 2) — the
+// calibration MUST-FIRE. Kept verbatim (trimmed) so the detector is pinned to
+// the measured defect, not a stylized version of it.
+const CYCLE2_LEAK_PROSE = `Looking at the QA findings: the headline text "One drop." and "And everything" straddle piece s2.hero's panel at x=642. My wrapper is 720px wide starting at x=120, so it ends at x=840 — overlapping the panel which starts at x=642. The headline spans the full wrapper width and crosses into the panel zone.
+
+Fix: constrain the entire stack to a max-width that sits fully clear of the panel (642-120 = 522px from my left edge, so I cap content width at ~480px), and ensure no text node can flow past that bound.`;
+
+await check("extractJsxTextSegments: leading prose, between-tag runs; attributes/styles/expressions masked", () => {
+  const segs = extractJsxTextSegments(
+    `Some leading prose here <div style={{ width: "720px", content: "at x=120" }} title="my wrapper is">Real copy{c.headline}more text</div>`,
+  );
+  const texts = segs.map((s) => s.text.trim());
+  assert(texts.includes("Some leading prose here"), `leading prose extracted: ${JSON.stringify(texts)}`);
+  assert(texts.includes("Real copy"), "between-tag run extracted");
+  assert(texts.includes("more text"), "run after an expression extracted");
+  assert(!texts.some((t) => t.includes("720px") || t.includes("x=120") || t.includes("my wrapper")), "style/attribute strings never surface as text segments");
+});
+
+await check("isMetaTextSegment: vocabulary arm fires on QA/wrapper/piece-id/coordinate prose", () => {
+  assert(isMetaTextSegment("Looking at the QA findings: the headline straddles"), "QA findings");
+  assert(isMetaTextSegment("My wrapper is 720px wide starting at x=120"), "wrapper + px + coords");
+  assert(isMetaTextSegment("the panel of piece s2.hero starts at x=642"), "piece-id token");
+  assert(isMetaTextSegment("so I cap content width at ~480px"), "first-person planning verb");
+  assert(isMetaTextSegment("constrain the stack to a max-width clear of the panel"), "max-width as prose");
+});
+
+await check("isMetaTextSegment: structural arm fires on sentence-length px/planning prose without vocabulary", () => {
+  const noVocab =
+    "The content block needs to sit within 480px so the two columns never collide, and the second row should stay under 320px to leave the footer visible at the bottom of the frame area.";
+  assert(isMetaTextSegment(noVocab), "long px-carrying prose flags structurally");
+});
+
+await check("isMetaTextSegment: real brand copy passes — short lines, long ledes, first-person taglines", () => {
+  assert(!isMetaTextSegment("Come as you are."), "headline");
+  assert(!isMetaTextSegment("THE INVITATION"), "eyebrow");
+  assert(!isMetaTextSegment("Behind layers. Behind routines too heavy to hold. Behind the idea that beauty means covering up what's already there."), "118-char lede");
+  assert(!isMetaTextSegment("I stopped hiding. And everything shifted for me, for good."), "first-person brand voice without planning verbs");
+  assert(!isMetaTextSegment("Renewal — Acme Corp · $12,400 · Won"), "diegetic mock row");
+  assert(!isMetaTextSegment("Complimentary shipping over $30 · Returns within 30 days"), "diegetic footer");
+});
+
+await check("stripMetaText: CALIBRATION MUST-FIRE — the verbatim cycle-2 s2 leak is detected and dominates (reject)", () => {
+  const leakedBody = `${CYCLE2_LEAK_PROSE}\n\n<div style={{ width: '100%' }}>\n  <h1 data-content-path="headline">{c.headline}</h1>\n</div>`;
+  const r = stripMetaText(leakedBody);
+  assert(r.stripped.length >= 1, "the leak prose is flagged");
+  assert(r.reject, "prose dominates the body's text → reject for a fresh emission");
+  assert(!r.code.includes("QA findings"), "the prose is gone from the stripped code");
+  assert(r.code.includes('data-content-path="headline"'), "the real JSX survives the strip");
+});
+
+await check("stripMetaText: minority prose strips in place (no reject) — the artwork keeps its copy", () => {
+  const body = `<div>\n  I cap content width at ~480px to clear the panel\n  <h1>Beauty is not a performance.</h1>\n  <p>A thesis, not a tagline. An invitation to stop performing and start being. The world is open and the glow is yours to keep, always.</p>\n  <span>Futuredew · serum + oil highlight</span>\n</div>`;
+  const r = stripMetaText(body);
+  assert(r.stripped.length === 1, `one flagged segment, got ${r.stripped.length}`);
+  assert(!r.reject, `minority prose must strip, not reject (frac ceiling ${META_TEXT_REJECT_FRAC})`);
+  assert(!r.code.includes("I cap content"), "prose removed");
+  assert(r.code.includes("Beauty is not a performance."), "real copy intact");
+});
+
+await check("stripMetaText: clean bodies untouched (every canned fixture body)", () => {
+  for (const [name, body] of [["HERO_TEAL", HERO_TEAL], ["COPY_BODY", COPY_BODY], ["SELF_POS_HERO", SELF_POS_HERO], ["RICH_HERO_DEFAULT", RICH_HERO_DEFAULT], ["CONNECTOR_BODY", CONNECTOR_BODY]] as const) {
+    const r = stripMetaText(body);
+    assert(r.stripped.length === 0 && r.code === body, `${name} must pass clean (flagged: ${JSON.stringify(r.stripped)})`);
+  }
+});
+
+await check("castBuild end-to-end: minority meta-text strips from the shipped body; telemetry counts it", async () => {
+  const proseCopy = `<div>\n  so I cap content width at ~480px to clear the panel zone\n  <h1 data-content-path="headline" style={{ fontFamily: FONT_DISPLAY }}>{c.headline}</h1>\n  <p>A thesis, not a tagline. An invitation to stop performing and start being — the whole story, approved before the render.</p>\n</div>`;
+  const f = makeFakeCaller((id, nth) => (id === "s2.copy" ? proseCopy : cannedFor(id, nth)));
+  const r = await castBuild(input, { caller: f.caller as never, concurrency: 4 });
+  assert(!r.code.includes("I cap content width"), "leaked prose never ships");
+  assert(r.code.includes("A thesis, not a tagline"), "the real copy ships");
+  assert(r.telemetry.metaTextStrips >= 1, `telemetry counts the strip, got ${r.telemetry.metaTextStrips}`);
+});
+
+await check("castBuild end-to-end: prose-DOMINATED emission rejects → repair → placeholder when unrepentant", async () => {
+  const dominated = `${CYCLE2_LEAK_PROSE}\n<div><span>ok</span></div>`;
+  const f = makeFakeCaller((id, nth) => (id === "s2.copy" ? dominated : cannedFor(id, nth)));
+  const r = await castBuild(input, { caller: f.caller as never, concurrency: 4 });
+  assert(!r.code.includes("QA findings"), "the reasoning never ships");
+  const copyCalls = f.log.filter((l) => l.id === "s2.copy");
+  assert(copyCalls.length === 2, `reject routed to the ONE repair (got ${copyCalls.length} calls)`);
+  assert(/never narrate your reasoning/.test(copyCalls[1].user), "the repair prompt carries the anti-narration line");
+  assert(r.elementOutcomes.some((o) => o.pieceId === "s2.copy" && o.failed), "unrepentant piece ships as placeholder, counted honestly");
+});
+
+await check("element system prompt carries the v11 anti-narration hard rule", async () => {
+  let system = "";
+  const inner = makeFakeCaller();
+  const spy = async (call: Parameters<typeof inner.caller>[0]) => {
+    system = call.system;
+    return inner.caller(call);
+  };
+  await castBuild(input, { caller: spy as never, concurrency: 4 });
+  assert(/NEVER narrate your reasoning/.test(system), "anti-narration rule stated");
+  assert(/text node/.test(system), "the text-node consequence is named");
+});
+
+// ─── Meta-text CALIBRATION on real build artifacts (skips when absent) ───────
+// MUST-FIRE: the cycle-2 Glossier composition's s2.copy piece (the shipped
+// leak). MUST-PASS: every piece of every prior CLEAN build on disk. Guarded
+// by existsSync so CI without .data/dogfood artifacts stays green.
+
+{
+  const { existsSync, readFileSync } = await import("fs");
+  const { join } = await import("path");
+  /** data-piece wrapper inner bodies from an assembled composition. Pieces
+   *  are emitted sequentially inside a Section ending with <Chrome …>, so a
+   *  body runs to the NEXT piece wrapper or the Chrome boundary — trailing
+   *  closing tags in the slice are inert for text extraction (self-closing
+   *  <div /> forms make brace-free div balancing unreliable). */
+  const pieceBodies = (src: string): { id: string; body: string }[] => {
+    const out: { id: string; body: string }[] = [];
+    const marks: { id: string; start: number; at: number }[] = [];
+    const re = /<div data-piece="([^"]+)"[^>]*>/g;
+    for (let m = re.exec(src); m; m = re.exec(src)) {
+      marks.push({ id: m[1], start: m.index + m[0].length, at: m.index });
+    }
+    for (let i = 0; i < marks.length; i++) {
+      const next = marks[i + 1]?.at ?? src.length;
+      const chromeAt = src.indexOf("<Chrome ", marks[i].start);
+      const end = chromeAt !== -1 && chromeAt < next ? chromeAt : next;
+      out.push({ id: marks[i].id, body: src.slice(marks[i].start, end) });
+    }
+    return out;
+  };
+  const root = process.cwd();
+  const leakPath = join(root, ".data/dogfood/cycle2-glossier/Composition.dogfood.tsx");
+  if (existsSync(leakPath)) {
+    await check("CALIBRATION artifact MUST-FIRE: cycle-2 Glossier s2.copy leak detected, and ONLY it", () => {
+      const flagged = pieceBodies(readFileSync(leakPath, "utf8"))
+        .filter((p) => stripMetaText(p.body).stripped.length > 0)
+        .map((p) => p.id);
+      assert(flagged.length === 1 && flagged[0] === "s2.copy", `exactly the known leak fires, got ${JSON.stringify(flagged)}`);
+    });
+  }
+  const cleanArtifacts = [
+    ".data/dogfood/cycle1-liquiddeath/Composition.dogfood.tsx",
+    "src/generated/CAST_SPIKE_A8_KLARNA/Composition.tsx",
+    "src/generated/CAST_SPIKE_A7_KLARNA/Composition.tsx",
+  ].map((p) => join(root, p)).filter((p) => existsSync(p));
+  for (const p of cleanArtifacts) {
+    await check(`CALIBRATION artifact MUST-PASS: ${p.split("/").slice(-2).join("/")} — zero meta-text findings on every piece`, () => {
+      for (const piece of pieceBodies(readFileSync(p, "utf8"))) {
+        const r = stripMetaText(piece.body);
+        assert(r.stripped.length === 0, `${piece.id} false-fired: ${JSON.stringify(r.stripped[0] ?? "")}`);
+      }
+    });
+  }
+}
+
+// ─── Unowned-copy BINDING check (v11 — dogfood cycle 2 s4 class) ─────────────
+
+await check("unownedCopyValues (v11): coverage widened to eyebrow/caption/cta", () => {
+  const content = {
+    eyebrow: "THE INVITATION",
+    headline: "Come as you are.",
+    lede: "The world is open.",
+    caption: "Free standard shipping on orders $40+",
+    cta: { primary: "Shop the world of Glossier", secondary: "glossier.com" },
+  } as never;
+  const vals = unownedCopyValues(content, []);
+  for (const v of ["THE INVITATION", "Come as you are.", "Shop the world of Glossier", "glossier.com", "Free standard shipping on orders $40+"]) {
+    assert(vals.includes(v), `${v} hunted`);
+  }
+  assert(unownedCopyValues(content, ["cta", "eyebrow", "caption", "headline", "lede"]).length === 0, "owned fields are never hunted");
+});
+
+await check("rejectableUnownedCopyValues: only headline/lede/bullets/cta.primary may reject; isUrlLikeValue carve-out", () => {
+  const content = {
+    eyebrow: "THE RANGE",
+    headline: "Not one bottle. A world.",
+    cta: { primary: "Shop the world of Glossier", secondary: "glossier.com" },
+    caption: "Real products. Real textures.",
+  } as never;
+  const rej = rejectableUnownedCopyValues(content, []);
+  assert(rej.includes("Not one bottle. A world.") && rej.includes("Shop the world of Glossier"), "headline + cta.primary rejectable");
+  assert(!rej.includes("THE RANGE") && !rej.includes("Real products. Real textures."), "eyebrow/caption are strip-only");
+  assert(isUrlLikeValue("glossier.com") && isUrlLikeValue("https://linear.app/features"), "domains/urls detected");
+  assert(!isUrlLikeValue("Come as you are.") && !isRejectableUnownedCopy("glossier.com"), "a bare domain never rejects an element");
+});
+
+await check("stripUnownedCopy (v11): trailing-punct + case variants strip the cycle-2 s4 retype shapes", () => {
+  // The measured s4 hero: headline retyped WITHOUT its period (the period
+  // lived in a nested accent span) + the eyebrow retyped in a different case.
+  const heroBody = `<div>\n  <div>The Invitation</div>\n  <div>Come as you are<span style={{ color: ACCENT }}>.</span></div>\n  <span>Shop the world of Glossier</span>\n</div>`;
+  const r = stripUnownedCopy(heroBody, ["THE INVITATION", "Come as you are.", "Shop the world of Glossier"]);
+  assert(r.stripped.length === 3, `all three retypes stripped, got ${JSON.stringify(r.stripped)}`);
+  assert(!/The Invitation|Come as you are|Shop the world of Glossier/.test(r.code), `no retype survives: ${r.code}`);
+  assert(r.residual.length === 0, "clean strip leaves no residual");
+});
+
+await check("unownedBindingFields: content-present fields not owned by this element", () => {
+  const content = { headline: "H", lede: "L", cta: { primary: "P" }, meta: [{ label: "a", value: "b" }] } as never;
+  assert([...unownedBindingFields(content, ["headline", "lede"])].sort().join(",") === "cta,meta", "cta+meta unowned");
+  assert(unownedBindingFields(content, ["headline", "lede", "cta", "meta"]).length === 0, "owner binds freely");
+  assert(!unownedBindingFields(content, []).includes("bullets"), "fields absent from content are not hunted");
+});
+
+await check("stripUnownedBindings: exact child expressions strip (bare, helper-wrapped, indexed)", () => {
+  const body = `<div>\n  <h1>{c.headline}</h1>\n  <p>{lastWordAccent(c.lede, ACCENT)}</p>\n  <span>{c.cta.primary}</span>\n  <em>{c.bullets[0]}</em>\n  <b>ours to keep</b>\n</div>`;
+  const r = stripUnownedBindings(body, ["headline", "lede", "cta", "bullets"]);
+  assert(r.residual.length === 0, `all bindings strippable, residual: ${JSON.stringify(r.residual)}`);
+  assert(r.stripped.length === 4, `four fields stripped, got ${JSON.stringify(r.stripped)}`);
+  assert(!/c\.(headline|lede|cta|bullets)/.test(r.code), `no unowned binding survives: ${r.code}`);
+  assert(r.code.includes("ours to keep"), "unrelated text intact");
+});
+
+await check("stripUnownedBindings: attribute references are RESIDUAL (reject); template CHILD expressions strip", () => {
+  const body = `<div title={c.headline}><span>{\`— \${c.lede} —\`}</span></div>`;
+  const r = stripUnownedBindings(body, ["headline", "lede"]);
+  assert(r.residual.includes("headline"), "attribute binding is residual (rejects)");
+  assert(r.stripped.includes("lede") && !r.residual.includes("lede"), "a template literal in CHILD position is still a text child — stripped deterministically");
+  assert(!/c\.lede/.test(r.code) && /title=\{c\.headline\}/.test(r.code), "child strip applied; attribute left for the repair to remove");
+});
+
+await check("stripUnownedBindings: owned fields and c-free bodies untouched", () => {
+  const body = `<h1 data-content-path="headline">{c.headline}</h1>`;
+  const owned = stripUnownedBindings(body, []);
+  assert(owned.code === body && owned.stripped.length === 0 && owned.residual.length === 0, "owner untouched");
+  const free = stripUnownedBindings(`<div><span>static</span></div>`, ["headline"]);
+  assert(free.code.includes("static") && free.residual.length === 0, "no bindings → no-op");
+});
+
+await check("castBuild end-to-end: hero binding theft rejects in-round; repair that drops it ships clean", async () => {
+  // Round 1: s0.hero binds the copy element's headline in an ATTRIBUTE
+  // (non-strippable → reject). Round 2 (repair): same rich hero without it.
+  const thief = RICH_HERO_DEFAULT.replace("<div style={{ display: \"flex\", gap: 8 }}>", "<div aria-label={c.headline} style={{ display: \"flex\", gap: 8 }}>");
+  const f = makeFakeCaller((id, nth) => (id === "s0.hero" ? (nth === 1 ? thief : RICH_HERO_DEFAULT) : cannedFor(id, nth)));
+  const r = await castBuild(input, { caller: f.caller as never, concurrency: 4 });
+  const heroCalls = f.log.filter((l) => l.id === "s0.hero");
+  assert(heroCalls.length === 2, `binding theft cost exactly ONE in-round repair, got ${heroCalls.length}`);
+  assert(/binds scene copy it does not own/.test(heroCalls[1].user), "the repair prompt names the theft");
+  assert(/c\.headline/.test(heroCalls[1].user), "the stolen field is named");
+  assert(r.elementOutcomes.some((o) => o.pieceId === "s0.hero" && o.repaired && !o.failed), "repair recovered the hero");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

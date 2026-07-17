@@ -170,6 +170,13 @@ await check("system: ONE worked example, branded ILLUSTRATIVE, copying = validat
   assert((system.match(/WORKED EXAMPLE/g) ?? []).length === 1, "exactly ONE example (more = more leakage surface)");
 });
 
+await check("system: the v11 full-bleed vertical-fill clause is STATED (cycle-2 s4 barbell class)", () => {
+  assert(system.includes("FULL-BLEED VERTICAL FILL"), "clause present");
+  assert(system.includes("UPPER third") && system.includes("LOWER third"), "upper+lower-third inventory demand");
+  assert(/barbell/.test(system), "the barbell consequence is named");
+  assert(/fails a blocking gate/.test(system), "the gate consequence is named (models comply better with a stated sensor)");
+});
+
 await check("system: the bookend-hero density contract + interior/ownsCopy ownership rule are STATED (retry audit classes 1+9)", () => {
   assert(system.includes("AT LEAST 4 of a hero's items must CARRY TEXT"), "hero text-bearing floor stated");
   assert(system.includes("NESTED structure"), "nested-structure demand stated");
