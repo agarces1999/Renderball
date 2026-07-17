@@ -946,6 +946,9 @@ async function runCastPreviewBuild(args: {
       bump("skeleton", g.skeletonBars.filter((s) => s.blocking).length);
       bump("icon-font-strip", g.iconFontStrips.length);
       bump("orphaned-fragment", g.orphanedFragments.length);
+      bump("cross-piece-stat-dup", g.crossPieceStatDups.length);
+      bump("brand-mark-defect", g.brandMarkDefects.length);
+      bump("accented-glyph-gap", g.accentedGlyphGaps.length);
       for (const v of g.vision) bump("vision", v.severe.length);
     };
     tallyRound(loop.gateRounds[0], fires);

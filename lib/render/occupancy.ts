@@ -116,6 +116,11 @@ export const OCCUPANCY_ANCHOR_MIN_INK = 0.03;
 
 /** Card-interior furnish floor (advisory only). */
 export const CARD_INTERIOR_FLOOR = 0.4;
+/** Below this a SOLID card-sized panel reads as ORPHANED (essentially empty) —
+ *  the cycle-9 Tailscale s2 "floating white card" the under-furnished arm skipped
+ *  for having no children to measure. Tighter than the furnish floor so a
+ *  genuinely-furnished-but-sparse card stays "under-furnished", not "orphaned". */
+export const ORPHAN_INTERIOR_FLOOR = 0.02;
 /** A "card" is an opaque panel at least this big… */
 export const CARD_MIN_AREA_PX = 60_000;
 /** …and at most this fraction of the canvas (bigger = a stage, not a card). */
@@ -153,6 +158,9 @@ export interface CardOccupancyAdvisory {
   scene: number;
   pieceId: string;
   blocking: false;
+  /** True when the panel is SOLID and essentially empty (an orphaned card), vs
+   *  merely under-furnished (cycle-10 P3, light/minimal register). */
+  orphaned: boolean;
   card: { x: number; y: number; w: number; h: number };
   /** Interior painted+text coverage of the card, 0..1 (visible rects). */
   coverage: number;
@@ -318,6 +326,21 @@ export const assessOccupancy = async (
       }
       return out;
     };
+    // True when a recorded ancestor within the piece paints an opaque/gradient
+    // surface — the element is nested content INSIDE a card, not a standalone
+    // floating card (guards the orphaned-empty arm from flagging a large but
+    // childless content leaf that sits inside a furnished panel).
+    const hasPaintedAncestor = (idx: number): boolean => {
+      const seen = new Set<number>();
+      let p = m.elements[idx]?.parentIx;
+      while (typeof p === "number" && p >= 0 && !seen.has(p)) {
+        seen.add(p);
+        const a = m.elements[p];
+        if (a && (cssAlpha(a.bg) >= 0.5 || a.hasBgImage)) return true;
+        p = a?.parentIx;
+      }
+      return false;
+    };
     let cardCount = 0;
     for (const [i, e] of m.elements.entries()) {
       if (cardCount >= MAX_CARD_ADVISORIES_PER_SCENE) break;
@@ -326,33 +349,48 @@ export const assessOccupancy = async (
       const card = visibleRect(e);
       const area = card.w * card.h;
       if (area < CARD_MIN_AREA_PX || area > CARD_MAX_CANVAS_FRAC * canvasArea) continue;
-      if (cssAlpha(e.bg) < 0.5 && !e.hasBgImage) continue;
+      const solidBg = cssAlpha(e.bg) >= 0.5;
+      if (!solidBg && !e.hasBgImage) continue;
       const kids = descendantsOf(i);
-      if (kids.length === 0) continue; // an empty slab is skeleton/washout territory
       const interior = kids
         .map((k) => m.elements[k])
         .filter((k) => isPaintedElement(k))
         .map((k) => clampRect(visibleRect(k), card))
         .filter((r) => r.w > 0 && r.h > 0);
-      const coverage = rectUnionArea(interior) / area;
+      const coverage = kids.length === 0 ? 0 : rectUnionArea(interior) / area;
       if (coverage >= CARD_INTERIOR_FLOOR) continue;
+      // cycle-10 P3: a SOLID, non-nested card-sized panel with ~no interior
+      // content is an ORPHANED card (the light/minimal "floating white card" the
+      // old arm skipped for having no children). A gradient-only empty slab, or a
+      // childless leaf nested inside a furnished card, stays skeleton/content
+      // territory (never orphaned).
+      const orphaned = solidBg && coverage < ORPHAN_INTERIOR_FLOOR && !hasPaintedAncestor(i);
+      if (kids.length === 0 && !orphaned) continue;
       cardCount += 1;
       result.cardAdvisories.push({
         kind: "card-interior-occupancy",
         scene: m.scene,
         pieceId: e.piece,
         blocking: false,
+        orphaned,
         card,
         coverage,
-        detail:
-          `scene ${m.scene}: a ${card.w}×${card.h} card in piece "${e.piece}" is UNDER-FURNISHED — interior ` +
-          `painted+text coverage ${pct(coverage)} (furnish floor ${pct(CARD_INTERIOR_FLOOR)}). ` +
-          `Most of the card reads as dead panel.`,
-        advisory:
-          `ADVISORY (non-blocking) — a ${card.w}×${card.h} card interior in this piece is ${pct(coverage)} furnished ` +
-          `(target comfortably >${pct(CARD_INTERIOR_FLOOR)}). While regenerating, ALSO fill the card's empty ` +
-          `region with real interior content in the same register (rows, meta lines, a chart strip, concrete ` +
-          `values) — never ship a card that is mostly empty panel.`,
+        detail: orphaned
+          ? `scene ${m.scene}: a ${card.w}×${card.h} SOLID card in piece "${e.piece}" is ORPHANED — interior ` +
+            `coverage ${pct(coverage)} (essentially empty). A solid panel carrying nothing floats as a rendering ` +
+            `defect, not staged negative space (the light/minimal "empty white card" class).`
+          : `scene ${m.scene}: a ${card.w}×${card.h} card in piece "${e.piece}" is UNDER-FURNISHED — interior ` +
+            `painted+text coverage ${pct(coverage)} (furnish floor ${pct(CARD_INTERIOR_FLOOR)}). ` +
+            `Most of the card reads as dead panel.`,
+        advisory: orphaned
+          ? `ADVISORY (non-blocking) — a ${card.w}×${card.h} SOLID panel in this piece is essentially EMPTY ` +
+            `(${pct(coverage)} furnished). FURNISH it with real content in the register's world (rows, values, a ` +
+            `mock, a label stack) OR REMOVE it — never ship an orphaned empty card, especially a near-canvas card ` +
+            `on a light/minimal canvas where it reads as an unfinished slab.`
+          : `ADVISORY (non-blocking) — a ${card.w}×${card.h} card interior in this piece is ${pct(coverage)} furnished ` +
+            `(target comfortably >${pct(CARD_INTERIOR_FLOOR)}). While regenerating, ALSO fill the card's empty ` +
+            `region with real interior content in the same register (rows, meta lines, a chart strip, concrete ` +
+            `values) — never ship a card that is mostly empty panel.`,
       });
     }
   }

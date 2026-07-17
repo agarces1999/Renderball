@@ -72,8 +72,23 @@ export const fontsFromCrawl = (be: AgentBrandExtract | undefined): Theme["fonts"
   const display = roleOrText(roles.display) ?? textFam[0]?.family;
   const body = roleOrText(roles.body) ?? roleOrText(roles.display) ?? textFam[1]?.family ?? textFam[0]?.family;
   const mono = roleOrText(roles.mono);
+  // Dedupe families case-insensitively, keeping the first occurrence — a crawl
+  // whose body role IS the fallback lead (e.g. body "Inter" + "Inter, system-ui,
+  // sans-serif" fallback) otherwise emits "Inter, Inter, system-ui, sans-serif"
+  // (cycle-9 P4). Quoting is preserved via quoteFamily on re-emit.
+  const dedupeStack = (value: string): string => {
+    const seen = new Set<string>();
+    const kept: string[] = [];
+    for (const f of value.split(",").map((s) => s.trim().replace(/^['"]|['"]$/g, "").trim()).filter(Boolean)) {
+      const key = f.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      kept.push(f);
+    }
+    return kept.map((f) => quoteFamily(f)).join(", ");
+  };
   const stack = (primary: string | undefined, fallback: string): string =>
-    primary ? `${quoteFamily(primary)}, ${fallback}` : fallback;
+    dedupeStack(primary ? `${quoteFamily(primary)}, ${fallback}` : fallback);
   const faces = fam
     .filter((f) => f.family && f.src && !isIconFont(f.family))
     .map((f) => {

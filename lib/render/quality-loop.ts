@@ -92,8 +92,15 @@ import {
   findIconFontTextStacks,
   stripIconFontsFromTextStacks,
   findOrphanedFragments,
+  findCrossPieceStatDup,
+  findBrandMarkDefects,
+  assessAccentedGlyphCoverage,
+  ensureLatin1Fallback,
   type IconFontStackFinding,
   type OrphanedFragmentFinding,
+  type StatDupFinding,
+  type BrandMarkFinding,
+  type AccentedGlyphFinding,
 } from "./text-integrity";
 import {
   assessAccentFill,
@@ -219,6 +226,14 @@ export interface IconFontStripEvent {
   family: string;
 }
 
+/** cycle-10 P2: a text stack with no accented-glyph coverage, given a Latin-1
+ *  fallback deterministically (the accented analogue of the icon-font strip). */
+export interface AccentFallbackEvent {
+  round: number;
+  stack: string;
+  added: string;
+}
+
 /** v13 (#5): bind-in-place ledger. */
 export interface BindCopyEvent {
   round: number;
@@ -277,6 +292,12 @@ export interface GateRoundReport {
   iconFontStrips: IconFontStripEvent[];
   /** cycle-9 P1: measured orphaned copy fragments (blocking). */
   orphanedFragments: OrphanedFragmentFinding[];
+  /** cycle-10 P1: cross-piece duplicate stat + numeric-format drift (blocking). */
+  crossPieceStatDups: StatDupFinding[];
+  /** cycle-10 P1: garbled / duplicate brand marks off-chrome (blocking). */
+  brandMarkDefects: BrandMarkFinding[];
+  /** cycle-10 P2: text stacks lacking accented-glyph coverage (auto-repaired). */
+  accentedGlyphGaps: AccentedGlyphFinding[];
   vision: SceneVisionVerdict[];
   targets: { pieceId: string; feedback: string[] }[];
 }
@@ -305,6 +326,9 @@ export interface Round0Report {
   strayFragments: number;
   iconFontStrips: number;
   orphanedFragments: number;
+  crossPieceStatDups: number;
+  brandMarkDefects: number;
+  accentedGlyphGaps: number;
   structural: number;
   rtBlocking: number;
   visionSevereScenes: number[];
@@ -419,6 +443,7 @@ export interface QualityLoopResult {
     imgSwapEvents: ImgSwapEvent[];
     strayFragmentEvents: StrayFragmentEvent[];
     iconFontStripEvents: IconFontStripEvent[];
+    accentFallbackEvents: AccentFallbackEvent[];
     bindCopyEvents: BindCopyEvent[];
     noProgressEvents: NoProgressEvent[];
     cacheBustEvents: CacheBustEvent[];
@@ -757,6 +782,7 @@ export async function runQualityLoop(
   const imgSwapEvents: ImgSwapEvent[] = [];
   const strayFragmentEvents: StrayFragmentEvent[] = [];
   const iconFontStripEvents: IconFontStripEvent[] = [];
+  const accentFallbackEvents: AccentFallbackEvent[] = [];
   const bindCopyEvents: BindCopyEvent[] = [];
   const edgeCropEvents: EdgeCropEvent[] = [];
   const regenHistory = new Map<string, { cls: FailureClass; value: number; aux: number; escalated: boolean }>();
@@ -940,6 +966,50 @@ export async function runQualityLoop(
       }
     }
 
+    // cycle-10 P2: SPANISH / ACCENTED-GLYPH coverage. When the copy carries
+    // á/é/í/ó/ú/ñ/ü/¿/¡ and a TEXT stack has no family that can render a
+    // diacritic, the glyph silently drops. DETERMINISTICALLY append a Latin-1-safe
+    // generic so per-glyph fallback always covers it (the accented analogue of the
+    // icon-font strip). The finding fires (telemetry) even when auto-repaired.
+    const accentCopyText = JSON.stringify((script.scenes ?? []).map((s) => s.content ?? {}));
+    const accentedGlyphGaps = assessAccentedGlyphCoverage({
+      code: finalCode,
+      copyText: accentCopyText,
+      fontFaceCss: theme.fonts.fontFaceCss,
+    });
+    if (accentedGlyphGaps.length > 0) {
+      const fix = ensureLatin1Fallback(finalCode);
+      if (fix.appended.length > 0) {
+        finalCode = fix.code;
+        for (const a of fix.appended) accentFallbackEvents.push({ round, stack: a.stack, added: a.added });
+        warn(
+          `  [accented-glyph] ${accentedGlyphGaps.length} text stack(s) lacked accented coverage [${accentedGlyphGaps.map((g) => `${g.stack}:${g.missingChars.join("")}`).join(", ")}] — appended a Latin-1-safe generic (deterministic, zero tokens)`,
+        );
+      }
+    }
+
+    // cycle-10 P1 (arm 3): CROSS-PIECE STAT DEDUP + numeric-format drift. The
+    // cycle-9 s4 class no gate caught — a hero counter ("30000") + a copy binding
+    // ("30,000") restating the SAME figure across two pieces (both invisible to
+    // the measured text layer: a ::after counter and a bound value). Read straight
+    // off the assembled source, resolving bindings against the script content.
+    const crossPieceStatDups = findCrossPieceStatDup(finalCode, (script.scenes ?? []) as { content?: Record<string, unknown> }[]);
+    if (crossPieceStatDups.length > 0) {
+      log(
+        `  cross-piece-stat-dup: ${crossPieceStatDups.length} [${crossPieceStatDups.map((f) => `s${f.scene}:"${f.forms.join("/")}"×${f.pieces.length}${f.formatDrift ? "(drift)" : ""}`).join(", ")}]`,
+      );
+    }
+
+    // cycle-10 P1 (arm 3b): GARBLED / DUPLICATE BRAND MARK. >1 brand lockup across
+    // a scene's non-chrome pieces (the s4 "IY INELLIN" garble + a correct lockup),
+    // or a text-node wordmark scrambled vs the known brand name.
+    const brandMarkDefects = findBrandMarkDefects(finalCode, BRAND);
+    if (brandMarkDefects.length > 0) {
+      log(
+        `  brand-mark: ${brandMarkDefects.length} [${brandMarkDefects.map((f) => `s${f.scene}:${f.kind}${f.garbledText ? ` "${f.garbledText}"` : ` ×${f.pieces.length}`}`).join(", ")}]`,
+      );
+    }
+
     if (!genDirReady) {
       await hooks.ensureGenDir();
       genDirReady = true;
@@ -1060,6 +1130,13 @@ export async function runQualityLoop(
     const structural = runStructuralGates(finalCode, script);
     for (const e of strayThisRound.filter((e) => e.action === "none")) {
       structural.push({ scene: e.scene, key: "stray_fragment", detail: e.detail });
+    }
+    // cycle-10 P1: cross-piece stat dedup + brand-mark defects (source-based).
+    for (const f of crossPieceStatDups) {
+      structural.push({ scene: f.scene, key: f.duplicated ? "cross_piece_stat_dup" : "stat_format_drift", detail: f.detail });
+    }
+    for (const f of brandMarkDefects) {
+      structural.push({ scene: f.scene, key: f.kind === "garbled-brand-mark" ? "garbled_brand_mark" : "duplicate_brand_mark", detail: f.detail });
     }
     // v11 (#5) logo-glyph count.
     for (const [pieceId, body] of pieceCache) {
@@ -1299,6 +1376,25 @@ export async function runQualityLoop(
       if (!validPieceIds.has(id)) continue;
       targets.set(id, [...(targets.get(id) ?? []), `[text-integrity/orphaned-fragment] ${f.detail}\n${f.repairInstruction}`]);
     }
+    // cycle-10 P1 (arm 3): route the REDUNDANT piece of each cross-piece stat dup
+    // (and the drifting piece of a format-drift) to regen. Falls back copy→hero.
+    for (const f of crossPieceStatDups) {
+      const routeTo = [...(f.redundantPieces.length ? f.redundantPieces : [f.primaryPiece])];
+      for (let id of routeTo) {
+        if (!validPieceIds.has(id)) id = `s${f.scene}.copy`;
+        if (!validPieceIds.has(id)) id = `s${f.scene}.hero`;
+        if (!validPieceIds.has(id)) continue;
+        targets.set(id, [...(targets.get(id) ?? []), `[text-integrity/cross-piece-stat-dup] ${f.detail}\n${f.repairInstruction}`]);
+      }
+    }
+    // cycle-10 P1 (arm 3b): route the redundant/garbled brand mark to regen.
+    for (const f of brandMarkDefects) {
+      let id = f.pieceId;
+      if (!validPieceIds.has(id)) id = `s${f.scene}.copy`;
+      if (!validPieceIds.has(id)) id = `s${f.scene}.hero`;
+      if (!validPieceIds.has(id)) continue;
+      targets.set(id, [...(targets.get(id) ?? []), `[text-integrity/${f.kind}] ${f.detail}\n${f.repairInstruction}`]);
+    }
 
     const gateRound: GateRoundReport = {
       round,
@@ -1333,6 +1429,9 @@ export async function runQualityLoop(
       strayFragments: strayFragmentEvents.filter((e) => e.round === round),
       iconFontStrips: iconFontStripEvents.filter((e) => e.round === round),
       orphanedFragments,
+      crossPieceStatDups,
+      brandMarkDefects,
+      accentedGlyphGaps,
       vision,
       targets: [...targets.entries()].map(([pieceId, feedback]) => ({ pieceId, feedback })),
     };
@@ -1363,6 +1462,9 @@ export async function runQualityLoop(
         strayFragments: strayFragmentEvents.filter((e) => e.round === 0).length,
         iconFontStrips: iconFontStripEvents.filter((e) => e.round === 0).length,
         orphanedFragments: orphanedFragments.length,
+        crossPieceStatDups: crossPieceStatDups.length,
+        brandMarkDefects: brandMarkDefects.length,
+        accentedGlyphGaps: accentedGlyphGaps.length,
         structural: structural.length,
         rtBlocking: rt.blocking.length,
         visionSevereScenes: vision.filter((v) => v.severe.length > 0).map((v) => v.scene),
@@ -1536,7 +1638,7 @@ export async function runQualityLoop(
     finalContrast,
     finalAccentFill,
     pieceCache,
-    events: { edgeCropEvents, washoutLiftEvents, imgSwapEvents, strayFragmentEvents, iconFontStripEvents, bindCopyEvents, noProgressEvents, cacheBustEvents },
+    events: { edgeCropEvents, washoutLiftEvents, imgSwapEvents, strayFragmentEvents, iconFontStripEvents, accentFallbackEvents, bindCopyEvents, noProgressEvents, cacheBustEvents },
     finalize,
     ...(castRoundError ? { castRoundError } : {}),
   };

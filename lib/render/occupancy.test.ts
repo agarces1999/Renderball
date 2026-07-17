@@ -154,6 +154,33 @@ await check("a WELL-FURNISHED card interior does not advise", async () => {
   assert(r.cardAdvisories.length === 0, `well-furnished card, got ${JSON.stringify(r.cardAdvisories)}`);
 });
 
+// cycle-10 P3: the light/minimal "orphaned empty card" — a SOLID card-sized panel
+// with no interior content that the under-furnished arm used to skip.
+await check("ORPHANED-CARD (P3): a SOLID card-sized panel with NO children advises orphaned=true", async () => {
+  const card = el({ piece: "s2.copy", pieceKind: "text", bg: "rgb(255,255,255)", x: 900, y: 400, w: 320, h: 240 });
+  const m: SceneMeasurement = { scene: 2, width: 1920, height: 1080, elements: [card], screenshotPath: undefined };
+  const r = await assessOccupancy([m], ["split"]);
+  assert(r.cardAdvisories.length === 1, `one advisory for the empty card, got ${JSON.stringify(r.cardAdvisories)}`);
+  assert(r.cardAdvisories[0].orphaned === true, "flagged orphaned");
+  assert(r.cardAdvisories[0].blocking === false, "orphaned advisory never blocks");
+  assert(r.cardAdvisories[0].coverage === 0, `empty → 0 coverage, got ${r.cardAdvisories[0].coverage}`);
+});
+
+await check("ORPHANED-CARD (P3): a GRADIENT-only empty slab is NOT flagged (ambient territory)", async () => {
+  const blob = el({ piece: "s2.atmosphere", pieceKind: "diegetic", bg: "rgba(0,0,0,0)", hasBgImage: true, x: 900, y: 400, w: 320, h: 240 });
+  const m: SceneMeasurement = { scene: 2, width: 1920, height: 1080, elements: [blob], screenshotPath: undefined };
+  const r = await assessOccupancy([m], ["split"]);
+  assert(r.cardAdvisories.length === 0, `gradient-only empty slab skipped, got ${JSON.stringify(r.cardAdvisories)}`);
+});
+
+await check("ORPHANED-CARD (P3): a merely under-furnished card stays orphaned=false", async () => {
+  const card = el({ piece: "s3.hero", pieceKind: "diegetic", bg: "rgb(30,30,40)", x: 100, y: 100, w: 300, h: 300 });
+  const kid = el({ piece: "s3.hero", pieceKind: "diegetic", bg: "rgb(200,200,200)", x: 110, y: 110, w: 60, h: 40, parentIx: 0 });
+  const m: SceneMeasurement = { scene: 3, width: 1920, height: 1080, elements: [card, kid], screenshotPath: undefined };
+  const r = await assessOccupancy([m], ["split"]);
+  assert(r.cardAdvisories.length === 1 && r.cardAdvisories[0].orphaned === false, `under-furnished (2.7%) not orphaned, got ${JSON.stringify(r.cardAdvisories)}`);
+});
+
 await check("measure-error scenes and empty registers are skipped cleanly", async () => {
   const err: SceneMeasurement = { scene: 0, width: W, height: H, elements: [], error: "boom" };
   const r = await assessOccupancy([err], ["quote"]);
