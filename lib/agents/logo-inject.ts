@@ -17,13 +17,22 @@ export const injectLogoSrc = (
   code: string,
   logoSrc: string | undefined,
 ): string => {
-  if (!logoSrc) return code;
   // Drop anything the agent authored for LOGO_SRC so our injected const is the
   // single source of truth: a `declare const LOGO_SRC` type stub, a real
   // `const LOGO_SRC = "...";` (may hold the sentinel or a corrupted value), and
   // collapse any bare sentinel literal. The agent sometimes also writes a
   // defensive `RESOLVED_LOGO = typeof LOGO_SRC !== "undefined" ? LOGO_SRC : "<inlined>"`
   // — that's left intact and simply resolves to our real LOGO_SRC at runtime.
+  //
+  // NO-LOGO brands (v13 hotfix, dogfood cycle 5 — Patagonia): a crawl with no
+  // discoverable logo (logo_hd/apple_touch_icon/favicon all absent) used to
+  // EARLY-RETURN here, leaving the emitted `logoSrc={LOGO_SRC}` chrome binding
+  // dangling — a ReferenceError at render time that killed EVERY scene (the
+  // chrome mounts on all of them) and burned the full retry ladder on a defect
+  // no piece regen could fix. The const is now ALWAYS defined when referenced:
+  // `undefined` when there is no logo, which lands on BrandChrome's
+  // `{logoSrc ? <img> : <text-wordmark/>}` fallback — the same posture as the
+  // v12 broken-image swap (absent art → deterministic text wordmark).
   const out = code
     .replace(/^[ \t]*declare\s+const\s+LOGO_SRC\b[^\n]*\r?\n/gm, "")
     .replace(
@@ -31,9 +40,9 @@ export const injectLogoSrc = (
       "",
     )
     .split(LOGO_SENTINEL)
-    .join(logoSrc);
+    .join(logoSrc ?? "");
   if (!/\bLOGO_SRC\b/.test(out)) return out; // agent didn't reference it
-  const decl = `const LOGO_SRC = ${JSON.stringify(logoSrc)};\n`;
+  const decl = `const LOGO_SRC = ${logoSrc ? JSON.stringify(logoSrc) : "undefined"};\n`;
 
   // Inject AFTER the import block. Imports can be MULTI-LINE
   // (`import {\n  A,\n} from "x";`). The old anchor — every line that *starts*

@@ -126,10 +126,34 @@ await check("no imports + references LOGO_SRC → const at top, compiles", async
   assert((await compileErr(out)) === null, "should compile");
 });
 
-// ── undefined logoSrc → no-op ─────────────────────────────────────────────────
-await check("undefined logoSrc returns the code unchanged", () => {
-  const code = "export const S = () => LOGO_SRC;";
-  assert(injectLogoSrc(code, undefined) === code, "should be a no-op");
+// ── undefined logoSrc → const STILL defined (v13: the Patagonia no-logo class)
+// The old no-op contract left `logoSrc={LOGO_SRC}` dangling on logo-less
+// brands — a ReferenceError that killed every scene at render (the chrome
+// mounts on all of them). Now: referenced → `const LOGO_SRC = undefined;`
+// (BrandChrome's text-wordmark fallback engages); unreferenced → untouched.
+await check("undefined logoSrc + referenced → const LOGO_SRC = undefined injected, compiles", async () => {
+  const code = 'import { AbsoluteFill } from "remotion";\nexport const S = () => <AbsoluteFill>{LOGO_SRC}</AbsoluteFill>;';
+  const out = injectLogoSrc(code, undefined);
+  assert(out.includes("const LOGO_SRC = undefined;"), `const must be defined, got: ${out}`);
+  assert((await compileErr(out)) === null, "should compile");
+});
+
+await check("undefined logoSrc + agent-authored stale const → stripped and re-defined as undefined", () => {
+  const code = 'import { Img } from "./Img";\nconst LOGO_SRC = "https://stale.example/logo.png";\nexport const S = () => <Img src={LOGO_SRC} />;';
+  const out = injectLogoSrc(code, undefined);
+  assert(!out.includes("stale.example"), "hallucinated logo URL must be stripped on no-logo brands");
+  assert(out.includes("const LOGO_SRC = undefined;"), "const re-defined as undefined");
+});
+
+await check("undefined logoSrc + sentinel → sentinel collapses to empty (falsy → wordmark fallback)", () => {
+  const code = `import { Img } from "./Img";\nexport const S = () => <Img src={"${LOGO_SENTINEL}"} />;`;
+  const out = injectLogoSrc(code, undefined);
+  assert(!out.includes(LOGO_SENTINEL), "sentinel must be gone");
+});
+
+await check("undefined logoSrc + no reference → code returned unchanged", () => {
+  const code = 'import { AbsoluteFill } from "remotion";\nexport const S = () => <AbsoluteFill />;';
+  assert(injectLogoSrc(code, undefined) === code, "unreferenced no-logo code untouched");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);
