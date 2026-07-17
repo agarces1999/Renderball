@@ -14,6 +14,7 @@
  */
 import {
   composeSceneLayout,
+  validateScenePlan,
   CANVAS,
   SPLIT_HERO_MIN_W_FRAC,
   SPLIT_HERO_VCENTER_FRAC,
@@ -286,6 +287,77 @@ check("accent is declared, never default: plain copy is ink-only; stat/quote cop
   const quote = composeSceneLayout({ register: "quote", content: FULL_CONTENT }, "16:9");
   assert(byId(quote, "copy")!.paletteRoles.includes("accent"), "quote emphasis may take accent");
   assert(byId(centered, "chrome")!.paletteRoles.join() === "ink", "chrome is ink-only");
+});
+
+// ── Frame-authoring: consuming head-authored bounds ─────────────────────────
+// A composition placing hero right-of-center and copy left, disjoint.
+const headComposition = {
+  atmosphere: "cool wash",
+  elements: [
+    { role: "hero", subject: "dashboard", focalRank: 1, bounds: { x: 900, y: 180, w: 720, h: 700 }, interior: [] },
+    { role: "copy", subject: "stack", focalRank: 2, bounds: { x: 140, y: 320, w: 600, h: 440 }, ownsCopy: ["headline"], interior: [] },
+    { role: "atmosphere", subject: "field", interior: [] },
+  ],
+} as unknown as import("../../src/schema").SceneComposition;
+
+check("head-bounds: composeSceneLayout mounts hero + copy at the HEAD's authored bounds", () => {
+  const plan = composeSceneLayout({ register: "split", content: FULL_CONTENT, composition: headComposition }, "16:9");
+  const hero = byId(plan, "hero")!;
+  const copy = byId(plan, "copy")!;
+  assert(hero.bounds.x === 900 && hero.bounds.w === 720, `hero at head bounds, got ${JSON.stringify(hero.bounds)}`);
+  assert(copy.bounds.x === 140 && copy.bounds.w === 600, `copy at head bounds, got ${JSON.stringify(copy.bounds)}`);
+});
+
+check("head-bounds: an un-composed scene still falls back to the deterministic table (byte-identical to before)", () => {
+  const withComp = composeSceneLayout({ register: "split", content: FULL_CONTENT, composition: headComposition }, "16:9");
+  const withoutComp = composeSceneLayout({ register: "split", content: FULL_CONTENT }, "16:9");
+  // The table hero differs from the head hero → the consume path is live.
+  assert(byId(withComp, "hero")!.bounds.x !== byId(withoutComp, "hero")!.bounds.x, "head bounds override the table");
+});
+
+check("head-bounds: off-canvas head bounds are CLAMPED into the frame (never crop off-edge)", () => {
+  const escaping = {
+    atmosphere: "wash",
+    elements: [
+      { role: "hero", subject: "d", focalRank: 1, bounds: { x: 1700, y: 900, w: 600, h: 600 }, interior: [] },
+      { role: "copy", subject: "s", focalRank: 2, bounds: { x: 100, y: 200, w: 500, h: 400 }, ownsCopy: ["headline"], interior: [] },
+      { role: "atmosphere", subject: "f", interior: [] },
+    ],
+  } as unknown as import("../../src/schema").SceneComposition;
+  const plan = composeSceneLayout({ register: "split", content: FULL_CONTENT, composition: escaping }, "16:9");
+  const hero = byId(plan, "hero")!;
+  assert(hero.bounds.x + hero.bounds.w <= CANVAS["16:9"].w && hero.bounds.y + hero.bounds.h <= CANVAS["16:9"].h, `clamped into canvas, got ${JSON.stringify(hero.bounds)}`);
+});
+
+check("head-bounds: colliding hero+copy fall BACK to the disjoint table (never ship interleaved content)", () => {
+  const colliding = {
+    atmosphere: "wash",
+    elements: [
+      { role: "hero", subject: "d", focalRank: 1, bounds: { x: 100, y: 200, w: 900, h: 500 }, interior: [] },
+      { role: "copy", subject: "s", focalRank: 2, bounds: { x: 200, y: 250, w: 700, h: 400 }, ownsCopy: ["headline"], interior: [] },
+      { role: "atmosphere", subject: "f", interior: [] },
+    ],
+  } as unknown as import("../../src/schema").SceneComposition;
+  const plan = composeSceneLayout({ register: "centered", content: FULL_CONTENT, composition: colliding }, "16:9");
+  const hero = byId(plan, "hero")!;
+  const copy = byId(plan, "copy")!;
+  assert(!overlaps(hero, copy), "hero and copy must be disjoint after the collision fallback");
+});
+
+check("validateScenePlan: a clean head-bounds plan yields no violations", () => {
+  const plan = composeSceneLayout({ register: "split", content: FULL_CONTENT, composition: headComposition }, "16:9");
+  const v = validateScenePlan(plan, "16:9", { composition: headComposition, content: FULL_CONTENT });
+  assert(v.length === 0, `expected clean, got ${JSON.stringify(v)}`);
+});
+
+check("validateScenePlan: an undeclared content overlap is reported as a repair request", () => {
+  const plan = composeSceneLayout({ register: "centered", content: FULL_CONTENT }, "16:9");
+  // Force an overlap by hand (mutate the copy over the hero) and validate.
+  const copy = byId(plan, "copy")!;
+  const hero = byId(plan, "hero")!;
+  copy.bounds = { ...hero.bounds, z: copy.bounds.z };
+  const v = validateScenePlan(plan, "16:9");
+  assert(v.some((x) => x.kind === "disjointness"), `expected a disjointness violation, got ${JSON.stringify(v)}`);
 });
 
 for (const { name, fn } of checks) {

@@ -609,6 +609,8 @@ const FIELD_SCOPED_ERROR_RX: RegExp[] = [
   /^Scene \d+: names "/,
   /^Scenes [\d, ]+ share the same atmosphere phrase/,
   /^Scenes \d+-\d+ all use register /, // v9: archetype variety
+  /^Scene \d+ headline names the brand/, // frame-authoring: cold-open
+  /^Scene \d+ (?:headline|lede) uses the banned cliché/, // frame-authoring: anti-cliché
   /^These numeric claims are NOT grounded/,
   /^These funding-stage labels aren't stated/,
   /^Type-only scenes /,
@@ -627,7 +629,7 @@ const processScriptObject = (parsed: unknown, brief: AgentBrief, briefId: string
   const withAssets = mergePreallocatedAssets(withIdentity, brief);
   const normalized = backfillSceneRegisters(normalizeScriptContent(withAssets));
   const fail = (error: string): ScriptCheck => ({ ok: false, error, fieldScoped: isFieldScoped(error), normalized });
-  const validation = validateScript(normalized);
+  const validation = validateScript(normalized, { brandName: brief.brand_extract?.title });
   if (!validation.ok) return fail(validation.error);
   const script = validation.script as unknown as LooseScript;
 
@@ -1487,8 +1489,13 @@ const main = async (): Promise<void> => {
     // v10: blueprint validation = the composition contract + the narrow
     // ungrounded mock-value deny-list (EST-dates / %-OFF vs grounding sources).
     const groundingText = claimGroundingSources(agentBrief);
+    // Frame-authoring: the head composes pixel bounds on THIS canvas, so the
+    // composition validator (and the head prompt below) must know the aspect.
+    const aspect = (["16:9", "9:16", "1:1"].includes(script.config?.aspect_ratio ?? "")
+      ? script.config!.aspect_ratio
+      : "16:9") as "16:9" | "9:16" | "1:1";
     const validateComposition = (scenes: Scene[]): string[] => [
-      ...checkSceneComposition(scenes),
+      ...checkSceneComposition(scenes, { aspect }),
       ...findUngroundedMockValues(scenes, groundingText),
     ];
     let headAttemptN = 0;
@@ -1510,6 +1517,7 @@ const main = async (): Promise<void> => {
           script: script as unknown as Script,
           caller: headCaller,
           validate: validateComposition,
+          aspect,
           brandName: BRAND,
           paletteHint: `canvas ${canvasPlan.background} (${canvasPlan.mode}), signature accent ${signature}, brand palette: ${(be.palette ?? []).join(", ")}`,
           designNotes: `Design system consts available downstream: PALETTE (canvas/ink/accent/muted/softNeutral/cardFill/white), shared keyframes (glowBreathe, drift1-3, drawWidth, fadeRise, scaleIn). Fonts locked: display ${crawlFonts.display}, body ${crawlFonts.body}.`,
@@ -1576,9 +1584,8 @@ const main = async (): Promise<void> => {
     ];
 
     // ── PHASES 4–5: cast (GLM-5.2-FAST @ Fireworks) + the gate loop ──────────
-    const aspect = (["16:9", "9:16", "1:1"].includes(script.config?.aspect_ratio ?? "")
-      ? script.config!.aspect_ratio
-      : "16:9") as "16:9" | "9:16" | "1:1";
+    // aspect is hoisted above (computed before the composition head, which
+    // authors pixel bounds on this canvas).
     const castInput = {
       script: script as unknown as Script,
       theme,

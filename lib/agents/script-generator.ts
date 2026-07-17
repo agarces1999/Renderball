@@ -333,7 +333,7 @@ export const generateScript = async (
     // backfill any missing scene registers (GLM omits them sporadically, and
     // exemplar selection + the Design Agent's layout archetypes key on them).
     const normalized = backfillSceneRegisters(normalizeScriptContent(withAssets));
-    const validation = validateScript(normalized);
+    const validation = validateScript(normalized, { brandName: brief.brand_extract?.title });
     if (validation.ok) {
       // Duration guard: the requested duration is authoritative. If the
       // agent collapsed the video (sizing scenes like ~1s animation beats),

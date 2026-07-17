@@ -24,6 +24,7 @@
  * is a composer bug (a bad geometry table entry), never a runtime condition.
  */
 import type { Bounds, PieceKind } from "../edit/piece-model";
+import type { SceneComposition, ElementBounds } from "../../src/schema";
 import { throughlineAnchorFor } from "./choreograph";
 
 // ─── Public contract ────────────────────────────────────────────────────────
@@ -303,14 +304,143 @@ const assertPlanInvariants = (plan: ScenePlan, aspect: Aspect, content: Record<s
   }
 };
 
+// ─── Head-authored bounds (frame-authoring, 2026-07-17) ─────────────────────
+// The composition head now COMPOSES THE FRAME — it authors each element's pixel
+// bounds so the whole canvas is composed (one dominant focal object near center,
+// deliberate negative space, no corner-clustering). composeSceneLayout CONSUMES
+// those bounds for the content slots (hero/copy) instead of authoring geometry
+// from the content-blind table; the table survives only as the FALLBACK for
+// un-composed scenes and per-role gaps. layout-composer's authoring role shrinks
+// to a VALIDATOR (validateScenePlan) over the consumed plan.
+
+/** A near-full-canvas element (a full-bleed hero the copy sits over). */
+const isFullBleedRect = (b: Bounds, W: number, H: number): boolean =>
+  b.w * b.h >= 0.85 * W * H;
+
+/** Clamp head-authored bounds fully inside the canvas — shift, then shrink —
+ *  so a consumed bound can never crop off the frame edge (containment by
+ *  construction, the invariant the assemble path relies on). */
+const clampBounds = (b: ElementBounds, W: number, H: number): { x: number; y: number; w: number; h: number } => {
+  let { x, y, w, h } = b;
+  w = Math.max(1, Math.min(w, W));
+  h = Math.max(1, Math.min(h, H));
+  x = Math.max(0, Math.min(x, W - w));
+  y = Math.max(0, Math.min(y, H - h));
+  return { x, y, w, h };
+};
+
+/** Read + clamp the head-authored bounds for one role, or null when the
+ *  composition didn't place it (fall back to the table). */
+const headBoundsFor = (
+  composition: SceneComposition | undefined,
+  role: string,
+  z: number,
+  W: number,
+  H: number,
+): Bounds | null => {
+  const b = composition?.elements?.find((e) => e.role === role)?.bounds;
+  if (!b) return null;
+  const ok = [b.x, b.y, b.w, b.h].every((n) => typeof n === "number" && Number.isFinite(n)) && b.w > 0 && b.h > 0;
+  if (!ok) return null;
+  return { ...clampBounds(b, W, H), z };
+};
+
+// ─── The validator (frame-authoring) ─────────────────────────────────────────
+
+export interface PlanViolation {
+  /** The element the caller should route a repair to. */
+  pieceId: string;
+  /** One of the validated contracts. */
+  kind: "containment" | "disjointness" | "stranded-hero" | "budget";
+  /** ≤200-char, human-readable, for a verbatim-error repair prompt. */
+  message: string;
+}
+
+/**
+ * Validate a consumed ScenePlan against the contracts layout-composer used to
+ * settle by construction: CONTAINMENT (every bbox inside the safe canvas — no
+ * off-edge crop), DISJOINTNESS (no undeclared content overlap), the SPLIT /
+ * stranded-hero numeric contract, and (when a composition is supplied) the
+ * brandMark/CTA singularity BUDGET. Returns repair requests — it NEVER
+ * re-lays-out. Pure. Atmosphere/full-bleed treatments are exempt from
+ * containment+disjointness (they own the frame by design).
+ */
+export const validateScenePlan = (
+  plan: ScenePlan,
+  aspect: Aspect,
+  opts?: { composition?: SceneComposition; content?: Record<string, unknown> },
+): PlanViolation[] => {
+  const { w: W, h: H } = CANVAS[aspect];
+  const out: PlanViolation[] = [];
+  const els = plan.elements;
+
+  // Containment — content slots keep a bottom margin; full-canvas treatments
+  // (atmosphere, the full-bleed hero) and chrome own the edge by design.
+  for (const el of els) {
+    if (el.kind === "atmosphere" || el.kind === "chrome") continue;
+    const { x, y, w, h } = el.bounds;
+    if (w >= W && h >= H) continue; // full-canvas treatment
+    if (x < 0 || y < 0 || x + w > W || y + h > H) {
+      out.push({ pieceId: el.id, kind: "containment", message: `"${el.id}" bounds ${JSON.stringify({ x, y, w, h })} escape the ${W}×${H} canvas — keep it fully on-canvas.` });
+    } else if (y + h > BOTTOM_SAFE_FRAC * H) {
+      out.push({ pieceId: el.id, kind: "containment", message: `"${el.id}" bottom edge ${y + h} crosses the bottom reserve (${Math.floor(BOTTOM_SAFE_FRAC * H)}px) — lift it into the safe frame.` });
+    }
+  }
+
+  // Disjointness — non-atmosphere content pairs, unless declared or one is a
+  // full-bleed treatment (the copy-over-canvas overlap).
+  for (let i = 0; i < els.length; i++) {
+    for (let j = i + 1; j < els.length; j++) {
+      const a = els[i];
+      const b = els[j];
+      if (a.kind === "atmosphere" || b.kind === "atmosphere") continue;
+      if (!rectsOverlap(a.bounds, b.bounds)) continue;
+      if (a.allowedOverlaps.includes(b.id) || b.allowedOverlaps.includes(a.id)) continue;
+      if (isFullBleedRect(a.bounds, W, H) || isFullBleedRect(b.bounds, W, H)) continue;
+      out.push({ pieceId: b.id, kind: "disjointness", message: `"${a.id}" and "${b.id}" bounds overlap with no declared allowance — content elements must sit in disjoint territory.` });
+    }
+  }
+
+  // Split / stranded-hero numeric contract.
+  if (plan.register === "split") {
+    const hero = els.find((e) => e.id === "hero");
+    const copy = els.find((e) => e.id === "copy");
+    if (hero && copy) {
+      if (hero.bounds.w < SPLIT_HERO_MIN_W_FRAC * W) {
+        out.push({ pieceId: "hero", kind: "stranded-hero", message: `split hero w=${hero.bounds.w} < ${Math.round(SPLIT_HERO_MIN_W_FRAC * W)} — the hero must command ≥${Math.round(SPLIT_HERO_MIN_W_FRAC * 100)}% of the frame width.` });
+      }
+      const heroCy = hero.bounds.y + hero.bounds.h / 2;
+      if (Math.abs(heroCy - H / 2) > SPLIT_HERO_VCENTER_FRAC * H) {
+        out.push({ pieceId: "hero", kind: "stranded-hero", message: `split hero cy=${heroCy} is not vertically centered (±${Math.round(SPLIT_HERO_VCENTER_FRAC * H)}px of ${H / 2}).` });
+      }
+    }
+  }
+
+  // Singularity budget — the named brandMark/CTA owners must be real slots (or
+  // "chrome"/"none"). Only checked when a composition carries a budget.
+  const budget = opts?.composition?.budget;
+  if (budget) {
+    const ids = new Set(els.map((e) => e.id));
+    const ownerOk = (v: unknown): boolean => typeof v === "string" && (v === "chrome" || v === "none" || ids.has(v));
+    if (!ownerOk(budget.brandMark)) out.push({ pieceId: "chrome", kind: "budget", message: `budget.brandMark "${String(budget.brandMark)}" names no element in the plan — one element owns the single brand mark.` });
+    if (!ownerOk(budget.cta)) out.push({ pieceId: "copy", kind: "budget", message: `budget.cta "${String(budget.cta)}" names no element in the plan — one element owns the single CTA.` });
+  }
+
+  return out;
+};
+
 // ─── The composer ───────────────────────────────────────────────────────────
 
 /**
- * Compose the deterministic element-slot plan for one scene. Pure: identical
- * inputs yield a byte-identical ScenePlan (fixed tables, fixed emit order —
- * atmosphere, hero, copy, throughline, chrome — no randomness, no clock).
+ * Compose the element-slot plan for one scene. When the scene carries a
+ * head-authored composition, the content slots (hero/copy) mount at the HEAD's
+ * pixel bounds (consumed + clamped into the canvas); otherwise they fall back
+ * to the deterministic per-register table. Atmosphere/chrome/throughline stay
+ * deterministic (full-bleed / fixed bar / pinned anchor). Pure: identical
+ * inputs yield a byte-identical ScenePlan.
  *
- * @param scene  register + content (only field PRESENCE is read, never text).
+ * @param scene  register + content (field PRESENCE, never text) + the optional
+ *        head composition (its elements' bounds are consumed).
  * @param aspect target canvas.
  * @param opts.hasThroughline add the cross-scene motif slot, pinned to
  *        throughlineAnchorFor(aspect) (lib/agents/choreograph.ts) so the
@@ -318,13 +448,14 @@ const assertPlanInvariants = (plan: ScenePlan, aspect: Aspect, content: Record<s
  *        push has its target.
  */
 export const composeSceneLayout = (
-  scene: { register?: string; content?: Record<string, unknown> },
+  scene: { register?: string; content?: Record<string, unknown>; composition?: SceneComposition },
   aspect: Aspect,
   opts?: { hasThroughline?: boolean },
 ): ScenePlan => {
   const register = normalizeRegister(scene.register);
   const { w: W, h: H } = CANVAS[aspect];
   const geo = GEOMETRY[register][aspect];
+  const composition = scene.composition;
 
   const copyFields = presentOf(scene.content, COPY_FIELDS);
   const visualFields = presentOf(scene.content, VISUAL_FIELDS);
@@ -341,6 +472,26 @@ export const composeSceneLayout = (
   // is the composition, not an accident.
   const isCanvasTreatment = register === "full-bleed";
 
+  // Consume the head's frame — its authored bounds for the content slots. When
+  // absent (un-composed scene) each falls back to the deterministic table.
+  let heroHead = wantsHero && geo.hero ? headBoundsFor(composition, "hero", 1, W, H) : null;
+  let copyHead = headBoundsFor(composition, "copy", 2, W, H);
+  // Safety net: if the head placed hero and copy so they COLLIDE (and it isn't
+  // the full-bleed copy-over-canvas overlap), the head-loop's own validator
+  // failed to fix it — rather than ship interleaved content, fall BOTH back to
+  // the deterministic disjoint table for this scene.
+  if (
+    heroHead &&
+    copyHead &&
+    !isCanvasTreatment &&
+    !isFullBleedRect(heroHead, W, H) &&
+    rectsOverlap(heroHead, copyHead)
+  ) {
+    heroHead = null;
+    copyHead = null;
+  }
+  const usedHeadBounds = !!(heroHead || copyHead);
+
   const elements: ElementSlot[] = [];
 
   elements.push({
@@ -355,14 +506,17 @@ export const composeSceneLayout = (
   });
 
   if (wantsHero && geo.hero) {
+    // A head-placed hero large enough to blanket the frame reads as a canvas
+    // treatment — copy may sit on top (declared), same as full-bleed.
+    const heroIsFullBleed = isCanvasTreatment || (heroHead ? isFullBleedRect(heroHead, W, H) : false);
     elements.push({
       id: "hero",
       kind: "diegetic",
-      bounds: { ...geo.hero, z: 1 },
+      bounds: heroHead ?? { ...geo.hero, z: 1 },
       contentFields: visualFields,
       // Diegetic UI: surfaces + hairlines + ink, accent for the data moments.
       paletteRoles: ["panelBg", "hairline", "ink", "accent"],
-      allowedOverlaps: isCanvasTreatment
+      allowedOverlaps: heroIsFullBleed
         ? ["atmosphere", "copy", "chrome", "throughline"]
         : ["atmosphere"],
     });
@@ -373,7 +527,7 @@ export const composeSceneLayout = (
     kind: "text",
     // z2 keeps overlaid copy above a full-bleed hero; harmless elsewhere
     // (copy is disjoint from everything else by table construction).
-    bounds: { ...geo.copy, z: 2 },
+    bounds: copyHead ?? { ...geo.copy, z: 2 },
     contentFields: copyFields,
     // Accent only where the register declares emphasis: the stat metric and
     // the quote's highlighted line. Everything else sets copy in pure ink.
@@ -408,6 +562,16 @@ export const composeSceneLayout = (
   });
 
   const plan: ScenePlan = { register, elements };
-  assertPlanInvariants(plan, aspect, scene.content);
+  // TABLE path: the geometry is hand-checked, so a table-edit collision MUST
+  // throw (a composer bug, never a runtime condition). HEAD-BOUNDS path:
+  // containment is guaranteed by clampBounds and the hero↔copy collision was
+  // reconciled above, so the fatal-invariant assert would false-throw on the
+  // legitimately looser frames the head composes (a hero over the throughline
+  // anchor, a copy column crossing the bottom reserve) — those are surfaced as
+  // repair requests by validateScenePlan, not crashes. Ownership (invariant d)
+  // is bounds-independent and holds by construction either way.
+  if (!usedHeadBounds) {
+    assertPlanInvariants(plan, aspect, scene.content);
+  }
   return plan;
 };

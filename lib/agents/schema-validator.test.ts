@@ -19,6 +19,7 @@ import {
   countInteriorSpecifics,
   BEAT_COVERAGE_MIN_FRACTION,
   checkSceneComposition,
+  checkColdOpenVoice,
   findUngroundedMockValues,
   TEMPLATE_LEAK_RX,
 } from "./schema-validator";
@@ -1357,6 +1358,170 @@ check("composition errors each stay ≤200 chars and name the scene", () => {
     assert(e.length <= 200, `error over 200 chars (${e.length}): ${e}`);
     assert(/Scene(s)? \d/.test(e), `error must name the scene: ${e}`);
   }
+});
+
+// ── Frame-authoring: checkSceneComposition frame checks ─────────────────────
+// A frame-authored composition: hero focalRank 1 near center, copy left,
+// disjoint bounds, negativeSpace + budget. Passes clean; each mutation trips
+// exactly the frame contract under test. Neither "slate" nor its atmosphere
+// tokens read dark/light, so the surface-contrast arm stays quiet.
+const frameGood = () =>
+  clone([
+    {
+      index: 0,
+      label: "Hook",
+      visual_concept: "An analytics dashboard hero centered, copy left.",
+      content: { headline: "You feel the drag", lede: "Every tab is a tax.", cta: { primary: "Start free" }, asset_ids: [] },
+      composition: {
+        atmosphere: "Cool slate gradient drifts behind the dashboard through faint grain",
+        negativeSpace: "the lower band and the right margin stay open around the dashboard",
+        budget: { brandMark: "chrome", cta: "copy" },
+        elements: [
+          {
+            role: "hero",
+            subject: "an analytics dashboard",
+            focalRank: 1,
+            bounds: { x: 900, y: 180, w: 720, h: 700 },
+            interior: [
+              "KPI tile 'Revenue $128k'",
+              "row 'Acme · $12.4k · Won'",
+              "bar chart 7 bars",
+              "delta chip '+12%'",
+              "status pill 'Live'",
+              "sparkline 40/60",
+            ],
+            motion: "the bar chart bars rise one by one",
+          },
+          {
+            role: "copy",
+            subject: "headline stack left",
+            focalRank: 2,
+            bounds: { x: 140, y: 320, w: 600, h: 440 },
+            ownsCopy: ["headline", "lede", "cta"],
+            interior: ["headline in display type", "lede beneath in body"],
+          },
+          {
+            role: "atmosphere",
+            subject: "slate field behind everything",
+            interior: ["gradient wash", "fine grain overlay"],
+          },
+        ],
+      },
+    },
+  ]) as unknown as CompScenes;
+
+const frameHero = (s: CompScenes) =>
+  (s[0] as unknown as { composition: { elements: Record<string, unknown>[] } }).composition.elements[0];
+const frameComp = (s: CompScenes) => (s[0] as unknown as { composition: Record<string, unknown> }).composition;
+
+check("frame: a clean frame-authored composition passes every check", () => {
+  const e = checkSceneComposition(frameGood());
+  assert(e.length === 0, `expected clean, got ${JSON.stringify(e)}`);
+});
+
+check("frame: a missing element bound is rejected", () => {
+  const s = frameGood();
+  delete (frameHero(s) as Record<string, unknown>).bounds;
+  const e = checkSceneComposition(s).filter((x) => /missing pixel bounds/.test(x));
+  assert(e.length === 1, `expected a missing-bounds error, got ${JSON.stringify(checkSceneComposition(s))}`);
+});
+
+check("frame: an off-canvas bound is rejected", () => {
+  const s = frameGood();
+  (frameHero(s) as { bounds: Record<string, number> }).bounds = { x: 1500, y: 180, w: 720, h: 700 };
+  const e = checkSceneComposition(s).filter((x) => /escape the .* canvas/.test(x));
+  assert(e.length === 1, `expected an off-canvas error, got ${JSON.stringify(checkSceneComposition(s))}`);
+});
+
+check("frame: exactly one focalRank-1 element (two rank-1 fails)", () => {
+  const s = frameGood();
+  const comp = frameComp(s) as { elements: Record<string, unknown>[] };
+  comp.elements[1].focalRank = 1; // copy also claims 1
+  const e = checkSceneComposition(s).filter((x) => /focalRank 1/.test(x));
+  assert(e.length === 1 && /2 elements claim/.test(e[0]), `expected a dual-rank1 error, got ${JSON.stringify(checkSceneComposition(s))}`);
+});
+
+check("frame: a corner-shoved focal object is rejected", () => {
+  const s = frameGood();
+  (frameHero(s) as { bounds: Record<string, number> }).bounds = { x: 20, y: 20, w: 300, h: 260 };
+  const e = checkSceneComposition(s).filter((x) => /corner-shoved/.test(x));
+  assert(e.length === 1, `expected a corner-shove error, got ${JSON.stringify(checkSceneComposition(s))}`);
+});
+
+check("frame: overlapping content bounds are rejected", () => {
+  const s = frameGood();
+  (frameHero(s) as { bounds: Record<string, number> }).bounds = { x: 200, y: 320, w: 700, h: 400 }; // over the copy column
+  const e = checkSceneComposition(s).filter((x) => /bounds overlap/.test(x));
+  assert(e.length === 1, `expected an overlap error, got ${JSON.stringify(checkSceneComposition(s))}`);
+});
+
+check("frame: negativeSpace is required (≥4 words)", () => {
+  const s = frameGood();
+  (frameComp(s) as Record<string, unknown>).negativeSpace = "empty";
+  const e = checkSceneComposition(s).filter((x) => /negativeSpace is required/.test(x));
+  assert(e.length === 1, `expected a negativeSpace error, got ${JSON.stringify(checkSceneComposition(s))}`);
+});
+
+check("frame: a budget owner that names no element/chrome/none is rejected", () => {
+  const s = frameGood();
+  (frameComp(s) as { budget: Record<string, unknown> }).budget.brandMark = "sidebar";
+  const e = checkSceneComposition(s).filter((x) => /budget.brandMark/.test(x));
+  assert(e.length === 1, `expected a budget-owner error, got ${JSON.stringify(checkSceneComposition(s))}`);
+});
+
+check("frame: budget.cta 'none' with a defined CTA is rejected", () => {
+  const s = frameGood();
+  (frameComp(s) as { budget: Record<string, unknown> }).budget.cta = "none";
+  const e = checkSceneComposition(s).filter((x) => /budget.cta is "none"/.test(x));
+  assert(e.length === 1, `expected a cta-owner error, got ${JSON.stringify(checkSceneComposition(s))}`);
+});
+
+check("frame: the 9:16 canvas validates bounds against 1080×1920", () => {
+  const s = frameGood();
+  // {x:900,w:720} escapes 1080-wide but fits 1920-wide — aspect must matter.
+  const wide = checkSceneComposition(s, { aspect: "9:16" }).filter((x) => /escape the 1080×1920/.test(x));
+  assert(wide.length >= 1, `expected a 9:16 off-canvas error, got ${JSON.stringify(checkSceneComposition(s, { aspect: "9:16" }))}`);
+});
+
+check("frame: a LEGACY composition (no frame fields) skips the frame checks", () => {
+  // duoGood carries no bounds/focalRank/negativeSpace/budget → not frame-authored.
+  assert(checkSceneComposition(duoGood()).length === 0, "legacy blueprints must not trip the frame contract");
+});
+
+// ── Frame-authoring: cold-open + anti-cliché voice ──────────────────────────
+
+check("voice: a scene-0 headline that names the brand is rejected", () => {
+  const scenes = [{ content: { headline: "Klarna" } }, { content: { headline: "The cart is full" } }];
+  const e = checkColdOpenVoice(scenes, "Klarna");
+  assert(e.some((x) => /names the brand/.test(x)), `expected a brand-opener error, got ${JSON.stringify(e)}`);
+});
+
+check("voice: a tension-led scene-0 headline passes; the brand appearing LATER is fine", () => {
+  const scenes = [{ content: { headline: "You know the feeling" } }, { content: { headline: "Klarna makes it smooth" } }];
+  assert(checkColdOpenVoice(scenes, "Klarna").length === 0, "tension opener + later brand mention must pass");
+});
+
+check("voice: banned benefit clichés in a headline or lede are rejected verbatim", () => {
+  const scenes = [
+    { content: { headline: "You know the feeling", lede: "A smarter way to pay, all in one place." } },
+    { content: { headline: "Your money, treated right" } },
+  ];
+  const e = checkColdOpenVoice(scenes);
+  assert(e.some((x) => /a smarter way to/i.test(x)), "the smarter-way cliché is caught");
+  assert(e.some((x) => /all in one place/i.test(x)), "the all-in-one-place cliché is caught");
+  assert(e.some((x) => /treated right/i.test(x)), "the treated-right cliché is caught");
+});
+
+check("voice: validateScript surfaces a brand-led scene-0 opener when brandName is supplied (reference fixture)", () => {
+  if (!existsSync(refScriptPath)) return; // generated fixture gitignored — skip cleanly
+  const base = JSON.parse(readFileSync(refScriptPath, "utf8")) as { scenes: { content: { headline: string } }[] } & Record<string, unknown>;
+  const brand = "Acme";
+  const branded = { ...base, scenes: base.scenes.map((sc, i) => (i === 0 ? { ...sc, content: { ...sc.content, headline: brand } } : sc)) };
+  const bad = validateScript(branded, { brandName: brand });
+  assert(!bad.ok && /names the brand/.test(bad.error), `expected a brand-opener rejection, got ${JSON.stringify(!bad.ok && bad.error)}`);
+  // Without the brandName the brand-opener arm is skipped.
+  const noBrand = validateScript(branded, {});
+  assert(noBrand.ok || !/names the brand/.test(noBrand.error), "the brand-opener arm is skipped without brandName");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

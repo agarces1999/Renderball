@@ -152,6 +152,16 @@ export interface Script {
  * back-compat: scenes without a spec fall back to visual_concept-driven
  * briefs.
  */
+/** Head-authored pixel bounds on the scene's aspect canvas (frame-authoring,
+ *  2026-07-17). w/h are the wrapper's rendered size; for text elements w is a
+ *  MAX width and height flows (mirrors piece-model.Bounds). */
+export interface ElementBounds {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
 export interface ElementSpec {
   /** Which cast slot this describes: hero | copy | atmosphere | connector | throughline. */
   role: string;
@@ -168,12 +178,52 @@ export interface ElementSpec {
   ownsCopy?: string[];
   /** One sustained motion beat tied to a named interior item. */
   motion?: string;
+  /**
+   * FOCAL RANK (frame-authoring, 2026-07-17): 1 = the dominant focal object,
+   * near optical center; ascending integers = progressively subordinate.
+   * Exactly one element per composed scene carries rank 1 — the head reasons
+   * about the WHOLE frame's hierarchy here instead of leaving placement to a
+   * content-blind table. Atmosphere carries none (it is the base layer).
+   */
+  focalRank?: number;
+  /**
+   * HEAD-AUTHORED PIXEL BOUNDS (frame-authoring, 2026-07-17) on the scene's
+   * aspect canvas (1920×1080 @16:9, 1080×1920 @9:16, 1080×1080 @1:1). The
+   * composition head PLACES every element so the whole frame is composed — one
+   * dominant focal object near optical center, deliberate negative space, mass
+   * distributed to fill the frame (no corner-clustering). layout-composer
+   * CONSUMES these bounds (it no longer authors geometry from a blind table)
+   * and validates them; the element cast mounts the leaf into this exact rect,
+   * and the LEGO editor's move/resize edits this field + re-runs the validator
+   * (0 LLM). Optional for back-compat: atmosphere is full-bleed, and stored /
+   * un-composed scenes fall back to the deterministic layout table.
+   */
+  bounds?: ElementBounds;
+}
+
+/** The per-frame SINGULARITY budget (frame-authoring, 2026-07-17): exactly ONE
+ *  brand mark and ONE CTA per scene, each naming WHICH element owns it — a role
+ *  ("hero"/"copy"), "chrome" for the corner brand lockup, or "none" when the
+ *  scene carries neither. Prevents the duplicate-brand-pill / competing-CTA
+ *  defects the reference never has. */
+export interface FrameBudget {
+  brandMark: string;
+  cta: string;
 }
 
 export interface SceneComposition {
   elements: ElementSpec[];
   /** The atmosphere treatment for THIS scene — must differ from adjacent scenes. */
   atmosphere: string;
+  /**
+   * The NEGATIVE-SPACE plan (frame-authoring, 2026-07-17): a sentence naming
+   * WHERE the deliberate emptiness lives, so the frame breathes around its
+   * focal object the way the reference does — the distinction between intended
+   * air and the dead-void corner-clustering defect.
+   */
+  negativeSpace?: string;
+  /** The per-frame singularity budget (see FrameBudget). */
+  budget?: FrameBudget;
 }
 
 export interface ScriptDecision {

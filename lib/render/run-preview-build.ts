@@ -770,7 +770,8 @@ async function runCastPreviewBuild(args: {
       const composed = await generateComposition({
         script: script as unknown as Script,
         caller: headCaller,
-        validate: (scenes: Scene[]) => checkSceneComposition(scenes),
+        validate: (scenes: Scene[]) => checkSceneComposition(scenes, { aspect }),
+        aspect,
         brandName: brand,
         paletteHint: `canvas ${canvasPlan.background} (${canvasPlan.mode}), signature accent ${signature}, brand palette: ${(be?.palette ?? []).join(", ")}`,
         designNotes: `Design system consts available downstream: PALETTE (CANVAS/INK/ACCENT/MUTED/SOFT_NEUTRAL/CARD_FILL/WHITE), shared keyframes (glowBreathe, drift1-3, drawWidth, fadeRise, scaleIn). Fonts: display ${theme.fonts.display}, body ${theme.fonts.body}.`,

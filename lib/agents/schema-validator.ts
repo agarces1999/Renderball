@@ -573,6 +573,88 @@ export const checkScriptRichness = (scenes: RichnessSceneInput[]): string[] => {
   return errors;
 };
 
+// ─── Cold-open + anti-cliché voice (frame-authoring, 2026-07-17) ─────────────
+//
+// The 3-critic diagnosis found the reference wins on COPY VOICE as much as
+// composition: it cold-opens on the reader's TENSION ("You know the feeling")
+// while the cast opened on the brand name ("Klarna") over benefit-cliché ledes
+// ("A smarter way to pay … all in one place"). The prompt now HARD-bans a
+// brand-led opener and the fintech/marketing cliché family; these arms are the
+// machine backstop, in the same static-check → verbatim-error → repair mechanism
+// the richness contract uses. Generation-path only (validateScript richness).
+
+/** The banned benefit-cliché family (verbatim, per the frame-authoring plan).
+ *  Any of these in a headline or lede is generic marketing filler that reads as
+ *  "AI slop" — the reference never uses one. Case-insensitive; no /g so .test()
+ *  stays stateless. */
+export const BANNED_CLICHE_RX =
+  /\ba smarter way to\b|\ball in one place\b|\btreated right\b|\bstay on top of your money\b|\bshop with confidence\b|\beverything you need\b/i;
+
+/** Normalize a string for brand-name containment (lowercase, collapse
+ *  non-alphanumerics to single spaces). */
+const normalizeForBrand = (s: string): string =>
+  s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+
+/**
+ * Cold-open + voice checks. Returns one ≤200-char error per finding (naming the
+ * scene), shaped for the generation repair loop:
+ *   - the SCENE-0 headline must state the reader's TENSION, never the brand name
+ *     (a brand-led opener is banned; move the brand mark to the corner/close).
+ *   - no headline or lede may carry a banned benefit cliché.
+ * `brandName` is optional — the brand-opener check is skipped without it.
+ */
+export const checkColdOpenVoice = (
+  scenes: { content?: unknown }[],
+  brandName?: string,
+): string[] => {
+  const out: string[] = [];
+  const headlineOf = (sc: { content?: unknown }): string => {
+    const c = (sc?.content ?? {}) as Record<string, unknown>;
+    return typeof c.headline === "string" ? c.headline : "";
+  };
+  const ledeOf = (sc: { content?: unknown }): string => {
+    const c = (sc?.content ?? {}) as Record<string, unknown>;
+    return typeof c.lede === "string" ? c.lede : "";
+  };
+
+  // Scene-0 brand-led opener — the reference's biggest voice tell.
+  const brand = (brandName ?? "").trim();
+  if (brand.length >= 3 && scenes.length > 0) {
+    const h0 = normalizeForBrand(headlineOf(scenes[0]));
+    const b = normalizeForBrand(brand);
+    // Contained as a standalone token-run (word-bounded on both sides).
+    const contained = b.length > 0 && new RegExp(`(^| )${b.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}( |$)`).test(h0);
+    if (contained) {
+      out.push(
+        `Scene 0 headline names the brand ("${headlineOf(scenes[0]).trim().slice(0, 40)}") — a scene-0 opener must state the READER'S TENSION (the feeling/friction of the status quo), never the brand name. Move the brand mark to the corner or the closing scene, and open on the tension.`,
+      );
+    }
+  }
+
+  // Banned benefit clichés in any headline or lede (report EVERY hit — a lede
+  // can stack several, and the repair prompt should name them all).
+  const clicheG = new RegExp(BANNED_CLICHE_RX.source, "gi");
+  scenes.forEach((sc, i) => {
+    for (const [field, text] of [
+      ["headline", headlineOf(sc)],
+      ["lede", ledeOf(sc)],
+    ] as const) {
+      clicheG.lastIndex = 0;
+      const seen = new Set<string>();
+      for (const m of text.matchAll(clicheG)) {
+        const phrase = m[0].toLowerCase();
+        if (seen.has(phrase)) continue;
+        seen.add(phrase);
+        out.push(
+          `Scene ${i} ${field} uses the banned cliché "${m[0]}" ("${text.trim().slice(0, 48)}") — write concrete, second-person, present-tense copy about THIS reader's moment, not generic marketing filler.`,
+        );
+      }
+    }
+  });
+
+  return out;
+};
+
 // ─── Composition contract (cast-doctrine blueprint checks) ───────────────
 //
 // The thinking head authors a per-scene SceneComposition (src/schema.ts:
@@ -791,13 +873,196 @@ const stringInterior = (el: RawElement): string[] =>
     ? (el.interior as unknown[]).filter((x): x is string => typeof x === "string")
     : [];
 
+// ── Frame-authoring contract (2026-07-17) ───────────────────────────────────
+// The composition head now COMPOSES THE WHOLE FRAME: per element a focalRank +
+// pixel bounds, per scene a negativeSpace plan and a singularity budget. These
+// checks validate what the head authored so a bad frame (dead void, corner-
+// cluster, off-canvas crop, duplicate brand mark) is repaired at the HEAD (one
+// thinking-on repair round) instead of shipping. Mirrors CANVAS in
+// layout-composer / measure-scene (mirrored, not imported, to keep the
+// validator's dependency surface at src/schema only).
+
+export type CompAspect = "16:9" | "9:16" | "1:1";
+const COMP_CANVAS: Record<CompAspect, { w: number; h: number }> = {
+  "16:9": { w: 1920, h: 1080 },
+  "9:16": { w: 1080, h: 1920 },
+  "1:1": { w: 1080, h: 1080 },
+};
+
+/** Roles whose bounds compose the frame and are CONSUMED by layout-composer —
+ *  the content elements. atmosphere is full-bleed; throughline is pinned to the
+ *  cross-scene anchor (it legitimately overlaps the hero) and connector is a
+ *  full-bleed relationship layer — both are placed deterministically, NOT from
+ *  head bounds, so they are exempt from the frame bounds/disjointness checks. */
+const PLACED_ROLES = new Set(["hero", "copy"]);
+/** A budget owner names a role, the corner chrome lockup, or nothing. */
+const BUDGET_OWNER_EXTRA = new Set(["chrome", "none"]);
+/** The focalRank-1 element's center must sit within this fraction of the
+ *  canvas half-extent of the optical center (not corner-jammed). */
+export const FOCAL_CENTER_X_FRAC = 0.32;
+export const FOCAL_CENTER_Y_FRAC = 0.34;
+/** Two content bounds may overlap by at most this fraction of the smaller
+ *  element's area before it reads as an undeclared collision. */
+export const BOUNDS_OVERLAP_MAX_FRAC = 0.1;
+/** A near-full-canvas element (a full-bleed hero) covers ≥ this fraction of
+ *  the canvas; copy-over-it is the one legal overlap. */
+export const FULL_CANVAS_FRAC = 0.85;
+export const NEGATIVE_SPACE_MIN_WORDS = 4;
+
+interface RawBounds { x: number; y: number; w: number; h: number }
+const readBounds = (el: RawElement): RawBounds | null => {
+  const b = (el as { bounds?: unknown }).bounds;
+  if (!b || typeof b !== "object") return null;
+  const bb = b as Record<string, unknown>;
+  const nums = ["x", "y", "w", "h"].map((k) => bb[k]);
+  if (nums.some((n) => typeof n !== "number" || !Number.isFinite(n))) return null;
+  return { x: bb.x as number, y: bb.y as number, w: bb.w as number, h: bb.h as number };
+};
+
+const rectArea = (b: RawBounds): number => Math.max(0, b.w) * Math.max(0, b.h);
+const overlapArea = (a: RawBounds, b: RawBounds): number => {
+  const ox = Math.max(0, Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x));
+  const oy = Math.max(0, Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y));
+  return ox * oy;
+};
+
+/** A composition is "frame-authored" when it carries ANY of the frame fields —
+ *  the signal that the head composed the frame (vs a legacy/stored blueprint,
+ *  which skips these checks so the pre-frame-authoring contract still loads). */
+const isFrameAuthored = (comp: { negativeSpace?: unknown; budget?: unknown; elements?: unknown }): boolean => {
+  if (comp.negativeSpace !== undefined || comp.budget !== undefined) return true;
+  const els = Array.isArray(comp.elements) ? (comp.elements as RawElement[]) : [];
+  return els.some((e) => e?.bounds !== undefined || (e as { focalRank?: unknown })?.focalRank !== undefined);
+};
+
+/**
+ * The frame-composition checks for ONE frame-authored scene: bounds present +
+ * in-canvas per placed element, focalRank hierarchy (exactly one rank-1, near
+ * optical center), pairwise disjointness (unless a full-bleed treatment),
+ * negativeSpace present, and the singularity budget satisfied. Returns ≤200-char
+ * errors shaped for the head's verbatim-error repair loop.
+ */
+const frameCompositionErrors = (
+  i: number,
+  comp: { elements: RawElement[]; negativeSpace?: unknown; budget?: unknown },
+  content: Record<string, unknown>,
+  canvas: { w: number; h: number },
+  elName: (el: RawElement, j: number) => string,
+): string[] => {
+  const out: string[] = [];
+  const { w: W, h: H } = canvas;
+  const elements = comp.elements;
+  const placed = elements
+    .map((el, j) => ({ el, j, bounds: readBounds(el), role: typeof el?.role === "string" ? el.role : "" }))
+    .filter((e) => PLACED_ROLES.has(e.role));
+
+  // 1) BOUNDS present + inside the canvas for every placed (non-atmosphere) element.
+  for (const p of placed) {
+    if (!p.bounds) {
+      out.push(
+        `Scene ${i} ${elName(p.el, p.j)}: missing pixel bounds — every non-atmosphere element needs bounds { x, y, w, h } on the ${W}×${H} canvas so the frame is composed, not corner-clustered.`,
+      );
+      continue;
+    }
+    const { x, y, w, h } = p.bounds;
+    if (w <= 0 || h <= 0 || x < 0 || y < 0 || x + w > W || y + h > H) {
+      out.push(
+        `Scene ${i} ${elName(p.el, p.j)}: bounds ${JSON.stringify(p.bounds)} escape the ${W}×${H} canvas (or have non-positive size) — keep every element fully on-canvas with a margin from the edges.`,
+      );
+    }
+  }
+
+  // 2) FOCAL RANK — exactly one rank-1, and it sits near optical center.
+  const rank1 = placed.filter((p) => Number((p.el as { focalRank?: unknown }).focalRank) === 1);
+  if (rank1.length === 0) {
+    out.push(
+      `Scene ${i}: no element has focalRank 1 — one element must be the dominant focal object (focalRank 1), large and near the ${Math.round(W / 2)},${Math.round(H / 2)} optical center.`,
+    );
+  } else if (rank1.length > 1) {
+    out.push(
+      `Scene ${i}: ${rank1.length} elements claim focalRank 1 (${rank1.map((p) => elName(p.el, p.j)).join(", ")}) — exactly ONE element is the dominant focal object; rank the rest 2, 3, …`,
+    );
+  } else {
+    const b = rank1[0].bounds;
+    if (b) {
+      const ccx = b.x + b.w / 2;
+      const ccy = b.y + b.h / 2;
+      if (Math.abs(ccx - W / 2) > FOCAL_CENTER_X_FRAC * W || Math.abs(ccy - H / 2) > FOCAL_CENTER_Y_FRAC * H) {
+        out.push(
+          `Scene ${i} ${elName(rank1[0].el, rank1[0].j)}: the focalRank-1 object's center (${Math.round(ccx)},${Math.round(ccy)}) is corner-shoved — place the dominant focal object near the optical center (${Math.round(W / 2)},${Math.round(H / 2)}), not against an edge.`,
+        );
+      }
+    }
+  }
+
+  // 3) DISJOINTNESS — the CONSUMED hero and copy (the first of each role, the
+  //    pair layout-composer actually places from head bounds) must not overlap,
+  //    unless the hero is a near-full-canvas treatment (the full-bleed hero the
+  //    copy sits over). Scoped to that pair: extra copy elements feed the same
+  //    single copy slot, and the throughline/connector overlays overlap the
+  //    hero by design — checking every pair mislabels those legal overlaps.
+  const firstHero = placed.find((p) => p.role === "hero" && p.bounds);
+  const firstCopy = placed.find((p) => p.role === "copy" && p.bounds);
+  if (firstHero?.bounds && firstCopy?.bounds) {
+    const ov = overlapArea(firstHero.bounds, firstCopy.bounds);
+    const heroFullBleed = rectArea(firstHero.bounds) >= FULL_CANVAS_FRAC * W * H;
+    const smaller = Math.min(rectArea(firstHero.bounds), rectArea(firstCopy.bounds));
+    if (ov > 0 && !heroFullBleed && smaller > 0 && ov / smaller > BOUNDS_OVERLAP_MAX_FRAC) {
+      out.push(
+        `Scene ${i}: ${elName(firstHero.el, firstHero.j)} and ${elName(firstCopy.el, firstCopy.j)} bounds overlap (${Math.round((ov / smaller) * 100)}% of the smaller) — the hero and copy must sit in disjoint territory (a collision ships as interleaved, unreadable content).`,
+      );
+    }
+  }
+
+  // 4) NEGATIVE SPACE — a composed plan, not an afterthought.
+  const neg = comp.negativeSpace;
+  if (typeof neg !== "string" || neg.trim().split(/\s+/).filter(Boolean).length < NEGATIVE_SPACE_MIN_WORDS) {
+    out.push(
+      `Scene ${i}: negativeSpace is required (≥${NEGATIVE_SPACE_MIN_WORDS} words) — name WHERE the deliberate emptiness lives so the frame breathes around its focal object.`,
+    );
+  }
+
+  // 5) SINGULARITY BUDGET — one brand mark + one CTA, each owned by a real element.
+  const budget = comp.budget as { brandMark?: unknown; cta?: unknown } | undefined;
+  const roles = new Set(placed.map((p) => p.role));
+  const ownerValid = (v: unknown): boolean =>
+    typeof v === "string" && (BUDGET_OWNER_EXTRA.has(v) || roles.has(v));
+  if (!budget || typeof budget !== "object") {
+    out.push(
+      `Scene ${i}: budget is required — { brandMark, cta } naming the ONE element that owns the single brand mark and the ONE that owns the single CTA (a role, "chrome", or "none").`,
+    );
+  } else {
+    if (!ownerValid(budget.brandMark)) {
+      out.push(
+        `Scene ${i}: budget.brandMark "${truncateForError(String(budget.brandMark), 20)}" must name a scene element role, "chrome", or "none" — exactly one element owns the single brand mark.`,
+      );
+    }
+    if (!ownerValid(budget.cta)) {
+      out.push(
+        `Scene ${i}: budget.cta "${truncateForError(String(budget.cta), 20)}" must name a scene element role, "chrome", or "none" — exactly one element owns the single CTA.`,
+      );
+    } else if (content.cta != null && budget.cta === "none") {
+      out.push(
+        `Scene ${i}: budget.cta is "none" but the scene defines a CTA — name the element that owns it (usually "copy").`,
+      );
+    }
+  }
+
+  return out;
+};
+
 /**
  * The composition contract. Returns one error per finding (each ≤200 chars,
  * naming the scene and element role, actionable for the verbatim-error
  * repair loop); empty array = every composed scene meets the contract.
- * Scenes without a `composition` field are skipped.
+ * Scenes without a `composition` field are skipped. `opts.aspect` sets the
+ * canvas the frame-authoring bounds checks validate against (default 16:9).
  */
-export const checkSceneComposition = (scenes: Scene[]): string[] => {
+export const checkSceneComposition = (
+  scenes: Scene[],
+  opts: { aspect?: CompAspect } = {},
+): string[] => {
+  const canvas = COMP_CANVAS[opts.aspect ?? "16:9"] ?? COMP_CANVAS["16:9"];
   const errors: string[] = [];
   // Normalized atmosphere per scene index (null = uncomposed/unusable) so
   // the variety check compares LITERAL neighbours only.
@@ -1036,6 +1301,22 @@ export const checkSceneComposition = (scenes: Scene[]): string[] => {
         `Scene ${i}: no element's motion references its own interior — tie one motion beat to a ≥${MOTION_TOKEN_MIN_LEN}-char token from that element's interior items.`,
       );
     }
+
+    // 7) FRAME COMPOSITION (frame-authoring) — bounds/focalRank/negativeSpace/
+    //    budget, validated only when the head actually composed the frame (a
+    //    legacy blueprint carrying none of these fields is left to the
+    //    pre-frame-authoring contract above).
+    if (isFrameAuthored(comp as { negativeSpace?: unknown; budget?: unknown; elements?: unknown })) {
+      errors.push(
+        ...frameCompositionErrors(
+          i,
+          comp as unknown as { elements: RawElement[]; negativeSpace?: unknown; budget?: unknown },
+          content,
+          canvas,
+          elName,
+        ),
+      );
+    }
   });
 
   return errors;
@@ -1249,6 +1530,13 @@ export interface ValidateScriptOptions {
    * keep loading).
    */
   richness?: boolean;
+  /**
+   * Brand name for the cold-open check (checkColdOpenVoice): a scene-0 headline
+   * that names the brand is a brand-led opener and is rejected. Optional — the
+   * brand-opener arm is skipped without it (the cliché arm still runs). Only
+   * consulted on the richness (generation) path.
+   */
+  brandName?: string;
 }
 
 export const validateScript = (
@@ -1591,6 +1879,15 @@ export const validateScript = (
     const richness = checkScriptRichness(scenes as RichnessSceneInput[]);
     if (richness.length > 0) {
       return { ok: false, error: richness.join(" | ") };
+    }
+    // Cold-open + anti-cliché voice (frame-authoring): scene-0 opens on the
+    // reader's tension (brand name banned as an opener), no benefit clichés.
+    const voice = checkColdOpenVoice(
+      scenes as { content?: unknown }[],
+      opts.brandName,
+    );
+    if (voice.length > 0) {
+      return { ok: false, error: voice.join(" | ") };
     }
   }
 

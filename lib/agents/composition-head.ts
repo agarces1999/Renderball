@@ -28,6 +28,23 @@
  */
 import type { Script, Scene, SceneComposition } from "../../src/schema";
 
+// ─── Canvas (frame-authoring) ────────────────────────────────────────────────
+// Mirrors CANVAS in layout-composer.ts / measure-scene.ts — the head authors
+// PIXEL bounds, so it must know the target canvas. Mirrored, not imported, to
+// keep this a pure dependency-free leaf (the same doctrine layout-composer
+// applies to CANVAS_DIMS). The values are the fixed product canvases.
+
+export type Aspect = "16:9" | "9:16" | "1:1";
+
+export const HEAD_CANVAS: Record<Aspect, { w: number; h: number }> = {
+  "16:9": { w: 1920, h: 1080 },
+  "9:16": { w: 1080, h: 1920 },
+  "1:1": { w: 1080, h: 1080 },
+};
+
+const normalizeAspect = (a: string | undefined): Aspect =>
+  a === "9:16" || a === "1:1" ? a : "16:9";
+
 // ─── Public contract ────────────────────────────────────────────────────────
 
 export interface CompositionPromptOpts {
@@ -38,6 +55,9 @@ export interface CompositionPromptOpts {
   paletteHint?: string;
   /** Free-form design-language notes threaded from the crawl/theme step. */
   designNotes?: string;
+  /** The target canvas (frame-authoring): the head authors pixel bounds on
+   *  this canvas. Default "16:9" (1920×1080). */
+  aspect?: Aspect;
 }
 
 /** The one call shape the head makes. Structurally compatible with
@@ -113,6 +133,8 @@ export const WORKED_EXAMPLE = JSON.stringify(
         {
           role: "hero",
           subject: "the Brewline mobile checkout screen in a rounded phone frame",
+          focalRank: 1,
+          bounds: { x: 980, y: 170, w: 560, h: 760 },
           interior: [
             "cart panel on a crisp off-white surface, charcoal ink — bright against the roast-brown canvas",
             'order row "Colombia Huila 12oz — $18.50" inside the cart panel',
@@ -128,6 +150,8 @@ export const WORKED_EXAMPLE = JSON.stringify(
         {
           role: "copy",
           subject: "the editorial stack left of the phone: eyebrow, headline, lede",
+          focalRank: 2,
+          bounds: { x: 150, y: 250, w: 620, h: 520 },
           interior: ["eyebrow line in mono caps", "headline in display type", "lede at reading size beneath"],
           ownsCopy: ["eyebrow", "headline", "lede"],
           motion: "the headline rises as one block, then holds",
@@ -141,6 +165,9 @@ export const WORKED_EXAMPLE = JSON.stringify(
         },
       ],
       atmosphere: "warm roast-brown radial wash, steam wisps drifting upward through fine grain",
+      negativeSpace:
+        "the lower third and the wide gutter between the editorial column and the phone stay open, so the checkout reads as the one focal object with air around it",
+      budget: { brandMark: "chrome", cta: "hero" },
     },
   ],
   null,
@@ -156,9 +183,22 @@ export const buildCompositionPrompt = (
   script: Script,
   opts: CompositionPromptOpts = {},
 ): { system: string; user: string } => {
+  const aspect = normalizeAspect(opts.aspect);
+  const { w: W, h: H } = HEAD_CANVAS[aspect];
+  const cx = Math.round(W / 2);
+  const cy = Math.round(H / 2);
   const system = [
-    `You are the COMPOSITION DIRECTOR for an animated brand video — for each scene, you author the complete blueprint the builders will transcribe.`,
-    `The builders downstream are fast literal transcribers: whatever you do not author, they will not invent well. Every creative decision lands HERE, as concrete values.`,
+    `You are the COMPOSITION DIRECTOR for an animated brand video — for each scene, you author the complete blueprint the builders will transcribe, AND you COMPOSE THE WHOLE FRAME (every element's place on the canvas).`,
+    `The builders downstream are fast literal transcribers: whatever you do not author, they will not invent well. Every creative decision lands HERE, as concrete values. No one else composes the frame — if you cluster the mass in a corner and leave a dead void, that is exactly what ships.`,
+    ``,
+    `FRAME COMPOSITION — the canvas is ${W}×${H}px (origin top-left). Compose it like a senior art director, the way a premium launch frame (Apple, Linear, Stripe) is composed, NOT like a form dumped in a column:`,
+    `- ONE DOMINANT FOCAL OBJECT. Exactly one element is the hero the eye lands on first — usually the diegetic hero (a product screen, dashboard, device mock). Give it focalRank 1 and place it LARGE and near the OPTICAL CENTER (around ${cx},${cy} — its center within the central ~55% of the frame, never jammed into a corner). Everything else is subordinate: focalRank 2, 3, … in descending prominence.`,
+    `- DELIBERATE NEGATIVE SPACE. The frame must BREATHE — name, in negativeSpace, WHERE the intentional emptiness lives (a quiet band, a margin, the gutter beside the focal object). This is the opposite of the dead-void defect: emptiness is a COMPOSED choice around the focal object, not a corner-clustered accident with a huge blank middle.`,
+    `- MASS FILLS THE FRAME. Distribute the elements so the whole canvas reads as composed — no element pushed to one corner while two-thirds of the frame sits empty. A subordinate copy stack, a footer meta strip, a chrome band, floating chips: use them to balance the focal object, not to crowd it.`,
+    `- ONE GRID / CARD SYSTEM per scene: pick a single spatial system (a two-column split, a centered stack, a card-over-field) and place every element on it. Do not mix incompatible systems in one frame.`,
+    `- SINGULARITY BUDGET: exactly ONE brand mark and ONE CTA per scene. In budget, name WHICH element owns each: a role ("hero"/"copy"), "chrome" for the corner brand lockup, or "none" when the scene carries neither. Never let two elements both render a brand pill or a call-to-action — duplicate brand marks and competing CTAs are the single loudest "AI slop" tell.`,
+    ``,
+    `PER-ELEMENT PLACEMENT: every non-atmosphere element carries a focalRank AND real pixel bounds { x, y, w, h } inside the ${W}×${H} canvas. Bounds must be DISJOINT (no two content elements overlap) unless the scene is a full-bleed treatment where the hero IS the canvas and copy sits on top. Keep a comfortable margin from every edge (nothing flush to the frame edge). The text (copy) element's w is a MAX width — its height flows. atmosphere is the full-bleed base layer and needs no bounds/focalRank.`,
     ``,
     `FOR EVERY SCENE, author:`,
     `1. elements[] — one entry per element the scene needs, each on this contract:`,
@@ -169,10 +209,14 @@ export const buildCompositionPrompt = (
     `     connector = a full-bleed SVG relationship system — cast it ONLY when the scene's concept is genuinely relational (flow, network, convergence, scatter).`,
     `     throughline = the recurring cross-scene motif — cast it in EVERY scene when the script's narrative names a throughline.`,
     `   - subject: what the element IS, concretely. Name the artifact ("the Acme billing dashboard in a browser frame"), never a vague gesture ("some UI", "a visual").`,
+    `   - focalRank: the element's place in the frame's focal hierarchy — 1 for the single dominant focal object (near optical center), 2, 3, … descending. Exactly ONE element per scene is focalRank 1. (atmosphere carries none.)`,
+    `   - bounds: { x, y, w, h } in pixels on the ${W}×${H} canvas — where this element sits and how big it is. The focalRank-1 element is LARGE and near center; content elements are pairwise DISJOINT; nothing flush to an edge. (atmosphere carries none — it is full-bleed.)`,
     `   - interior: the interior inventory — SHORT concrete items the element must visibly contain. A hero needs AT LEAST 6, and AT LEAST 4 of a hero's items must CARRY TEXT — quoted micro-copy or a concrete value (a chip, timestamp, label, price, metric: 'status chip "Rendering — 5 of 8"'); a text-free logo/glow/CTA-shape inventory renders a hollow scene and is a validation failure. The inventory should imply NESTED structure (rows inside panels, chips inside rows), never six floating fragments. SURFACE CONTRAST: one hero interior item must NAME the hero's dominant surface tone, chosen to CONTRAST with the scene canvas — if the scene canvas is dark, the hero's primary panel must be a light surface or carry high-luminance content ("checkout card on a crisp off-white surface"); if the canvas is light, a dark or richly saturated surface. A hero painted in the canvas's own tone renders as a washout and is a validation failure. EVERY item carries a REAL value authored for THIS brand and THIS scene — a label, number, name, timestamp, or state drawn from (or plausibly extending) this script's content. Plausible diegetic mock values (a price, balance, timestamp inside the product's own UI) are set dressing, not marketing claims — author them concrete and realistic. NEVER sample, masked, or placeholder values ("$XX", "$— — —", "•••", "Item 1", "Company name", lorem) — the builders ship your values verbatim, so a placeholder here ships as a placeholder on screen. Describe the copy widget CONCRETELY — "headline set in display type", "eyebrow line in mono caps" — NEVER with the word "placeholder" (an interior item containing "placeholder" ships that word on screen and is a validation failure). And interior items must NEVER contain the text of any copy field an element ownsCopy — the owning element renders those words exactly once; reference the WIDGET, not the words ("the CTA pill in the accent", never the CTA's text). A validator rejects interiors that retype owned copy.`,
     `   - ownsCopy: the scene content fields (eyebrow, headline, lede, bullets, caption, meta, cta) this element EXCLUSIVELY renders. Be explicit on every element — an empty array means it owns nothing. Ownership is exclusive: no field appears on two elements, and the headline is owned EXACTLY once per scene. An owned field's TEXT lives only in the owner's render — no interior[] item anywhere in the scene may restate it.`,
     `   - motion: ONE sustained motion beat, tied BY NAME to an item in that element's interior list ("the progress bar fills to 62% as the status chip ticks over").`,
     `2. atmosphere — this scene's atmosphere treatment in at least 6 words. It MUST differ from the adjacent scenes' treatments: vary the mechanism (wash vs bands vs rays vs grain), not just the adjective.`,
+    `3. negativeSpace — one sentence (≥4 words) naming WHERE the deliberate emptiness lives on this frame (the quiet band, the margin, the gutter beside the focal object). Composed air, never a corner-clustered accident.`,
+    `4. budget — { brandMark, cta }: name the ONE element that owns the single brand mark and the ONE element that owns the single CTA (a role, "chrome", or "none"). Exactly one of each per scene.`,
     ``,
     `ACCENT DISCIPLINE: the brand accent is PUNCTUATION — chips, rules, badges, highlights, small buttons, data moments — never a panel fill. No interior item may describe a large accent-colored surface: an accent-filled panel, slab, column, or half-frame ships as a flat color block and a deterministic gate rejects it.`,
     ``,
@@ -185,7 +229,7 @@ export const buildCompositionPrompt = (
     `ADJACENT-SCENE VARIETY: adjacent scenes must not read as the same layout archetype more than 2 in a row — vary the hero's ARTIFACT TYPE (browser mock, phone frame, dashboard, chart panel, terminal, physical-object tableau) and its implied placement side scene to scene, so no three consecutive scenes ship the same split composition.`,
     ``,
     `OUTPUT: ONLY JSON — a single array of SceneComposition objects, one per scene, in scene order. No prose, no markdown fences, no keys beyond the contract:`,
-    `[{ "elements": [{ "role", "subject", "interior": [...], "ownsCopy": [...], "motion" }], "atmosphere" }]`,
+    `[{ "elements": [{ "role", "subject", "focalRank", "bounds": { "x", "y", "w", "h" }, "interior": [...], "ownsCopy": [...], "motion" }], "atmosphere", "negativeSpace", "budget": { "brandMark", "cta" } }]`,
     ``,
     `WORKED EXAMPLE — one scene, for an UNRELATED brand (a fictional coffee-subscription app):`,
     WORKED_EXAMPLE,
@@ -206,6 +250,7 @@ export const buildCompositionPrompt = (
 
   const n = script.narrative;
   const user = [
+    `Canvas: ${W}×${H}px (aspect ${aspect}) — author every element's bounds { x, y, w, h } on THIS canvas, optical center ~${cx},${cy}.`,
     opts.brandName ? `Brand: ${opts.brandName}` : "",
     opts.paletteHint ? `Palette: ${opts.paletteHint}` : "",
     opts.designNotes ? `Design notes: ${opts.designNotes}` : "",

@@ -418,6 +418,27 @@ export const stripMaskedValueRuns = (body: string): { code: string; stripped: nu
 };
 
 /**
+ * (d7) PLACEHOLDER-GLYPH emission gate (frame-authoring, 2026-07-17). A mock
+ * panel whose core VALUE fields are masked glyphs — "$———", a dash-only
+ * skeleton row ("— — —"), an X-masked number ("$X,XXX", "XX%") — ships as a
+ * broken, half-loaded product (the dark-on-dark murk's companion defect; v8's
+ * heroes were riddled with them). The reference's mocks are FULLY POPULATED, so
+ * this REJECTS a hero carrying any such glyph to the surgical repair with a
+ * verbatim error. Deliberately NOT the bullet-mask form ("•••"): that is the
+ * reference's own deliberate "order pending" narrative beat AND is separately
+ * collapsed by stripMaskedValueRuns — this gate targets the unambiguous
+ * broken-skeleton signatures only, so a legitimate diegetic pending state
+ * survives while a placeholder-riddled panel is rebuilt.
+ */
+export const MASKED_VALUE_GLYPH_RX =
+  /\$\s?[—–]{2,}|\$\s?[—–]\s?[—–]|[—–]\s?[—–]\s?[—–]|\$\s?X{1,3}(?![A-Za-z0-9])|\bX{1,3}(?:,X{3})+\b|\bXX+\s?%/;
+
+export const findMaskedValueGlyphs = (body: string): string[] => {
+  const g = new RegExp(MASKED_VALUE_GLYPH_RX.source, "gi");
+  return [...body.matchAll(g)].map((m) => m[0].trim());
+};
+
+/**
  * (d6) META-TEXT LEAK detector + strip (v11 — dogfood cycle 2, worst defect).
  * A regen emitted its chain-of-reasoning ("Looking at the QA findings: the
  * headline text … My wrapper is 720px wide starting at x=120 … I cap content
@@ -1958,7 +1979,14 @@ export const castBuild = async (
   const slug = slugify(throughline);
 
   const plans = script.scenes.map((scene) =>
-    composeSceneLayout({ register: scene.register, content: scene.content }, aspect, { hasThroughline }),
+    // Frame-authoring: pass the head's composition so composeSceneLayout
+    // consumes its authored bounds for the content slots (hero/copy) instead
+    // of the content-blind table.
+    composeSceneLayout(
+      { register: scene.register, content: scene.content, composition: scene.composition },
+      aspect,
+      { hasThroughline },
+    ),
   );
 
   // Connector casting. A scene WITH a composition is decided by the head:
@@ -2159,6 +2187,20 @@ export const castBuild = async (
               `the hero floor is ≥${PRE_RENDER_HERO_MIN_ELEMENTS} nested elements AND ≥${PRE_RENDER_HERO_MIN_TEXT} concrete visible text values ` +
               `(rows, chips, labels, timestamps, values that belong to the product). Rebuild this element as a real product ` +
               `artifact with a furnished interior — every inventory item in the brief visibly present, plus supporting diegetic chrome`,
+          };
+        }
+        // (d7) PLACEHOLDER-GLYPH floor: a mock panel whose value fields are
+        // masked skeletons ("$———", "$X,XXX", "XX%", "— — —") ships as a broken
+        // product — reject to the surgical repair with the offending glyphs.
+        const masked = findMaskedValueGlyphs(bindGuard.code);
+        if (masked.length > 0) {
+          return {
+            ok: false,
+            raw,
+            error:
+              `hero mock carries placeholder/skeleton value glyphs: ${[...new Set(masked)].slice(0, 4).map((g) => JSON.stringify(g)).join(", ")} — ` +
+              `every price, metric, and value in the panel must be a CONCRETE literal (e.g. "$18.50", "62%", "1,204") like a fully-loaded product, ` +
+              `never a masked/dashed placeholder that reads as a broken half-loaded UI`,
           };
         }
         // (g) Surface-contrast backstop: a hero whose every flat panel sits in

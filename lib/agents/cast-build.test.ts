@@ -42,6 +42,7 @@ import {
   repaintInteriorTextForSurface,
   themeFontFamilyNames,
   stripMaskedValueRuns,
+  findMaskedValueGlyphs,
   extractJsxTextSegments,
   isMetaTextSegment,
   stripMetaText,
@@ -1465,6 +1466,18 @@ await check("stripMetaText: a leaked font-name text node strips when theme names
   assert(withNames.code.includes("Built for you"), "real copy survives");
   const without = stripMetaText(body);
   assert(without.stripped.length === 0, "without the name vocab the node is untouched (backward-compatible)");
+});
+
+// ── Frame-authoring: placeholder-glyph emission floor (d7) ──────────────────
+await check("findMaskedValueGlyphs: masked/skeleton value glyphs are caught; concrete values pass", () => {
+  assert(findMaskedValueGlyphs(`<div>{"$———"}</div>`).length > 0, "dollar-dash skeleton is caught");
+  assert(findMaskedValueGlyphs(`<span>$X,XXX</span>`).length > 0, "X-masked currency is caught");
+  assert(findMaskedValueGlyphs(`<span>XX%</span>`).length > 0, "X-masked percent is caught");
+  assert(findMaskedValueGlyphs(`<td>— — —</td>`).length > 0, "dash-only skeleton row is caught");
+  // Concrete, fully-populated values (a real product panel) pass clean.
+  assert(findMaskedValueGlyphs(`<div><span>$18.50</span><span>62%</span><span>1,204 contacts</span><span>Ships Thu, Feb 12</span></div>`).length === 0, "concrete values never false-fire");
+  // An em-dash used as prose punctuation is not a masked value.
+  assert(findMaskedValueGlyphs(`<p>340 beans — 160 to a free bag</p>`).length === 0, "a lone prose em-dash is not a placeholder");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

@@ -129,6 +129,28 @@ Read your sections' \`headline\` fields in order, top to bottom, as one list. Th
 
 The COPY carries the story; the visuals dramatize it.
 
+### Cold-open on the reader's TENSION (HARD RULE — machine-checked)
+
+The single biggest voice tell that separates a premium piece from "AI slop" is HOW scene 0 opens. Get this right:
+
+- **The scene-0 headline states the reader's TENSION — never the brand name.** Open on the feeling, the friction, the cost, the moment the reader already lives. A brand-name opener ("Klarna", "[Brand]") is BANNED as the scene-0 headline — a static check rejects it. The brand mark belongs in the corner logo, an eyebrow, or the CLOSING scene, not as the hero headline that opens the story. (If you want the brand named early, put it in scene 0's \`eyebrow\` or let the corner logo carry it — the HEADLINE opens on tension.)
+- **Ledes are second-person, present-tense, concrete scene-setting.** Put the reader INSIDE the moment. Short declarative sentences that show, not tell.
+  - BAD (brand-led + benefit cliché): headline "Klarna" / lede "Discover a smarter way to pay, save, and stay on top of your money — all in one place."
+  - GOOD (tension-led + concrete scene): headline "You know the feeling" / lede "The cart is full. The total stares back. Your finger hovers."
+- **The turn / payoff headline names the RELIEF, not a bare numeral or the brand.** When the story turns, say what changes for the reader ("Approved in minutes", "The hesitation is gone") — not just a number floating alone.
+
+### Banned cliché family (HARD — machine-checked, rejected in any headline or lede)
+
+These generic marketing phrases read as filler and are REJECTED verbatim wherever they appear in a headline or lede. Never write them; say the specific, concrete thing instead:
+- "a smarter way to [X]"
+- "all in one place"
+- "[X] treated right" (e.g. "your money treated right")
+- "stay on top of your money"
+- "shop with confidence"
+- "everything you need"
+
+If you catch yourself reaching for one of these, you are labeling the moment instead of dramatizing it — rewrite it as a concrete second-person scene.
+
 ### Keep the story in the COPY and the SECTION ROLES — not inside visual_concept
 
 The storyline lives in three places: (1) \`narrative\`, (2) the progression of \`content\` across sections, (3) each \`scene.description\`'s role. It does NOT change how you write \`visual_concept\` — that stays composition-first (see "How to write a rich visual_concept"). Do not turn visual_concept into a narrated timeline; keep staging each section's composition and let the COPY + SEQUENCE carry the narrative.
@@ -561,14 +583,14 @@ narrative:
 - arc: "Open calm and self-assured on the brand, deliver the headline news, ground it in the 2x proof, lend it credibility with the lead investor, resolve on the invitation to read the full letter."
 - throughline: "A brand-purple glow that intensifies section by section — faint behind the opening logo, brightest behind the closing CTA — so momentum visibly builds toward the invitation."
 
-Notice how the headlines read top-to-bottom as a progression: "[Brand]" → "We raised $20M" → "2x" → "Led by Sequoia" → "Read the announcement". That is the story in the copy.
+Notice how the headlines read top-to-bottom as a progression — and scene 0 opens on the MOMENT, not the brand name: "The bet paid off" → "We raised $20M" → "2x" → "Led by Sequoia" → "Read the announcement". The brand mark lives in the eyebrow + corner logo, NEVER the opening headline (a brand-led scene-0 headline is rejected by the cold-open check).
 
 Structure (30s, 16:9, slow pacing, 5 scenes):
 
 Scene 0 (0-4s) — "Brand mark":
 - description: "Establish brand identity and set the calm, considered tone for the announcement."
 - visual_concept: "Composition: A centered logo sits above the brand wordmark with a thin horizontal accent bar in brand-purple beneath, all held in a faint navy-to-purple radial glow; the meta row (Series / Date) sits small along the base, and two decorative dots sit at varied depths in the dark backdrop.\nAnimations: Logo scaleIn at 0s (spring, duration 0.7s). Wordmark letter-spacing settle at 0.9s, duration 0.8s. Accent bar drawWidth 0→100% at 1.8s, duration 0.7s. Meta row fadeRise at 2.6s. The lockup glow breathes infinite (4s cycle) from 0s; the two backdrop dots drift infinite at varied depths from 0s."
-- content: { eyebrow: "ANNOUNCING", headline: "[Brand]", caption: "A message from the team", meta: [{label:"Series",value:"B"},{label:"Date",value:"Today"}], asset_ids: ["site_favicon"] }
+- content: { eyebrow: "[BRAND] · ANNOUNCING", headline: "The bet paid off", caption: "A message from the team", meta: [{label:"Series",value:"B"},{label:"Date",value:"Today"}], asset_ids: ["site_favicon"] }  (cold-open: the HEADLINE states the moment; the brand rides the eyebrow + corner logo)
 - (beat check: D=4s → latest beat 2.6s = 65% ≥ the 60% target ✓)
 
 Scene 1 (4-10s) — "The raise":
@@ -642,7 +664,7 @@ Structure (24s, 16:9, medium pacing, 5 scenes):
 Scene 0 (0-3s) — "Brand mark":
 - description: "Establish brand identity."
 - visual_concept: "Composition: A centered brand logo sits in the upper-third of the canvas with the brand wordmark beneath it. A thin horizontal accent bar in brand-color sits below the wordmark. A faint radial glow in the brand's primary color washes behind the logo. Two small decorative dots sit at varied positions in the dark backdrop.\nAnimations: Logo scaleIn at 0s, spring config (duration 0.7s). Wordmark letterSettle at 0.8s, duration 1s. Accent bar drawWidth 0→100% at 1.8s, duration 0.8s, ease-out-cubic. Radial glow loops infinite breathe (3s cycle, opacity 0.2→0.35→0.2) from 0s. Two decorative dots drift infinite with sin-based motion at varied speeds."
-- content: { eyebrow: "INTRODUCING", headline: "[Brand]", caption: "A new API for [the brand's product domain].", asset_ids: ["site_favicon"] }
+- content: { eyebrow: "[BRAND] · INTRODUCING", headline: "Fighting your tools again", caption: "A new API for [the brand's product domain].", asset_ids: ["site_favicon"] }  (cold-open: the HEADLINE opens on the engineer's friction; the brand rides the eyebrow + corner logo)
 
 Scene 1 (3-9s) — "The thesis":
 - description: "Establish what this is and what it's for in one sentence."
@@ -813,5 +835,7 @@ Each numbered item below is checked by a static validator the moment you submit.
 3. **FURNISHED INTERIORS** — any visual_concept naming a container (mock / window / panel / card / dashboard / browser) must ALSO name ≥2 specifics drawn INSIDE it (rows, labels, values, tabs, feed, chart, avatar, nav, fields, buttons, ...). "Three window mockups" with nothing named inside FAILS.
 4. **NO COPY-PASTE ATMOSPHERE** — the same motion/atmosphere phrase may not recur across 3+ scenes. The ambient examples in this prompt ("radial glow loops infinite breathe...", "dots drift infinite with sin-based motion...") are ILLUSTRATIVE — never copy them into your scenes. Tie each scene's sustained motion to a NAMED element of THAT scene (the tabs sway, the hub rotates, the terminal caret blinks).
 5. **CRAWLED IMAGES ARE NEVER MOCK-UI INTERIORS** — site_img_* / og_image / favicon assets may be referenced as logos, photos, or illustrations mounted BESIDE your composition, but NEVER planned as the interior of a mock window / panel / dashboard (an image pasted inside chrome renders flat or blank). Every mock interior must be DRAWN — name its rows, labels, values, tabs per item 3. Do not write "window showing site_img_0".
+6. **COLD-OPEN ON TENSION** — the scene-0 \`headline\` must state the reader's TENSION, NOT the brand name. A scene-0 headline that names the brand is REJECTED. Put the brand in scene 0's eyebrow / corner logo, or the closing scene; open the story on the feeling.
+7. **NO BENEFIT CLICHÉS** — no headline or lede may contain: "a smarter way to [X]", "all in one place", "[X] treated right", "stay on top of your money", "shop with confidence", or "everything you need". Each is REJECTED verbatim. Write the concrete, second-person, present-tense line instead.
 
 When you receive a brief, generate the Script JSON now.`;

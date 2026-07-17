@@ -402,5 +402,48 @@ await check("maxAttempts defaults to 3", async () => {
   assert(fake.calls.length === 3 && r.errors.length === 3, "one call + one logged error per attempt");
 });
 
+// ─── Frame-authoring: the head composes the whole frame ──────────────────────
+
+await check("system: the FRAME COMPOSITION clause — the head composes the whole frame", () => {
+  assert(system.includes("FRAME COMPOSITION"), "frame-composition section present");
+  assert(system.includes("1920×1080"), "the 16:9 canvas is stated");
+  assert(system.includes("ONE DOMINANT FOCAL OBJECT"), "the dominant-focal rule");
+  assert(system.includes("DELIBERATE NEGATIVE SPACE"), "the negative-space rule");
+  assert(system.includes("SINGULARITY BUDGET"), "the brand-mark/CTA budget rule");
+  assert(system.includes("optical center"), "optical-center placement demand");
+  assert(/corner/i.test(system), "the corner-cluster defect named");
+  assert(system.includes("focalRank") && system.includes("bounds"), "per-element focalRank + bounds named");
+  assert(system.includes("negativeSpace") && system.includes("budget"), "scene-level negativeSpace + budget named");
+});
+
+await check("output contract + user carry the new frame fields + the canvas", () => {
+  assert(
+    system.includes(`"focalRank"`) && system.includes(`"bounds"`) && system.includes(`"negativeSpace"`) && system.includes(`"budget"`),
+    "the OUTPUT shape lists focalRank/bounds/negativeSpace/budget",
+  );
+  assert(user.includes("Canvas: 1920×1080"), "the user prompt states the 16:9 canvas");
+});
+
+await check("buildCompositionPrompt threads the canvas per aspect (9:16 = 1080×1920)", () => {
+  const vertical = buildCompositionPrompt(script, { aspect: "9:16" });
+  assert(vertical.system.includes("1080×1920"), "vertical canvas in the system prompt");
+  assert(vertical.user.includes("Canvas: 1080×1920"), "vertical canvas in the user prompt");
+});
+
+await check("WORKED_EXAMPLE carries head-authored bounds + focalRank + negativeSpace + budget", () => {
+  const scene = (JSON.parse(WORKED_EXAMPLE) as SceneComposition[])[0] as SceneComposition & {
+    negativeSpace?: string;
+    budget?: { brandMark: string; cta: string };
+  };
+  assert(typeof scene.negativeSpace === "string" && scene.negativeSpace.trim().split(/\s+/).length >= 4, "negativeSpace present, ≥4 words");
+  assert(!!scene.budget && typeof scene.budget.brandMark === "string" && typeof scene.budget.cta === "string", "budget { brandMark, cta } present");
+  const hero = scene.elements.find((e) => e.role === "hero")!;
+  const copy = scene.elements.find((e) => e.role === "copy")!;
+  assert(hero.focalRank === 1, "the hero is focalRank 1");
+  assert(!!hero.bounds && !!copy.bounds, "hero + copy carry pixel bounds");
+  const cx = hero.bounds!.x + hero.bounds!.w / 2;
+  assert(Math.abs(cx - 960) <= 0.4 * 1920, "the focal hero is near the optical center, not corner-jammed");
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exitCode = 1;
