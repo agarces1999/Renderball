@@ -944,6 +944,8 @@ async function runCastPreviewBuild(args: {
       bump("occupancy-void", g.occupancy.findings.filter((x) => x.blocking).length);
       bump("text-contrast", g.textContrast.blocking.length);
       bump("skeleton", g.skeletonBars.filter((s) => s.blocking).length);
+      bump("icon-font-strip", g.iconFontStrips.length);
+      bump("orphaned-fragment", g.orphanedFragments.length);
       for (const v of g.vision) bump("vision", v.severe.length);
     };
     tallyRound(loop.gateRounds[0], fires);

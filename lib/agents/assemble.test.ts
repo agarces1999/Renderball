@@ -8,6 +8,7 @@
  */
 import { assembleComposition, clampPieceOffsets, type AssembleInput } from "./assemble";
 import { verifyCompilable } from "./code-extraction";
+import { decompose, reassemble, pieceCount } from "./lego-decompose";
 import type { Theme, SceneManifest, Piece } from "../edit/piece-model";
 
 let passed = 0;
@@ -122,6 +123,28 @@ await check("every emitted piece wrapper carries data-piece + data-kind (gate vi
 await check("emits the Generated alias rendering every Section", () => {
   assert(out.includes("export const Generated: React.FC<{ script: Script }>"), "Generated export");
   assert(out.includes("<Section0 script={script} />"), "Generated mounts Section0");
+});
+
+// ── cycle-9 P2: <Piece> markers → the LEGO decomposer works on cast output ──
+await check("wraps each non-chrome piece in a <Piece id kind> marker (+ imports the shim)", () => {
+  assert(out.includes('import { Piece } from "./Piece";'), "Piece shim imported");
+  assert(out.includes('<Piece id="s0.text" kind="text">'), "text piece wrapped");
+  assert(out.includes('<Piece id="s0.panel" kind="diegetic">'), "diegetic piece wrapped");
+  assert(out.includes('<Piece id="s0.bar" kind="diegetic" throughline="progress-bar">'), "throughline prop carried on the marker");
+  assert(out.includes('<Piece id="s0.atmos" kind="atmosphere">'), "atmosphere piece wrapped");
+  assert(!out.includes('id="s0.chrome"'), "chrome piece is NOT wrapped (Section emits <Chrome/>)");
+  // The SOURCE marker carries id=/kind=, NOT data-piece= — so every data-piece-keyed
+  // cast tool (pieceSpanInCode, clampPieceOffsets, forced-lift) still reads the inner div.
+  assert(!/<Piece[^>]*data-piece=/.test(out), "the <Piece> tag must not carry data-piece in source");
+});
+
+await check("cast output decomposes and round-trips byte-identically (lego editor unblocked)", () => {
+  const d = decompose(out);
+  assert(pieceCount(d) === 4, `expected 4 decomposable pieces (text/panel/bar/atmos), got ${pieceCount(d)}`);
+  assert(reassemble(d) === out, "decompose → reassemble must be byte-identical to the assembled composition");
+  const ids = d.scenes.flatMap((s) => s.pieces.map((p) => p.id)).sort();
+  assert(ids.includes("s0.text") && ids.includes("s0.panel") && ids.includes("s0.bar") && ids.includes("s0.atmos"),
+    `decomposed ids: ${ids.join(", ")}`);
 });
 
 await check("the assembled Composition.tsx COMPILES (esbuild tsx)", async () => {

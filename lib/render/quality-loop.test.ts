@@ -132,6 +132,21 @@ check("dropAccentsNearCanvas: unparseable canvas → no filtering", () => {
   const accents = ["#421d25"];
   assert(dropAccentsNearCanvas(accents, "not-a-hex").length === 1, "bad canvas → passthrough");
 });
+// cycle-9 P3: Tailscale light-minimal calibration — a LEGIT quiet/muted accent on
+// a light off-white canvas is well past ΔRGB 24 and MUST survive (the threshold is
+// tuned for near-identical monochrome tones only, never a real muted accent).
+check("dropAccentsNearCanvas: a quiet muted accent on a light off-white canvas is kept", () => {
+  // muted slate #6b7280 on off-white #f7f8fa — ΔRGB ≈ 229, far above the floor.
+  const kept = dropAccentsNearCanvas(["#6b7280"], "#f7f8fa");
+  assert(kept.length === 1 && kept[0] === "#6b7280", "quiet muted accent survives on a light canvas");
+});
+check("dropAccentsNearCanvas: only a near-canvas tint drops on a light palette", () => {
+  // a soft #eef0f3 tint IS indistinguishable from #f7f8fa (ΔRGB ≈ 14) → dropped;
+  // the visible muted accent #4b5563 (ΔRGB ≈ 250) → kept.
+  const kept = dropAccentsNearCanvas(["#eef0f3", "#4b5563"], "#f7f8fa");
+  assert(!kept.includes("#eef0f3"), "near-canvas tint dropped");
+  assert(kept.includes("#4b5563"), "visible muted accent kept");
+});
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exitCode = 1;

@@ -38,19 +38,44 @@ const CSS_FONT_FORMAT: Record<string, string> = {
 };
 const quoteFamily = (f: string): string => (/[^a-zA-Z0-9-]/.test(f) ? JSON.stringify(f) : f);
 
+/**
+ * Icon/symbol webfonts (Swiper's nav glyphs, FontAwesome, Material Icons/Symbols,
+ * Glyphicons…) ship pictographic glyphs, NOT letterforms — most map the ASCII
+ * letter range to blank/zero-width glyphs. When a crawl misclassifies one as a
+ * TEXT role, real copy renders as fragments: uppercase/digits/punctuation may
+ * survive (they, or nearby glyphs, sometimes exist) while lowercase vanishes.
+ * This is the cycle-8 P0 defect — Tony's crawl put "swiper-icons" in BOTH the
+ * display and body font_roles, and (because it is a data-URI it always loads)
+ * every headline/lede/bullet/caption collapsed to its leading capital + punct
+ * ("Decades of looking away" → "D", "Supply reports:…" → "S:"). Such a family
+ * must NEVER lead a text stack; filter it out of role assignment AND the faces.
+ */
+const ICON_FONT_RX =
+  /(?:^|[\s_-])(?:icons?|glyphs?|symbols?)(?:[\s_-]|$)|swiper|font\s*-?awesome|glyphicons?|material\s*-?(?:icons|symbols)|ionicons|fa-?(?:brands|solid|regular)|feather-?icons?|typicons|entypo|dashicons|icomoon|elusive-?icons?|foundation\s*-?icons|line-?awesome|remixicon|boxicons|simple-?line-?icons/i;
+
+/** True when a font family is an icon/symbol webfont (never valid for text). */
+export const isIconFont = (family: string | undefined): boolean =>
+  !!family && ICON_FONT_RX.test(family.trim());
+
 /** Theme fonts from the brand crawl: role-classified families lead their
  *  stacks; @font-face CSS is built from the crawled srcs (data:-inlined later
- *  at finalize so the measure/vision path loads them CORS-free). */
+ *  at finalize so the measure/vision path loads them CORS-free). Icon/symbol
+ *  fonts are excluded from every text role AND the faces (cycle-9 P0 fix). */
 export const fontsFromCrawl = (be: AgentBrandExtract | undefined): Theme["fonts"] => {
   const fam = be?.fonts ?? [];
   const roles = be?.font_roles ?? {};
-  const display = roles.display ?? fam[0]?.family;
-  const body = roles.body ?? roles.display ?? fam[1]?.family ?? fam[0]?.family;
-  const mono = roles.mono;
+  // Never let an icon font lead a TEXT stack: ignore an icon-font role
+  // assignment and fall through to the first REAL text family in the crawl.
+  const textFam = fam.filter((f) => f.family && !isIconFont(f.family));
+  const roleOrText = (r: string | undefined): string | undefined =>
+    r && !isIconFont(r) ? r : undefined;
+  const display = roleOrText(roles.display) ?? textFam[0]?.family;
+  const body = roleOrText(roles.body) ?? roleOrText(roles.display) ?? textFam[1]?.family ?? textFam[0]?.family;
+  const mono = roleOrText(roles.mono);
   const stack = (primary: string | undefined, fallback: string): string =>
     primary ? `${quoteFamily(primary)}, ${fallback}` : fallback;
   const faces = fam
-    .filter((f) => f.family && f.src)
+    .filter((f) => f.family && f.src && !isIconFont(f.family))
     .map((f) => {
       const fmt = f.format ? CSS_FONT_FORMAT[f.format.toLowerCase()] ?? f.format : undefined;
       return `@font-face { font-family: ${JSON.stringify(f.family)}; src: url("${f.src}")${fmt ? ` format("${fmt}")` : ""};${f.weight ? ` font-weight: ${f.weight};` : ""}${f.style ? ` font-style: ${f.style};` : ""} font-display: swap; }`;

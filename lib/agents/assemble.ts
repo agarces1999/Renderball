@@ -159,9 +159,22 @@ const emitPiece = (piece: Piece, sceneIndex: number, resolve: PieceBodyResolver,
   // those measured fields — omit these and the gates fail open on assembled output.
   const pieceAttrs = ` data-piece=${JSON.stringify(piece.id)} data-kind=${JSON.stringify(piece.kind)}`;
 
+  // cycle-9 P2: wrap the positioned wrapper in a transparent <Piece> marker so the
+  // deterministic LEGO decomposer (lego-decompose keys on `<Piece id kind>`) can
+  // split the cast composition into editable per-piece files, exactly like the
+  // monolithic path. The Piece shim renders display:contents (zero layout box —
+  // pixel-identical) and its SOURCE tag carries `id=`/`kind=`, NOT `data-piece=`,
+  // so every source-keyed cast tool (pieceSpanInCode, clampPieceOffsets,
+  // forceHeroSurfaceLift, measure's data-piece anchor) still reads the inner
+  // positioned <div data-piece> unchanged.
+  const throughProp = piece.throughlineSlug ? ` throughline=${JSON.stringify(piece.throughlineSlug)}` : "";
+  const pieceOpen = `${pad}<Piece id=${JSON.stringify(piece.id)} kind=${JSON.stringify(piece.kind)}${throughProp}>`;
+  const pieceClose = `${pad}</Piece>`;
+  const wrap = (inner: string): string => `${pieceOpen}\n${inner}\n${pieceClose}`;
+
   if (piece.kind === "atmosphere") {
     // Full-bleed decorative layer; bounds.z controls stacking (glow under, grain over).
-    return `${pad}<div${pieceAttrs} style={{ position: "absolute", inset: 0, zIndex: ${b.z}, pointerEvents: "none" }}>\n${pad}${INDENT}${body}\n${childMarkup ? childMarkup + "\n" : ""}${pad}</div>`;
+    return wrap(`${pad}<div${pieceAttrs} style={{ position: "absolute", inset: 0, zIndex: ${b.z}, pointerEvents: "none" }}>\n${pad}${INDENT}${body}\n${childMarkup ? childMarkup + "\n" : ""}${pad}</div>`);
   }
 
   const sizing =
@@ -173,7 +186,7 @@ const emitPiece = (piece: Piece, sceneIndex: number, resolve: PieceBodyResolver,
     : "";
   // Co-locate data-throughline AND literal px left/top on this same wrapper so
   // assessContinuity's pxAnchor + assessThroughlinePresence still read them.
-  return `${pad}<div${pieceAttrs}${throughAttr} style={{ position: "absolute", left: ${b.x}, top: ${b.y}, ${sizing}, zIndex: ${b.z} }}>\n${pad}${INDENT}${body}\n${childMarkup ? childMarkup + "\n" : ""}${pad}</div>`;
+  return wrap(`${pad}<div${pieceAttrs}${throughAttr} style={{ position: "absolute", left: ${b.x}, top: ${b.y}, ${sizing}, zIndex: ${b.z} }}>\n${pad}${INDENT}${body}\n${childMarkup ? childMarkup + "\n" : ""}${pad}</div>`);
 };
 
 const emitSection = (scene: SceneManifest, resolve: PieceBodyResolver): string => {
@@ -263,6 +276,7 @@ ${scenes.map((s) => `${INDENT}<Section${s.scene} script={script} />`).join("\n")
 
   return `import React from "react";
 import { Img } from "./Img";
+import { Piece } from "./Piece";
 import { BrandChrome } from "./BrandChrome";
 
 interface Script {

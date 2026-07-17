@@ -89,6 +89,13 @@ import {
 } from "./hero-contrast";
 import { findSkeletonBars, type SkeletonBarFinding } from "./skeleton-bars";
 import {
+  findIconFontTextStacks,
+  stripIconFontsFromTextStacks,
+  findOrphanedFragments,
+  type IconFontStackFinding,
+  type OrphanedFragmentFinding,
+} from "./text-integrity";
+import {
   assessAccentFill,
   type AccentFillFinding,
   type AccentFillResult,
@@ -205,6 +212,13 @@ export interface StrayFragmentEvent {
   detail: string;
 }
 
+/** cycle-9 P1: icon-font-in-a-text-role stripped from the assembled Composition. */
+export interface IconFontStripEvent {
+  round: number;
+  site: string;
+  family: string;
+}
+
 /** v13 (#5): bind-in-place ledger. */
 export interface BindCopyEvent {
   round: number;
@@ -259,6 +273,10 @@ export interface GateRoundReport {
     errors: string[];
   };
   strayFragments: StrayFragmentEvent[];
+  /** cycle-9 P1: icon fonts stripped out of text stacks this round (deterministic). */
+  iconFontStrips: IconFontStripEvent[];
+  /** cycle-9 P1: measured orphaned copy fragments (blocking). */
+  orphanedFragments: OrphanedFragmentFinding[];
   vision: SceneVisionVerdict[];
   targets: { pieceId: string; feedback: string[] }[];
 }
@@ -285,6 +303,8 @@ export interface Round0Report {
   textContrastBlocking: number;
   textContrastAdvisory: number;
   strayFragments: number;
+  iconFontStrips: number;
+  orphanedFragments: number;
   structural: number;
   rtBlocking: number;
   visionSevereScenes: number[];
@@ -398,6 +418,7 @@ export interface QualityLoopResult {
     washoutLiftEvents: WashoutLiftEvent[];
     imgSwapEvents: ImgSwapEvent[];
     strayFragmentEvents: StrayFragmentEvent[];
+    iconFontStripEvents: IconFontStripEvent[];
     bindCopyEvents: BindCopyEvent[];
     noProgressEvents: NoProgressEvent[];
     cacheBustEvents: CacheBustEvent[];
@@ -735,6 +756,7 @@ export async function runQualityLoop(
   const washoutLiftEvents: WashoutLiftEvent[] = [];
   const imgSwapEvents: ImgSwapEvent[] = [];
   const strayFragmentEvents: StrayFragmentEvent[] = [];
+  const iconFontStripEvents: IconFontStripEvent[] = [];
   const bindCopyEvents: BindCopyEvent[] = [];
   const edgeCropEvents: EdgeCropEvent[] = [];
   const regenHistory = new Map<string, { cls: FailureClass; value: number; aux: number; escalated: boolean }>();
@@ -894,6 +916,29 @@ export async function runQualityLoop(
       hooks.onFinalize?.(round, info);
       return bind.code;
     });
+
+    // cycle-9 P1 (arm 1): ICON-FONT-IN-A-TEXT-ROLE. An icon/symbol webfont
+    // leading a text stack (Tony's swiper-icons in FONT_DISPLAY+FONT_BODY —
+    // cycle-8 P0) renders copy as fragments while the DOM text stays full, so
+    // no measured gate sees it. Detect it on the assembled source and strip it
+    // DETERMINISTICALLY (zero tokens) before measuring — the crawl-theme fix
+    // stops it at the source; this is the belt-and-suspenders that also catches
+    // an icon font reaching the code any other way (inline fontFamily, a mock).
+    const iconFontStacks = findIconFontTextStacks(finalCode);
+    if (iconFontStacks.length > 0) {
+      const strip = stripIconFontsFromTextStacks(finalCode);
+      for (const s of strip.stripped) iconFontStripEvents.push({ round, site: s.site, family: s.family });
+      if (strip.stripped.length > 0) {
+        finalCode = strip.code;
+        for (const [pid, body] of pieceCache) {
+          const s2 = stripIconFontsFromTextStacks(body);
+          if (s2.stripped.length > 0) pieceCache.set(pid, s2.code);
+        }
+        warn(
+          `  [icon-font] stripped icon/symbol font(s) from ${strip.stripped.length} text stack(s) [${[...new Set(strip.stripped.map((s) => `${s.site}:${s.family}`))].join(", ")}] — copy now renders in a letterform font (deterministic, zero tokens)`,
+        );
+      }
+    }
 
     if (!genDirReady) {
       await hooks.ensureGenDir();
@@ -1197,6 +1242,19 @@ export async function runQualityLoop(
         `${textContrast.errors.length ? ` · errors: ${textContrast.errors.join(" | ")}` : ""}`,
     );
 
+    // (b7) cycle-9 P1 (arm 2): ORPHANED COPY FRAGMENTS — a copy node rendered as
+    // a lone char / value-less label-colon / dotted initials (a bind/emit
+    // truncation). Blocking; routed to the owning copy piece for a fresh regen.
+    const orphanedFragments = measurements.flatMap((m) => findOrphanedFragments(m));
+    if (orphanedFragments.length > 0) {
+      for (const f of orphanedFragments) {
+        structural.push({ scene: f.scene, key: "orphaned_fragment", detail: f.detail });
+      }
+      log(
+        `  orphaned-fragments: ${orphanedFragments.length} [${orphanedFragments.map((f) => `${f.pieceId}:"${f.text}"`).join(", ")}]`,
+      );
+    }
+
     // (c) per-scene vision.
     const vision = hooks.runPerSceneVision
       ? await phase(`vision-r${round}`, () => hooks.runPerSceneVision!(measurements, script, brandTruth))
@@ -1232,6 +1290,15 @@ export async function runQualityLoop(
     for (const a of textContrast.advisories) {
       targets.get(a.pieceId)?.push(`[advisory/text-contrast] ${a.repairInstruction}`);
     }
+    // cycle-9 P1 (arm 2): orphaned fragments are BLOCKING — route each to its
+    // owning copy piece (falls back to s{scene}.copy → s{scene}.hero via `add`).
+    for (const f of orphanedFragments) {
+      let id = f.pieceId;
+      if (!validPieceIds.has(id)) id = `s${f.scene}.copy`;
+      if (!validPieceIds.has(id)) id = `s${f.scene}.hero`;
+      if (!validPieceIds.has(id)) continue;
+      targets.set(id, [...(targets.get(id) ?? []), `[text-integrity/orphaned-fragment] ${f.detail}\n${f.repairInstruction}`]);
+    }
 
     const gateRound: GateRoundReport = {
       round,
@@ -1264,6 +1331,8 @@ export async function runQualityLoop(
         errors: textContrast.errors,
       },
       strayFragments: strayFragmentEvents.filter((e) => e.round === round),
+      iconFontStrips: iconFontStripEvents.filter((e) => e.round === round),
+      orphanedFragments,
       vision,
       targets: [...targets.entries()].map(([pieceId, feedback]) => ({ pieceId, feedback })),
     };
@@ -1292,6 +1361,8 @@ export async function runQualityLoop(
         textContrastBlocking: textContrast.findings.length,
         textContrastAdvisory: textContrast.advisories.length,
         strayFragments: strayFragmentEvents.filter((e) => e.round === 0).length,
+        iconFontStrips: iconFontStripEvents.filter((e) => e.round === 0).length,
+        orphanedFragments: orphanedFragments.length,
         structural: structural.length,
         rtBlocking: rt.blocking.length,
         visionSevereScenes: vision.filter((v) => v.severe.length > 0).map((v) => v.scene),
@@ -1465,7 +1536,7 @@ export async function runQualityLoop(
     finalContrast,
     finalAccentFill,
     pieceCache,
-    events: { edgeCropEvents, washoutLiftEvents, imgSwapEvents, strayFragmentEvents, bindCopyEvents, noProgressEvents, cacheBustEvents },
+    events: { edgeCropEvents, washoutLiftEvents, imgSwapEvents, strayFragmentEvents, iconFontStripEvents, bindCopyEvents, noProgressEvents, cacheBustEvents },
     finalize,
     ...(castRoundError ? { castRoundError } : {}),
   };

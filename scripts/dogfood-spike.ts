@@ -134,6 +134,7 @@ import {
   type VisionFinding,
 } from "../lib/render/vision-gate";
 import { callZaiVision } from "../lib/render/zai-vision";
+import { isIconFont } from "../lib/render/crawl-theme";
 import { VISION_MODEL } from "../lib/anthropic";
 import { costUsd, addUsage, EMPTY_USAGE, type Usage } from "../lib/usage";
 import { resolveCanvasPlan, signatureWithLogoFallback } from "../lib/crawl/brand-identity";
@@ -824,13 +825,19 @@ const quoteFamily = (f: string): string => (/[^a-zA-Z0-9-]/.test(f) ? JSON.strin
 const fontsFromCrawl = (be: AgentBrandExtract | undefined): Theme["fonts"] => {
   const fam = be?.fonts ?? [];
   const roles = be?.font_roles ?? {};
-  const display = roles.display ?? fam[0]?.family;
-  const body = roles.body ?? roles.display ?? fam[1]?.family ?? fam[0]?.family;
-  const mono = roles.mono;
+  // cycle-9 P0: an icon/symbol font (swiper-icons, FontAwesome, …) must never
+  // lead a TEXT stack — it has no letterforms, so real copy renders as
+  // fragments. Ignore an icon-font role and fall through to a real text family.
+  const textFam = fam.filter((f) => f.family && !isIconFont(f.family));
+  const roleOrText = (r: string | undefined): string | undefined =>
+    r && !isIconFont(r) ? r : undefined;
+  const display = roleOrText(roles.display) ?? textFam[0]?.family;
+  const body = roleOrText(roles.body) ?? roleOrText(roles.display) ?? textFam[1]?.family ?? textFam[0]?.family;
+  const mono = roleOrText(roles.mono);
   const stack = (primary: string | undefined, fallback: string): string =>
     primary ? `${quoteFamily(primary)}, ${fallback}` : fallback;
   const faces = fam
-    .filter((f) => f.family && f.src)
+    .filter((f) => f.family && f.src && !isIconFont(f.family))
     .map((f) => {
       const fmt = f.format ? CSS_FONT_FORMAT[f.format.toLowerCase()] ?? f.format : undefined;
       return `@font-face { font-family: ${JSON.stringify(f.family)}; src: url("${f.src}")${fmt ? ` format("${fmt}")` : ""};${f.weight ? ` font-weight: ${f.weight};` : ""}${f.style ? ` font-style: ${f.style};` : ""} font-display: swap; }`;
