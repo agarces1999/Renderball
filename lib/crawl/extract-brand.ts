@@ -7,9 +7,19 @@ import {
   snapHexToPixels,
 } from "./vision-brand";
 import { readLogoCache, writeLogoCache } from "./logo-cache";
-import { dominantSvgColor } from "./brand-identity";
+import { dominantSvgColor, signatureWithLogoFallback } from "./brand-identity";
 import { extractDesignLanguage } from "./design-language";
 import { safeFetch } from "./ssrf-guard";
+import {
+  assessBrandTruth,
+  dominantColorFromImageBytes,
+  isNeutralAccentHex,
+  verifyLogoChain,
+  verifyPageImages,
+  type BrandTruthReport,
+  type LogoChainResult,
+  type PageImageVerification,
+} from "./brand-truth";
 
 /**
  * Receives the model + token usage of every Anthropic call the crawl makes —
@@ -294,21 +304,93 @@ export const extractBrand = async (
   // crawl proceeds unchanged.
   const { site_screenshot, design_language } = await designP; // hoisted above
 
+  // ── v14 brand-truth verification (the Patagonia-failover class, at source) ──
+  // 1. LOGO DECODE: fetch+decode the chosen mark AND the fallback icons. A dead
+  //    candidate is blanked so pickLogo can't resurrect it at design time (the
+  //    naturalWidth=0 class caught here, not at render).
+  // 2. PHOTO VERIFICATION: page_images fetched+decoded in parallel (time-boxed
+  //    ~5s); dead entries dropped before they can reach preallocated assets.
+  // 3. ACCENT SANITY: when the resolved signature is neutral/missing, pull the
+  //    logo's dominant chromatic color from the bytes we just fetched.
+  // 4. Attach the structured BrandTruthReport. All best-effort — a probe
+  //    failure must never turn a good crawl into a failed one.
+  let logo_hd_final = logoResult?.url;
+  let logo_confidence_final = logoResult?.confidence;
+  let logo_source_final = logoResult?.source;
+  let favicon_final = favicon;
+  let apple_touch_final = apple_touch_icon;
+  let page_images_final = page_images;
+  let logo_color_final = logo_color;
+  let brand_truth: BrandTruthReport | undefined;
+  try {
+    const [logoChain, photoCheck]: [LogoChainResult, PageImageVerification] =
+      await Promise.all([
+        verifyLogoChain([logoResult?.url, apple_touch_icon, favicon]),
+        verifyPageImages(page_images, { budgetMs: 5_000 }),
+      ]);
+    // Blank every dead candidate — reject undecodable → next candidate → null.
+    const dead = new Set(logoChain.deadUrls);
+    if (logo_hd_final && dead.has(logo_hd_final)) {
+      logo_hd_final = undefined;
+      logo_confidence_final = undefined;
+      logo_source_final = undefined;
+    }
+    if (apple_touch_final && dead.has(apple_touch_final)) apple_touch_final = undefined;
+    if (favicon_final && dead.has(favicon_final)) favicon_final = undefined;
+    page_images_final = photoCheck.kept;
+    // Accent sanity: neutral/missing signature → logo dominant color fallback.
+    const sigNow = signatureWithLogoFallback(palette, theme_color, logo_color_final);
+    if ((sigNow === null || isNeutralAccentHex(sigNow)) && logoChain.effectiveBytes) {
+      const fromLogo = await dominantColorFromImageBytes(logoChain.effectiveBytes);
+      if (fromLogo && !isNeutralAccentHex(fromLogo)) logo_color_final = fromLogo;
+    }
+    brand_truth = assessBrandTruth(
+      {
+        url,
+        title,
+        description,
+        og_image,
+        theme_color,
+        favicon: favicon_final,
+        apple_touch_icon: apple_touch_final,
+        logo_hd: logo_hd_final,
+        logo_color: logo_color_final,
+        headlines,
+        body_excerpts,
+        page_images: page_images_final,
+        palette,
+        background_color,
+      },
+      { logo: logoChain, photos: photoCheck },
+    );
+  } catch {
+    // Verification is best-effort; fall back to the pure assessment.
+    try {
+      brand_truth = assessBrandTruth({
+        url, title, description, og_image, theme_color,
+        favicon: favicon_final, apple_touch_icon: apple_touch_final,
+        logo_hd: logo_hd_final, logo_color: logo_color_final,
+        headlines, body_excerpts, page_images: page_images_final,
+        palette, background_color,
+      });
+    } catch { /* the report is advisory — never fail the crawl over it */ }
+  }
+
   return {
     url,
     title,
     description,
     og_image,
     theme_color,
-    favicon,
-    apple_touch_icon,
+    favicon: favicon_final,
+    apple_touch_icon: apple_touch_final,
     headlines,
     body_excerpts,
-    page_images,
-    logo_hd: logoResult?.url,
-    logo_confidence: logoResult?.confidence,
-    logo_source: logoResult?.source,
-    logo_color,
+    page_images: page_images_final,
+    logo_hd: logo_hd_final,
+    logo_confidence: logo_confidence_final,
+    logo_source: logo_source_final,
+    logo_color: logo_color_final,
     fonts,
     font_roles,
     palette,
@@ -316,6 +398,7 @@ export const extractBrand = async (
     motion_signal,
     site_screenshot,
     design_language,
+    brand_truth,
     fetched_at,
     ok: true,
   };

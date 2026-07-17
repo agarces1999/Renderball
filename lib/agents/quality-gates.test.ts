@@ -1009,16 +1009,25 @@ check("bind-in-place: bullets and cta.primary bind with the right accessors; whi
   assert(r.code.includes("<button>{c.cta.primary}</button>"), "cta.primary bound");
 });
 
-check("bind-in-place: split retypes and attribute values are NEVER touched (conservative no-op)", () => {
+check("bind-in-place (v14): adjacent split spans that concatenate to an owned field bind via slice expressions", () => {
   const split = `export const Section0 = () => (<h1><span>Config</span><span> hell</span></h1>);`;
   const rs2 = bindLiteralCopyInPlace(split, copyScenes);
-  assert(rs2.code === split && rs2.bound.length === 0, "split spans must not bind");
+  assert(
+    rs2.code.includes("<span>{c.headline.slice(0, 6)}</span>"),
+    `first span binds its slice, got: ${rs2.code}`,
+  );
+  assert(
+    rs2.code.includes("<span> {c.headline.slice(7, 11)}</span>"),
+    `second span binds its slice with the leading space preserved, got: ${rs2.code}`,
+  );
+  assert(rs2.bound.length === 1 && rs2.bound[0].field === "headline", `ledger: ${JSON.stringify(rs2.bound)}`);
+  assert(findUnboundCopy(rs2.code, copyScenes).length === 0, "slice-bound code clears findUnboundCopy");
   const attr = `export const Section0 = () => (<Eyebrow text="the old way" />);`;
   const ra = bindLiteralCopyInPlace(attr, copyScenes);
   assert(ra.code === attr && ra.bound.length === 0, "attribute values must not bind");
 });
 
-check("bind-in-place: idempotent, section-scoped, and case-exact", () => {
+check("bind-in-place: idempotent, section-scoped; re-case binds ONLY through an exact transform (v14)", () => {
   const code = `export const Section0 = () => (<h6>the old way</h6>);
 export const Section1 = () => (<h6>the old way</h6>);`;
   const scenes2 = [copyScenes[0], { content: { headline: "Something else" } }];
@@ -1027,9 +1036,99 @@ export const Section1 = () => (<h6>the old way</h6>);`;
   assert(once.code.includes("Section1 = () => (<h6>the old way</h6>)"), "scene 1 does not own the field — untouched");
   const twice = bindLiteralCopyInPlace(once.code, scenes2);
   assert(twice.code === once.code && twice.bound.length === 0, "second pass is a no-op");
+  // v14: an ALL-CAPS retype of a lowercase field is expressible as an exact
+  // transform — it binds as {c.eyebrow.toUpperCase()} (identical glyphs render).
   const recased = `export const Section0 = () => (<h6>THE OLD WAY</h6>);`;
   const rc = bindLiteralCopyInPlace(recased, copyScenes);
-  assert(rc.code === recased, "re-cased literal is a styling choice — never bound (exact match only)");
+  assert(
+    rc.code.includes("<h6>{c.eyebrow.toUpperCase()}</h6>"),
+    `uppercase retype binds via toUpperCase, got: ${rc.code}`,
+  );
+  const rc2 = bindLiteralCopyInPlace(rc.code, copyScenes);
+  assert(rc2.code === rc.code, "re-case bind is idempotent");
+  // Title-case is NOT expressible as a whole-string transform — stays skipped.
+  const title = `export const Section0 = () => (<h6>The Old Way</h6>);`;
+  const rt = bindLiteralCopyInPlace(title, copyScenes);
+  assert(rt.code === title && rt.bound.length === 0, "title-case retype stays unbound (no exact transform)");
+});
+
+// ── bind-in-place v14 extensions (cycle-5 Patagonia residual classes) ───────
+
+check("bind-in-place (v14): whole-node literal preceded by a NEWLINE binds (the cycle-5 h1 shape)", () => {
+  const code = `export const Section0 = () => (
+  <h1
+    data-content-path="headline"
+    style={{ fontSize: 64 }}
+  >
+    Config hell
+  </h1>);`;
+  const r = bindLiteralCopyInPlace(code, copyScenes);
+  assert(
+    /,\n {2}>\n {4}\{c\.headline\}\n {2}<\/h1>/.test(r.code.replace(/\r/g, "")) ||
+      r.code.includes("{c.headline}"),
+    `newline-indented whole node binds, got: ${r.code}`,
+  );
+  assert(r.bound.length === 1 && r.bound[0].field === "headline", `ledger: ${JSON.stringify(r.bound)}`);
+  assert(findUnboundCopy(r.code, copyScenes).length === 0, "bound code clears findUnboundCopy");
+});
+
+check("bind-in-place (v14): three-span split with a styled separator binds (the cycle-5 cta.secondary shape)", () => {
+  const scenes = [{ content: { cta: { primary: "Go now", secondary: "Worn Wear · Repair, reuse, pass it on" } } }];
+  const code = `export const Section0 = () => (
+  <div data-content-path="hero.subline">
+    <span>Worn Wear</span>
+    <span style={{ color: '#666666' }}>·</span>
+    <span>Repair, reuse, pass it on</span>
+  </div>);`;
+  const r = bindLiteralCopyInPlace(code, scenes);
+  assert(
+    r.code.includes("<span>{c.cta.secondary.slice(0, 9)}</span>"),
+    `first span slice, got: ${r.code}`,
+  );
+  assert(
+    r.code.includes("<span style={{ color: '#666666' }}>{c.cta.secondary.slice(10, 11)}</span>"),
+    `separator span keeps its style attr and binds its slice, got: ${r.code}`,
+  );
+  assert(
+    r.code.includes("<span>{c.cta.secondary.slice(12, 37)}</span>"),
+    `third span slice, got: ${r.code}`,
+  );
+  const again = bindLiteralCopyInPlace(r.code, scenes);
+  assert(again.code === r.code && again.bound.length === 0, "split bind is idempotent");
+});
+
+check("bind-in-place (v14): composed labels that merely CONTAIN a field stay unbound (conservative)", () => {
+  // The cycle-5 s0 shape: eyebrow "IN THE WILD" rendered inside the piece's own
+  // composed label "Field Recordings · In the Wild" — that's the piece's text,
+  // not a retype; no transform reproduces it. Must never bind or mangle.
+  const scenes = [{ content: { eyebrow: "IN THE WILD" } }];
+  const code = `export const Section0 = () => (<div>
+    Field Recordings · In the Wild
+  </div>);`;
+  const r = bindLiteralCopyInPlace(code, scenes);
+  assert(r.code === code && r.bound.length === 0, `composed label untouched, got: ${r.code}`);
+});
+
+check("bind-in-place (v14): leading text + trailing punctuation span binds (the Glossier 'Come as you are<span>.</span>' shape)", () => {
+  const scenes = [{ content: { headline: "Come as you are." } }];
+  const code = `export const Section0 = () => (<h1>Come as you are<span>.</span></h1>);`;
+  const r = bindLiteralCopyInPlace(code, scenes);
+  assert(
+    r.code.includes(">{c.headline.slice(0, 15)}<span>{c.headline.slice(15, 16)}</span>"),
+    `text+span run binds via slices, got: ${r.code}`,
+  );
+});
+
+check("bind-in-place (v14): a sibling run that does NOT fully cover the field stays unbound", () => {
+  const scenes = [{ content: { headline: "Come as you are." } }];
+  // "Come as" + "you" ≠ the whole field (missing " are.") → skip.
+  const partial = `export const Section0 = () => (<h1>Come as<span>you</span></h1>);`;
+  const rp = bindLiteralCopyInPlace(partial, scenes);
+  assert(rp.code === partial && rp.bound.length === 0, "partial coverage must not bind");
+  // Segments out of order → skip.
+  const shuffled = `export const Section0 = () => (<h1>you are.<span>Come as</span></h1>);`;
+  const rs = bindLiteralCopyInPlace(shuffled, scenes);
+  assert(rs.code === shuffled && rs.bound.length === 0, "out-of-order segments must not bind");
 });
 
 check("bind-in-place: arrow-function '>' and JSX-structural values never mangle code", () => {

@@ -273,6 +273,10 @@ export interface BuildWarnings {
   throughline_absent?: { throughline: string; tagged: number; scenes: number };
   /** Broken/invented image URLs the integrity pass repaired (swapped or neutralized). */
   images_repaired?: { replaced: number; neutralized: number };
+  /** Brand-truth preflight degradations (v14) — the build proceeded, but the
+   *  cached brand extract is degraded (dead assets dropped, neutral accent,
+   *  failover-signal traces). Each entry is an independently actionable reason. */
+  brand_truth_degraded?: string[];
   /** Brand logo still rendered at >1 site after the structural retry (count of sites). */
   duplicate_logo?: number;
   /** Per-scene editorial eyebrows that appear ≥2× (chrome echo of the kicker). */

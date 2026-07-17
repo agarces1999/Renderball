@@ -12,6 +12,7 @@ import { verifyScenesRender } from "./ssr-render";
 import { measureScenes } from "./measure-scene";
 import { findRenderTruthFailures, measureOutDir } from "./render-truth-gates";
 import { resolveCanvasPlan } from "../crawl/brand-identity";
+import { preflightBrandTruth } from "../crawl/brand-truth";
 import { repairRenderTruth } from "./render-truth-repair";
 import {
   runVisionGate,
@@ -71,6 +72,57 @@ export async function runPreviewBuild(
   const brief = await loadBriefByScriptId(scriptId, ownerId);
   // brief is optional — without it the agents fall back to empty brand context.
 
+  // ── v14 BRAND-TRUTH PREFLIGHT (build entry, against the CACHED extract) ──
+  // Stored briefs carry cached extracts the crawl-time checks never saw, and
+  // even a healthy crawl goes stale (a logo URL that 200'd at crawl time can be
+  // dead at build time — the naturalWidth=0 class). Verify over the network
+  // (time-boxed), refuse on hardFail BEFORE any spend, act on the verification
+  // (drop dead photos / blank dead logo candidates, in-memory only), and carry
+  // degradations into the build warnings.
+  let brandTruthDegraded: string[] | undefined;
+  if (brief?.brand_extract?.ok) {
+    const userLogo = brief.brand_files?.find((f) => f.is_logo);
+    const truth = await preflightBrandTruth(brief.brand_extract, {
+      userLogoUrl: userLogo?.url,
+    });
+    if (truth.hardFail) {
+      console.error(
+        "[preview/build] brand-truth preflight HARD FAIL:",
+        truth.degraded.join(" · "),
+      );
+      return {
+        status: 422,
+        body: {
+          error: `The brand extract failed the brand-truth preflight: ${truth.degraded.join("; ")}. Re-crawl the brand's site (it may have been down or parked when crawled) or upload a logo and pick a brand color, then rebuild.`,
+          stage: "brand-truth-preflight",
+          brand_truth: truth as unknown as Record<string, unknown>,
+        },
+      };
+    }
+    if (truth.degraded.length > 0) {
+      console.warn("[preview/build] brand-truth DEGRADED:", truth.degraded.join(" · "));
+      brandTruthDegraded = truth.degraded;
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const bx = brief.brand_extract as any;
+    const deadPhotos = new Set(truth.signals.photos.deadUrls);
+    if (deadPhotos.size > 0 && Array.isArray(bx.page_images)) {
+      bx.page_images = bx.page_images.filter(
+        (p: { src?: string }) => !p?.src || !deadPhotos.has(p.src),
+      );
+    }
+    const rejectedLogos = new Set(truth.signals.logo.rejected.map((r) => r.url));
+    if (!userLogo && rejectedLogos.size > 0) {
+      if (bx.logo_hd && rejectedLogos.has(bx.logo_hd)) {
+        bx.logo_hd = undefined;
+        bx.logo_confidence = undefined;
+        bx.logo_source = undefined;
+      }
+      if (bx.apple_touch_icon && rejectedLogos.has(bx.apple_touch_icon)) bx.apple_touch_icon = undefined;
+      if (bx.favicon && rejectedLogos.has(bx.favicon)) bx.favicon = undefined;
+    }
+  }
+
   // Phase-boundary clock, persisted as <genDir>/build-timeline.json at the
   // end — the 57-min HubSpot run was unattributable because the only phase
   // data lived in discarded console logs. Never again.
@@ -102,6 +154,10 @@ export async function runPreviewBuild(
   const model = MODELS.codingAgentBuild;
   let currentUsage = result.usage ?? EMPTY_USAGE;
   let currentWarnings = result.warnings;
+  // Surface brand-truth degradations as build warnings (preview quality chips).
+  if (brandTruthDegraded && brandTruthDegraded.length > 0) {
+    currentWarnings = { ...(currentWarnings ?? {}), brand_truth_degraded: brandTruthDegraded };
+  }
 
   // Write the generated artifacts under src/generated/<scriptId>/ via the shared
   // writer — IDENTICAL layout to the MP4 path, so "Render to MP4" reuses this

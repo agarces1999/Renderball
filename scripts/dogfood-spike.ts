@@ -171,6 +171,7 @@ import { callZaiVision } from "../lib/render/zai-vision";
 import { VISION_MODEL } from "../lib/anthropic";
 import { costUsd, addUsage, EMPTY_USAGE, type Usage } from "../lib/usage";
 import { resolveCanvasPlan, signatureWithLogoFallback } from "../lib/crawl/brand-identity";
+import { preflightBrandTruth, type BrandTruthReport } from "../lib/crawl/brand-truth";
 import { SCRIPT_GENERATOR_SYSTEM_PROMPT } from "../lib/agents/prompts/script-generator";
 import {
   buildUserMessage,
@@ -1608,7 +1609,7 @@ const main = async (): Promise<void> => {
 
   const report: Record<string, unknown> = {
     experiment:
-      `DOGFOOD CYCLE ${CYCLE} (v12 batch): generalized acceptance8 runner on brief ${BRIEF_ID} (${TAG}) — CLASS-MATCHED no-progress breaker (progress judged on the finding class that targeted the piece; one escalation max, same-class failure after escalation accepts-and-flags), GATE→BACKSTOP washout closure (forced surface lift from MEASURED screenshot colors + re-measure; residuals regen with an explicit lighten/darken direction), cross-piece text collision generalized to any size pairing with role-split dual routing + the head's MOCK TERRITORY clause, broken-image swap at measure time (naturalWidth===0 → text wordmark + img_broken finding). All v10/v11 gates retained; same budget and retry discipline as acceptance8.`,
+      `DOGFOOD CYCLE ${CYCLE} (v14 batch): generalized acceptance8 runner on brief ${BRIEF_ID} (${TAG}) — BRAND-TRUTH INTEGRITY GATE (Lever A, production crawl code): failover/parked-page detection (URL tokens + outage boilerplate + sparse-core), logo decode-verification of the full fallback chain, accent sanity in HSL with logo-dominant-color fallback, page-image fetch+decode verification (dead entries dropped), all run at crawl time AND as a build-entry preflight against the CACHED extract (hardFail → build refused; degraded → report surfaced in build output + gallery). bindLiteralCopyInPlace extended to newline whole-node, exact re-case (toUpperCase/toLowerCase), and split-span slice-binding forms. All v9-v13 gates retained; same budget and retry discipline as acceptance8.`,
     briefId: BRIEF_ID,
     tag: TAG,
     cycle: CYCLE,
@@ -1725,12 +1726,43 @@ const main = async (): Promise<void> => {
     });
     const be = stored.brand_extract as unknown as AgentBrandExtract | undefined;
     if (!be?.ok) throw new Error("brief has no cached brand_extract — crawl the brand first (brand selection contract)");
+
+    // ── v14 BRAND-TRUTH PREFLIGHT (build entry, against the CACHED extract) ──
+    // The Patagonia incident: cycle 5 built an entire video from a CDN-failover
+    // page (accent #666666, logo null, zero photos). Stored briefs carry cached
+    // extracts that crawl-time checks never saw — so the gate runs HERE, with
+    // network verification (logo decode + photo probes, time-boxed).
+    const brandTruth = await phase("brand-truth-preflight", () => preflightBrandTruth(be));
+    report.brandTruth = brandTruth;
+    if (brandTruth.hardFail) {
+      console.error(`  ✗ BRAND-TRUTH HARD FAIL — refusing to build:`);
+      for (const r of brandTruth.degraded) console.error(`    · ${r}`);
+      throw new Error(
+        `BRAND-TRUTH PREFLIGHT HARD FAIL: ${brandTruth.degraded.join(" · ")}`,
+      );
+    }
+    if (brandTruth.degraded.length > 0) {
+      console.warn(`  ⚠ brand-truth DEGRADED (build proceeds; report surfaced in output + gallery):`);
+      for (const r of brandTruth.degraded) console.warn(`    · ${r}`);
+    } else {
+      console.log(
+        `  brand-truth preflight CLEAN — logo ${brandTruth.signals.logo.status} · accent ${brandTruth.signals.accent.resolved ?? "none"} · photos ${brandTruth.signals.photos.verified ?? "?"}/${brandTruth.signals.photos.listed} alive`,
+      );
+    }
+    // Act on the verification: dead cached photos never reach preallocated
+    // assets; the logo truth is the first candidate that actually DECODES.
+    if (brandTruth.signals.photos.deadUrls.length > 0 && be.page_images) {
+      const deadSet = new Set(brandTruth.signals.photos.deadUrls);
+      be.page_images = be.page_images.filter((p) => !deadSet.has(p.src));
+      console.warn(`  ⚠ dropped ${deadSet.size} dead page image(s) from the build input`);
+    }
+
     BRAND = be.title?.trim() || TAG;
     const canvasPlan = resolveCanvasPlan(be as Parameters<typeof resolveCanvasPlan>[0]);
     const signature =
       signatureWithLogoFallback(be.palette ?? [], be.theme_color, be.logo_color) ?? be.theme_color ?? (be.palette ?? [])[0] ?? "#666666";
     const crawlFonts = fontsFromCrawl(be);
-    const logoSrc = be.logo_hd ?? be.apple_touch_icon ?? be.favicon ?? undefined;
+    const logoSrc = brandTruth.signals.logo.effectiveUrl ?? undefined;
     report.brief = { projectId: stored.id, url: stored.brand_kit_url, brand: BRAND, brandExtractCached: true, canvasPlan, signature, fonts: { display: crawlFonts.display, body: crawlFonts.body, mono: crawlFonts.mono, fontFaces: (be.fonts ?? []).length }, logo: logoSrc ? logoSrc.slice(0, 120) : null };
 
     // ── canaries: ALL THREE transports before any real spend ─────────────────
@@ -2831,6 +2863,14 @@ const main = async (): Promise<void> => {
       ].join(" · ");
       report.headline = headline;
 
+      // v14: brand-truth preflight verdict — surfaced loudly in the gallery.
+      const truthRep = report.brandTruth as BrandTruthReport | undefined;
+      const brandTruthHtml = truthRep
+        ? truthRep.degraded.length === 0
+          ? `<div class="sub ok-line">brand-truth preflight: CLEAN — logo ${esc(truthRep.signals.logo.status)} · accent ${esc(truthRep.signals.accent.resolved ?? "none")} · photos ${truthRep.signals.photos.verified ?? "?"}/${truthRep.signals.photos.listed} alive${truthRep.signals.photos.timedOut ? ` (${truthRep.signals.photos.timedOut} probe timeout(s), kept)` : ""}</div>`
+          : `<div class="banner" style="background:#2a2114;border-color:#6b511f;color:#e8c05f"><b>BRAND-TRUTH ${truthRep.hardFail ? "HARD FAIL" : "DEGRADED"} (v14 preflight):</b> ${truthRep.degraded.map((d) => esc(d)).join(" · ")}</div>`
+        : `<div class="sub bad-line">brand-truth preflight: NOT RUN</div>`;
+
       const finalG = gateRounds[gateRounds.length - 1];
       const summary = finalG
         ? `final residuals: density ${finalG.density.length} · washout ${finalG.heroContrast.findings.length} · underscale ${finalG.heroUnderscale?.length ?? 0} · near-miss ${finalG.washoutNearMiss?.length ?? 0} · skeleton ${finalG.skeletonBars?.length ?? 0} · accent-as-fill ${finalG.accentFill.findings.length} · edge-crop ${finalG.edgeCrop.residual.length} · structural ${finalG.structural.length} · rt-blocking ${finalG.renderTruthBlocking.length} · vision-severe scenes [${finalG.vision.filter((v) => v.severe.length).map((v) => v.scene).join(", ") || "none"}] · sequence vision: detached (pending at publish)`
@@ -2886,7 +2926,11 @@ const main = async (): Promise<void> => {
   neighbor's territory, regens directly — no more clamp ricochets) · full-bleed vertical-fill head clause +
   register-aware barbell repair (full-bleed barbells route to the HERO) · logo-glyph count finding (&gt;1
   brand mark per hero mock) · interior-clip advisory (text protruding &gt;30% past its piece union) ·
-  sequence verdict fires on round-0 frames and threads into round-1+ regen prompts. All v10 gates retained.</div>
+  sequence verdict fires on round-0 frames and threads into round-1+ regen prompts. All v10 gates retained.
+  <b>V14:</b> BRAND-TRUTH integrity gate — failover/parked detection, logo decode, accent sanity, and photo
+  verification run at crawl time AND as a build-entry preflight against the cached extract (hardFail refuses
+  the build; degraded builds carry the report — the Patagonia-failover class).</div>
+  ${brandTruthHtml}
   <div class="sub">${esc(headline)}</div>
   <div class="sub">${esc(summary)}</div>
   <div class="sub">wall: script→preview ${wall.scriptToPreviewSeconds ?? "—"}s · cast wall ${wall.castWallSeconds}s · run total ${wall.totalRunSeconds.toFixed(1)}s ·

@@ -1577,11 +1577,107 @@ const accessorForField = (field: string): string | null => {
 
 const escapeRx = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
+// Inline wrapper tags whose adjacent siblings legitimately concatenate into one
+// copy string ("Worn Wear<span>·</span>Repair, reuse…" — the cycle-5 residual
+// class). Block-level tags never participate: a split across <div>s is layout,
+// not a retype of one field.
+const INLINE_SPLIT_TAGS = "span|em|strong|b|i";
+
+/**
+ * Bind a SPLIT retype: a run of raw text + adjacent inline siblings whose
+ * texts concatenate (whitespace-insensitively, case-exactly) to `value`.
+ * Each aligned segment becomes `{<accessor>.slice(a, b)}` over the VALUE's
+ * character positions — a render no-op by construction (the segment renders
+ * the identical characters; inter-segment whitespace was already collapsed by
+ * JSX, so slicing around it changes nothing). Conservative: any segment that
+ * fails to align contiguously (whitespace-only gaps allowed) skips the run.
+ */
+const bindSplitSpanRuns = (
+  section: string,
+  value: string,
+  accessor: string,
+): { section: string; count: number } => {
+  // A candidate run: `>` + optional raw text + 1..4 inline elements with
+  // text-only children, optionally separated by raw text, ending at a tag.
+  // Open tags allow braces in ATTRIBUTES (`style={{…}}` separators are the
+  // observed shape) — inner text must stay expression-free for alignment.
+  const runRe = new RegExp(
+    `(?<![=\\-])>([^<>{}]*)((?:<(?:${INLINE_SPLIT_TAGS})\\b[^<>]*>[^<>{}]*</(?:${INLINE_SPLIT_TAGS})>[^<>{}]*){1,4})(?=</?[A-Za-z])`,
+    "g",
+  );
+  let count = 0;
+  const out = section.replace(runRe, (full: string) => {
+    // Parse the run (minus the leading `>`) into ordered raw-text / tag parts.
+    const body = full.slice(1);
+    const partRe = new RegExp(
+      `(<(?:${INLINE_SPLIT_TAGS})\\b[^<>]*>)([^<>{}]*)(</(?:${INLINE_SPLIT_TAGS})>)`,
+      "g",
+    );
+    type Seg = { kind: "text" | "inner"; raw: string; open?: string; close?: string };
+    const segs: Seg[] = [];
+    let last = 0;
+    let pm: RegExpExecArray | null;
+    while ((pm = partRe.exec(body)) !== null) {
+      if (pm.index > last) segs.push({ kind: "text", raw: body.slice(last, pm.index) });
+      segs.push({ kind: "inner", raw: pm[2], open: pm[1], close: pm[3] });
+      last = pm.index + pm[0].length;
+    }
+    if (last < body.length) segs.push({ kind: "text", raw: body.slice(last) });
+
+    // Align every non-whitespace segment against VALUE with a cursor walk.
+    // Gaps in VALUE between segments must be whitespace-only (the separators
+    // JSX already collapses between sibling elements).
+    let cursor = 0;
+    let alignedCount = 0;
+    const spans: ({ a: number; b: number } | null)[] = segs.map((s) => {
+      const core = s.raw.trim();
+      if (core.length === 0) return null; // whitespace-only — preserved verbatim
+      const idx = value.indexOf(core, cursor);
+      if (idx < cursor || value.slice(cursor, idx).trim() !== "") return { a: -1, b: -1 };
+      cursor = idx + core.length;
+      alignedCount += 1;
+      return { a: idx, b: cursor };
+    });
+    const misaligned = spans.some((s) => s !== null && s.a === -1);
+    // Demand: full coverage of the value, ≥2 aligned segments (a single
+    // segment is the whole-node case, handled by the exact-match pass).
+    if (misaligned || alignedCount < 2 || value.slice(cursor).trim() !== "") return full;
+
+    count += 1;
+    const rebuilt = segs
+      .map((s, si) => {
+        const span = spans[si];
+        const bindOne = (raw: string, a: number, b: number): string => {
+          const lead = raw.slice(0, raw.length - raw.trimStart().length);
+          const trail = raw.slice(raw.trimEnd().length);
+          return `${lead}{${accessor}.slice(${a}, ${b})}${trail}`;
+        };
+        if (s.kind === "text") return span ? bindOne(s.raw, span.a, span.b) : s.raw;
+        return `${s.open}${span ? bindOne(s.raw, span.a, span.b) : s.raw}${s.close}`;
+      })
+      .join("");
+    return `>${rebuilt}`;
+  });
+  return { section: out, count };
+};
+
 /**
  * Bind literal copy retypes in the assembled composition to `c.<field>`
  * references. Returns the transformed code + a ledger of what bound. Pure and
  * conservative: any value containing JSX-structural characters, and any
- * occurrence that is not a whole child-text node, is skipped.
+ * occurrence that is not a whole child-text node (or an alignable split-span
+ * run / exact re-case), is skipped.
+ *
+ * v14 extensions (the cycle-5 residual classes):
+ *   • whole-node whitespace now spans NEWLINES — `>\n  Value\n</h1>` binds
+ *     (JSX collapses that whitespace identically around `{c.field}`);
+ *   • re-case forms bind through an exact transform — a literal that equals
+ *     value.toUpperCase() binds as `{c.field.toUpperCase()}` (same glyphs
+ *     render; the editor still propagates). Title-case and composed labels
+ *     ("Field Recordings · In the Wild" around an "IN THE WILD" eyebrow)
+ *     stay skipped — no expression reproduces them, and a composed label is
+ *     the piece's own text, not a retype;
+ *   • split-span runs bind via slice expressions (bindSplitSpanRuns above).
  */
 export const bindLiteralCopyInPlace = (
   code: string,
@@ -1603,17 +1699,35 @@ export const bindLiteralCopyInPlace = (
       if (/[<>{}\\]/.test(f.value) || /&[a-z#]+;/i.test(f.value)) continue; // JSX-structural / entity text — skip
       const accessor = accessorForField(f.field);
       if (!accessor) continue;
-      // Whole child-text node: `>` (not an arrow's) + optional ws + the exact
-      // value + optional ws + a real tag open/close. Whitespace kept verbatim.
-      const nodeRe = new RegExp(
-        `(?<![=\\-])>([ \\t]*)${escapeRx(f.value)}([ \\t]*\\n?[ \\t]*)(?=</?[A-Za-z])`,
-        "g",
-      );
+      // The literal→expression pairs this field can bind through, each an
+      // exact render no-op: the value itself, and its whole-string case
+      // transforms when they differ (re-case retypes, conservatively).
+      const variants: { literal: string; expr: string }[] = [
+        { literal: f.value, expr: accessor },
+      ];
+      const upper = f.value.toUpperCase();
+      const lower = f.value.toLowerCase();
+      if (upper !== f.value) variants.push({ literal: upper, expr: `${accessor}.toUpperCase()` });
+      if (lower !== f.value) variants.push({ literal: lower, expr: `${accessor}.toLowerCase()` });
       let count = 0;
-      section = section.replace(nodeRe, (_full, ws1: string, ws2: string) => {
-        count += 1;
-        return `>${ws1}{${accessor}}${ws2}`;
-      });
+      for (const v of variants) {
+        // Whole child-text node: `>` (not an arrow's) + whitespace (INCLUDING
+        // newlines — the indented-block form) + the exact literal + whitespace
+        // + a real tag open/close. Whitespace kept verbatim.
+        const nodeRe = new RegExp(
+          `(?<![=\\-])>([ \\t\\r\\n]*)${escapeRx(v.literal)}([ \\t\\r\\n]*)(?=</?[A-Za-z])`,
+          "g",
+        );
+        section = section.replace(nodeRe, (_full, ws1: string, ws2: string) => {
+          count += 1;
+          return `>${ws1}{${v.expr}}${ws2}`;
+        });
+      }
+      // Split-span retypes (case-exact): adjacent inline siblings that
+      // concatenate to the owned field bind through slice expressions.
+      const split = bindSplitSpanRuns(section, f.value, accessor);
+      section = split.section;
+      count += split.count;
       if (count > 0) bound.push({ scene: i, field: f.field, accessor, count });
     }
     out = out.slice(0, m.index) + section + out.slice(m.index + m[0].length);

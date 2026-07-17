@@ -228,6 +228,11 @@ export interface BrandExtract {
   site_screenshot?: string;
   /** Structured design-language brief read off the homepage screenshot (composition / type-treatment / mood). */
   design_language?: DesignLanguage;
+  /** Brand-truth integrity report computed at crawl time (v14): failover/parked
+   *  detection, logo decode, accent sanity, photo verification. Build entries
+   *  RE-run the preflight against cached extracts regardless — this field is
+   *  the crawl-time snapshot, not the gate. Type-only import: no runtime cycle. */
+  brand_truth?: import("../../lib/crawl/brand-truth").BrandTruthReport;
   fetched_at: string;
   ok: boolean;
   error?: string;
