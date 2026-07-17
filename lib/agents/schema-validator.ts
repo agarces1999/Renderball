@@ -210,9 +210,34 @@ export const extractStatClaims = (text: string): string[] => {
   return out;
 };
 
+/**
+ * A PLAIN currency amount ($243.00, $60.75, €18.50) with no magnitude suffix
+ * is a DIEGETIC PRICE — a cart total, an installment, a product price — not a
+ * marketing proof-stat. The invented-claim gate exists to catch fabricated
+ * SCALE claims (magnitude currency "$840M", percentages, latencies, "10x",
+ * funding stages); a plain price is a different class. But WHERE it appears
+ * matters: a price in a HEADLINE/lede/bullet/meta is still a claim surface and
+ * stays strict ("Save $18.50 every order" is a marketing claim). Only in a
+ * descriptive CAPTION — set-dressing text under the content (the reference S0
+ * caption is "checkout.store.com · SSL secured") — is a plain price exempt.
+ * That is the Klarna full-pipe fix: a generated checkout scene re-invents its
+ * own "$243.00" total and echoes it in the caption; the gate used to flag it
+ * and burn repair rounds forcing the model to strip a value it had no grounded
+ * alternative for. The exemption is opt-in (default strict) and NEVER weakens
+ * the scale guard: a magnitude suffix keeps its unit and still flows through
+ * grounding, and the ceiling rejects a spelled-out scale figure ("$5,000,000").
+ */
+export const DIEGETIC_PRICE_CEILING = 1_000_000;
+export const isDiegeticPrice = (claim: ParsedClaim): boolean =>
+  claim.kind === "stat" &&
+  claim.currency &&
+  claim.unit === null &&
+  claim.value < DIEGETIC_PRICE_CEILING;
+
 export const findUngroundedClaims = (
   scriptText: string,
   sourceText: string,
+  opts: { exemptDiegeticPrices?: boolean } = {},
 ): string[] => {
   const nums = indexSourceNumbers(sourceText);
   const percentiles = new Set(
@@ -222,6 +247,7 @@ export const findUngroundedClaims = (
   for (const token of extractStatClaims(scriptText)) {
     const claim = parseClaim(token);
     if (!claim) continue;
+    if (opts.exemptDiegeticPrices && isDiegeticPrice(claim)) continue;
     if (isGrounded(claim, nums, percentiles)) continue;
     out.push(token);
   }

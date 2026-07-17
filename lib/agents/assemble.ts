@@ -86,6 +86,7 @@ const HELPERS = `const Chrome = (p: { sceneIndex: number; totalScenes: number; s
     {...p}
     variant="corner"
     logoSrc={LOGO_SRC}
+    wordmark={BRAND_WORDMARK}
     ink={INK}
     accent={ACCENT}
     fontDisplay={FONT_DISPLAY}

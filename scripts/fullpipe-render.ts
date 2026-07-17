@@ -1,11 +1,13 @@
 /**
- * FRAME-AUTHORING isolation runner. Holds the SCRIPT constant (the 60-min GLM
- * reference build's own script.json) and runs the NEW frame-authoring head +
- * cast + the shared quality loop over it — so the ONLY variable vs the
- * reference frames is the composition/emission code this PR changed. Vision is
- * off (deterministic gates only); frames land in $OUT/frames/scene{0..4}.png.
+ * FULL-PIPELINE runner — the REAL product path, script GENERATED (not held
+ * constant). Loads the stored Klarna brief, builds the AgentBrief exactly as
+ * app/new/actions.ts does for a moments/wizard brief, runs generateScript
+ * (crawl-grounded), then the SAME frame-authoring head + cast + shared quality
+ * loop the isolation runner uses. This is the test that closes the loop: does a
+ * REAL generated script + the frame-authoring/hollow-hero/clutter fixes land
+ * at/near the 60-min reference? Vision OFF (deterministic gates only).
  *
- *   set -a && source .env.local && set +a && node scripts/frameauth-render.mjs
+ *   set -a && source .env.local && set +a && node scripts/fullpipe-render.mjs
  */
 import { promises as fs } from "fs";
 import path from "path";
@@ -16,8 +18,10 @@ import { deriveCrawlTheme } from "../lib/render/crawl-theme";
 import { neutralizeInk } from "../lib/agents/cast-build";
 import { generateComposition, type CompositionCaller } from "../lib/agents/composition-head";
 import { checkSceneComposition } from "../lib/agents/schema-validator";
-import { castCall } from "../lib/llm/cast-provider";
+import { generateScript, claimGroundingSources, sceneClaimCopyByStrictness } from "../lib/agents/script-generator";
+import { findUngroundedClaims } from "../lib/agents/schema-validator";
 import { resolveCornerBrandMark } from "../lib/agents/logo-inject";
+import { castCall } from "../lib/llm/cast-provider";
 import { measureScenes } from "../lib/render/measure-scene";
 import {
   IMG_SHIM_SOURCE,
@@ -26,17 +30,12 @@ import {
   LOTTIE_SHIM_SOURCE,
   BRAND_CHROME_SOURCE,
 } from "../lib/render/build-wrapper";
-import {
-  runQualityLoop,
-  type LoopScript,
-  type BrandTruthLite,
-} from "../lib/render/quality-loop";
+import { runQualityLoop, type LoopScript, type BrandTruthLite } from "../lib/render/quality-loop";
 import type { Script, Scene } from "../src/schema";
 
 const BRIEF_ID = process.env.RB_FA_BRIEF ?? "01KWTTE1XSW6BXXKSXPTBX9HDH";
-const REF_SCRIPT = process.env.RB_FA_SCRIPT ?? "src/generated/01KWTTHKKECT0GGZ6D7HBQP1R5/script.json";
-const OUT = process.env.RB_FA_OUT ?? path.join(process.cwd(), ".data", "dogfood", "frameauth-klarna");
-const GEN_DIR = path.join(process.cwd(), "src", "generated", "FRAMEAUTH_KLARNA");
+const OUT = process.env.RB_FP_OUT ?? path.join(process.cwd(), ".data", "dogfood", "fullpipe-klarna");
+const GEN_DIR = path.join(process.cwd(), "src", "generated", "FULLPIPE_KLARNA");
 const CAST_MODEL = process.env.RB_CAST_MODEL ?? "accounts/fireworks/routers/glm-5p2-fast";
 
 const t0 = Date.now();
@@ -47,34 +46,59 @@ const log = (m: string) => console.log(`[${((Date.now() - t0) / 1000).toFixed(1)
   await fs.mkdir(GEN_DIR, { recursive: true });
 
   const brief = await withDbRetry(() => loadBrief(BRIEF_ID, DEV_OWNER_ID));
+  if (!brief) throw new Error("brief not found");
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const be: any = (brief as any)?.brand_extract?.ok ? (brief as any).brand_extract : undefined;
+  const b: any = brief;
+  const be = b?.brand_extract?.ok ? b.brand_extract : undefined;
   const brand = (be?.title as string | undefined)?.trim() || "Klarna";
-  log(`brief ${BRIEF_ID} loaded — brand "${brand}"`);
+  log(`brief ${BRIEF_ID} loaded — brand "${brand}", freeform=${JSON.stringify(b.freeform_prompt)}, moments=${b.moments?.length ?? 0}`);
 
-  // The reference build's OWN script — strip any attached composition so the
-  // NEW head re-authors the frame from scratch.
-  const raw = JSON.parse(await fs.readFile(path.resolve(REF_SCRIPT), "utf8")) as Script;
+  // ── SCRIPT GENERATION (the product path — NOT held constant) ──
+  const agentBrief = {
+    duration_seconds: b.duration_seconds ?? 30,
+    distribution_format: b.distribution_format ?? "landscape",
+    moment_count: (b.moments?.length ?? 5) || 5,
+    brand_kit_url: b.brand_kit_url,
+    verified_claims: b.verified_claims,
+    brand_extract: be,
+    purpose: b.purpose,
+    moments: b.moments,
+    cta: b.cta,
+  };
+  log("generateScript starting (real product path)…");
+  const gen = await generateScript(agentBrief, BRIEF_ID);
+  if (!gen.ok) {
+    log(`SCRIPT-GEN FAILED: ${gen.error}`);
+    process.exit(2);
+  }
+  const src = claimGroundingSources(agentBrief);
+  const split = sceneClaimCopyByStrictness(gen.script.scenes);
+  const ung = [
+    ...findUngroundedClaims(split.strict, src),
+    ...findUngroundedClaims(split.caption, src, { exemptDiegeticPrices: true }),
+  ];
+  log(`script generated: ${gen.script.scenes.length} scenes; residual ungrounded (post-fix): ${JSON.stringify(ung)}`);
+  await fs.writeFile(path.join(OUT, "script.generated.json"), JSON.stringify(gen.script, null, 2), "utf8");
+  for (const [i, sc] of gen.script.scenes.entries()) {
+    const c = (sc.content ?? {}) as Record<string, unknown>;
+    log(`  S${i} [${sc.register ?? "?"}] HL=${JSON.stringify(c.headline)}`);
+  }
+
+  const raw = gen.script as Script;
   const script: Script = { ...raw, scenes: raw.scenes.map((s) => ({ ...s, composition: undefined })) };
   const aspect = (["16:9", "9:16", "1:1"].includes(script.config?.aspect_ratio ?? "")
     ? script.config!.aspect_ratio
     : "16:9") as "16:9" | "9:16" | "1:1";
-  log(`reference script: ${script.scenes.length} scenes, aspect ${aspect}, scene-0 headline ${JSON.stringify(script.scenes[0]?.content?.headline)}`);
 
   const canvasPlan = resolveCanvasPlan(be);
   const signature =
     signatureWithLogoFallback(be?.palette ?? [], be?.theme_color, be?.logo_color) ??
-    be?.theme_color ??
-    (be?.palette ?? [])[0] ??
-    "#666666";
+    be?.theme_color ?? (be?.palette ?? [])[0] ?? "#666666";
   const derived = deriveCrawlTheme(be, canvasPlan.background, canvasPlan.mode, signature, be?.palette ?? []);
-  const inkGuard = neutralizeInk(derived.theme);
-  const theme = inkGuard.theme;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const userLogo = (brief as any)?.brand_files?.find((f: { is_logo?: boolean }) => f.is_logo);
-  // App-icon-only brands (Klarna: appIcon.png) → corner wordmark, not a blank
-  // silhouetted square (resolveCornerBrandMark demotes apple_touch_icon/favicon).
+  const theme = neutralizeInk(derived.theme).theme;
+  const userLogo = b?.brand_files?.find((f: { is_logo?: boolean }) => f.is_logo);
   const { logoSrc } = resolveCornerBrandMark({ userLogoUrl: userLogo?.url, logoHd: be?.logo_hd, brandName: brand });
+  log(`corner logo resolved: ${logoSrc ? logoSrc : "(none → wordmark fallback)"}`);
 
   let usage = { input: 0, output: 0 };
   const track = (r: { inputTokens: number; outputTokens: number }) => {
@@ -82,7 +106,7 @@ const log = (m: string) => console.log(`[${((Date.now() - t0) / 1000).toFixed(1)
   };
 
   // ── HEAD (frame-authoring) ──
-  log("composition head (frame-authoring) starting…");
+  log("composition head starting…");
   const headCaller: CompositionCaller = async (call) => {
     const r = await castCall({ system: call.system, user: call.user, maxTokens: call.maxTokens, model: CAST_MODEL, effort: call.effort === "none" ? "low" : call.effort });
     track(r);
@@ -100,15 +124,9 @@ const log = (m: string) => console.log(`[${((Date.now() - t0) / 1000).toFixed(1)
   const composedScript = { ...script, scenes: composed.scenes };
   const residual = checkSceneComposition(composed.scenes, { aspect });
   log(`head: ${composed.attempts} attempt(s), ${residual.length} residual validation error(s)`);
-  await fs.writeFile(
-    path.join(OUT, "composition.json"),
-    JSON.stringify(composed.scenes.map((s, i) => ({ scene: i, composition: s.composition ?? null })), null, 2),
-    "utf8",
-  );
+  await fs.writeFile(path.join(OUT, "composition.json"), JSON.stringify(composed.scenes.map((s, i) => ({ scene: i, composition: s.composition ?? null })), null, 2), "utf8");
 
-  const accentHexes = [
-    ...new Set([derived.signatureAccent, theme.palette.ACCENT].filter((h): h is string => typeof h === "string" && /^#[0-9a-fA-F]{3,8}$/.test(h))),
-  ];
+  const accentHexes = [...new Set([derived.signatureAccent, theme.palette.ACCENT].filter((h): h is string => typeof h === "string" && /^#[0-9a-fA-F]{3,8}$/.test(h)))];
   const brandTruth: BrandTruthLite = { name: brand, backgroundColor: canvasPlan.background, accent: signature, fonts: [be?.font_roles?.display, be?.font_roles?.body].filter((f: unknown): f is string => !!f) };
 
   // ── CAST + shared quality loop (vision OFF; deterministic gates on) ──
@@ -135,7 +153,7 @@ const log = (m: string) => console.log(`[${((Date.now() - t0) / 1000).toFixed(1)
         track(r);
         return r;
       },
-      runPerSceneVision: undefined, // vision OFF — deterministic gates only
+      runPerSceneVision: undefined,
       ensureGenDir: async () => {
         await fs.mkdir(GEN_DIR, { recursive: true });
         await fs.writeFile(path.join(GEN_DIR, "Img.tsx"), IMG_SHIM_SOURCE, "utf8");
@@ -152,11 +170,9 @@ const log = (m: string) => console.log(`[${((Date.now() - t0) / 1000).toFixed(1)
     },
   );
   log(`cast loop done — ${loop.rounds + 1} round(s), round0 ${loop.round0?.passed ? "CLEAN" : "failed"}, castError=${loop.castRoundError?.error ?? "none"}`);
+  log(`motif-clutter events: ${JSON.stringify(loop.events.motifClutterEvents?.map((e) => `${e.pieceId}:${e.form}→${e.action}`) ?? [])}`);
 
-  // ── frames: RE-RENDER from the shipped finalCode so the deterministic
-  //    excisions applied in the final round (motif clutter, stray fragments)
-  //    show — the loop's finalMeasurements are captured BEFORE that round's
-  //    excision, so they would eyeball as stale. ──
+  // Re-render frames from the shipped finalCode so deterministic excisions show.
   await fs.writeFile(path.join(GEN_DIR, "Composition.tsx"), loop.finalCode, "utf8");
   const outMeasure = path.join(OUT, "_measure");
   await fs.mkdir(outMeasure, { recursive: true });
@@ -171,10 +187,10 @@ const log = (m: string) => console.log(`[${((Date.now() - t0) / 1000).toFixed(1)
   }
 
   await fs.writeFile(
-    path.join(OUT, "frameauth-summary.json"),
-    JSON.stringify({ brand, aspect, headAttempts: composed.attempts, headResidual: residual, rounds: loop.rounds + 1, round0Clean: loop.round0?.passed ?? false, telemetry: loop.roundTelemetry[loop.roundTelemetry.length - 1] ?? null, usage, wallSeconds: (Date.now() - t0) / 1000 }, null, 2),
+    path.join(OUT, "fullpipe-summary.json"),
+    JSON.stringify({ brand, aspect, scriptScenes: gen.script.scenes.length, residualUngrounded: ung, headAttempts: composed.attempts, headResidual: residual, rounds: loop.rounds + 1, round0Clean: loop.round0?.passed ?? false, motifClutter: loop.events.motifClutterEvents ?? [], telemetry: loop.roundTelemetry[loop.roundTelemetry.length - 1] ?? null, usage, wallSeconds: (Date.now() - t0) / 1000 }, null, 2),
     "utf8",
   );
   log(`DONE — frames in ${path.join(OUT, "frames")}; tokens in/out ${usage.input}/${usage.output}`);
   process.exit(0);
-})().catch((e) => { console.error("FRAMEAUTH RUNNER FAILED:", e); process.exit(1); });
+})().catch((e) => { console.error("FULLPIPE RUNNER FAILED:", e); process.exit(1); });

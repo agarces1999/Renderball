@@ -200,6 +200,34 @@ export const sceneClaimCopy = (
     .join(" \n ");
 
 /**
+ * The claim copy split by grounding STRICTNESS. The claim surfaces (headline,
+ * lede, eyebrow, bullets, meta stat-tiles) stay strict — an invented stat there
+ * is a marketing claim. The CAPTION is descriptive set-dressing text under the
+ * content ("checkout.store.com · SSL secured · $243.00 total"), so a plain
+ * diegetic price there is exempt (see findUngroundedClaims exemptDiegeticPrices).
+ * A token appearing in BOTH a strict field and the caption is still caught via
+ * the strict pass.
+ */
+export const sceneClaimCopyByStrictness = (
+  scenes: ReadonlyArray<{ content?: unknown }>,
+): { strict: string; caption: string } => {
+  const strictParts: string[] = [];
+  const captionParts: string[] = [];
+  for (const sc of scenes) {
+    const c = (sc.content ?? {}) as Record<string, unknown>;
+    const bullets = Array.isArray(c.bullets)
+      ? (c.bullets as unknown[]).map((b) => (typeof b === "string" ? b : (b as { text?: string })?.text || "")).join(" ")
+      : "";
+    const meta = Array.isArray(c.meta)
+      ? (c.meta as { value?: unknown }[]).map((m) => String(m?.value ?? "")).join(" ")
+      : "";
+    strictParts.push([c.headline, c.lede, c.eyebrow, bullets, meta].filter(Boolean).join(" "));
+    if (c.caption) captionParts.push(String(c.caption));
+  }
+  return { strict: strictParts.join(" \n "), caption: captionParts.join(" \n ") };
+};
+
+/**
  * Agent 1 — Script Generator.
  *
  * Takes a customer brief, returns a validated Script JSON.
@@ -366,7 +394,15 @@ export const generateScript = async (
       // "approved content" downstream. The agent gets the exact tokens to fix.
       const sourceText = claimGroundingSources(brief);
       const scriptCopy = sceneClaimCopy(validation.script.scenes);
-      const ungrounded = findUngroundedClaims(scriptCopy, sourceText);
+      // Claim surfaces strict; captions tolerate plain diegetic prices (a
+      // checkout total echoed under a mock is set dressing, not a proof stat) —
+      // the Klarna full-pipe fix, so a valid rich script isn't blocked forcing
+      // the model to strip a checkout figure it has no grounded alternative for.
+      const { strict: strictCopy, caption: captionCopy } = sceneClaimCopyByStrictness(validation.script.scenes);
+      const ungrounded = [
+        ...findUngroundedClaims(strictCopy, sourceText),
+        ...findUngroundedClaims(captionCopy, sourceText, { exemptDiegeticPrices: true }),
+      ].filter((t, i, a) => a.indexOf(t) === i);
       // QA G5: also catch a fabricated funding-stage label ("Series C" when the
       // brief only says "$250M funding round").
       const ungroundedStages = findUngroundedStageLabels(scriptCopy, sourceText);

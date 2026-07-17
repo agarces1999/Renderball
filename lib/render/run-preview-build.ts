@@ -16,6 +16,7 @@ import {
   BRAND_CHROME_SOURCE,
 } from "./build-wrapper";
 import { decomposeGenDir } from "../agents/lego-store";
+import { resolveCornerBrandMark } from "../agents/logo-inject";
 import { verifyScenesRender } from "./ssr-render";
 import { measureScenes } from "./measure-scene";
 import { findRenderTruthFailures, measureOutDir, type RenderTruthKind } from "./render-truth-gates";
@@ -733,8 +734,15 @@ async function runCastPreviewBuild(args: {
     const theme = inkGuard.theme;
 
     const userLogo = brief?.brand_files?.find((f: { is_logo?: boolean }) => f.is_logo);
-    const logoSrc: string | undefined =
-      userLogo?.url ?? be?.logo_hd ?? be?.apple_touch_icon ?? be?.favicon ?? undefined;
+    // Corner mark: a user logo / logo_hd renders as the image; an app-icon
+    // (apple_touch_icon / favicon) would silhouette to a blank white square, so
+    // it is demoted to the brand wordmark text (resolveCornerBrandMark). The
+    // app icon stays available to the hero as a preallocated asset.
+    const { logoSrc } = resolveCornerBrandMark({
+      userLogoUrl: userLogo?.url,
+      logoHd: be?.logo_hd,
+      brandName: brand,
+    });
 
     const aspect = (["16:9", "9:16", "1:1"].includes(script.config?.aspect_ratio ?? "")
       ? script.config!.aspect_ratio

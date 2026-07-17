@@ -83,6 +83,23 @@ check("multiplier + percent are stat-shaped and checked", () => {
   assert(u.includes("10x"), `expected 10x flagged, got ${JSON.stringify(u)}`);
 });
 
+// ── diegetic prices are set dressing, not proof claims (the Klarna full-pipe
+// fix: a generated checkout scene re-invents its own "$243.00 → 4× $60.75"
+// total; the plain currency amounts must not burn repair rounds). ──────────
+check("plain caption prices exempt WITH the opt-in flag; still strict by default", () => {
+  const caption = "Total $243.00 · Pay $60.75 today · €18.50 each";
+  assert(findUngroundedClaims(caption, "", { exemptDiegeticPrices: true }).length === 0, "opt-in → prices exempt in caption");
+  assert(findUngroundedClaims(caption, "").length === 3, "default is STILL strict (copy is a claim surface)");
+});
+check("magnitude currency is a scale claim even WITH the exemption (guard not weakened)", () => {
+  const u = findUngroundedClaims("We process $840M every year", "Klarna helps you shop.", { exemptDiegeticPrices: true });
+  assert(u.includes("$840M"), `magnitude currency still flagged, got ${JSON.stringify(u)}`);
+});
+check("a spelled-out scale figure is flagged even WITH the exemption (above the ceiling)", () => {
+  const u = findUngroundedClaims("$5,000,000 processed", "Klarna helps you shop.", { exemptDiegeticPrices: true });
+  assert(u.some((t) => t.includes("5,000,000")), `above the price ceiling → flagged, got ${JSON.stringify(u)}`);
+});
+
 // ── S5 tightened (the fabricated-38ms fix): full-token grounding ─────────
 // Raycast's crawl says "Fast. Think in milliseconds." and "99.8% crash-free
 // rate" — it contains NO latency number. Sonnet invented "38ms" / "38ms p50"

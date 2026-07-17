@@ -10,7 +10,7 @@
  *
  * Run: `npm test`. No API key, no network.
  */
-import { injectLogoSrc, LOGO_SENTINEL } from "./logo-inject";
+import { injectLogoSrc, LOGO_SENTINEL, resolveCornerBrandMark, brandWordmarkText } from "./logo-inject";
 import * as esbuild from "esbuild";
 
 const SRC = "https://corgi.insure/images/corgi%20logo%20vector.svg";
@@ -154,6 +154,44 @@ await check("undefined logoSrc + sentinel → sentinel collapses to empty (falsy
 await check("undefined logoSrc + no reference → code returned unchanged", () => {
   const code = 'import { AbsoluteFill } from "remotion";\nexport const S = () => <AbsoluteFill />;';
   assert(injectLogoSrc(code, undefined) === code, "unreferenced no-logo code untouched");
+});
+
+// ── corner-mark resolution + wordmark fallback (the Klarna white-square fix) ──
+await check("brandWordmarkText strips a crawl-title tagline", () => {
+  assert(brandWordmarkText("Klarna US - A secure, flexible way to manage your money") === "Klarna US", "tagline stripped");
+  assert(brandWordmarkText("Linear – Plan and build") === "Linear", "en-dash separator");
+  assert(brandWordmarkText("Liquid Death") === "Liquid Death", "no separator → whole name");
+  assert(brandWordmarkText("") === undefined, "empty → undefined");
+});
+
+await check("resolveCornerBrandMark: app-icon-only brand → wordmark, no image (Klarna appIcon)", () => {
+  const r = resolveCornerBrandMark({ brandName: "Klarna US - manage your money" });
+  assert(r.logoSrc === undefined && r.wordmark === "Klarna US", `app-icon brand → wordmark, got ${JSON.stringify(r)}`);
+});
+
+await check("resolveCornerBrandMark: a real logo_hd renders as the image, no wordmark", () => {
+  const r = resolveCornerBrandMark({ logoHd: "https://x/logo.svg", brandName: "Acme" });
+  assert(r.logoSrc === "https://x/logo.svg" && r.wordmark === undefined, `logo image, got ${JSON.stringify(r)}`);
+});
+
+await check("resolveCornerBrandMark: a user upload always wins", () => {
+  const r = resolveCornerBrandMark({ userLogoUrl: "blob://up", logoHd: "https://x/logo.svg", brandName: "Acme" });
+  assert(r.logoSrc === "blob://up" && r.wordmark === undefined, `user logo wins, got ${JSON.stringify(r)}`);
+});
+
+await check("injectLogoSrc injects BRAND_WORDMARK alongside LOGO_SRC (fallback const)", () => {
+  const code = 'import { AbsoluteFill } from "remotion";\nexport const S = () => <AbsoluteFill logo={LOGO_SRC} name={BRAND_WORDMARK} />;';
+  const out = injectLogoSrc(code, undefined, "Klarna");
+  assert(/const LOGO_SRC = undefined;/.test(out), "LOGO_SRC undefined when no logo");
+  assert(/const BRAND_WORDMARK = "Klarna";/.test(out), `BRAND_WORDMARK injected, got: ${out}`);
+});
+
+await check("injectLogoSrc: real logo → LOGO_SRC set, BRAND_WORDMARK undefined", async () => {
+  const code = 'import { AbsoluteFill } from "remotion";\nexport const S = () => <AbsoluteFill logo={LOGO_SRC} name={BRAND_WORDMARK} />;';
+  const out = injectLogoSrc(code, SRC, undefined);
+  assert(out.includes(`const LOGO_SRC = ${JSON.stringify(SRC)};`), "LOGO_SRC set");
+  assert(/const BRAND_WORDMARK = undefined;/.test(out), "BRAND_WORDMARK undefined for logo brands");
+  assert((await compileErr(out)) === null, "injected output compiles");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

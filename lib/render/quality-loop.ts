@@ -31,7 +31,7 @@ import type { CastEffort } from "../llm/cast-provider";
 import type { Theme } from "../edit/piece-model";
 import type { Script } from "../../src/schema";
 import { stripCodeFence, verifyCompilable } from "../agents/code-extraction";
-import { injectLogoSrc } from "../agents/logo-inject";
+import { injectLogoSrc, brandWordmarkText } from "../agents/logo-inject";
 import { finalizeUndefinedRefs, assessInvalidLucideImports } from "../agents/finalize-refs";
 import { measureScenes, type SceneMeasurement } from "./measure-scene";
 import {
@@ -41,6 +41,9 @@ import {
   hexLuminance,
   findStrayFragments,
   exciseStrayFragment,
+  findMotifClutter,
+  exciseMotifClutter,
+  type MotifClutterFinding,
   type EdgeCropFinding,
   type RenderTruthFinding,
   type RenderTruthKind,
@@ -216,6 +219,17 @@ export interface StrayFragmentEvent {
   pieceId: string;
   form: "crossing" | "isolated";
   action: "clipped" | "removed" | "none";
+  detail: string;
+}
+
+/** Motif clutter (ghost glyphs / floating brand pills on the decoration layers)
+ *  excised deterministically from the assembled Composition. */
+export interface MotifClutterEvent {
+  round: number;
+  scene: number;
+  pieceId: string;
+  form: "decorative-glyph" | "floating-brand-mark" | "floating-motif";
+  action: "blanked" | "stripped" | "none";
   detail: string;
 }
 
@@ -442,6 +456,7 @@ export interface QualityLoopResult {
     washoutLiftEvents: WashoutLiftEvent[];
     imgSwapEvents: ImgSwapEvent[];
     strayFragmentEvents: StrayFragmentEvent[];
+    motifClutterEvents: MotifClutterEvent[];
     iconFontStripEvents: IconFontStripEvent[];
     accentFallbackEvents: AccentFallbackEvent[];
     bindCopyEvents: BindCopyEvent[];
@@ -781,6 +796,7 @@ export async function runQualityLoop(
   const washoutLiftEvents: WashoutLiftEvent[] = [];
   const imgSwapEvents: ImgSwapEvent[] = [];
   const strayFragmentEvents: StrayFragmentEvent[] = [];
+  const motifClutterEvents: MotifClutterEvent[] = [];
   const iconFontStripEvents: IconFontStripEvent[] = [];
   const accentFallbackEvents: AccentFallbackEvent[] = [];
   const bindCopyEvents: BindCopyEvent[] = [];
@@ -926,7 +942,11 @@ export async function runQualityLoop(
     );
 
     finalCode = await phase(`finalize-r${round}`, async () => {
-      let code = injectLogoSrc(castResult!.code, config.logoSrc);
+      // No clean corner logo (app-icon-only / no logo) → the wordmark text is
+      // the corner mark (never a blank silhouetted square). When a real logo
+      // renders, the corner stays image-only (wordmark undefined).
+      const cornerWordmark = config.logoSrc ? undefined : brandWordmarkText(config.brand);
+      let code = injectLogoSrc(castResult!.code, config.logoSrc, cornerWordmark);
       const fonts = await inlineFontFaces(code, fetchFont);
       code = fonts.code;
       const fin = await finalizeUndefinedRefs(code);
@@ -1124,6 +1144,42 @@ export async function runQualityLoop(
     if (strayThisRound.length > 0) {
       if (strayExcised > 0) await hooks.writeComposition(finalCode);
       log(`  stray-fragments: ${strayThisRound.length} [${strayThisRound.map((e) => `${e.pieceId}:${e.form}→${e.action}`).join(", ")}]`);
+    }
+
+    // (b6b) MOTIF CLUTTER: ghost glyphs / floating brand pills on the decoration
+    // layers (atmosphere + *.throughline/*.connector) that defeat the head's
+    // budget{brandMark:1} — grouped per piece, excised deterministically
+    // (throughline pill → blank the piece; atmosphere glyphs → strip them).
+    let motifExcised = 0;
+    for (const m of measurements) {
+      const owner = (script.scenes?.[m.scene] as { composition?: { budget?: { brandMark?: unknown } } } | undefined)
+        ?.composition?.budget?.brandMark;
+      const findings = findMotifClutter(m, {
+        brandName: BRAND,
+        brandMarkOwner: typeof owner === "string" ? owner : undefined,
+      });
+      const byPiece = new Map<string, MotifClutterFinding[]>();
+      for (const f of findings) byPiece.set(f.pieceId, [...(byPiece.get(f.pieceId) ?? []), f]);
+      for (const [pieceId, group] of byPiece) {
+        const span = pieceSpanInCode(finalCode, pieceId);
+        const repair = span
+          ? exciseMotifClutter(finalCode.slice(span.start, span.end), group, { brandName: BRAND })
+          : { code: "", action: "none" as const, detail: "piece span not found" };
+        if (span && repair.action !== "none") {
+          finalCode = finalCode.slice(0, span.start) + repair.code + finalCode.slice(span.end);
+          if (pieceCache.has(pieceId)) {
+            const cached = exciseMotifClutter(pieceCache.get(pieceId)!, group, { brandName: BRAND });
+            if (cached.action !== "none") pieceCache.set(pieceId, cached.code);
+          }
+          motifExcised += 1;
+        }
+        motifClutterEvents.push({ round, scene: group[0].scene, pieceId, form: group[0].form, action: repair.action, detail: `${group[0].detail} → ${repair.detail}` });
+      }
+    }
+    const motifThisRound = motifClutterEvents.filter((e) => e.round === round);
+    if (motifThisRound.length > 0) {
+      if (motifExcised > 0) await hooks.writeComposition(finalCode);
+      log(`  motif-clutter: ${motifThisRound.length} [${motifThisRound.map((e) => `${e.pieceId}:${e.form}→${e.action}`).join(", ")}]`);
     }
 
     // Structural gates read the (possibly clamped/excised) final code.
@@ -1626,6 +1682,41 @@ export async function runQualityLoop(
     round += 1;
   }
 
+  // FINAL motif-clutter pass: the per-round excision runs on that round's
+  // pre-excision measurements, so a layout that only settles on the LAST round
+  // (a regenerated hero shrinking away from the pinned throughline anchor) can
+  // leave a ghost glyph / floating motif pill in the shipped frame. Re-measure
+  // the final code once and excise against THAT, so the shipped composition and
+  // finalMeasurements agree with what actually renders.
+  {
+    const finalMotif = await measureScenes(genDir, script, genDir);
+    let excised = 0;
+    for (const mm of finalMotif) {
+      const owner = (script.scenes?.[mm.scene] as { composition?: { budget?: { brandMark?: unknown } } } | undefined)?.composition?.budget?.brandMark;
+      const findings = findMotifClutter(mm, { brandName: BRAND, brandMarkOwner: typeof owner === "string" ? owner : undefined });
+      const byPiece = new Map<string, MotifClutterFinding[]>();
+      for (const f of findings) byPiece.set(f.pieceId, [...(byPiece.get(f.pieceId) ?? []), f]);
+      for (const [pieceId, group] of byPiece) {
+        const span = pieceSpanInCode(finalCode, pieceId);
+        if (!span) continue;
+        const repair = exciseMotifClutter(finalCode.slice(span.start, span.end), group, { brandName: BRAND });
+        if (repair.action === "none") continue;
+        finalCode = finalCode.slice(0, span.start) + repair.code + finalCode.slice(span.end);
+        if (pieceCache.has(pieceId)) {
+          const cached = exciseMotifClutter(pieceCache.get(pieceId)!, group, { brandName: BRAND });
+          if (cached.action !== "none") pieceCache.set(pieceId, cached.code);
+        }
+        excised += 1;
+        motifClutterEvents.push({ round: round + 1, scene: group[0].scene, pieceId, form: group[0].form, action: repair.action, detail: `[final pass] ${group[0].detail} → ${repair.detail}` });
+      }
+    }
+    if (excised > 0) {
+      await hooks.writeComposition(finalCode);
+      log(`  motif-clutter [final pass]: excised ${excised} — re-measuring`);
+      finalMeasurements = await measureScenes(genDir, script, genDir);
+    }
+  }
+
   return {
     finalCode,
     finalMeasurements,
@@ -1638,7 +1729,7 @@ export async function runQualityLoop(
     finalContrast,
     finalAccentFill,
     pieceCache,
-    events: { edgeCropEvents, washoutLiftEvents, imgSwapEvents, strayFragmentEvents, iconFontStripEvents, accentFallbackEvents, bindCopyEvents, noProgressEvents, cacheBustEvents },
+    events: { edgeCropEvents, washoutLiftEvents, imgSwapEvents, strayFragmentEvents, motifClutterEvents, iconFontStripEvents, accentFallbackEvents, bindCopyEvents, noProgressEvents, cacheBustEvents },
     finalize,
     ...(castRoundError ? { castRoundError } : {}),
   };

@@ -1335,6 +1335,402 @@ export const exciseStrayFragment = (
   };
 };
 
+// ── motif clutter: singularity budget vs the throughline/atmosphere layers ───
+// Frame-authoring PR follow-up (Klarna eyeball): the recurring-motif and
+// atmosphere layers scatter DECORATION disconnected from any content — s4
+// shipped four ghost ✓ glyphs drifting in the atmosphere, and the throughline
+// (pinned to a fixed cross-scene anchor, right of frame) shipped a floating
+// "Klarna" pill on top of the CHROME wordmark. Both defeat the composition
+// head's budget{brandMark:1} intent. Every prior gate is blind: the glyphs are
+// tiny textless-looking atmosphere, the pill is a legal in-frame element.
+//
+// Two arms (measured truth on the DECORATION layers only — atmosphere +
+// *.throughline/*.connector; hero/copy content is never touched so a legit
+// checkout ✓ or the hero's own brand mark stays):
+//   decorative-glyph — an element whose text is a pure motif GLYPH (✓ ★ ❤ …,
+//     no letters/digits) in a decoration layer. Always clutter (real content
+//     glyphs live in hero/copy pieces) → remove.
+//   floating-brand-mark — a decoration-layer element that renders the BRAND
+//     NAME as a pill/badge, UNLESS the head's budget assigns the brand mark to
+//     THIS layer AND the mark sits ON content (not isolated). So the scene-3
+//     grid legend (budget=throughline, over the hero) stays; the scenes-0/1/2
+//     unbudgeted pills and the scene-4 pill floating right of the phone go.
+const MOTIF_DECO_PIECE_RX = /\.(throughline|connector)$/;
+// Motif glyphs: checkmarks, stars, sparkles, hearts, suit pips — symbols that
+// read as "AI-slop motif echo". Deliberately EXCLUDES arrows (→ ➜: legit
+// "next"/flow indicators) and dots/bullets (neutral texture).
+const MOTIF_GLYPH_RX =
+  /[✓✔✅☑✅✔✕✖✗✘★☆✦✧⭐✨❤♥♡♠♦♣♦️]/u;
+/** True when trimmed text is PURELY motif glyph(s) — a checkmark/star/heart run
+ *  with no letters or digits (so "Klarna", "$248", "→ Buy" never qualify). */
+export const isMotifGlyphText = (t: string): boolean => {
+  const s = (t ?? "").trim();
+  if (!s) return false;
+  if (/[A-Za-z0-9]/.test(s)) return false;
+  return MOTIF_GLYPH_RX.test(s);
+};
+
+export interface MotifClutterFinding {
+  kind: "motif-clutter";
+  scene: number;
+  pieceId: string;
+  form: "decorative-glyph" | "floating-brand-mark" | "floating-motif";
+  text: string;
+  rect: { x: number; y: number; w: number; h: number };
+  detail: string;
+}
+
+export interface MotifClutterOptions {
+  /** Brand name — enables the floating-brand-mark arm (omit ⇒ glyph arm only). */
+  brandName?: string;
+  /** budget.brandMark for THIS scene (the role the head assigned the single
+   *  brand mark: "throughline" | "hero" | "chrome" | "none" | …). A decoration
+   *  layer that owns the budgeted mark AND sits on content is kept. */
+  brandMarkOwner?: string;
+  /** Isolation floor for a budgeted mark to still count as floating (default 80). */
+  isolationPx?: number;
+}
+
+/** The brand's first significant word, normalized (mirrors findBrandMarkDefects:
+ *  the leading alphabetic run so a domain suffix / tagline never pollutes it). */
+const brandFirstWord = (brandName: string | undefined): string => {
+  const rawFirst = (brandName ?? "").trim().split(/\s+/)[0] ?? "";
+  const cleanFirst = rawFirst.match(/[A-Za-z][A-Za-z'&-]*/)?.[0] ?? rawFirst;
+  return cleanFirst.toLowerCase().replace(/[^a-z0-9]/g, "");
+};
+
+/** Motif clutter on the decoration layers — pure geometry on measured rects. */
+export const findMotifClutter = (
+  m: SceneMeasurement,
+  opts: MotifClutterOptions = {},
+): MotifClutterFinding[] => {
+  if (m.error) return [];
+  const isolationPx = opts.isolationPx ?? STRAY_ISOLATION_MIN_PX;
+  const brandWord = brandFirstWord(opts.brandName);
+  const visible = m.elements.filter((e) => e.opacity > 0.02 && e.w > 0 && e.h > 0);
+  const isDecoLayer = (e: MeasuredElement): boolean =>
+    e.pieceKind === "atmosphere" || (!!e.piece && MOTIF_DECO_PIECE_RX.test(e.piece));
+  // Anchor content for the isolation test: painted, non-decoration, non-chrome,
+  // NON-full-bleed elements (excluding a full-bleed hero wrapper, whose box
+  // would falsely make every mark "on content").
+  const canvasArea = m.width * m.height;
+  const anchors = visible.filter(
+    (e) =>
+      !!e.piece &&
+      e.pieceKind !== "atmosphere" &&
+      e.pieceKind !== "chrome" &&
+      !MOTIF_DECO_PIECE_RX.test(e.piece) &&
+      (e.isImg || cssAlpha(e.bg) >= 0.5 || e.text.trim() !== "" || !!e.hasBgImage) &&
+      e.w * e.h < EDGE_CROP_FULL_BLEED_FRAC * canvasArea,
+  );
+  const out: MotifClutterFinding[] = [];
+  const seenGlyphPiece = new Set<string>();
+  const seenMarkPiece = new Set<string>();
+  for (const e of visible) {
+    if (!isDecoLayer(e)) continue;
+    const t = e.text.trim();
+    const rect = { x: e.x, y: e.y, w: e.w, h: e.h };
+    // Motif glyph — a text glyph (✓ ★ …) OR a small drawn <svg>/<path> icon
+    // (the ghost-checkmark echo painted as SVG) in the ATMOSPHERE layer.
+    const isSvgIcon =
+      e.pieceKind === "atmosphere" &&
+      (e.tag === "svg" || e.tag === "path") &&
+      e.text.trim() === "" &&
+      e.w > 0 && e.w <= 96 && e.h > 0 && e.h <= 96;
+    if (isMotifGlyphText(t) || isSvgIcon) {
+      if (seenGlyphPiece.has(e.piece)) continue;
+      seenGlyphPiece.add(e.piece);
+      out.push({
+        kind: "motif-clutter",
+        scene: m.scene,
+        pieceId: e.piece,
+        form: "decorative-glyph",
+        text: t || `<${e.tag} icon>`,
+        rect,
+        detail: `scene ${m.scene}: decoration layer ${e.piece} paints a free-floating motif ${isSvgIcon ? "icon" : `glyph "${t}"`}, not anchored to any content. Remove the decorative ${isSvgIcon ? "icon" : "glyph"}.`,
+      });
+      continue;
+    }
+    if (brandWord && brandWord.length >= 3) {
+      const norm = t.toLowerCase().replace(/[^a-z0-9]/g, "");
+      if (norm !== brandWord) continue;
+      if (seenMarkPiece.has(e.piece)) continue;
+      const role = e.pieceKind === "atmosphere" ? "atmosphere" : (MOTIF_DECO_PIECE_RX.exec(e.piece)?.[1] ?? "");
+      const budgeted = !!opts.brandMarkOwner && opts.brandMarkOwner === role;
+      const gap = anchors.length
+        ? Math.min(...anchors.map((a) => rectGap(rect, { x: a.x, y: a.y, w: a.w, h: a.h })))
+        : Infinity;
+      const isolated = gap >= isolationPx;
+      if (budgeted && !isolated) continue; // the sanctioned, on-content motif mark — keep
+      seenMarkPiece.add(e.piece);
+      out.push({
+        kind: "motif-clutter",
+        scene: m.scene,
+        pieceId: e.piece,
+        form: "floating-brand-mark",
+        text: t,
+        rect,
+        detail:
+          `scene ${m.scene}: decoration layer ${e.piece} renders a "${opts.brandName}" brand pill (${budgeted ? `budgeted here but ${Math.round(gap)}px off content — floating` : "not the budgeted brand-mark owner"}). ` +
+          `The chrome already carries the single corner mark; remove the duplicate/floating motif pill.`,
+      });
+    }
+  }
+  // Piece-level arm: an isolated throughline/connector PIECE whose whole painted
+  // extent sits ≥ isolationPx from all content is floating motif clutter even
+  // when it renders no brand name or glyph — the scene-0 "empty badge slot"
+  // (a dashed pill pinned right of the checkout, disconnected from it). A
+  // throughline that sits ON content (scene-3 grid legend) is not isolated → kept.
+  const decoPieceRects = new Map<string, { x: number; y: number; w: number; h: number }[]>();
+  for (const e of visible) {
+    if (e.piece && MOTIF_DECO_PIECE_RX.test(e.piece)) {
+      decoPieceRects.set(e.piece, [...(decoPieceRects.get(e.piece) ?? []), { x: e.x, y: e.y, w: e.w, h: e.h }]);
+    }
+  }
+  for (const [pieceId, rects] of decoPieceRects) {
+    if (seenMarkPiece.has(pieceId) || seenGlyphPiece.has(pieceId)) continue; // already flagged
+    const x0 = Math.min(...rects.map((r) => r.x));
+    const y0 = Math.min(...rects.map((r) => r.y));
+    const box = { x: x0, y: y0, w: Math.max(...rects.map((r) => r.x + r.w)) - x0, h: Math.max(...rects.map((r) => r.y + r.h)) - y0 };
+    if (box.w <= 0 || box.h <= 0) continue;
+    const gap = anchors.length ? Math.min(...anchors.map((a) => rectGap(box, { x: a.x, y: a.y, w: a.w, h: a.h }))) : Infinity;
+    if (gap < isolationPx) continue; // integrated with content → keep
+    seenMarkPiece.add(pieceId);
+    out.push({
+      kind: "motif-clutter",
+      scene: m.scene,
+      pieceId,
+      form: "floating-motif",
+      text: "",
+      rect: box,
+      detail: `scene ${m.scene}: throughline/connector piece ${pieceId} floats ${Math.round(gap)}px off all content (floor ${isolationPx}px) — a motif pinned in the void, disconnected from the frame. Remove it.`,
+    });
+  }
+  return out;
+};
+
+// ── motif-clutter repair (deterministic, zero tokens) ────────────────────────
+// decorative-glyph → strip the glyph element(s) from the piece body.
+// floating-brand-mark on a throughline/connector piece (the pill IS the piece)
+//   → blank the piece wrapper's inner. On atmosphere → strip the pill element.
+
+/** Index just after the '>' that closes the JSX start-tag beginning at
+ *  `tagStart` ('<'); string/brace aware. -1 if unterminated. */
+const jsxStartTagEnd = (s: string, tagStart: number): number => {
+  let quote: string | null = null;
+  let depth = 0;
+  for (let i = tagStart; i < s.length; i++) {
+    const c = s[i];
+    if (quote) {
+      if (c === "\\") i++;
+      else if (c === quote) quote = null;
+      continue;
+    }
+    if (c === '"' || c === "'" || c === "`") { quote = c; continue; }
+    if (c === "{") depth++;
+    else if (c === "}") depth--;
+    else if (c === ">" && depth === 0) return i + 1;
+  }
+  return -1;
+};
+
+/** Match the element `<tag` at `tagStart` to its balanced `</tag>` (nested same
+ *  tags, self-closing `<tag/>`, strings, `{expr}` braces aware). Returns the
+ *  inner-content start (after the start tag's '>') and the closing tag's start
+ *  ('<' of `</tag>`), plus the index just past `</tag>`. */
+const matchElement = (
+  s: string,
+  tagStart: number,
+  tag: string,
+): { innerStart: number; closeStart: number; afterEnd: number } | null => {
+  const openEnd = jsxStartTagEnd(s, tagStart);
+  if (openEnd < 0) return null;
+  if (s[openEnd - 2] === "/") return { innerStart: openEnd, closeStart: openEnd, afterEnd: openEnd }; // self-closed
+  const open = `<${tag}`;
+  const close = `</${tag}`;
+  let depth = 1;
+  let quote: string | null = null;
+  for (let i = openEnd; i < s.length; ) {
+    const c = s[i];
+    if (quote) {
+      if (c === "\\") { i += 2; continue; }
+      if (c === quote) quote = null;
+      i++;
+      continue;
+    }
+    if (c === '"' || c === "'" || c === "`") { quote = c; i++; continue; }
+    if (c === "<") {
+      if (s.startsWith(close, i)) {
+        depth--;
+        if (depth === 0) {
+          const gt = s.indexOf(">", i);
+          return { innerStart: openEnd, closeStart: i, afterEnd: gt < 0 ? s.length : gt + 1 };
+        }
+        i += close.length;
+        continue;
+      }
+      if (s.startsWith(open, i)) {
+        const e = jsxStartTagEnd(s, i);
+        if (e < 0) return null;
+        if (s[e - 2] !== "/") depth++;
+        i = e;
+        continue;
+      }
+    }
+    i++;
+  }
+  return null;
+};
+
+/** Empty a throughline/connector piece wrapper's inner content (keeps the
+ *  `<div data-piece …>` so measurement still sees the piece, painted blank). */
+export const blankPieceInner = (spanSlice: string): { code: string; blanked: boolean } => {
+  const at = spanSlice.indexOf("<div");
+  if (at < 0) return { code: spanSlice, blanked: false };
+  const m = matchElement(spanSlice, at, "div");
+  if (!m || m.closeStart <= m.innerStart) return { code: spanSlice, blanked: false };
+  if (!spanSlice.slice(m.innerStart, m.closeStart).trim()) return { code: spanSlice, blanked: false };
+  return { code: spanSlice.slice(0, m.innerStart) + spanSlice.slice(m.closeStart), blanked: true };
+};
+
+// ── motif ICON svgs (the ghost-checkmark defect drawn as <svg><path/></svg>) ──
+// The atmosphere emitter also paints motif echoes as SVG icons ("four ghosted
+// green checkmarks", drawn <path d="M5 12.5 L10 17.5 L19 7"/>), often inside a
+// {[…].map(…)} group — no text node, so the glyph arm is blind. Atmosphere's
+// legit content is washes/grain/dots (divs + CSS bg); a small standalone <svg>
+// ICON there is motif clutter. Strip small-viewBox <svg> icons (and the whole
+// {…map…} group when the svg is its body). Full-bleed background svgs are kept.
+
+/** Max viewBox / width|height dimension for an <svg> to count as an ICON. */
+const SVG_ICON_MAX_DIM = 96;
+const svgOpenTagIsIcon = (openTag: string): boolean => {
+  const vb = /viewBox\s*=\s*["']\s*[\d.]+\s+[\d.]+\s+([\d.]+)\s+([\d.]+)/.exec(openTag);
+  if (vb) return Math.max(Number(vb[1]), Number(vb[2])) <= SVG_ICON_MAX_DIM;
+  const wl = /\bwidth\s*=\s*["']?(\d+)/.exec(openTag);
+  const hl = /\bheight\s*=\s*["']?(\d+)/.exec(openTag);
+  if (wl || hl) return Math.max(Number(wl?.[1] ?? 0), Number(hl?.[1] ?? 0)) <= SVG_ICON_MAX_DIM;
+  return false; // size unknowable (e.g. width={expr}, no viewBox) → keep (avoid FP)
+};
+
+/** The `{ … }` JSX expression enclosing `pos` (nearest balanced brace pair). */
+const enclosingBraceExpr = (s: string, pos: number): { start: number; end: number } | null => {
+  let depth = 0;
+  let start = -1;
+  for (let i = pos - 1; i >= 0; i--) {
+    const c = s[i];
+    if (c === "}") depth++;
+    else if (c === "{") { if (depth === 0) { start = i; break; } depth--; }
+  }
+  if (start < 0) return null;
+  let d = 0;
+  let quote: string | null = null;
+  for (let i = start; i < s.length; i++) {
+    const c = s[i];
+    if (quote) { if (c === "\\") i++; else if (c === quote) quote = null; continue; }
+    if (c === '"' || c === "'" || c === "`") { quote = c; continue; }
+    if (c === "{") d++;
+    else if (c === "}") { d--; if (d === 0) return { start, end: i + 1 }; }
+  }
+  return null;
+};
+
+/** Strip decorative motif-icon `<svg>`s from a decoration-layer body. Removes
+ *  the enclosing `{…map…}` group when the svg is a mapped decoration. */
+export const stripDecorationSvgIcons = (body: string): { code: string; removed: number } => {
+  let out = body;
+  let removed = 0;
+  for (let guard = 0; guard < 32; guard++) {
+    let hit = false;
+    for (let at = out.indexOf("<svg"); at !== -1; at = out.indexOf("<svg", at + 4)) {
+      const openGt = out.indexOf(">", at);
+      if (openGt < 0) break;
+      const m = matchElement(out, at, "svg");
+      if (!m) continue;
+      if (!svgOpenTagIsIcon(out.slice(at, openGt + 1))) continue; // full-bleed/unknown → keep
+      // Remove the enclosing {…map…} group if this svg is a mapped decoration.
+      const brace = enclosingBraceExpr(out, at);
+      const span =
+        brace && brace.end >= m.afterEnd && out.slice(brace.start, at).includes(".map(")
+          ? brace
+          : { start: at, end: m.afterEnd };
+      out = out.slice(0, span.start) + out.slice(span.end);
+      removed++;
+      hit = true;
+      break;
+    }
+    if (!hit) break;
+  }
+  return { code: out, removed };
+};
+
+/** Remove leaf elements whose direct text matches `isClutter` (a motif glyph or
+ *  the brand pill) from a piece body. Leaf-only (no same-tag nesting inside),
+ *  bounded, string/brace safe enough for the decoration layers it runs on. */
+export const stripClutterElements = (
+  spanSlice: string,
+  isClutter: (text: string) => boolean,
+): { code: string; removed: number } => {
+  let out = spanSlice;
+  let removed = 0;
+  for (let guard = 0; guard < 64; guard++) {
+    let hit = false;
+    const rx = />([^<>{}]*)</g;
+    for (let m = rx.exec(out); m; m = rx.exec(out)) {
+      const text = m[1].trim();
+      if (!text || !isClutter(text)) continue;
+      const gt = m.index; // the '>' closing this element's start tag
+      const tagStart = out.lastIndexOf("<", gt);
+      if (tagStart < 0 || out[tagStart + 1] === "/") continue;
+      const nameM = /^<([A-Za-z][A-Za-z0-9]*)/.exec(out.slice(tagStart, tagStart + 30));
+      if (!nameM) continue;
+      const tag = nameM[1];
+      const closer = `</${tag}>`;
+      const closeAt = out.indexOf(closer, gt);
+      if (closeAt < 0) continue;
+      if (out.slice(gt + 1, closeAt).includes(`<${tag}`)) continue; // not a leaf — skip
+      out = out.slice(0, tagStart) + out.slice(closeAt + closer.length);
+      removed++;
+      hit = true;
+      break;
+    }
+    if (!hit) break;
+  }
+  return { code: out, removed };
+};
+
+export interface MotifRepairResult {
+  code: string;
+  action: "blanked" | "stripped" | "none";
+  detail: string;
+}
+
+/** Repair every motif-clutter finding for ONE piece's span slice. */
+export const exciseMotifClutter = (
+  spanSlice: string,
+  findings: MotifClutterFinding[],
+  opts: { brandName?: string } = {},
+): MotifRepairResult => {
+  if (findings.length === 0) return { code: spanSlice, action: "none", detail: "no findings" };
+  const pieceId = findings[0].pieceId;
+  const hasFloatingPiece = findings.some((f) => f.form === "floating-brand-mark" || f.form === "floating-motif");
+  // A floating brand pill / motif IS a throughline/connector piece → blank it.
+  if (hasFloatingPiece && MOTIF_DECO_PIECE_RX.test(pieceId)) {
+    const r = blankPieceInner(spanSlice);
+    if (r.blanked) return { code: r.code, action: "blanked", detail: `blanked floating motif piece ${pieceId}` };
+  }
+  // Otherwise strip the specific clutter elements: text glyphs + any atmosphere
+  // pill, plus small drawn <svg> motif icons (ghost checkmarks drawn as paths).
+  const brandWord = brandFirstWord(opts.brandName);
+  const isClutter = (t: string): boolean =>
+    isMotifGlyphText(t) ||
+    (brandWord.length >= 3 && t.toLowerCase().replace(/[^a-z0-9]/g, "") === brandWord);
+  const glyphs = stripClutterElements(spanSlice, isClutter);
+  const svgs = stripDecorationSvgIcons(glyphs.code);
+  const total = glyphs.removed + svgs.removed;
+  if (total > 0) return { code: svgs.code, action: "stripped", detail: `stripped ${total} motif element(s) from ${pieceId} (${glyphs.removed} glyph, ${svgs.removed} svg)` };
+  return { code: spanSlice, action: "none", detail: `no removable motif element in ${pieceId}` };
+};
+
 export interface RenderTruthOptions {
   /** Which checks block. dead-region defaults to advisory (composition taste). */
   blockingKinds?: RenderTruthKind[];

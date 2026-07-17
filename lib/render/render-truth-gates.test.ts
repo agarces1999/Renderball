@@ -21,6 +21,12 @@ import {
   assessCanvasBrightness,
   findStrayFragments,
   exciseStrayFragment,
+  findMotifClutter,
+  exciseMotifClutter,
+  blankPieceInner,
+  stripClutterElements,
+  stripDecorationSvgIcons,
+  isMotifGlyphText,
   STRAY_ISOLATION_MIN_PX,
   EDGE_CROP_FRAC,
   EDGE_CLAMP_OVERSIZE_FRAC,
@@ -614,6 +620,129 @@ await check("exciseStrayFragment: ambiguous (2 matching spans) and palette-const
 
 await check("STRAY_ISOLATION_MIN_PX is the calibrated 80px floor", () => {
   assert(STRAY_ISOLATION_MIN_PX === 80, `floor is 80, got ${STRAY_ISOLATION_MIN_PX}`);
+});
+
+// ── motif clutter (ghost glyphs + floating brand pills on decoration layers) ──
+console.log("motif-clutter");
+
+await check("isMotifGlyphText: motif glyphs true; words / prices / arrows false", () => {
+  assert(isMotifGlyphText("✓") && isMotifGlyphText("★ ★") && isMotifGlyphText("❤"), "glyphs true");
+  assert(!isMotifGlyphText("Klarna") && !isMotifGlyphText("$248") && !isMotifGlyphText("→ Buy") && !isMotifGlyphText(""), "non-glyph false");
+});
+
+await check("decorative-glyph in the ATMOSPHERE layer fires (the s4 ghost ✓)", () => {
+  const m = scene(4, [
+    el({ piece: "s4.atmosphere", pieceKind: "atmosphere", text: "✓", x: 260, y: 190, w: 60, h: 64, opacity: 0.06 }),
+    el({ piece: "s4.hero", pieceKind: "diegetic", bg: "rgb(255,255,255)", x: 700, y: 200, w: 400, h: 600 }),
+  ]);
+  const r = findMotifClutter(m, { brandName: "Klarna" });
+  assert(r.length === 1 && r[0].form === "decorative-glyph" && r[0].pieceId === "s4.atmosphere", `got ${JSON.stringify(r)}`);
+});
+
+await check("a ✓ in a CONTENT piece (hero checkout row) is NEVER touched", () => {
+  const m = scene(0, [el({ piece: "s0.hero", pieceKind: "diegetic", text: "✓", x: 620, y: 604, w: 18, h: 18 })]);
+  assert(findMotifClutter(m, { brandName: "Klarna" }).length === 0, "content-layer glyph exempt");
+});
+
+await check("throughline brand pill with budget!=throughline (scene 0/1/2) → floating-brand-mark", () => {
+  const m = scene(0, [
+    el({ piece: "s0.hero", pieceKind: "diegetic", bg: "rgb(255,255,255)", x: 560, y: 160, w: 800, h: 560 }),
+    el({ piece: "s0.throughline", pieceKind: "diegetic", text: "Klarna", x: 1376, y: 560, w: 168, h: 44 }),
+  ]);
+  const r = findMotifClutter(m, { brandName: "Klarna", brandMarkOwner: "none" });
+  assert(r.length === 1 && r[0].form === "floating-brand-mark" && r[0].pieceId === "s0.throughline", `got ${JSON.stringify(r)}`);
+});
+
+await check("throughline brand pill budgeted AND on the hero (scene 3 grid legend) → KEPT", () => {
+  const m = scene(3, [
+    el({ piece: "s3.hero", pieceKind: "diegetic", bg: "rgb(30,30,40)", x: 1020, y: 270, w: 780, h: 540 }),
+    el({ piece: "s3.throughline", pieceKind: "diegetic", text: "Klarna", x: 1400, y: 560, w: 140, h: 40 }),
+  ]);
+  assert(findMotifClutter(m, { brandName: "Klarna", brandMarkOwner: "throughline" }).length === 0, "sanctioned on-content motif mark stays");
+});
+
+await check("throughline brand pill budgeted but FLOATING off content (scene 4) → still fires", () => {
+  const m = scene(4, [
+    el({ piece: "s4.hero", pieceKind: "diegetic", bg: "rgb(30,30,40)", x: 660, y: 120, w: 600, h: 840 }),
+    el({ piece: "s4.throughline", pieceKind: "diegetic", text: "Klarna", x: 1400, y: 560, w: 140, h: 40 }),
+  ]);
+  const r = findMotifClutter(m, { brandName: "Klarna", brandMarkOwner: "throughline" });
+  assert(r.length === 1 && r[0].form === "floating-brand-mark", `pill 140px right of the phone is floating: ${JSON.stringify(r)}`);
+});
+
+await check("a full-bleed hero wrapper does NOT mask a floating pill (budget arm)", () => {
+  const m = scene(0, [
+    el({ piece: "s0.hero", pieceKind: "diegetic", bg: "rgb(10,5,28)", x: 0, y: 0, w: 1920, h: 1080 }), // full-bleed wrapper
+    el({ piece: "s0.hero", pieceKind: "diegetic", bg: "rgb(255,255,255)", x: 560, y: 160, w: 780, h: 560 }), // the actual card
+    el({ piece: "s0.throughline", pieceKind: "diegetic", text: "Klarna", x: 1500, y: 560, w: 150, h: 44 }),
+  ]);
+  const r = findMotifClutter(m, { brandName: "Klarna", brandMarkOwner: "none" });
+  assert(r.length === 1 && r[0].form === "floating-brand-mark", `full-bleed wrapper excluded from anchors: ${JSON.stringify(r)}`);
+});
+
+await check("blankPieceInner empties a throughline wrapper but preserves the data-piece box", () => {
+  const thr = '<div data-piece="s0.throughline" data-kind="diegetic" style={{ left: 1360 }}>\n  <div><span>Klarna</span></div>\n</div>';
+  const b = blankPieceInner(thr);
+  assert(b.blanked && !b.code.includes("Klarna"), `blanked: ${JSON.stringify(b)}`);
+  assert(b.code.includes('data-piece="s0.throughline"') && b.code.includes("style={{ left: 1360 }}"), "wrapper + style preserved");
+});
+
+await check("stripClutterElements removes glyph leaves but keeps gradient/texture divs", () => {
+  const atm = '<div data-piece="s4.atmosphere"><div style={{ opacity: 0.06 }}>✓</div><div style={{ background: "radial-gradient(x)" }} /><div style={{ opacity: 0.06 }}>✓</div></div>';
+  const s = stripClutterElements(atm, isMotifGlyphText);
+  assert(s.removed === 2 && !s.code.includes("✓"), `removed 2 glyphs: ${JSON.stringify(s)}`);
+  assert(s.code.includes("radial-gradient"), "gradient div kept");
+});
+
+await check("an isolated throughline with NO brand text (empty badge slot) → floating-motif", () => {
+  const m = scene(0, [
+    el({ piece: "s0.hero", pieceKind: "diegetic", bg: "rgb(255,255,255)", x: 560, y: 160, w: 670, h: 560 }),
+    el({ piece: "s0.throughline", pieceKind: "diegetic", bg: "rgba(0,0,0,0)", x: 1360, y: 540, w: 200, h: 200 }),
+    el({ piece: "s0.throughline", pieceKind: "diegetic", bg: "rgba(0,0,0,0)", x: 1386, y: 617, w: 148, h: 46 }),
+  ]);
+  const r = findMotifClutter(m, { brandName: "Klarna" });
+  assert(r.length === 1 && r[0].form === "floating-motif" && r[0].pieceId === "s0.throughline", `empty slot floats: ${JSON.stringify(r)}`);
+});
+
+await check("a throughline that sits ON the hero is NOT flagged as floating-motif", () => {
+  const m = scene(3, [
+    el({ piece: "s3.hero", pieceKind: "diegetic", bg: "rgb(30,30,40)", x: 1020, y: 270, w: 780, h: 540 }),
+    el({ piece: "s3.throughline", pieceKind: "diegetic", bg: "rgba(0,0,0,0)", x: 1360, y: 540, w: 200, h: 200 }),
+  ]);
+  assert(findMotifClutter(m, { brandName: "Klarna", brandMarkOwner: "throughline" }).length === 0, "integrated throughline stays");
+});
+
+await check("SVG-drawn ghost checkmark in atmosphere fires (measured as a small <svg>)", () => {
+  const m = scene(4, [
+    el({ piece: "s4.atmosphere", pieceKind: "atmosphere", tag: "svg", text: "", x: 300, y: 320, w: 26, h: 26, opacity: 0.06 }),
+    el({ piece: "s4.hero", pieceKind: "diegetic", bg: "rgb(255,255,255)", x: 560, y: 700, w: 800, h: 280 }),
+  ]);
+  const r = findMotifClutter(m, { brandName: "Klarna" });
+  assert(r.length === 1 && r[0].form === "decorative-glyph", `svg icon flagged: ${JSON.stringify(r)}`);
+});
+
+await check("stripDecorationSvgIcons removes a {…map…} checkmark group but keeps washes/grain", () => {
+  const atm =
+    '<div data-piece="s4.atmosphere">' +
+    '<div style={{ background: "radial-gradient(x)" }} />' +
+    '{[{ top: "30%" }, { top: "58%" }].map((ck, i) => (' +
+    '<svg key={i} width={ck.size} height={ck.size} viewBox="0 0 24 24" style={{ opacity: 0.06 }}>' +
+    '<path d="M5 12.5 L10 17.5 L19 7" stroke="#3ecfcf" fill="none" /></svg>))}' +
+    '<div style={{ backgroundImage: "url(grain.svg)" }} /></div>';
+  const r = stripDecorationSvgIcons(atm);
+  assert(r.removed === 1 && !r.code.includes("M5 12.5") && !r.code.includes(".map("), `map group removed: ${JSON.stringify(r)}`);
+  assert(r.code.includes("radial-gradient") && r.code.includes("url(grain.svg)"), "washes + grain kept");
+});
+
+await check("stripDecorationSvgIcons keeps a full-bleed (large-viewBox) atmosphere svg", () => {
+  const atm = '<div data-piece="s0.atmosphere"><svg viewBox="0 0 1920 1080" width="100%"><path d="M0 0 L1920 1080" /></svg></div>';
+  assert(stripDecorationSvgIcons(atm).removed === 0, "large background svg is not an icon");
+});
+
+await check("exciseMotifClutter blanks a throughline floating-mark piece end-to-end", () => {
+  const thr = '<div data-piece="s2.throughline" data-kind="diegetic"><div><span>Klarna</span></div></div>';
+  const r = exciseMotifClutter(thr, [{ kind: "motif-clutter", scene: 2, pieceId: "s2.throughline", form: "floating-brand-mark", text: "Klarna", rect: { x: 0, y: 0, w: 0, h: 0 }, detail: "" }], { brandName: "Klarna" });
+  assert(r.action === "blanked" && !r.code.includes("Klarna"), `got ${JSON.stringify(r)}`);
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);
