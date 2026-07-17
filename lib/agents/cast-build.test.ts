@@ -56,6 +56,10 @@ import {
   HERO_SURFACE_MIN_CONTRAST_FRAC,
   PRE_RENDER_HERO_MIN_ELEMENTS,
   PRE_RENDER_HERO_MIN_TEXT,
+  HERO_POPULATE_REPAIRS,
+  heroPopulateReassert,
+  extractQuotedValues,
+  heroBlueprintPlaceholder,
   HERO_MAX_TOKENS_CEREBRAS,
   HERO_MAX_TOKENS_FIREWORKS,
   type CastBuildInput,
@@ -219,6 +223,13 @@ const RICH_HERO_DEFAULT = `<div style={{ width: "100%", height: "100%", backgrou
   </div>
   <div style={{ height: 6, width: "62%", background: ACCENT, borderRadius: 3 }} />
 </div>`;
+
+// Thin-but-COMPILABLE hero bodies: under the density floor (≥15 el / ≥4 tx) but
+// real, populated content — the salvage class. Distinctive text so a build can
+// prove the salvage shipped (not the blank placeholder). THIN_HERO_RICHER
+// out-scores THIN_HERO for the richest-wins ranking.
+const THIN_HERO = `<div style={{ width: "100%", height: "100%", background: PANEL_BG }}><span style={{ color: INK }}>Checkout pending</span></div>`;
+const THIN_HERO_RICHER = `<div style={{ width: "100%", height: "100%", background: PANEL_BG }}><span style={{ color: INK }}>Checkout pending</span><span style={{ color: INK }}>Order review</span><span style={{ color: ACCENT }}>Awaiting</span></div>`;
 
 const cannedFor = (id: string, nth: number): string => {
   if (id === "s0.hero") return HERO_TEAL; // proves hue-locking + unowned-copy + filter guards
@@ -917,16 +928,116 @@ await check("maxTokensFor is provider-aware: hero 11000 on Fireworks, 6000 on Ce
   assert(maxTokensFor("atmosphere") === 3500 && maxTokensFor("copy") === 2500, "non-hero caps unchanged");
 });
 
-await check("build-level: a hollow hero fails the pre-render density gate → repair → placeholder; outcomes report it", async () => {
-  const hollowCanned = (id: string): string => (id === "s0.hero" ? DEFAULT_BODY : cannedFor(id, 2));
-  const f = makeFakeCaller(hollowCanned);
+await check("build-level: a persistently thin hero earns the WIDE populate budget, then ships the richest real emission — never the blank placeholder", async () => {
+  const thinCanned = (id: string): string => (id === "s0.hero" ? THIN_HERO : cannedFor(id, 2));
+  const f = makeFakeCaller(thinCanned);
   const r = await castBuild(input, { caller: f.caller as never, concurrency: 4 });
   const heroCalls = f.log.filter((l) => l.id === "s0.hero");
-  assert(heroCalls.length === 2, `hollow hero must earn the in-round repair, got ${heroCalls.length} call(s)`);
+  // Hollow-bookend class earns the wider populate budget, not the single repair.
+  assert(heroCalls.length === 1 + HERO_POPULATE_REPAIRS, `thin hero must earn the wide populate budget (${1 + HERO_POPULATE_REPAIRS} calls), got ${heroCalls.length}`);
+  // Every repair carries the density error AND re-asserts the interior inventory.
   assert(/hero interior too thin: statically measured/.test(heroCalls[1].user), "repair prompt carries the static density error");
+  assert(/POPULATE THE HERO/.test(heroCalls[1].user), "repair prompt RE-ASSERTS the interior inventory (populate-regen), not a generic retry");
+  // The INVARIANT: the richest real emission ships, never the empty shell.
+  // "Checkout pending" lives ONLY in the salvage body — its presence proves the
+  // real thin hero shipped in place of the blank placeholder (which carries no
+  // such text).
+  assert(r.code.includes("Checkout pending"), "the real (thin) hero body ships as the salvage, not the empty placeholder shell");
   const outcome = r.elementOutcomes.find((o) => o.pieceId === "s0.hero");
-  assert(!!outcome && outcome.failed, "elementOutcomes must report the failed hero (cache-invalidation signal)");
+  assert(!!outcome && outcome.failed, "elementOutcomes must still report the failed hero (telemetry/cache-invalidation signal)");
   assert(r.elementOutcomes.length === r.telemetry.elements, "one outcome per element call");
+});
+
+await check("build-level: when thin attempts differ, the RICHEST one is salvaged", async () => {
+  // nth 1 → thinner; nth 2+ → richer. The richest thin body must win the salvage.
+  const canned = (id: string, nth: number): string =>
+    id === "s0.hero" ? (nth >= 2 ? THIN_HERO_RICHER : THIN_HERO) : cannedFor(id, 2);
+  const f = makeFakeCaller(canned);
+  const r = await castBuild(input, { caller: f.caller as never, concurrency: 4 });
+  assert(r.code.includes("Order review") && r.code.includes("Awaiting"), "the richer thin emission wins the salvage");
+});
+
+await check("build-level: a hero that never COMPILES burns the WIDE budget (focal object), then the neutral placeholder (no salvage)", async () => {
+  // BROKEN never compiles → not salvageable → the classic placeholder ships.
+  // A hero earns the WIDE budget for ANY failure class (compile included) — a
+  // rich hero that compile-breaks is worth more shots than the single repair,
+  // because its degraded fallback erases the scene.
+  const canned = (id: string): string => (id === "s0.hero" ? BROKEN : cannedFor(id, 2));
+  const f = makeFakeCaller(canned);
+  const r = await castBuild(input, { caller: f.caller as never, concurrency: 4 });
+  const heroCalls = f.log.filter((l) => l.id === "s0.hero");
+  assert(heroCalls.length === 1 + HERO_POPULATE_REPAIRS, `an uncompilable hero burns the wide budget (${1 + HERO_POPULATE_REPAIRS} calls), got ${heroCalls.length}`);
+  const outcome = r.elementOutcomes.find((o) => o.pieceId === "s0.hero");
+  assert(!!outcome && outcome.failed, "the uncompilable hero is reported failed");
+  assert(r.code.includes("borderColor: HAIRLINE"), "the neutral placeholder shell ships when no real emission exists");
+});
+
+await check("extractQuotedValues: pulls display micro-copy from a blueprint interior; drops hex/css/noise", () => {
+  const interior = [
+    "browser chrome bar with a URL field reading 'checkout.store.com' and a padlock",
+    "checkout card on a lifted indigo surface (#141028) — brighter than the canvas",
+    "total amount '$349.95' in bright white Klarna Title",
+    "grayed-out 'Complete Purchase' button at 40% opacity",
+    "payment options row labeled 'Credit card', 'PayPal', and 'Apple Pay'",
+    "padding of '24px' inside the panel", // css length → dropped
+  ];
+  const v = extractQuotedValues(interior);
+  assert(v.includes("checkout.store.com") && v.includes("$349.95") && v.includes("Complete Purchase"), `real values kept, got ${JSON.stringify(v)}`);
+  assert(v.includes("Credit card") && v.includes("PayPal") && v.includes("Apple Pay"), "multiple quoted values in one item all captured");
+  assert(!v.includes("#141028"), "hex colors dropped");
+  assert(!v.includes("24px"), "css lengths dropped");
+  assert(new Set(v).size === v.length, "values deduped");
+});
+
+await check("heroBlueprintPlaceholder: builds a POPULATED, compilable card from the blueprint — never a blank shell", async () => {
+  const spec = {
+    role: "hero" as const,
+    subject: "a full-bleed checkout window",
+    interior: [
+      "URL field reading 'checkout.store.com'",
+      "total '$349.95' large",
+      "'Complete Purchase' button grayed",
+      "meta chip 'Cart: Full'",
+    ],
+    ownsCopy: [],
+    focalRank: 1,
+  };
+  const heroSlot = { id: "hero", kind: "diegetic", bounds: { x: 0, y: 0, w: 1920, h: 1080 }, paletteRoles: [], contentFields: [] } as never;
+  const body = heroBlueprintPlaceholder(theme, heroSlot, spec);
+  // Populated: the real values are present as visible text.
+  for (const val of ["checkout.store.com", "$349.95", "Complete Purchase", "Cart: Full"]) {
+    assert(body.includes(val), `blueprint placeholder must render "${val}"`);
+  }
+  // Contrasting surface (INK on a dark canvas), NOT the dark neutral shell.
+  assert(body.includes("background: INK"), "lifts onto a contrasting surface (not the canvas-toned shell)");
+  assert(!/borderColor: HAIRLINE \}\} \/>/.test(body), "NOT the blank neutral shell");
+  // Bounded + centered — never a full-bleed fill that would wash the frame.
+  assert(/justifyContent: "center"/.test(body) && /min\(540px/.test(body), "renders a bounded, centered card (not a full-bleed surface)");
+  // Compiles as a fragment (assembler emits FONT_*/token consts).
+  const err = await verifyCompilable(`const __P = () => (\n<div>\n${body}\n</div>\n);`);
+  assert(err === null, `blueprint placeholder must compile, got ${err}`);
+});
+
+await check("heroBlueprintPlaceholder: too few blueprint values → falls back to the neutral shell", () => {
+  const spec = { role: "hero" as const, subject: "a glowing pill", interior: ["soft radial halo", "breathing glow"], ownsCopy: [], focalRank: 1 };
+  const heroSlot = { id: "hero", kind: "diegetic", bounds: { x: 0, y: 0, w: 100, h: 100 }, paletteRoles: [], contentFields: [] } as never;
+  const body = heroBlueprintPlaceholder(theme, heroSlot, spec);
+  assert(body.includes("borderColor: HAIRLINE"), "with <2 usable values, the neutral shell ships");
+});
+
+await check("heroPopulateReassert: re-states the subject and every interior item as a populate directive", () => {
+  const spec = {
+    role: "hero" as const,
+    subject: "a full-bleed checkout window",
+    interior: ["browser chrome bar with 'checkout.store.com'", "total line '$248.00'", "grayed 'Complete Purchase' button"],
+    ownsCopy: [],
+    focalRank: 1,
+  };
+  const out = heroPopulateReassert(spec);
+  assert(/POPULATE THE HERO/.test(out), "leads with the populate directive");
+  assert(out.includes("a full-bleed checkout window"), "restates the subject");
+  for (const item of spec.interior) assert(out.includes(item), `re-asserts interior item: ${item}`);
+  assert(/dead rectangle/.test(out), "names the failure mode (empty panel = dead rectangle)");
 });
 
 await check("build-level: a raw asset-id <Img> src is substituted from the script manifest at zero repair cost", async () => {

@@ -624,6 +624,24 @@ export const stripMetaText = (
 export const PRE_RENDER_HERO_MIN_ELEMENTS = 15;
 export const PRE_RENDER_HERO_MIN_TEXT = 4;
 
+/**
+ * (d2b) HERO POPULATE-REGEN budget. The density gate (d2) correctly rejects a
+ * hollow hero, but the single surgical repair was calibrated for MECHANICAL
+ * failures (a truncated tag, a leaked prose line) — a fresh emission recovers
+ * those. A hollow BOOKEND hero (scene 0 cold-open, scene 4 CTA) is a different
+ * beast: the model under-furnishes those scenes because they "breathe", and
+ * one generic retry brought back the same thin body — then the build shipped
+ * the neutral placeholder, an EMPTY dark rectangle strictly WORSE than the thin
+ * hero it replaced (the frame-authoring dogfood: scene 0/4 heroes rendered as
+ * dead near-black panels while their 7-item interior inventories sat unused).
+ * So EVERY hero failure earns this WIDER budget (not just density — a rich
+ * full-bleed hero that COMPILE-breaks on GLM also needs the extra shots before
+ * it drops to the blank placeholder), density failures additionally RE-ASSERT
+ * the head's interior inventory item-by-item (heroPopulateReassert), and — the
+ * invariant — a composed hero NEVER falls back to the blank placeholder while
+ * ANY real emission exists: the richest thin attempt ships instead. */
+export const HERO_POPULATE_REPAIRS = 3;
+
 export const staticJsxDensity = (body: string): { elements: number; textNodes: number } => {
   // String-masked copy: literal contents → spaces (offsets preserved) so tag
   // and text scans can't be fooled by `<`/`>` inside strings.
@@ -1789,6 +1807,32 @@ const blueprintLines = (spec: ElementSpec, content: SceneContent | undefined, ow
 };
 
 /**
+ * POPULATE-REGEN re-assertion for a hero that shipped under the density floor.
+ * The generic surgical repair ("your attempt failed: <error>") let the same
+ * thin body come back on the bookend scenes — the model treats a cold-open /
+ * CTA hero as decorative and under-furnishes it. This re-states the head's
+ * interior inventory item-by-item, demands each as its own nested element, and
+ * REFRAMES negative space as belonging AROUND the hero (in the scene margins),
+ * never as an empty interior — the exact confusion that produced the dead
+ * panels. Used only when the failure IS the density floor. */
+export const heroPopulateReassert = (spec: ElementSpec | undefined): string => {
+  const subject = spec?.subject ?? "the scene's focal product artifact";
+  const items =
+    spec && spec.interior.length > 0
+      ? spec.interior.map((it, i) => `  ${i + 1}. ${it}`).join("\n")
+      : "";
+  return [
+    "── POPULATE THE HERO (your panel came back EMPTY or nearly empty — the single worst failure) ──",
+    `This hero IS "${subject}". It must ship as a FULLY-FURNISHED artifact that FILLS its wrapper — a real, densely-populated product surface (a fully-loaded checkout, dashboard, receipt, or CTA card), NOT a blank card, a bare frame, or one label floating in a void.`,
+    items ? "Build EVERY interior item below as its OWN concrete, visible, nested DOM element, with its real text value present verbatim:" : "Furnish it with realistic nested rows, labels, values, chips and status — concrete diegetic content, not a skeleton.",
+    items,
+    `Nest them structurally — rows inside panels, labels+values inside rows, chips inside headers — so the interior reads as ≥${PRE_RENDER_HERO_MIN_ELEMENTS} real elements and ≥${PRE_RENDER_HERO_MIN_TEXT} concrete text values. Negative space belongs AROUND the hero (the scene margins the composition already reserves), NEVER as an empty interior. An empty hero renders as a dead rectangle on screen — populate it.`,
+  ]
+    .filter(Boolean)
+    .join("\n");
+};
+
+/**
  * One element's brief: ONLY what that element owns — its role, its wrapper
  * geometry, the content-field values it renders, the palette roles it may
  * paint with (mapped to real const names), and the motif description when it
@@ -1876,6 +1920,14 @@ const elementBrief = (args: {
       const archetype = REGISTER_ARCHETYPE[register];
       if (archetype) lines.push(archetype);
       lines.push(MOCK_INTERIOR_CHECKLIST);
+    } else {
+      // Composed hero — the blueprint above IS the visual. The bookend scenes
+      // (cold-open, CTA) tempt the model to under-furnish a "breathing" hero
+      // into a bare frame; state the FILL floor so the panel ships populated
+      // on the first pass, not after a populate-regen.
+      lines.push(
+        `FILL THE PANEL: this hero is the scene's focal object — build EVERY interior item above as a concrete nested element so the panel reads as a real, fully-loaded product surface (≥${PRE_RENDER_HERO_MIN_ELEMENTS} elements, ≥${PRE_RENDER_HERO_MIN_TEXT} concrete text values). Negative space belongs AROUND the hero in the scene margins, NEVER as an empty interior — a bare frame or a single label in a void ships as a dead rectangle and is rejected.`,
+      );
     }
   }
 
@@ -1913,6 +1965,73 @@ const placeholderBody = (theme: Theme, slot: ElementSlot): string =>
   slot.contentFields.includes("headline")
     ? `<div data-content-path="headline" style={{ fontFamily: FONT_DISPLAY, fontSize: 56, fontWeight: 600, lineHeight: 1.1, color: ${tokenForRole(theme, "ink")} }}>{c.headline}</div>`
     : `<div style={{ width: "100%", height: "100%", borderRadius: 12, background: ${theme.grammar.panelBg}, border: "1px solid", borderColor: ${theme.grammar.hairline} }} />`;
+
+/**
+ * The concrete DISPLAY values quoted inside a hero blueprint's interior
+ * inventory — 'checkout.store.com', '$349.95', 'Complete Purchase', 'Cart:
+ * Full' — the micro-copy the leaf was meant to transcribe. Used to build a
+ * POPULATED hero placeholder when the leaf never produced a compilable body.
+ * Hex colors, css/pixel tokens, and letterless noise are dropped; order
+ * preserved, deduped. */
+export const extractQuotedValues = (interior: string[]): string[] => {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const item of interior) {
+    for (const m of item.matchAll(/'([^'\n]{2,60})'|"([^"\n]{2,60})"|'([^'\n]{2,60})'|"([^"\n]{2,60})"/g)) {
+      const raw = (m[1] ?? m[2] ?? m[3] ?? m[4] ?? "").trim();
+      if (!raw) continue;
+      const v = raw.replace(/[<>{}]/g, "").trim(); // JSX-text safe
+      if (v.length < 2 || seen.has(v)) continue;
+      if (/^#[0-9a-fA-F]{3,8}$/.test(v)) continue; // hex color
+      if (/^\d+(px|rem|em|%)$/.test(v)) continue; // css length
+      if (!/[\p{L}\p{N}]/u.test(v)) continue; // must carry a letter/number
+      seen.add(v);
+      out.push(v);
+    }
+  }
+  return out;
+};
+
+/**
+ * POPULATED hero fallback (the invariant closer). When a COMPOSED hero stays
+ * broken through its whole repair budget with no salvageable emission — GLM
+ * intermittently COMPILE-breaks the most complex bookend heroes (the full-bleed
+ * checkout, the CTA card), so every attempt can be uncompilable and the blank
+ * `placeholderBody` would ship a dead rectangle where the scene's focal object
+ * belongs — this builds a minimal but REAL product surface from the head's own
+ * blueprint: the subject as a header + the interior inventory's quoted values as
+ * rows, on a lifted (canvas-contrasting) surface so it never reads as a washout.
+ * Not as rich as a real emission, but never empty — which satisfies the "a
+ * composed hero must NEVER ship empty" invariant deterministically. Falls back
+ * to the neutral shell only when the blueprint yields too few display values.
+ * Referenced consts (FONT_DISPLAY/FONT_BODY + theme tokens) are always emitted
+ * by the assembler, so it compiles by construction. */
+export const heroBlueprintPlaceholder = (theme: Theme, slot: ElementSlot, spec: ElementSpec): string => {
+  const values = extractQuotedValues(spec.interior).slice(0, 7);
+  if (values.length < 2) return placeholderBody(theme, slot);
+  const surface = tokenForRole(theme, "ink"); // light on a dark canvas → contrast
+  const ink = tokenForRole(theme, "canvas"); // dark text on the lifted surface
+  const accent = tokenForRole(theme, "accent");
+  const rows = values
+    .map(
+      (v, i) =>
+        `      <div style={{ display: "flex", alignItems: "center", gap: 11, padding: "11px 0"${i > 0 ? ', borderTop: "1px solid rgba(0,0,0,0.09)"' : ""} }}>` +
+        `<span style={{ width: 6, height: 6, borderRadius: "50%", background: ${accent}, flexShrink: 0 }} />` +
+        `<span style={{ fontFamily: FONT_BODY, fontSize: 15, color: ${ink}, lineHeight: 1.3 }}>${v}</span></div>`,
+    )
+    .join("\n");
+  // A BOUNDED, centered card — never a full-bleed fill. The head can author a
+  // full-bleed hero (whole canvas); filling that with a lifted surface would
+  // wash the entire frame, so the fallback centers a modest checkout-sized card
+  // on the dark field (reads like scene 1's card), regardless of wrapper size.
+  return (
+    `<div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", padding: 48, boxSizing: "border-box" }}>\n` +
+    `    <div style={{ width: "min(540px, 92%)", maxHeight: "84%", borderRadius: 16, background: ${surface}, boxShadow: "0 24px 64px rgba(0,0,0,0.42)", padding: "22px 30px", boxSizing: "border-box", display: "flex", flexDirection: "column", overflow: "hidden" }}>\n` +
+    `${rows}\n` +
+    `    </div>\n` +
+    `  </div>`
+  );
+};
 
 // ─── The orchestrator ───────────────────────────────────────────────────────
 
@@ -2076,7 +2195,11 @@ export const castBuild = async (
       user: string,
     ): Promise<
       | { ok: true; body: string; rewrites: number; fontRewrites: number; heroSurface: boolean; metaStrips: number }
-      | { ok: false; raw: string; error: string }
+      // `salvage` carries a compilable-but-thin hero body (density-floor
+      // failure only): worse than a rich hero, but strictly BETTER than the
+      // blank placeholder — the invariant is that a composed hero never ships
+      // empty while a real emission exists. `score` ranks thin attempts.
+      | { ok: false; raw: string; error: string; salvage?: { body: string; score: number } }
     > => {
       let text: string;
       try {
@@ -2179,6 +2302,16 @@ export const castBuild = async (
       if (job.slot.id === "hero") {
         const density = staticJsxDensity(bindGuard.code);
         if (density.elements < PRE_RENDER_HERO_MIN_ELEMENTS || density.textNodes < PRE_RENDER_HERO_MIN_TEXT) {
+          // A thin hero is a FAILURE (→ populate-regen), but it is still real,
+          // populated content. Verify it compiles: a body that survives the
+          // fragment gate is SALVAGEABLE — it ships in place of the blank
+          // placeholder if the whole populate budget exhausts (an empty hero is
+          // the worst possible outcome, worse than a thin one). A thin body that
+          // ALSO fails to compile is not a populate problem at all — it is a
+          // MECHANICAL failure, so return the compile error and let it take the
+          // single surgical repair (not the wide populate budget).
+          const salvageErr = await verifyFragment(bindGuard.code);
+          if (salvageErr) return { ok: false, raw, error: salvageErr };
           return {
             ok: false,
             raw,
@@ -2187,6 +2320,7 @@ export const castBuild = async (
               `the hero floor is ≥${PRE_RENDER_HERO_MIN_ELEMENTS} nested elements AND ≥${PRE_RENDER_HERO_MIN_TEXT} concrete visible text values ` +
               `(rows, chips, labels, timestamps, values that belong to the product). Rebuild this element as a real product ` +
               `artifact with a furnished interior — every inventory item in the brief visibly present, plus supporting diegetic chrome`,
+            salvage: { body: bindGuard.code, score: density.elements + density.textNodes },
           };
         }
         // (d7) PLACEHOLDER-GLYPH floor: a mock panel whose value fields are
@@ -2228,30 +2362,76 @@ export const castBuild = async (
       };
     };
 
+    // Track the richest compilable-but-thin hero across attempts — the salvage
+    // that ships in place of the blank placeholder if the whole budget runs out.
+    const isDensityFail = (e: string): boolean => e.startsWith("hero interior too thin");
+    const isHero = job.slot.id === "hero";
+    const heroSpec = isHero ? specForSlot(script.scenes[job.sceneIndex], job.slot.id) : undefined;
+    let bestSalvage: { body: string; score: number } | undefined;
+    const noteSalvage = (r: { salvage?: { body: string; score: number } }): void => {
+      if (r.salvage && (!bestSalvage || r.salvage.score > bestSalvage.score)) bestSalvage = r.salvage;
+    };
+
     const first = await attempt(job.brief);
     if (first.ok) {
       return { pieceId: job.pieceId, body: first.body, outputTokens: tokens, repaired: false, failed: false, colorRewrites: first.rewrites, fontRewrites: first.fontRewrites, heroSurfaceCorrected: first.heroSurface, metaTextStrips: first.metaStrips };
     }
+    noteSalvage(first);
 
-    // ONE surgical repair: the same brief + the broken output + the exact
-    // error. A syntax failure is mechanical, not creative — one pointed retry
-    // recovers most of them (repairCompile doctrine, code-extraction.ts).
-    const second = await attempt(
-      [
-        job.brief,
-        "",
-        "Your previous attempt failed:",
-        first.raw ? `--- previous attempt ---\n${first.raw}` : "(the call itself failed)",
-        `--- error ---\n${first.error}`,
-        "Emit corrected JSX only — output ONLY component code; never narrate your reasoning, plan, or coordinate math as rendered text nodes.",
-      ].join("\n"),
-    );
-    if (second.ok) {
-      return { pieceId: job.pieceId, body: second.body, outputTokens: tokens, repaired: true, failed: false, colorRewrites: second.rewrites, fontRewrites: second.fontRewrites, heroSurfaceCorrected: second.heroSurface, metaTextStrips: second.metaStrips };
+    // Repair budget: a non-hero MECHANICAL failure (truncation, leaked prose,
+    // stolen copy, bad src) earns ONE surgical repair — a syntax failure is not
+    // creative, one pointed retry recovers most (repairCompile doctrine). A HERO
+    // is the scene's focal object and its degraded fallback is catastrophic (a
+    // dead panel — full-bleed, the whole frame), so it earns the WIDE budget for
+    // ANY failure class, not just density: the frame-authoring dogfood's scene-0
+    // hero (a rich full-bleed checkout window) kept COMPILE-breaking on GLM, and
+    // a single repair dropped it straight to the blank placeholder — more shots
+    // at a compilable rich body is worth the tokens when the alternative erases
+    // the scene. Density failures additionally RE-ASSERT the head's interior
+    // inventory each repair (heroPopulateReassert). See HERO_POPULATE_REPAIRS.
+    const maxRepairs = isHero ? HERO_POPULATE_REPAIRS : 1;
+    let prev: { raw: string; error: string } = first;
+    for (let r = 0; r < maxRepairs; r++) {
+      const reassert = isHero && isDensityFail(prev.error) ? heroPopulateReassert(heroSpec) : "";
+      const next = await attempt(
+        [
+          job.brief,
+          "",
+          "Your previous attempt failed:",
+          prev.raw ? `--- previous attempt ---\n${prev.raw}` : "(the call itself failed)",
+          `--- error ---\n${prev.error}`,
+          reassert,
+          "Emit corrected JSX only — output ONLY component code; never narrate your reasoning, plan, or coordinate math as rendered text nodes.",
+        ]
+          .filter(Boolean)
+          .join("\n"),
+      );
+      if (next.ok) {
+        return { pieceId: job.pieceId, body: next.body, outputTokens: tokens, repaired: true, failed: false, colorRewrites: next.rewrites, fontRewrites: next.fontRewrites, heroSurfaceCorrected: next.heroSurface, metaTextStrips: next.metaStrips };
+      }
+      noteSalvage(next);
+      prev = next;
     }
 
-    console.warn(`[cast-build] ${job.pieceId}: broken through repair — shipping placeholder (${second.error.slice(0, 120)})`);
-    return { pieceId: job.pieceId, body: placeholderBody(theme, job.slot), outputTokens: tokens, repaired: false, failed: true, colorRewrites: 0, fontRewrites: 0, heroSurfaceCorrected: false, metaTextStrips: 0 };
+    // Budget exhausted. INVARIANT: a composed hero must never ship as an empty
+    // panel while a real emission exists — ship the richest thin attempt (still
+    // counted as a failure for telemetry/cache-invalidation) rather than the
+    // blank placeholder. Only fall back to the neutral placeholder when NO
+    // compilable body was ever produced (every call errored or stayed broken).
+    if (bestSalvage) {
+      console.warn(`[cast-build] ${job.pieceId}: hero stayed under the density floor through ${maxRepairs} repair(s) — shipping the richest real emission (score ${bestSalvage.score}) rather than an empty placeholder`);
+      return { pieceId: job.pieceId, body: bestSalvage.body, outputTokens: tokens, repaired: false, failed: true, colorRewrites: 0, fontRewrites: 0, heroSurfaceCorrected: false, metaTextStrips: 0 };
+    }
+    // No salvageable emission (every attempt errored or compile-broke). For a
+    // COMPOSED hero this is the catastrophic case — the blank shell would ship a
+    // dead rectangle where the focal object belongs — so build a POPULATED
+    // fallback from the head's own blueprint (subject + interior values on a
+    // contrasting surface). The invariant holds: a composed hero never ships
+    // empty. Non-heroes (and heroes with no usable blueprint) take the neutral
+    // shell as before.
+    const fallback = isHero && heroSpec ? heroBlueprintPlaceholder(theme, job.slot, heroSpec) : placeholderBody(theme, job.slot);
+    console.warn(`[cast-build] ${job.pieceId}: broken through repair — shipping ${isHero && heroSpec ? "BLUEPRINT-populated" : "neutral"} placeholder (${prev.error.slice(0, 120)})`);
+    return { pieceId: job.pieceId, body: fallback, outputTokens: tokens, repaired: false, failed: true, colorRewrites: 0, fontRewrites: 0, heroSurfaceCorrected: false, metaTextStrips: 0 };
   };
 
   const outcomes = await Promise.all(jobs.map((job) => limiter.with(() => runElement(job))));

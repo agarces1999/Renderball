@@ -1512,6 +1512,19 @@ check("voice: banned benefit clichés in a headline or lede are rejected verbati
   assert(e.some((x) => /treated right/i.test(x)), "the treated-right cliché is caught");
 });
 
+check("voice: a banned cliché in an EYEBROW or CAPTION is caught (frame-authoring scene-4 escape hatch)", () => {
+  // The exact dogfood defect: scene 4 shipped the "[X] treated right" cliché as
+  // an EYEBROW, which the headline+lede-only check waved through.
+  const scenes = [
+    { content: { headline: "You know the feeling" } },
+    { content: { eyebrow: "YOUR MONEY, TREATED RIGHT", headline: "Shop smoother today" } },
+    { content: { headline: "Millions of stores", caption: "Everything you need · buyer protection" } },
+  ];
+  const e = checkColdOpenVoice(scenes);
+  assert(e.some((x) => /Scene 1 eyebrow.*treated right/i.test(x)), `the eyebrow cliché is caught, got ${JSON.stringify(e)}`);
+  assert(e.some((x) => /Scene 2 caption.*everything you need/i.test(x)), `the caption cliché is caught, got ${JSON.stringify(e)}`);
+});
+
 check("voice: validateScript surfaces a brand-led scene-0 opener when brandName is supplied (reference fixture)", () => {
   if (!existsSync(refScriptPath)) return; // generated fixture gitignored — skip cleanly
   const base = JSON.parse(readFileSync(refScriptPath, "utf8")) as { scenes: { content: { headline: string } }[] } & Record<string, unknown>;

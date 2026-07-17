@@ -600,7 +600,9 @@ const normalizeForBrand = (s: string): string =>
  * scene), shaped for the generation repair loop:
  *   - the SCENE-0 headline must state the reader's TENSION, never the brand name
  *     (a brand-led opener is banned; move the brand mark to the corner/close).
- *   - no headline or lede may carry a banned benefit cliché.
+ *   - no headline, lede, eyebrow, or caption may carry a banned benefit cliché
+ *     (the eyebrow/caption were the escape hatch a benefit cliché slipped
+ *     through in the frame-authoring dogfood).
  * `brandName` is optional — the brand-opener check is skipped without it.
  */
 export const checkColdOpenVoice = (
@@ -615,6 +617,10 @@ export const checkColdOpenVoice = (
   const ledeOf = (sc: { content?: unknown }): string => {
     const c = (sc?.content ?? {}) as Record<string, unknown>;
     return typeof c.lede === "string" ? c.lede : "";
+  };
+  const fieldOf = (sc: { content?: unknown }, field: string): string => {
+    const c = (sc?.content ?? {}) as Record<string, unknown>;
+    return typeof c[field] === "string" ? (c[field] as string) : "";
   };
 
   // Scene-0 brand-led opener — the reference's biggest voice tell.
@@ -631,13 +637,18 @@ export const checkColdOpenVoice = (
     }
   }
 
-  // Banned benefit clichés in any headline or lede (report EVERY hit — a lede
-  // can stack several, and the repair prompt should name them all).
+  // Banned benefit clichés in any headline, lede, eyebrow, or caption (report
+  // EVERY hit — a lede can stack several, and the repair prompt should name
+  // them all). The eyebrow was the escape hatch: the frame-authoring dogfood
+  // shipped scene 4's eyebrow "YOUR MONEY, TREATED RIGHT" — the exact
+  // "[X] treated right" cliché — because the check only read headline+lede.
   const clicheG = new RegExp(BANNED_CLICHE_RX.source, "gi");
   scenes.forEach((sc, i) => {
     for (const [field, text] of [
       ["headline", headlineOf(sc)],
       ["lede", ledeOf(sc)],
+      ["eyebrow", fieldOf(sc, "eyebrow")],
+      ["caption", fieldOf(sc, "caption")],
     ] as const) {
       clicheG.lastIndex = 0;
       const seen = new Set<string>();
