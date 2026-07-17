@@ -226,6 +226,37 @@ check("arm3b: garbled text-node wordmark (near-miss spelling) fires", () => {
   assert(g.length === 1 && g[0].garbledText === "Tialscale", `garbled 'Tialscale' fires, got ${JSON.stringify(g)}`);
 });
 
+check("arm3b FALABELLA-FP: a messy crawl title never makes the CORRECT wordmark read as garbled", () => {
+  // The Falabella build's brand title was "falabella.com⚡El Cyber de las Mejores
+  // Marcas"; the correct diegetic mentions "Falabella" (AVAILABLE AT Falabella /
+  // A Falabella label) must NOT read as a scrambled "falabellacomel".
+  const code = `
+<Piece id="s0.hero" kind="diegetic">
+  <div data-piece="s0.hero" data-kind="diegetic">
+    <div data-content-path="site.logo"><Img src="/logo.svg" /></div>
+    <span>AVAILABLE AT</span><span>Falabella</span>
+    <div>A Falabella label</div>
+  </div>
+</Piece>`;
+  const d = findBrandMarkDefects(code, "falabella.com⚡El Cyber de las Mejores Marcas");
+  assert(d.length === 0, `no garble/dup on correct 'Falabella' mentions, got ${JSON.stringify(d.map((x) => ({ k: x.kind, t: x.garbledText })))}`);
+});
+
+check("arm3b: a diegetic brand MENTION in a mock is not counted as a duplicate mark", () => {
+  // A single logo lockup + the brand named as retail copy ("AVAILABLE AT Falabella")
+  // is ONE mark, not two — retailers name themselves in-frame legitimately.
+  const code = `
+<Piece id="s0.hero" kind="diegetic">
+  <div data-piece="s0.hero" data-kind="diegetic">
+    <div data-content-path="site.logo"><Img src="/logo.svg" /></div>
+  </div>
+</Piece>
+<Piece id="s0.copy" kind="text">
+  <div data-piece="s0.copy" data-kind="text"><span>Falabella</span></div>
+</Piece>`;
+  assert(findBrandMarkDefects(code, "Falabella").length === 0, "one logo + a mention → not a duplicate");
+});
+
 check("arm3b: one brand lockup + exact brand mentions do NOT fire", () => {
   const code = `
 <Piece id="s0.hero" kind="diegetic">

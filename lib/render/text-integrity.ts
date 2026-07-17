@@ -410,15 +410,23 @@ const editDistance = (a: string, b: string): number => {
  *  brand name (garbled). */
 export const findBrandMarkDefects = (code: string, brandName: string): BrandMarkFinding[] => {
   const out: BrandMarkFinding[] = [];
-  const brandWord = normWord((brandName ?? "").trim().split(/\s+/)[0] ?? "");
+  // The crawl title can be messy ("falabella.com⚡El Cyber de las Mejores Marcas"):
+  // take the LEADING ALPHABETIC RUN of the first token so a domain suffix (.com),
+  // emoji, or tagline never pollutes the brand word — otherwise the CORRECT
+  // wordmark ("Falabella") reads as a near-miss of "falabellacom" and false-fires.
+  const rawFirst = (brandName ?? "").trim().split(/\s+/)[0] ?? "";
+  const cleanFirst = rawFirst.match(/[A-Za-z][A-Za-z'&-]*/)?.[0] ?? rawFirst;
+  const brandWord = normWord(cleanFirst);
   const spans = enumeratePieceSpans(code).filter((s) => s.kind !== "chrome" && s.scene >= 0);
-  const wordmarkRx = brandWord.length >= 2
-    ? new RegExp(`>\\s*(${(brandName ?? "").trim().split(/\s+/)[0].replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})\\s*<`, "gi")
-    : null;
   const marksByScene = new Map<number, { pieceId: string }[]>();
   for (const span of spans) {
-    let count = (span.body.match(LOGO_MARK_RX) || []).length;
-    if (wordmarkRx) count += (span.body.match(wordmarkRx) || []).length;
+    // A brand MARK = an intended logo mount/lockup, keyed on the data-content-path
+    // "logo" marker the cast assembler emits (the reliable signal; the s4 garbled
+    // SVG wordmark AND the correct Img lockup both carry it). Diegetic brand
+    // MENTIONS in a mock ("AVAILABLE AT Falabella" on a retail card) are NOT marks —
+    // counting exact wordmark text nodes here would false-fire on retailers that
+    // legitimately name themselves in-frame (Falabella build finding).
+    const count = (span.body.match(LOGO_MARK_RX) || []).length;
     for (let i = 0; i < count; i++) {
       const arr = marksByScene.get(span.scene) ?? [];
       arr.push({ pieceId: span.id });
@@ -429,6 +437,9 @@ export const findBrandMarkDefects = (code: string, brandName: string): BrandMark
       for (const m of span.body.matchAll(/>\s*([^<>{}\n]{2,40})\s*</g)) {
         const cand = normWord(m[1]);
         if (cand.length < brandWord.length * 0.6 || cand.length > brandWord.length * 1.6) continue;
+        // A substring relationship is truncation/domain, not a scramble
+        // ("falabella" vs "falabellacom"): never a garble.
+        if (cand === brandWord || cand.includes(brandWord) || brandWord.includes(cand)) continue;
         const d = editDistance(cand, brandWord);
         if (d > 0 && d <= Math.max(1, Math.ceil(brandWord.length * 0.34))) {
           out.push({
