@@ -1732,27 +1732,27 @@ const main = async (): Promise<void> => {
     // page (accent #666666, logo null, zero photos). Stored briefs carry cached
     // extracts that crawl-time checks never saw — so the gate runs HERE, with
     // network verification (logo decode + photo probes, time-boxed).
-    const brandTruth = await phase("brand-truth-preflight", () => preflightBrandTruth(be));
-    report.brandTruth = brandTruth;
-    if (brandTruth.hardFail) {
+    const truthReport = await phase("brand-truth-preflight", () => preflightBrandTruth(be));
+    report.brandTruth = truthReport;
+    if (truthReport.hardFail) {
       console.error(`  ✗ BRAND-TRUTH HARD FAIL — refusing to build:`);
-      for (const r of brandTruth.degraded) console.error(`    · ${r}`);
+      for (const r of truthReport.degraded) console.error(`    · ${r}`);
       throw new Error(
-        `BRAND-TRUTH PREFLIGHT HARD FAIL: ${brandTruth.degraded.join(" · ")}`,
+        `BRAND-TRUTH PREFLIGHT HARD FAIL: ${truthReport.degraded.join(" · ")}`,
       );
     }
-    if (brandTruth.degraded.length > 0) {
+    if (truthReport.degraded.length > 0) {
       console.warn(`  ⚠ brand-truth DEGRADED (build proceeds; report surfaced in output + gallery):`);
-      for (const r of brandTruth.degraded) console.warn(`    · ${r}`);
+      for (const r of truthReport.degraded) console.warn(`    · ${r}`);
     } else {
       console.log(
-        `  brand-truth preflight CLEAN — logo ${brandTruth.signals.logo.status} · accent ${brandTruth.signals.accent.resolved ?? "none"} · photos ${brandTruth.signals.photos.verified ?? "?"}/${brandTruth.signals.photos.listed} alive`,
+        `  brand-truth preflight CLEAN — logo ${truthReport.signals.logo.status} · accent ${truthReport.signals.accent.resolved ?? "none"} · photos ${truthReport.signals.photos.verified ?? "?"}/${truthReport.signals.photos.listed} alive`,
       );
     }
     // Act on the verification: dead cached photos never reach preallocated
     // assets; the logo truth is the first candidate that actually DECODES.
-    if (brandTruth.signals.photos.deadUrls.length > 0 && be.page_images) {
-      const deadSet = new Set(brandTruth.signals.photos.deadUrls);
+    if (truthReport.signals.photos.deadUrls.length > 0 && be.page_images) {
+      const deadSet = new Set(truthReport.signals.photos.deadUrls);
       be.page_images = be.page_images.filter((p) => !deadSet.has(p.src));
       console.warn(`  ⚠ dropped ${deadSet.size} dead page image(s) from the build input`);
     }
@@ -1762,7 +1762,7 @@ const main = async (): Promise<void> => {
     const signature =
       signatureWithLogoFallback(be.palette ?? [], be.theme_color, be.logo_color) ?? be.theme_color ?? (be.palette ?? [])[0] ?? "#666666";
     const crawlFonts = fontsFromCrawl(be);
-    const logoSrc = brandTruth.signals.logo.effectiveUrl ?? undefined;
+    const logoSrc = truthReport.signals.logo.effectiveUrl ?? undefined;
     report.brief = { projectId: stored.id, url: stored.brand_kit_url, brand: BRAND, brandExtractCached: true, canvasPlan, signature, fonts: { display: crawlFonts.display, body: crawlFonts.body, mono: crawlFonts.mono, fontFaces: (be.fonts ?? []).length }, logo: logoSrc ? logoSrc.slice(0, 120) : null };
 
     // ── canaries: ALL THREE transports before any real spend ─────────────────
