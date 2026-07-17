@@ -96,6 +96,19 @@ export interface MeasuredElement {
    *  element — i.e. something else is stacked ON TOP of it (the clipped-by-mock
    *  signal; text that is visibly on top reports false). */
   coveredAtCenter: boolean;
+  /** Computed border-top-left-radius in px (0 = square). Optional: older
+   *  fixtures predate it. v13 — the skeleton-bar detector keys on rounding. */
+  radius?: number;
+  /** Index (into this scene's elements array) of the nearest RECORDED ancestor,
+   *  -1 at the top. Optional: older fixtures predate it. v13 — sibling
+   *  grouping for the skeleton-bar detector. */
+  parentIx?: number;
+  /** True when the subtree carries ANY text (own or descendants'). Optional:
+   *  older fixtures predate it. */
+  hasTextDesc?: boolean;
+  /** True when the element paints a background-image/gradient (computed
+   *  backgroundColor alone is transparent for gradients). Optional. */
+  hasBgImage?: boolean;
 }
 
 export interface SceneMeasurement {
@@ -119,6 +132,7 @@ export const CANVAS_DIMS: Record<string, { w: number; h: number }> = {
 // dependency-free and self-contained.
 const PAGE_WALK = `(() => {
   const out = [];
+  const recordedIx = new Map();
   const alphaOf = (c) => {
     const m = /rgba?\\(([^)]+)\\)/.exec(c || "");
     if (!m) return 0;
@@ -162,6 +176,13 @@ const PAGE_WALK = `(() => {
         coveredAtCenter = !!hit && hit !== el && !el.contains(hit) && !hit.contains(el);
       }
     } catch (e) {}
+    // Nearest RECORDED ancestor (skipped ancestors — 0x0, display:none — are
+    // walked through so sibling grouping survives them).
+    let parentIx = -1;
+    for (let p = el.parentElement; p; p = p.parentElement) {
+      if (recordedIx.has(p)) { parentIx = recordedIx.get(p); break; }
+    }
+    recordedIx.set(el, out.length);
     out.push({
       tag: el.tagName.toLowerCase(),
       x: Math.round(r.x), y: Math.round(r.y),
@@ -178,6 +199,10 @@ const PAGE_WALK = `(() => {
       pieceKind,
       onOpaqueSurface,
       coveredAtCenter,
+      radius: parseFloat(cs.borderTopLeftRadius) || 0,
+      parentIx,
+      hasTextDesc: ((el.textContent || "").trim().length > 0),
+      hasBgImage: !!(cs.backgroundImage && cs.backgroundImage !== "none"),
     });
   }
   return out;

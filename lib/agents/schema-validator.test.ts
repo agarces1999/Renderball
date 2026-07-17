@@ -552,6 +552,34 @@ check("floor: short or noun-poor visual_concepts fail with measured numbers", ()
   assert(nounPoor.some((x) => /too thin \(\d+ chars, 0 drawable nouns\)/.test(x)), `got ${JSON.stringify(nounPoor)}`);
 });
 
+// — register-aware richness vocabulary (v13, cycle-4 Oatly brand-contract fix) —
+// An Oatly-style type-poster concept: ≥3 typographic drawables, ZERO UI nouns
+// (no panel/card/chart/bar/button vocabulary anywhere), >120 chars, beats late.
+const TYPE_POSTER_VC =
+  "Composition: An oversized numeral '3' fills the left half in chunky display type, a hand-inked scribble circles it, a postage stamp sits top-right and a sticker slants beneath the type lockup. Animations: numeral stamps in at 0s; scribble draws at 2s; sticker slaps at 4.6s.";
+
+check("register vocab: type-poster concept passes for quote/centered/full-bleed", () => {
+  assert(countDrawableNouns(TYPE_POSTER_VC) < 3, "control: UI-only vocabulary must still read this as noun-poor");
+  assert(countDrawableNouns(TYPE_POSTER_VC, "quote") >= 3, `quote register must count typographic drawables (got ${countDrawableNouns(TYPE_POSTER_VC, "quote")})`);
+  for (const reg of ["quote", "centered", "full-bleed"]) {
+    const e = checkScriptRichness([{ ...rs(TYPE_POSTER_VC), register: reg }]);
+    assert(!e.some((x) => /too thin/.test(x)), `register:${reg} must accept the type-poster concept, got ${JSON.stringify(e)}`);
+  }
+});
+
+check("register vocab: the same concept still fails for register:split (floor unchanged)", () => {
+  for (const reg of ["split", "stat", "list", undefined]) {
+    const e = checkScriptRichness([{ ...rs(TYPE_POSTER_VC), register: reg }]);
+    assert(e.some((x) => /too thin/.test(x)), `register:${reg ?? "(none)"} keeps the UI vocabulary — expected too-thin, got ${JSON.stringify(e)}`);
+  }
+});
+
+check("register vocab: UI nouns still count on type-poster registers (additive, not replacing)", () => {
+  // RICH_VC is pure UI vocabulary — a quote register must not lose it.
+  const e = checkScriptRichness([{ ...rs(RICH_VC), register: "quote" }]);
+  assert(!e.some((x) => /too thin/.test(x)), `UI vocabulary must still count on quote, got ${JSON.stringify(e)}`);
+});
+
 // — interior furnishing —
 check("furnishing: distinct interior specifics counted once", () => {
   assert(countInteriorSpecifics("rows and rows of labels") === 2, "row + label");

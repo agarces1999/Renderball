@@ -65,7 +65,7 @@
  */
 import { promises as fs } from "fs";
 import type { Page } from "playwright";
-import type { SceneMeasurement } from "./measure-scene";
+import type { MeasuredElement, SceneMeasurement } from "./measure-scene";
 
 // ── calibrated floors ────────────────────────────────────────────────────────
 
@@ -116,10 +116,36 @@ export interface HeroWashoutFinding {
   stats: HeroLuminanceStats;
 }
 
+/**
+ * v13 (#3) — NEAR-MISS washout ADVISORY. Cycle-4 evidence: s0.hero (spread
+ * 43/std 19.8) and s2.hero (spread 20/std 19.4) both sat <1 std-dev point
+ * above the blocking floor — visibly anemic in the frames, shipped unremarked.
+ * A region whose spread is under the floor AND whose std-dev is within
+ * NEAR_MISS margin of its floor gets an ADVISORY (never blocking) that the
+ * runner appends to any regen of that piece — a piece already being
+ * regenerated for another reason hears "and while you're at it, add tonal
+ * contrast" instead of shipping the same anemia again.
+ */
+export const WASHOUT_NEAR_MISS_STD_MARGIN = 3;
+
+export interface HeroWashoutNearMiss {
+  kind: "washout-near-miss";
+  scene: number;
+  pieceId: string;
+  /** Advisory by contract — this can NEVER block or create a regen target. */
+  blocking: false;
+  detail: string;
+  /** The feedback line appended to any regen of this piece. */
+  advisory: string;
+  stats: HeroLuminanceStats;
+}
+
 export interface HeroContrastResult {
   /** Stats for EVERY measurable hero region (pass or fail) — report fodder. */
   stats: HeroLuminanceStats[];
   findings: HeroWashoutFinding[];
+  /** v13 (#3): near-miss washouts — advisory only, appended to regens. */
+  advisories: HeroWashoutNearMiss[];
   /** Regions/scenes that could not be sampled (no finding fabricated). */
   errors: string[];
 }
@@ -279,6 +305,25 @@ const findingFor = (stats: HeroLuminanceStats): HeroWashoutFinding => ({
   stats,
 });
 
+const nearMissFor = (stats: HeroLuminanceStats): HeroWashoutNearMiss => ({
+  kind: "washout-near-miss",
+  scene: stats.scene,
+  pieceId: stats.pieceId,
+  blocking: false,
+  detail:
+    `scene ${stats.scene}: hero piece "${stats.pieceId}" is a NEAR-MISS washout — spread ` +
+    `${round1(stats.spread)} is under the ${WASHOUT_SPREAD_FLOOR} floor and std-dev ${round1(stats.stdDev)} ` +
+    `sits within ${WASHOUT_NEAR_MISS_STD_MARGIN} points of the ${WASHOUT_STDDEV_FLOOR} floor. ` +
+    `Not blocking, but the region reads anemic.`,
+  advisory:
+    `ADVISORY (non-blocking) — this piece is a NEAR-MISS washout: measured luminance spread ` +
+    `${round1(stats.spread)} (target comfortably >${WASHOUT_SPREAD_FLOOR}) and std-dev ${round1(stats.stdDev)} ` +
+    `(floor ${WASHOUT_STDDEV_FLOOR}). While regenerating, ALSO add real tonal contrast: an opaque surface ` +
+    `that separates decisively from the canvas, ink-dark interior text, and at least one accent-colored ` +
+    `element — do not ship another near-canvas tonal band.`,
+  stats,
+});
+
 /**
  * Run washout detection over measured scenes. For each scene with a
  * screenshot and at least one ".hero" piece, samples the hero region(s) on
@@ -291,7 +336,7 @@ export const assessHeroWashout = async (
   measurements: SceneMeasurement[],
   opts?: { page?: Page },
 ): Promise<HeroContrastResult> => {
-  const result: HeroContrastResult = { stats: [], findings: [], errors: [] };
+  const result: HeroContrastResult = { stats: [], findings: [], advisories: [], errors: [] };
   const work: { m: SceneMeasurement; regions: HeroRegion[] }[] = [];
   for (const m of measurements) {
     if (!m.screenshotPath) {
@@ -363,6 +408,12 @@ export const assessHeroWashout = async (
         result.stats.push(stats);
         if (stats.spread < WASHOUT_SPREAD_FLOOR && stats.stdDev < WASHOUT_STDDEV_FLOOR) {
           result.findings.push(findingFor(stats));
+        } else if (
+          stats.spread < WASHOUT_SPREAD_FLOOR &&
+          stats.stdDev < WASHOUT_STDDEV_FLOOR + WASHOUT_NEAR_MISS_STD_MARGIN
+        ) {
+          // v13 (#3): the near-miss band — advisory only, never blocking.
+          result.advisories.push(nearMissFor(stats));
         }
       }
     }
@@ -370,4 +421,160 @@ export const assessHeroWashout = async (
     if (browser) await browser.close().catch(() => {});
   }
   return result;
+};
+
+// ── hero-underscale (v13 #2) ─────────────────────────────────────────────────
+//
+// Cycle-4 evidence (Oatly): s2's carton — the RIGHT brand artifact — rendered
+// as a postage stamp lost in a void: its PAINTED footprint was 0.33% of the
+// 1080x1080 canvas while its member-rect bounding box read a healthy 17.6%
+// (transparent layout wrappers inflate the bbox; only what PAINTS counts).
+// On centered/quote registers the hero IS the frame's anchor — a painted
+// union under the floor is a blocking scale defect, routed with "the artifact
+// owns the frame — scale it up".
+//
+// PAINTED = opacity > 0.05 AND (an <img>, own text, an opaque background
+// (alpha ≥ 0.5), or a background-image/gradient). Union area is exact
+// (x-compression + y-interval merge), clamped to the canvas.
+//
+// CALIBRATION (2026-07-17, re-measured via measureScenes on the four
+// surviving dogfood genDirs — painted-union % of canvas on centered/quote
+// scenes only; full-bleed/split/list/stat registers are out of scope):
+//   MUST FIRE — Oatly    s2.hero (centered): 0.33%  (the postage-stamp carton)
+//   fires too — Glossier s1.hero (centered): 3.44%  (small dark tablet in a
+//               huge empty lower half — same class, verified by frame eyeball)
+//   MUST PASS — Oatly    s0.hero (quote):    12.42%
+//               Glossier s0.hero (quote):    13.73%
+//               Linear   s4.hero (centered): 10.87%
+//               LiquidD  s0.hero (centered): 14.84%
+//               LiquidD  s1.hero (quote):     9.26%  (nearest pass, 1.16x floor)
+//               LiquidD  s4.hero (centered): 16.44%
+//   Floor 8%: nearest fire 3.44% (0.43x), nearest pass 9.26% (1.16x).
+
+/** Painted-union floor — fraction of canvas area a centered/quote hero must
+ *  cover. See the calibration table above. */
+export const HERO_UNDERSCALE_MIN_FRAC = 0.08;
+/** Registers whose hero anchors the frame — the only ones this gate judges.
+ *  (A full-bleed hero owns the canvas by construction; split/list/stat heroes
+ *  share the frame with copy columns and rows.) */
+export const UNDERSCALE_REGISTERS: ReadonlySet<string> = new Set(["centered", "quote"]);
+
+export interface HeroUnderscaleFinding {
+  kind: "hero-underscale";
+  scene: number;
+  pieceId: string;
+  blocking: true;
+  /** Painted-union area of the piece as a fraction of the canvas. */
+  paintedFrac: number;
+  /** Member-rect bounding-box fraction (context — wrappers inflate this). */
+  bboxFrac: number;
+  paintedElements: number;
+  detail: string;
+  repairInstruction: string;
+}
+
+const cssAlphaOfBg = (c: string): number => {
+  const m = /rgba?\(([^)]+)\)/.exec(c || "");
+  if (!m) return 0;
+  const p = m[1].split(",").map((v) => parseFloat(v.trim()));
+  return p.length >= 4 ? (Number.isNaN(p[3]) ? 1 : p[3]) : 1;
+};
+
+/** Exact union area of axis-aligned rects (x-compression + y-interval merge). */
+export const rectUnionArea = (
+  rects: { x: number; y: number; w: number; h: number }[],
+): number => {
+  const boxes = rects.filter((r) => r.w > 0 && r.h > 0);
+  if (boxes.length === 0) return 0;
+  const xs = [...new Set(boxes.flatMap((r) => [r.x, r.x + r.w]))].sort((a, b) => a - b);
+  let area = 0;
+  for (let i = 0; i + 1 < xs.length; i++) {
+    const x0 = xs[i];
+    const x1 = xs[i + 1];
+    const slab = boxes.filter((r) => r.x <= x0 && r.x + r.w >= x1);
+    if (slab.length === 0) continue;
+    const iv = slab.map((r) => [r.y, r.y + r.h] as const).sort((a, b) => a[0] - b[0]);
+    let y = -Infinity;
+    let cover = 0;
+    for (const [a, b] of iv) {
+      if (a > y) { cover += b - a; y = b; }
+      else if (b > y) { cover += b - y; y = b; }
+    }
+    area += cover * (x1 - x0);
+  }
+  return area;
+};
+
+/** True when a measured element PAINTS (vs a transparent layout wrapper). */
+export const isPaintedElement = (e: MeasuredElement): boolean =>
+  e.opacity > 0.05 &&
+  e.w > 0 &&
+  e.h > 0 &&
+  (e.isImg || e.text !== "" || cssAlphaOfBg(e.bg) >= 0.5 || !!e.hasBgImage);
+
+/**
+ * Blocking hero-underscale findings for measured scenes. `registers` is the
+ * per-scene script register list; only centered/quote scenes are judged.
+ * Pure rect math — no PNG sampling, no browser.
+ */
+export const findHeroUnderscale = (
+  measurements: SceneMeasurement[],
+  registers: (string | undefined)[],
+): HeroUnderscaleFinding[] => {
+  const out: HeroUnderscaleFinding[] = [];
+  for (const m of measurements) {
+    if (m.error) continue;
+    const register = registers[m.scene];
+    if (!register || !UNDERSCALE_REGISTERS.has(register)) continue;
+    const canvasArea = m.width * m.height;
+    if (canvasArea <= 0) continue;
+    const byPiece = new Map<string, MeasuredElement[]>();
+    for (const e of m.elements) {
+      if (!e.piece || !e.piece.endsWith(".hero")) continue;
+      if (e.w <= 0 || e.h <= 0) continue;
+      byPiece.set(e.piece, [...(byPiece.get(e.piece) ?? []), e]);
+    }
+    for (const [pieceId, els] of byPiece) {
+      const clamp = (e: MeasuredElement) => {
+        const x0 = Math.max(0, e.x);
+        const y0 = Math.max(0, e.y);
+        return {
+          x: x0,
+          y: y0,
+          w: Math.max(0, Math.min(m.width, e.x + e.w) - x0),
+          h: Math.max(0, Math.min(m.height, e.y + e.h) - y0),
+        };
+      };
+      const painted = els.filter(isPaintedElement).map(clamp);
+      const paintedFrac = rectUnionArea(painted) / canvasArea;
+      const bx0 = Math.min(...els.map((e) => e.x));
+      const by0 = Math.min(...els.map((e) => e.y));
+      const bx1 = Math.max(...els.map((e) => e.x + e.w));
+      const by1 = Math.max(...els.map((e) => e.y + e.h));
+      const bboxFrac = ((bx1 - bx0) * (by1 - by0)) / canvasArea;
+      if (paintedFrac >= HERO_UNDERSCALE_MIN_FRAC) continue;
+      const pct = (n: number): string => `${(n * 100).toFixed(2)}%`;
+      out.push({
+        kind: "hero-underscale",
+        scene: m.scene,
+        pieceId,
+        blocking: true,
+        paintedFrac,
+        bboxFrac,
+        paintedElements: painted.filter((r) => r.w > 0 && r.h > 0).length,
+        detail:
+          `scene ${m.scene}: hero piece "${pieceId}" is UNDERSCALED on a ${register} scene — its painted ` +
+          `footprint covers ${pct(paintedFrac)} of the canvas (floor ${pct(HERO_UNDERSCALE_MIN_FRAC)}; ` +
+          `member bbox ${pct(Math.min(bboxFrac, 1))} is wrapper-inflated). A postage-stamp artifact lost ` +
+          `in a void, whatever the vision judge thought of it.`,
+        repairInstruction:
+          `THE ARTIFACT OWNS THE FRAME — SCALE IT UP. On a ${register} scene your piece is the frame's ` +
+          `anchor: rebuild it so the painted artwork (not empty wrapper space) commands the canvas — ` +
+          `at least ~3x its current painted area. Scale the artifact itself up decisively AND furnish ` +
+          `around it in the same diegetic register (supporting labels, badges, annotations, texture) ` +
+          `until the composition owns its region instead of floating in dead canvas.`,
+      });
+    }
+  }
+  return out.sort((a, b) => a.scene - b.scene || a.pieceId.localeCompare(b.pieceId));
 };

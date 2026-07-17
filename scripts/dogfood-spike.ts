@@ -144,10 +144,15 @@ import {
   assessHeroWashout,
   WASHOUT_SPREAD_FLOOR,
   WASHOUT_STDDEV_FLOOR,
+  HERO_UNDERSCALE_MIN_FRAC,
+  findHeroUnderscale,
   type HeroContrastResult,
   type HeroLuminanceStats,
   type HeroWashoutFinding,
+  type HeroWashoutNearMiss,
+  type HeroUnderscaleFinding,
 } from "../lib/render/hero-contrast";
+import { findSkeletonBars, type SkeletonBarFinding } from "../lib/render/skeleton-bars";
 import {
   assessAccentFill,
   ACCENT_FILL_MAX_FRAC,
@@ -192,6 +197,7 @@ import {
   hasCornerLogoSuppression,
   findUndefinedJsxComponents,
   findUnboundCopy,
+  bindLiteralCopyInPlace,
   findPlaceholderData,
   findProvidedComponentRedefinitions,
   type AspectRatio,
@@ -420,8 +426,9 @@ const sequenceNotesBlock = (): string[] =>
 const stopLengthEvents: { label: string; cap: number; retryCap: number; recovered: boolean }[] = [];
 const cacheBustEvents: { pieceId: string; reason: string }[] = [];
 /** v12 (#1): CLASS-MATCHED retry history — progress is judged on the finding
- *  class that targeted the piece, not a proxy metric. */
-type FailureClass = "washout" | "render-truth" | "accent-fill" | "density" | "vision";
+ *  class that targeted the piece, not a proxy metric. v13 adds hero-scale
+ *  (painted-union %) and skeleton (qualifying bar count). */
+type FailureClass = "washout" | "render-truth" | "accent-fill" | "density" | "vision" | "hero-scale" | "skeleton";
 const regenHistory = new Map<string, { cls: FailureClass; value: number; aux: number; escalated: boolean }>();
 const noProgressEvents: {
   pieceId: string;
@@ -446,6 +453,9 @@ const washoutLiftEvents: {
 }[] = [];
 /** v12 (#4): broken rendered images swapped to the text wordmark. */
 const imgSwapEvents: { round: number; scene: number; pieceId: string; src: string; via: string }[] = [];
+/** v13 (#5): bind-in-place ledger — literal copy mounts converted to bound
+ *  c.<field> references at finalize time (render no-op; editor lever). */
+const bindCopyEvents: { round: number; scene: number; field: string; accessor: string; count: number }[] = [];
 const ESCALATION_MARK = "[NO-PROGRESS ESCALATION]";
 
 const verifyFragmentCheap = (body: string): Promise<string | null> =>
@@ -1291,10 +1301,14 @@ const computeTargets = (args: {
   accentFill: AccentFillFinding[];
   edgeCropResidual: EdgeCropFinding[];
   vision: SceneVisionVerdict[];
+  /** v13 (#2): blocking hero-underscale on centered/quote scenes. */
+  underscale?: HeroUnderscaleFinding[];
+  /** v13 (#4): BLOCKING skeleton-bar findings only (advisories never route). */
+  skeletonBlocking?: SkeletonBarFinding[];
   /** Per-scene script registers — v11 (#4): barbell repair is register-aware. */
   registers?: (string | undefined)[];
 }): Map<string, string[]> => {
-  const { validPieceIds, density, profile, rtBlocking, washout, accentFill, edgeCropResidual, vision, registers } = args;
+  const { validPieceIds, density, profile, rtBlocking, washout, accentFill, edgeCropResidual, vision, underscale, skeletonBlocking, registers } = args;
   const targets = new Map<string, string[]>();
   const add = (pieceId: string, sceneFallback: number, feedback: string): void => {
     let id = pieceId;
@@ -1355,6 +1369,15 @@ const computeTargets = (args: {
   }
   for (const f of washout) {
     add(f.pieceId, f.scene, `[hero-contrast/hero-washout] ${f.detail}\n${f.repairInstruction}`);
+  }
+  // v13 (#2): hero-underscale routes to the named hero (blocking) — "the
+  // artifact owns the frame — scale it up".
+  for (const f of underscale ?? []) {
+    add(f.pieceId, f.scene, `[hero-scale/hero-underscale] ${f.detail}\n${f.repairInstruction}`);
+  }
+  // v13 (#4): skeleton-bar rows — only the BLOCKING (≥2 rows) arm routes.
+  for (const f of skeletonBlocking ?? []) {
+    add(f.pieceId, f.scene, `[structural/skeleton_bars] ${f.detail}\n${f.repairInstruction}`);
   }
   // v10: accent-as-fill routes to the named hero (blocking).
   for (const f of accentFill) {
@@ -1452,6 +1475,12 @@ interface GateRoundReport {
   renderTruthAll: RenderTruthFinding[];
   renderTruthBlocking: RenderTruthFinding[];
   heroContrast: { stats: HeroLuminanceStats[]; findings: HeroWashoutFinding[]; errors: string[] };
+  /** v13 (#3): near-miss washout advisories (never blocking). */
+  washoutNearMiss: HeroWashoutNearMiss[];
+  /** v13 (#2): blocking hero-underscale findings (centered/quote scenes). */
+  heroUnderscale: HeroUnderscaleFinding[];
+  /** v13 (#4): skeleton-bar findings (advisory + blocking). */
+  skeletonBars: SkeletonBarFinding[];
   /** v12 (#2): washout findings BEFORE the forced lift (the gate's raw fire). */
   washoutsAtGate: number;
   /** v12 (#2): this round's forced-lift ledger entries. */
@@ -1509,6 +1538,9 @@ const gateLogHtml = (gateRounds: GateRoundReport[]): string => {
       const rows: string[] = [];
       for (const f of g.density) rows.push(`<li><b>density/${esc(f.kind)} (BLOCKING)</b> scene ${f.scene}: ${esc(f.detail.slice(0, 280))}</li>`);
       for (const f of g.heroContrast.findings) rows.push(`<li><b>hero-contrast/hero-washout (BLOCKING)</b> scene ${f.scene} → ${esc(f.pieceId)}: ${esc(f.detail.slice(0, 280))}</li>`);
+      for (const f of g.washoutNearMiss ?? []) rows.push(`<li><b>hero-contrast/washout-near-miss (ADVISORY, v13)</b> scene ${f.scene} → ${esc(f.pieceId)}: ${esc(f.detail.slice(0, 280))}</li>`);
+      for (const f of g.heroUnderscale ?? []) rows.push(`<li><b>hero-scale/hero-underscale (BLOCKING, v13)</b> scene ${f.scene} → ${esc(f.pieceId)}: ${esc(f.detail.slice(0, 280))}</li>`);
+      for (const f of g.skeletonBars ?? []) rows.push(`<li><b>skeleton-bars (${f.blocking ? "BLOCKING" : "advisory"}, v13)</b> scene ${f.scene} → ${esc(f.pieceId)}: ${esc(f.detail.slice(0, 280))}</li>`);
       for (const e of g.heroContrast.errors) rows.push(`<li><b>hero-contrast</b> sampling error: ${esc(e.slice(0, 200))}</li>`);
       for (const e of g.washoutLifts ?? []) {
         rows.push(
@@ -1588,6 +1620,7 @@ const main = async (): Promise<void> => {
       v10: `accent-as-fill: largest flat accent rect in a hero region ≤${ACCENT_FILL_MAX_FRAC * 100}% of the piece area (blocking); piece-edge-crop: measured pieces clipping canvas bottom/right >2% of own size → deterministic clamp, residuals blocking; hero surface contrast area-weighted (≥25% painted weight); washout static mirror canvas-AGNOSTIC (light canvas → dark surface); sequence vision detached + skip-after-abort`,
       v11: `meta-text leak: rendered text segments carrying repair vocabulary/coordinate-math prose strip deterministically at the element gate (dominant prose = reject); unowned-copy BINDING check: c.<field> references for unowned fields strip/reject in-round (+ value coverage widened to eyebrow/caption/cta, trailing-punct + case variants); clamp-vs-slot: oversized (>25% over slot) or neighbor-invading clamps route regen directly; full-bleed barbell routes to the HERO with a vertical-fill instruction (head carries the matching clause); logo-glyph count >1 per hero mock = finding; interior-clip advisory (text protruding >30% past its piece union); detached sequence verdict fires on round-0 frames and threads into round-1+ regen prompts`,
       v12: `class-matched breaker: retry progress judged on the targeting class (washout → measured spread/std delta; render-truth → per-piece blocking count; density → el/tx; accent-fill → largest-rect frac), one escalation max, same-class failure after escalation = accept-and-flag; washout gate→backstop closure: forceHeroSurfaceLift with MEASURED panel+canvas colors (gradients/rgba/root-override included) fires the moment the gate does, re-measures, residuals regen with an explicit lighten/darken direction (invariant: never a no-op); cross-piece text collision Case D: copy-class canvas text (≤32px) over ANOTHER piece's text nodes = blocking, routed to BOTH pieces role-split (hero shrinks into slot / copy takes an opaque panel) + composition-head MOCK TERRITORY clause (full-canvas app shell forfeits the copy column); broken-image swap: measured naturalWidth===0 → deterministic text-wordmark swap (tag sites + the chrome logoSrc binding) + structural img_broken`,
+      v13: `register-aware richness vocabulary: quote/centered/full-bleed registers additionally accept TYPOGRAPHIC drawables (oversized numeral, type lockup, sticker, stamp, scribble...) in the script validator + prompt (floor unchanged; kills the type-poster brand-contract defect); hero-underscale: painted-union of a centered/quote hero <${HERO_UNDERSCALE_MIN_FRAC * 100}% of canvas = BLOCKING, routed "the artifact owns the frame — scale it up" (calibrated: Oatly s2 carton 0.33% fires, LiquidDeath s1 9.26% nearest pass); washout near-miss ADVISORY band (spread<floor AND std<floor+3, never blocking, appended to any regen of the piece); skeleton-bar measured detector: ≥3 sibling flat mid-grey rounded no-text bars >60px wide = structural skeleton_bars (advisory; ≥2 rows in a piece = blocking)`,
     },
     terminalError: null,
   };
@@ -1630,6 +1663,7 @@ const main = async (): Promise<void> => {
     report.finalContrast = finalContrast;
     report.finalAccentFill = finalAccentFill;
     report.edgeCropEvents = edgeCropEvents;
+    report.bindCopyEvents = bindCopyEvents;
     report.finalize = finalize;
     report.calls = callLog;
     report.fastRouter = {
@@ -2064,8 +2098,22 @@ const main = async (): Promise<void> => {
         const fonts = await inlineFontFaces(code, fetchFont);
         code = fonts.code;
         const fin = await finalizeUndefinedRefs(code);
-        finalize[`r${round}`] = { logoInjected: Boolean(logoSrc), fontsInlined: fonts.inlined.length, fontsFailed: fonts.failed, added: fin.added, stubbed: fin.stubbed, neutralized: fin.neutralized };
-        return fin.code;
+        // v13 (#5): BIND-IN-PLACE — literal copy retypes convert to bound
+        // c.<field> references (render no-op by construction: whole-node
+        // exact matches only; every Section declares `const c = …content`).
+        // Applied to the ASSEMBLED code each round (deterministic, idempotent,
+        // re-applies after every reassembly like the clamps); cached piece
+        // bodies stay untouched. Every downstream gate + SSR + measurement
+        // this round validates the transformed code.
+        const bind = bindLiteralCopyInPlace(fin.code, script!.scenes);
+        for (const b of bind.bound) bindCopyEvents.push({ round, ...b });
+        if (bind.bound.length > 0) {
+          console.log(
+            `  [bind-in-place] ${bind.bound.reduce((n, b) => n + b.count, 0)} literal copy mount(s) → bound refs [${bind.bound.map((b) => `s${b.scene}.${b.field}`).join(", ")}]`,
+          );
+        }
+        finalize[`r${round}`] = { logoInjected: Boolean(logoSrc), fontsInlined: fonts.inlined.length, fontsFailed: fonts.failed, added: fin.added, stubbed: fin.stubbed, neutralized: fin.neutralized, copyBound: bind.bound.reduce((n, b) => n + b.count, 0) };
+        return bind.code;
       });
 
       if (!genDirReady) {
@@ -2314,6 +2362,35 @@ const main = async (): Promise<void> => {
         }
       }
       finalContrast = contrast;
+      // v13 (#3): near-miss advisories log (never blocking; appended to any
+      // regen of the piece after targets are computed).
+      if (contrast.advisories.length > 0) {
+        console.log(
+          `  washout-near-miss (advisory): [${contrast.advisories.map((a) => `${a.pieceId} sp${a.stats.spread}/sd${a.stats.stdDev}`).join(", ")}]`,
+        );
+      }
+
+      // (b2b) v13 (#2): hero-underscale — painted-union floor on centered/quote
+      // heroes, judged on the SAME (possibly lifted/re-measured) frame the
+      // other gates see. Blocking; routed "the artifact owns the frame".
+      const sceneRegisters = script!.scenes.map((s) => s.register);
+      const underscale = findHeroUnderscale(measurements, sceneRegisters);
+      console.log(
+        `  hero-underscale: ${underscale.length} finding(s)` +
+          `${underscale.length ? ` [${underscale.map((f) => `${f.pieceId} painted ${(f.paintedFrac * 100).toFixed(2)}% < ${HERO_UNDERSCALE_MIN_FRAC * 100}%`).join(", ")}]` : ""}`,
+      );
+
+      // (b2c) v13 (#4): skeleton-bar detector — measured loading-skeleton rows.
+      // Advisory at 1 row (structural finding), blocking at ≥2 rows in a piece.
+      const skeletonBars = measurements.flatMap((m) => findSkeletonBars(m));
+      for (const f of skeletonBars) {
+        structural.push({ scene: f.scene, key: "skeleton_bars", detail: f.detail });
+      }
+      if (skeletonBars.length > 0) {
+        console.log(
+          `  skeleton-bars: [${skeletonBars.map((f) => `${f.pieceId} ${f.rows} row(s)/${f.bars} bars${f.blocking ? " BLOCKING" : ""}`).join(", ")}]`,
+        );
+      }
 
       // (b3) accent-as-fill (v10) — proportion discipline on the hero regions:
       // the brand accent is punctuation, never a panel fill.
@@ -2339,8 +2416,16 @@ const main = async (): Promise<void> => {
         accentFill: accentFill.findings,
         edgeCropResidual,
         vision,
-        registers: script!.scenes.map((s) => s.register),
+        underscale,
+        skeletonBlocking: skeletonBars.filter((f) => f.blocking),
+        registers: sceneRegisters,
       });
+      // v13 (#3): near-miss washout advisories ride along on any piece ALREADY
+      // being regenerated — they never create a target and never block.
+      for (const a of contrast.advisories) {
+        const existing = targets.get(a.pieceId);
+        if (existing) existing.push(`[advisory/washout-near-miss] ${a.advisory}`);
+      }
 
       gateRounds.push({
         round,
@@ -2352,6 +2437,9 @@ const main = async (): Promise<void> => {
         renderTruthAll: rt.findings,
         renderTruthBlocking: rt.blocking,
         heroContrast: { stats: contrast.stats, findings: contrast.findings, errors: contrast.errors },
+        washoutNearMiss: contrast.advisories,
+        heroUnderscale: underscale,
+        skeletonBars,
         washoutsAtGate: contrastRaw.findings.length,
         washoutLifts: washoutLiftEvents.filter((e) => e.round === round),
         imgSwaps: imgSwapEvents.filter((e) => e.round === round),
@@ -2375,6 +2463,10 @@ const main = async (): Promise<void> => {
           edgeCropsInitial: edgeCropInitial.length,
           edgeCropsClamped: edgeCropEvents.filter((e) => e.round === 0 && e.action === "clamped").length,
           edgeCropsResidual: edgeCropResidual.length,
+          heroUnderscale: underscale.length,
+          washoutNearMiss: contrast.advisories.length,
+          skeletonBarsAdvisory: skeletonBars.filter((f) => !f.blocking).length,
+          skeletonBarsBlocking: skeletonBars.filter((f) => f.blocking).length,
           structural: structural.length,
           rtBlocking: rt.blocking.length,
           visionSevereScenes: vision.filter((v) => v.severe.length > 0).map((v) => v.scene),
@@ -2389,7 +2481,8 @@ const main = async (): Promise<void> => {
       await writeOut();
 
       console.log(
-        `  round ${round}: density ${density.length} · washout ${contrastRaw.findings.length}→${contrast.findings.length} residual (${washoutLiftEvents.filter((e) => e.round === round && e.action === "forced-lift").length} forced lift(s)) · accent-fill ${accentFill.findings.length} · ` +
+        `  round ${round}: density ${density.length} · washout ${contrastRaw.findings.length}→${contrast.findings.length} residual (${washoutLiftEvents.filter((e) => e.round === round && e.action === "forced-lift").length} forced lift(s)) · near-miss ${contrast.advisories.length} · ` +
+          `underscale ${underscale.length} · skeleton ${skeletonBars.length} · accent-fill ${accentFill.findings.length} · ` +
           `edge-crop ${edgeCropInitial.length}→${edgeCropResidual.length} residual · structural ${structural.length} · render-truth ${rt.findings.length} (${rt.blocking.length} blocking) · ` +
           `vision actionable ${vision.reduce((n, v) => n + v.actionable.length, 0)} (severe on [${vision.filter((v) => v.severe.length).map((v) => v.scene).join(", ")}]) · ` +
           `retry targets [${[...targets.keys()].join(", ") || "none"}]`,
@@ -2434,6 +2527,17 @@ const main = async (): Promise<void> => {
           const frac = Math.round((st?.largestRectFrac ?? 0) * 1000) / 10;
           return { cls: "accent-fill", value: frac, aux: 0, metric: `largest accent rect ${frac}% of piece` };
         }
+        // v13 (#2): hero-underscale — progress = the painted union GREW.
+        if (joined.includes("[hero-scale/")) {
+          const f = underscale.find((u) => u.pieceId === pieceId);
+          const pct = Math.round((f?.paintedFrac ?? 0) * 1000) / 10;
+          return { cls: "hero-scale", value: pct, aux: 0, metric: `painted union ${pct}% of canvas` };
+        }
+        // v13 (#4): skeleton bars — progress = fewer qualifying bars.
+        if (joined.includes("[structural/skeleton_bars]")) {
+          const f = skeletonBars.find((s) => s.pieceId === pieceId);
+          return { cls: "skeleton", value: f?.bars ?? 0, aux: f?.rows ?? 0, metric: `${f?.bars ?? 0} skeleton bar(s) in ${f?.rows ?? 0} row(s)` };
+        }
         const d = densityMetricOf(pieceId);
         const cls: FailureClass = joined.includes("[density/") ? "density" : "vision";
         return { cls, value: d.value, aux: d.aux, metric: `${d.value}el/${d.aux}tx` };
@@ -2453,6 +2557,10 @@ const main = async (): Promise<void> => {
             return cur.value < prev.value; // fewer blocking findings on the piece
           case "accent-fill":
             return cur.value < prev.value - 2; // largest-rect frac shrank
+          case "hero-scale":
+            return cur.value > prev.value + 1; // painted union grew ≥1pt of canvas
+          case "skeleton":
+            return cur.value < prev.value || cur.aux < prev.aux; // fewer bars/rows
           default:
             return cur.value > prev.value || cur.aux > prev.aux; // el/tx grew
         }
@@ -2547,10 +2655,19 @@ const main = async (): Promise<void> => {
       const ecInit = finalRound?.edgeCrop.initial.filter((f) => f.scene === i) ?? [];
       const ecRes = finalRound?.edgeCrop.residual.filter((f) => f.scene === i) ?? [];
       const p = profile?.scenes.find((s) => s.scene === i);
+      const nearMiss = finalRound?.washoutNearMiss?.filter((f) => f.scene === i) ?? [];
+      const usc = finalRound?.heroUnderscale?.filter((f) => f.scene === i) ?? [];
+      const skel = finalRound?.skeletonBars?.filter((f) => f.scene === i) ?? [];
       const note = [
         p ? (p.ssrError ? `density: SSR ERROR` : `diegetic ${p.bestDiegetic ? `${p.bestDiegetic.elements}el/${p.bestDiegetic.textNodes}txt` : "none"} · hero ${p.hero ? `${p.hero.elements}el/${p.hero.textNodes}tx` : "none"} · depth ${p.depth}`) : "density: n/a",
         cst.length ? `contrast: ${cst.map((c) => `${c.pieceId} spread ${c.spread}/std ${c.stdDev}`).join(" · ")}` : "contrast: no hero region",
-        wash.length ? `HERO-WASHOUT: ${wash.map((f) => f.pieceId).join(", ")}` : "washout: clean",
+        wash.length
+          ? `HERO-WASHOUT: ${wash.map((f) => f.pieceId).join(", ")}`
+          : nearMiss.length
+            ? `washout: NEAR-MISS advisory on ${nearMiss.map((f) => f.pieceId).join(", ")}`
+            : "washout: clean",
+        usc.length ? `HERO-UNDERSCALE: ${usc.map((f) => `${f.pieceId} painted ${(f.paintedFrac * 100).toFixed(2)}%`).join(", ")}` : "underscale: clean",
+        skel.length ? `SKELETON-BARS${skel.some((f) => f.blocking) ? " (BLOCKING)" : ""}: ${skel.map((f) => `${f.pieceId} ${f.rows}r/${f.bars}b`).join(", ")}` : "skeleton: clean",
         afFind.length
           ? `ACCENT-AS-FILL: ${afFind.map((f) => `${f.pieceId} ${(f.stats.largestRectFrac * 100).toFixed(0)}%`).join(", ")}`
           : afStats.length
@@ -2626,12 +2743,12 @@ const main = async (): Promise<void> => {
   sequence-vision: DETACHED (never on the wall)${sequenceAborted ? " · <b>skipped after first abort</b>" : ""}</div>`;
 
       const r0 = report.round0 as
-        | { passed: boolean; targets: string[]; density: number; washouts: number; accentFills: number; edgeCropsInitial: number; edgeCropsClamped: number; edgeCropsResidual: number; structural: number; rtBlocking: number; visionSevereScenes: number[] }
+        | { passed: boolean; targets: string[]; density: number; washouts: number; accentFills: number; edgeCropsInitial: number; edgeCropsClamped: number; edgeCropsResidual: number; heroUnderscale?: number; washoutNearMiss?: number; skeletonBarsAdvisory?: number; skeletonBarsBlocking?: number; structural: number; rtBlocking: number; visionSevereScenes: number[] }
         | undefined;
       const round0Html = r0
         ? r0.passed
-          ? `<span class="ok-line"><b>ROUND 0 PASSED</b> — every blocking gate clean on the first cast${r0.edgeCropsClamped ? ` (${r0.edgeCropsClamped} edge-crop(s) clamped deterministically en route)` : ""}</span>`
-          : `<span class="bad-line"><b>ROUND 0 FAILED</b></span> — ${r0.targets.length} retry target(s): [${esc(r0.targets.join(", "))}] · density ${r0.density} · washouts ${r0.washouts} · accent-as-fill ${r0.accentFills} · edge-crop ${r0.edgeCropsInitial}→${r0.edgeCropsResidual} residual (${r0.edgeCropsClamped} clamped) · structural ${r0.structural} · rt-blocking ${r0.rtBlocking} · vision-severe scenes [${r0.visionSevereScenes.join(", ") || "none"}]`
+          ? `<span class="ok-line"><b>ROUND 0 PASSED</b> — every blocking gate clean on the first cast${r0.edgeCropsClamped ? ` (${r0.edgeCropsClamped} edge-crop(s) clamped deterministically en route)` : ""}${r0.washoutNearMiss ? ` · ${r0.washoutNearMiss} near-miss washout advisory(ies)` : ""}${r0.skeletonBarsAdvisory ? ` · ${r0.skeletonBarsAdvisory} skeleton-bar advisory(ies)` : ""}</span>`
+          : `<span class="bad-line"><b>ROUND 0 FAILED</b></span> — ${r0.targets.length} retry target(s): [${esc(r0.targets.join(", "))}] · density ${r0.density} · washouts ${r0.washouts} · underscale ${r0.heroUnderscale ?? 0} · accent-as-fill ${r0.accentFills} · edge-crop ${r0.edgeCropsInitial}→${r0.edgeCropsResidual} residual (${r0.edgeCropsClamped} clamped) · skeleton ${(r0.skeletonBarsAdvisory ?? 0) + (r0.skeletonBarsBlocking ?? 0)} (${r0.skeletonBarsBlocking ?? 0} blocking) · near-miss ${r0.washoutNearMiss ?? 0} · structural ${r0.structural} · rt-blocking ${r0.rtBlocking} · vision-severe scenes [${r0.visionSevereScenes.join(", ") || "none"}]`
         : "no round-0 record (cast never ran)";
       const npEsc = noProgressEvents.filter((x) => x.action === "escalated");
       const npFlag = noProgressEvents.filter((x) => x.action === "accepted-and-flagged");
@@ -2716,7 +2833,7 @@ const main = async (): Promise<void> => {
 
       const finalG = gateRounds[gateRounds.length - 1];
       const summary = finalG
-        ? `final residuals: density ${finalG.density.length} · washout ${finalG.heroContrast.findings.length} · accent-as-fill ${finalG.accentFill.findings.length} · edge-crop ${finalG.edgeCrop.residual.length} · structural ${finalG.structural.length} · rt-blocking ${finalG.renderTruthBlocking.length} · vision-severe scenes [${finalG.vision.filter((v) => v.severe.length).map((v) => v.scene).join(", ") || "none"}] · sequence vision: detached (pending at publish)`
+        ? `final residuals: density ${finalG.density.length} · washout ${finalG.heroContrast.findings.length} · underscale ${finalG.heroUnderscale?.length ?? 0} · near-miss ${finalG.washoutNearMiss?.length ?? 0} · skeleton ${finalG.skeletonBars?.length ?? 0} · accent-as-fill ${finalG.accentFill.findings.length} · edge-crop ${finalG.edgeCrop.residual.length} · structural ${finalG.structural.length} · rt-blocking ${finalG.renderTruthBlocking.length} · vision-severe scenes [${finalG.vision.filter((v) => v.severe.length).map((v) => v.scene).join(", ") || "none"}] · sequence vision: detached (pending at publish)`
         : "NO GATE ROUNDS";
 
       const html = `<!doctype html>

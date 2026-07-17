@@ -1539,6 +1539,88 @@ export const findUnboundCopy = (
   return out;
 };
 
+// ─── bind-in-place (v13 #5, the twice-deferred editor lever) ───────────────
+//
+// Cycle 1: 16 unbound_copy structurals; cycle 4: 21 — copy retyped as literal
+// JSX instead of bound through `c.<field>`. The literals render fine today but
+// the launch editor edits CONTENT (script.scenes[i].content); a literal mount
+// silently keeps the stale string. This transform converts literal copy text
+// in the ASSEMBLED composition to bound references.
+//
+// Safety posture — the transform is a RENDER NO-OP by construction:
+//   • Only whole JSX child-text nodes that EXACTLY equal a content field's
+//     value are bound (surrounding whitespace preserved verbatim). A split
+//     retype ("Come as you are<span>.</span>") never matches — skipped.
+//   • Attribute values are never touched (pattern anchored between > and <).
+//   • Every assembled Section declares `const c = script.scenes[k].content`
+//     (assemble.ts), so `{c.<field>}` is in scope anywhere in the section and
+//     renders the IDENTICAL string.
+//   • Idempotent: once bound, the literal is gone; a re-run finds nothing.
+//   • Ownership: the v11 unowned-copy strip/reject machinery removes foreign
+//     retypes at cast time, so literals surviving to the assembled code are
+//     the OWNING piece's own mounts — binding them is the owned-field case.
+
+export interface BoundCopyEvent {
+  scene: number;
+  field: string;
+  accessor: string;
+  count: number;
+}
+
+const ACCESSOR_OK_RX = /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*|\[\d+\])*$/;
+
+const accessorForField = (field: string): string | null => {
+  // bullets[2] / cta.primary / headline are all valid member chains under c.
+  const acc = `c.${field}`;
+  return ACCESSOR_OK_RX.test(acc) ? acc : null;
+};
+
+const escapeRx = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * Bind literal copy retypes in the assembled composition to `c.<field>`
+ * references. Returns the transformed code + a ledger of what bound. Pure and
+ * conservative: any value containing JSX-structural characters, and any
+ * occurrence that is not a whole child-text node, is skipped.
+ */
+export const bindLiteralCopyInPlace = (
+  code: string,
+  scenes: SceneTiming[],
+): { code: string; bound: BoundCopyEvent[] } => {
+  let out = code;
+  const bound: BoundCopyEvent[] = [];
+  for (let i = 0; i < scenes.length; i += 1) {
+    const fields = contentCopyFields(scenes[i]?.content);
+    if (fields.length === 0) continue;
+    const sectionRe = new RegExp(
+      `(?:Section|Scene|Slide)${i}\\b[\\s\\S]*?(?=(?:Section|Scene|Slide)${i + 1}\\b|registerRoot|$)`,
+      "i",
+    );
+    const m = sectionRe.exec(out);
+    if (!m) continue;
+    let section = m[0];
+    for (const f of fields) {
+      if (/[<>{}\\]/.test(f.value) || /&[a-z#]+;/i.test(f.value)) continue; // JSX-structural / entity text — skip
+      const accessor = accessorForField(f.field);
+      if (!accessor) continue;
+      // Whole child-text node: `>` (not an arrow's) + optional ws + the exact
+      // value + optional ws + a real tag open/close. Whitespace kept verbatim.
+      const nodeRe = new RegExp(
+        `(?<![=\\-])>([ \\t]*)${escapeRx(f.value)}([ \\t]*\\n?[ \\t]*)(?=</?[A-Za-z])`,
+        "g",
+      );
+      let count = 0;
+      section = section.replace(nodeRe, (_full, ws1: string, ws2: string) => {
+        count += 1;
+        return `>${ws1}{${accessor}}${ws2}`;
+      });
+      if (count > 0) bound.push({ scene: i, field: f.field, accessor, count });
+    }
+    out = out.slice(0, m.index) + section + out.slice(m.index + m[0].length);
+  }
+  return { code: out, bound };
+};
+
 /**
  * Deterministically neutralize invalid `lucide-react` imports so a hallucinated
  * icon can't crash the render. The agent sometimes imports brand logos

@@ -360,14 +360,48 @@ const DRAWABLE_NOUN_RX = new RegExp(
   "gi",
 );
 
+// v13 (cycle-4 Oatly, CONFIRMED brand-contract defect): the drawable lexicon
+// above is UI-biased (panel/chart/mock/button). A type-poster brand's
+// legitimate concepts — oversized numerals, ransom-note type blocks, stamps,
+// scribbles — scored "2 drawable nouns" at 1000+ chars, burned 2 script
+// attempts + 2 surgicals, and the floor then FORCED weak stage-card mocks
+// onto scenes whose right answer was typographic. On the registers whose
+// idiom is typographic (quote / centered / full-bleed), TYPOGRAPHIC drawables
+// additionally count toward the floor. The floor itself is unchanged, and the
+// UI vocabulary still counts on every register — this widens what counts as
+// "a thing to look at" only where type IS the artwork.
+export const TYPE_POSTER_REGISTERS: ReadonlySet<string> = new Set([
+  "quote",
+  "centered",
+  "full-bleed",
+]);
+const TYPO_DRAWABLE_SOURCE =
+  "numerals?|lockups?|letterforms?|glyphs?|monograms?|stickers?|stamps?|scribbles?|underlines?|strikethroughs?|ransom[\\s-]?notes?|type\\s?blocks?|posters?|headline\\s?blocks?|mastheads?|marquees?|speech\\s?bubbles?|torn[\\s-]?paper|ampersands?|asterisks?|quotation\\s?marks?|exclamation\\s?(?:marks?|points?)|slashes?|brackets?|punctuation";
+const TYPO_DRAWABLE_NOUN_RX = new RegExp(
+  `\\b(${DIEGETIC_ELEMENT_SOURCE}|${EXTRA_DRAWABLE_SOURCE}|${TYPO_DRAWABLE_SOURCE})\\b`,
+  "gi",
+);
+
 /** Naive singular so "cards"/"card" count once ("mesh"/"glass" unaffected). */
 const singularize = (w: string): string =>
   w.endsWith("s") && !w.endsWith("ss") ? w.slice(0, -1) : w;
 
-/** Distinct concrete drawable nouns named in a visual_concept. */
-export const countDrawableNouns = (visualConcept: string): number => {
+/**
+ * Distinct concrete drawable nouns named in a visual_concept. When `register`
+ * is a type-poster register (quote / centered / full-bleed), typographic
+ * drawables (oversized numeral, stacked wordmark, ransom-note type block,
+ * sticker, stamp, scribble, type lockup, poster headline...) count too.
+ */
+export const countDrawableNouns = (
+  visualConcept: string,
+  register?: string,
+): number => {
+  const rx =
+    register && TYPE_POSTER_REGISTERS.has(register)
+      ? TYPO_DRAWABLE_NOUN_RX
+      : DRAWABLE_NOUN_RX;
   const seen = new Set<string>();
-  for (const m of visualConcept.matchAll(DRAWABLE_NOUN_RX)) {
+  for (const m of visualConcept.matchAll(rx)) {
     seen.add(singularize(m[0].toLowerCase().replace(/[\s-]+/g, " ")));
   }
   return seen.size;
@@ -450,6 +484,9 @@ export interface RichnessSceneInput {
   start_seconds?: unknown;
   end_seconds?: unknown;
   visual_concept?: unknown;
+  /** Scene register — widens the drawable vocabulary on type-poster registers
+   *  (quote / centered / full-bleed). Optional: absent = UI vocabulary only. */
+  register?: unknown;
 }
 
 /**
@@ -484,11 +521,18 @@ export const checkScriptRichness = (scenes: RichnessSceneInput[]): string[] => {
     }
 
     // 2) visual_concept floor — enough prose AND enough drawable things.
+    //    Register-aware (v13): on quote/centered/full-bleed the typographic
+    //    vocabulary counts too — floor value unchanged.
+    const register = typeof sc.register === "string" ? sc.register : undefined;
+    const typeRegister = !!register && TYPE_POSTER_REGISTERS.has(register);
     const chars = vc.trim().length;
-    const nouns = countDrawableNouns(vc);
+    const nouns = countDrawableNouns(vc, register);
     if (chars < VISUAL_CONCEPT_MIN_CHARS || nouns < VISUAL_CONCEPT_MIN_NOUNS) {
+      const vocabHint = typeRegister
+        ? "(panel, chart, logo, bar — or, on this register, typographic artifacts: oversized numeral, type lockup, sticker, stamp, scribble...)"
+        : "(panel, chart, logo, bar, mock, button...)";
       errors.push(
-        `Scene ${i}: visual_concept too thin (${chars} chars, ${nouns} drawable nouns) — need ≥${VISUAL_CONCEPT_MIN_CHARS} chars AND ≥${VISUAL_CONCEPT_MIN_NOUNS} concrete drawable elements (panel, chart, logo, bar, mock, button...).`,
+        `Scene ${i}: visual_concept too thin (${chars} chars, ${nouns} drawable nouns) — need ≥${VISUAL_CONCEPT_MIN_CHARS} chars AND ≥${VISUAL_CONCEPT_MIN_NOUNS} concrete drawable elements ${vocabHint}.`,
       );
     }
 

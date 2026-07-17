@@ -28,6 +28,7 @@ import {
   findUndwelledText,
   countAccentBorders,
   findUnboundCopy,
+  bindLiteralCopyInPlace,
   assessThroughlinePresence,
   countBrandMarks,
 } from "./quality-gates";
@@ -981,6 +982,69 @@ check("dropped/transformed copy is out of scope (neither bound nor literal)", ()
     findUnboundCopy(code, [{ content: { headline: "Config hell" } }]).length === 0,
     "absent field flagged",
   );
+});
+
+// ── bind-in-place (v13 #5): literal copy → bound content references ─────────
+
+check("bind-in-place: exact literal headline binds to {c.headline} and clears the unbound finding", () => {
+  const code = `export const Section0 = ({ script }) => {
+  const c = script.scenes[0].content;
+  return (<div><h1>Config hell</h1><p>{c.lede}</p></div>);
+};`;
+  const r = bindLiteralCopyInPlace(code, copyScenes);
+  assert(r.code.includes("<h1>{c.headline}</h1>"), `expected bound headline, got: ${r.code}`);
+  assert(r.bound.length === 1 && r.bound[0].field === "headline" && r.bound[0].count === 1, `ledger: ${JSON.stringify(r.bound)}`);
+  assert(findUnboundCopy(r.code, copyScenes).length === 0, "transformed code must pass findUnboundCopy");
+});
+
+check("bind-in-place: bullets and cta.primary bind with the right accessors; whitespace survives", () => {
+  const code = `export const Section0 = () => (<ul>
+    <li> No bastions required </li>
+    <li>Direct access to infra</li>
+    <button>Start free</button>
+  </ul>);`;
+  const r = bindLiteralCopyInPlace(code, copyScenes);
+  assert(r.code.includes("<li> {c.bullets[0]} </li>"), `bullet 0 with preserved spaces, got: ${r.code}`);
+  assert(r.code.includes("<li>{c.bullets[1]}</li>"), "bullet 1 bound");
+  assert(r.code.includes("<button>{c.cta.primary}</button>"), "cta.primary bound");
+});
+
+check("bind-in-place: split retypes and attribute values are NEVER touched (conservative no-op)", () => {
+  const split = `export const Section0 = () => (<h1><span>Config</span><span> hell</span></h1>);`;
+  const rs2 = bindLiteralCopyInPlace(split, copyScenes);
+  assert(rs2.code === split && rs2.bound.length === 0, "split spans must not bind");
+  const attr = `export const Section0 = () => (<Eyebrow text="the old way" />);`;
+  const ra = bindLiteralCopyInPlace(attr, copyScenes);
+  assert(ra.code === attr && ra.bound.length === 0, "attribute values must not bind");
+});
+
+check("bind-in-place: idempotent, section-scoped, and case-exact", () => {
+  const code = `export const Section0 = () => (<h6>the old way</h6>);
+export const Section1 = () => (<h6>the old way</h6>);`;
+  const scenes2 = [copyScenes[0], { content: { headline: "Something else" } }];
+  const once = bindLiteralCopyInPlace(code, scenes2);
+  assert(once.code.includes("Section0 = () => (<h6>{c.eyebrow}</h6>)"), `scene-0 bind, got: ${once.code}`);
+  assert(once.code.includes("Section1 = () => (<h6>the old way</h6>)"), "scene 1 does not own the field — untouched");
+  const twice = bindLiteralCopyInPlace(once.code, scenes2);
+  assert(twice.code === once.code && twice.bound.length === 0, "second pass is a no-op");
+  const recased = `export const Section0 = () => (<h6>THE OLD WAY</h6>);`;
+  const rc = bindLiteralCopyInPlace(recased, copyScenes);
+  assert(rc.code === recased, "re-cased literal is a styling choice — never bound (exact match only)");
+});
+
+check("bind-in-place: arrow-function '>' and JSX-structural values never mangle code", () => {
+  const arrow = `export const Section0 = () => {
+  const pick = (x) => x < 3 ? "a" : "b";
+  return (<div>{pick(1)}<h1>Config hell</h1></div>);
+};`;
+  const r = bindLiteralCopyInPlace(arrow, copyScenes);
+  assert(r.code.includes(`(x) => x < 3`), "arrow body untouched");
+  assert(r.code.includes("<h1>{c.headline}</h1>"), "real node still binds");
+  const weird = bindLiteralCopyInPlace(
+    `export const Section0 = () => (<h1>A {"<"} B</h1>);`,
+    [{ content: { headline: 'A {"<"} B' } }],
+  );
+  assert(weird.bound.length === 0, "JSX-structural value skipped");
 });
 
 // REAL-specimen smoke tests against the archived A/B builds (stable fixtures

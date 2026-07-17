@@ -29,6 +29,11 @@ import {
   heroRegionsFromMeasurement,
   WASHOUT_SPREAD_FLOOR,
   WASHOUT_STDDEV_FLOOR,
+  WASHOUT_NEAR_MISS_STD_MARGIN,
+  HERO_UNDERSCALE_MIN_FRAC,
+  findHeroUnderscale,
+  rectUnionArea,
+  isPaintedElement,
   type HeroContrastResult,
 } from "./hero-contrast";
 import type { MeasuredElement, SceneMeasurement } from "./measure-scene";
@@ -162,6 +167,135 @@ await check("scenes without screenshots or heroes are skipped without fabricated
     measurement(1, [el("s1.copy", 100, 100, 200, 200)], path.join(A5_PNGS, "scene1.png")), // no hero
   ]);
   assert(r.stats.length === 0 && r.findings.length === 0 && r.errors.length === 0, `nothing to measure → empty result, got ${JSON.stringify({ s: r.stats.length, f: r.findings.length, e: r.errors })}`);
+});
+
+// ── v13 (#3): near-miss washout ADVISORY — real cycle-4 Oatly fixtures ──────
+// Regions re-measured 2026-07-17 via measureScenes on
+// src/generated/CAST_SPIKE_DOGFOOD_OATLY (1080x1080; frames archived at
+// .data/dogfood/cycle4-oatly/frames): s0.hero 601x280 @ 240,640 spread 43 /
+// std 19.8 and s2.hero 600x340 @ 240,620 spread 20 / std 19.4 — BOTH inside
+// the advisory band (spread < 45, 19 ≤ std < 22); s1.hero 444x561 @ 560,260
+// spread 158 / std 70.2 — comfortably clear.
+
+const OATLY_FRAMES = path.join(process.cwd(), ".data/dogfood/cycle4-oatly/frames");
+const oatlyMeasurement = (scene: number, pieceId: string, x: number, y: number, w: number, h: number): SceneMeasurement => ({
+  scene, width: 1080, height: 1080,
+  elements: [el(pieceId, x, y, w, h)],
+  screenshotPath: path.join(OATLY_FRAMES, `scene${scene}.png`),
+});
+
+await check("near-miss band: cycle-4 s0/s2 heroes get ADVISORIES (not findings); strong s1 gets neither", async () => {
+  const r = await assessHeroWashout([
+    oatlyMeasurement(0, "s0.hero", 240, 640, 601, 280),
+    oatlyMeasurement(1, "s1.hero", 560, 260, 444, 561),
+    oatlyMeasurement(2, "s2.hero", 240, 620, 600, 340),
+  ]);
+  assert(r.errors.length === 0, `sampling errors: ${r.errors.join(" | ")}`);
+  assert(r.findings.length === 0, `advisory band must NOT block, got findings: ${r.findings.map((f) => f.pieceId).join(",")}`);
+  const advised = r.advisories.map((a) => a.pieceId).sort();
+  assert(JSON.stringify(advised) === JSON.stringify(["s0.hero", "s2.hero"]), `s0+s2 advisories expected, got [${advised.join(",")}]`);
+  for (const a of r.advisories) {
+    assert(a.blocking === false && a.kind === "washout-near-miss", "advisory contract: never blocking");
+    assert(a.stats.spread < WASHOUT_SPREAD_FLOOR && a.stats.stdDev >= WASHOUT_STDDEV_FLOOR && a.stats.stdDev < WASHOUT_STDDEV_FLOOR + WASHOUT_NEAR_MISS_STD_MARGIN, `band membership: ${JSON.stringify(a.stats)}`);
+    assert(a.advisory.startsWith("ADVISORY"), "regen feedback marked as advisory");
+  }
+});
+
+await check("near-miss band is EXCLUSIVE of the blocking gate — a true washout is a finding, never an advisory", async () => {
+  // v5 scene-0 (spread 30 / std 15.1) breaches BOTH floors.
+  const r = await assessHeroWashout([
+    measurement(0, [el("s0.hero", 1020, 270, 800, 540)], path.join(A5_PNGS, "scene0.png")),
+  ]);
+  assert(r.findings.length === 1, "blocking washout fires");
+  assert(r.advisories.length === 0, `no advisory alongside the blocking finding, got ${r.advisories.length}`);
+});
+
+// ── v13 (#2): hero-underscale — painted-union floor on centered/quote ───────
+// Real-artifact calibration lives in hero-contrast.ts's module table
+// (measured 2026-07-17): Oatly s2 carton 0.33% MUST FIRE; Oatly s0 12.42%,
+// LiquidDeath s1 9.26% (nearest pass), Linear s4 10.87% all PASS. The unit
+// fixtures below mirror those geometries exactly.
+
+const pel = (piece: string, x: number, y: number, w: number, h: number, over: Partial<MeasuredElement> = {}): MeasuredElement => ({
+  ...el(piece, x, y, w, h),
+  ...over,
+});
+const sq = (scene: number, elements: MeasuredElement[]): SceneMeasurement => ({
+  scene, width: 1080, height: 1080, elements,
+});
+
+await check("rectUnionArea: exact union, overlap not double-counted, zero-size ignored", () => {
+  assert(rectUnionArea([]) === 0, "empty");
+  assert(rectUnionArea([{ x: 0, y: 0, w: 100, h: 100 }]) === 10000, "single rect");
+  assert(rectUnionArea([{ x: 0, y: 0, w: 100, h: 100 }, { x: 50, y: 50, w: 100, h: 100 }]) === 17500, "overlap counted once");
+  assert(rectUnionArea([{ x: 0, y: 0, w: 100, h: 100 }, { x: 200, y: 200, w: 0, h: 50 }]) === 10000, "degenerate ignored");
+});
+
+await check("isPaintedElement: opaque bg / text / img / gradient paint; transparent wrappers do not", () => {
+  assert(isPaintedElement(pel("p", 0, 0, 100, 100, { bg: "rgb(36, 53, 106)" })), "opaque bg paints");
+  assert(isPaintedElement(pel("p", 0, 0, 100, 100, { text: "Oats" })), "text paints");
+  assert(isPaintedElement(pel("p", 0, 0, 100, 100, { isImg: true })), "img paints");
+  assert(isPaintedElement(pel("p", 0, 0, 100, 100, { hasBgImage: true })), "gradient paints");
+  assert(!isPaintedElement(pel("p", 0, 0, 100, 100)), "transparent wrapper does not");
+  assert(!isPaintedElement(pel("p", 0, 0, 100, 100, { bg: "rgba(0, 0, 0, 0.2)" })), "near-transparent tint does not");
+  assert(!isPaintedElement(pel("p", 0, 0, 100, 100, { bg: "rgb(0,0,0)", opacity: 0.02 })), "invisible does not");
+});
+
+// The Oatly-s2 mirror: a 600x340 transparent layout wrapper (bbox 17.5% of
+// canvas) whose PAINTED content is a ~60x90 carton + a thin caption — the
+// postage stamp. Painted union ≈ 0.55% of 1080x1080.
+const cartonScene = sq(2, [
+  pel("s2.hero", 240, 620, 600, 340), // transparent wrapper — inflates bbox only
+  pel("s2.hero", 510, 700, 60, 90, { bg: "rgb(255, 214, 224)" }), // the carton
+  pel("s2.hero", 500, 800, 80, 12, { text: "OATLY" }), // caption line
+]);
+
+await check("underscale FIRES on the centered postage-stamp hero, with the scale-it-up routing feedback", () => {
+  const f = findHeroUnderscale([cartonScene], [undefined, undefined, "centered"]);
+  assert(f.length === 1 && f[0].pieceId === "s2.hero", `one finding on s2.hero, got ${JSON.stringify(f.map((x) => x.pieceId))}`);
+  assert(f[0].kind === "hero-underscale" && f[0].blocking === true, "blocking hero-underscale");
+  assert(f[0].paintedFrac < HERO_UNDERSCALE_MIN_FRAC, `painted frac under floor: ${f[0].paintedFrac}`);
+  assert(f[0].bboxFrac > 0.15, `wrapper-inflated bbox reported for context: ${f[0].bboxFrac}`);
+  assert(/THE ARTIFACT OWNS THE FRAME — SCALE IT UP/.test(f[0].repairInstruction), "mandated routing feedback present");
+  assert(f[0].detail.includes("centered"), "register named in detail");
+});
+
+await check("underscale is register-scoped: the same postage stamp on split/list/stat/absent registers never fires", () => {
+  for (const reg of ["split", "list", "stat", "full-bleed", undefined]) {
+    const f = findHeroUnderscale([cartonScene], [undefined, undefined, reg]);
+    assert(f.length === 0, `register ${reg ?? "(none)"} must not fire, got ${f.length}`);
+  }
+});
+
+await check("underscale PASSES a quote hero whose painted panel owns ~12% of the canvas (Oatly s0 mirror)", () => {
+  // 601x280 wrapper with an OPAQUE panel filling ~86% of it → painted 12.4%.
+  const m = sq(0, [
+    pel("s0.hero", 240, 640, 601, 280),
+    pel("s0.hero", 250, 650, 580, 250, { bg: "rgb(36, 53, 106)" }),
+  ]);
+  const f = findHeroUnderscale([m], ["quote"]);
+  assert(f.length === 0, `12% painted union must pass, got ${JSON.stringify(f)}`);
+});
+
+await check("underscale PASSES the nearest real pass (LiquidDeath s1 mirror, ~9.3%) — floor margin holds", () => {
+  // Painted union just above the floor: 335x300 ≈ 8.6% of 1080x1080.
+  const m = sq(1, [pel("s1.hero", 372, 390, 335, 300, { bg: "rgb(20, 20, 20)" })]);
+  const f = findHeroUnderscale([m], [undefined, "quote"]);
+  assert(f.length === 0, `9%-ish painted union must pass, got ${JSON.stringify(f)}`);
+});
+
+await check("underscale skips errored scenes and non-hero pieces; overlap in painted rects is not double-counted", () => {
+  const errored: SceneMeasurement = { ...cartonScene, error: "boom" };
+  assert(findHeroUnderscale([errored], [undefined, undefined, "centered"]).length === 0, "errored scene skipped");
+  const copyOnly = sq(2, [pel("s2.copy", 100, 100, 50, 50, { bg: "rgb(10,10,10)" })]);
+  assert(findHeroUnderscale([copyOnly], [undefined, undefined, "centered"]).length === 0, "no hero piece → nothing");
+  // Two fully-overlapping painted panels must not sum past the floor.
+  const overlapped = sq(2, [
+    pel("s2.hero", 0, 0, 200, 200, { bg: "rgb(30,30,30)" }),
+    pel("s2.hero", 0, 0, 200, 200, { bg: "rgb(40,40,40)" }),
+  ]);
+  const f = findHeroUnderscale([overlapped], [undefined, undefined, "centered"]);
+  assert(f.length === 1 && Math.abs(f[0].paintedFrac - 200 * 200 / (1080 * 1080)) < 1e-9, `overlap counted once, got ${f[0]?.paintedFrac}`);
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);
