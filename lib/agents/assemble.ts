@@ -194,6 +194,63 @@ ${pieces}
 };`;
 };
 
+// ── deterministic edge-crop clamp (v10) ─────────────────────────────────────
+// The measured arm (render-truth-gates findEdgeCroppedPieces) names pieces
+// whose rendered union clips the canvas bottom/right edge. The cheapest true
+// fix is a REPOSITION, not a regen: every non-atmosphere wrapper this module
+// emits carries literal `left: X, top: Y` px (see emitPiece), so shifting the
+// wrapper is a string-exact, zero-token repair on the assembled composition.
+
+export interface PieceOffsetMove {
+  pieceId: string;
+  /** Shift in px (negative = up/left). Offsets are floored at 0 after the move. */
+  dx?: number;
+  dy?: number;
+}
+
+export interface ClampResult {
+  code: string;
+  applied: { pieceId: string; from: { left: number; top: number }; to: { left: number; top: number } }[];
+  /** Moves that found no literally-positioned wrapper (atmosphere pieces, ids
+   *  not in the code) — the caller escalates these to a regen. */
+  skipped: { pieceId: string; reason: string }[];
+}
+
+const escapeRegExp = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/** Apply wrapper-offset moves to an assembled composition. Only wrappers with
+ *  the literal `left: X, top: Y` shape emitPiece writes are touched. */
+export const clampPieceOffsets = (code: string, moves: PieceOffsetMove[]): ClampResult => {
+  const result: ClampResult = { code, applied: [], skipped: [] };
+  for (const move of moves) {
+    const dx = move.dx ?? 0;
+    const dy = move.dy ?? 0;
+    if (dx === 0 && dy === 0) {
+      result.skipped.push({ pieceId: move.pieceId, reason: "zero move" });
+      continue;
+    }
+    const rx = new RegExp(
+      `(<div[^>]*data-piece=${escapeRegExp(JSON.stringify(move.pieceId))}[^>]*style=\\{\\{ position: "absolute", left: )(-?\\d+(?:\\.\\d+)?)(, top: )(-?\\d+(?:\\.\\d+)?)`,
+    );
+    const m = rx.exec(result.code);
+    if (!m) {
+      result.skipped.push({
+        pieceId: move.pieceId,
+        reason: "no literally-positioned wrapper found (atmosphere/full-bleed piece, or id absent)",
+      });
+      continue;
+    }
+    const from = { left: Number(m[2]), top: Number(m[4]) };
+    const to = { left: Math.max(0, from.left + dx), top: Math.max(0, from.top + dy) };
+    result.code =
+      result.code.slice(0, m.index) +
+      `${m[1]}${to.left}${m[3]}${to.top}` +
+      result.code.slice(m.index + m[0].length);
+    result.applied.push({ pieceId: move.pieceId, from, to });
+  }
+  return result;
+};
+
 /** Assemble the full Composition.tsx string from theme + manifests + piece bodies. */
 export const assembleComposition = (input: AssembleInput): string => {
   const { theme, scenes, pieceBody } = input;

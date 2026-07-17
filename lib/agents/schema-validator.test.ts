@@ -19,6 +19,7 @@ import {
   countInteriorSpecifics,
   BEAT_COVERAGE_MIN_FRACTION,
   checkSceneComposition,
+  findUngroundedMockValues,
   TEMPLATE_LEAK_RX,
 } from "./schema-validator";
 
@@ -1188,6 +1189,66 @@ check("washout mirror: a DARK hex does NOT satisfy it, and non-dark atmospheres 
   assert(dark.some((x) => /reads dark/.test(x)), `a dark hex must not count as a light surface, got ${JSON.stringify(dark)}`);
   // duoGood's own atmospheres (confetti / sunrise) read light → never fires.
   assert(!checkSceneComposition(duoGood()).some((x) => /reads dark/.test(x)), "non-dark atmosphere must never fire the check");
+});
+
+// — v10: the CANVAS-AGNOSTIC washout arm (light canvas → dark surface) —
+check("washout mirror v10: LIGHT atmosphere + hero with no dark/saturated-surface item fails (the Glossier arm)", () => {
+  const s = duoGood();
+  sceneOf(s, 0).composition.atmosphere = "Pale blush-pink wash breathes softly across the whole canvas";
+  const e = checkSceneComposition(s);
+  assert(
+    e.some((x) => /Scene 0 hero: atmosphere reads light but no interior item names a dark\/saturated contrasting surface/.test(x)),
+    `expected the light-canvas washout error, got ${JSON.stringify(e)}`,
+  );
+});
+
+check("washout mirror v10: light atmosphere + a named dark surface passes (cue word or dark hex)", () => {
+  const cue = duoGood();
+  sceneOf(cue, 0).composition.atmosphere = "Powder-pink pastel field with drifting petals across the canvas";
+  sceneOf(cue, 0).composition.elements[0].interior[0] = "lesson card on a deep espresso panel, XP bar 340/500";
+  assert(!checkSceneComposition(cue).some((x) => /reads light/.test(x)), "dark cue word must satisfy the light arm");
+  const hex = duoGood();
+  sceneOf(hex, 0).composition.atmosphere = "Milky ivory gradient washes the frame edge to edge softly";
+  sceneOf(hex, 0).composition.elements[0].interior[0] = "lesson card panel painted #2b1e26, XP bar 340/500";
+  assert(!checkSceneComposition(hex).some((x) => /reads light/.test(x)), "dark hex must satisfy the light arm");
+});
+
+check("washout mirror v10: a LIGHT hex does not satisfy the light arm; dark reading wins when both match", () => {
+  const s = duoGood();
+  sceneOf(s, 0).composition.atmosphere = "Pale cream wash floods every corner of the frame gently";
+  sceneOf(s, 0).composition.elements[0].interior[0] = "lesson card panel painted #faf7f2, XP bar 340/500";
+  assert(checkSceneComposition(s).some((x) => /reads light/.test(x)), "a light hex must not count as a dark surface");
+  // Both vocabularies present → the dark arm judges (light details on a dark field).
+  const both = duoGood();
+  sceneOf(both, 0).composition.atmosphere = "Pale streaks rake across a near-black charcoal field diagonally";
+  const e = checkSceneComposition(both);
+  assert(e.some((x) => /reads dark/.test(x)) && !e.some((x) => /reads light/.test(x)), `dark wins on mixed vocabulary, got ${JSON.stringify(e)}`);
+});
+
+// — v10: the narrow ungrounded mock-value deny-list —
+check("mock deny-list: ungrounded EST-dates and %-OFF promos in interiors fail; grounded ones pass", () => {
+  const grounding = "Founded in 2017. Liquid Death sells mountain water. Get 20% off your first case.";
+  const est = duoGood();
+  sceneOf(est, 0).composition.elements[0].interior[0] = 'brand badge "EST 2024" top right';
+  const e1 = findUngroundedMockValues(est as never, grounding);
+  assert(e1.length === 1 && /EST 2024/.test(e1[0]) && /founding-date badge/.test(e1[0]), `ungrounded EST-date must fail, got ${JSON.stringify(e1)}`);
+  const promo = duoGood();
+  sceneOf(promo, 1).composition.elements[0].interior[0] = 'promo chip "35% OFF" in the corner';
+  const e2 = findUngroundedMockValues(promo as never, grounding);
+  assert(e2.length === 1 && /35% OFF/i.test(e2[0]) && /promo discount/.test(e2[0]), `ungrounded promo must fail, got ${JSON.stringify(e2)}`);
+  const grounded = duoGood();
+  sceneOf(grounded, 0).composition.elements[0].interior[0] = 'brand badge "EST 2017" top right';
+  sceneOf(grounded, 1).composition.elements[0].interior[1] = 'promo chip "20% OFF" first case';
+  assert(findUngroundedMockValues(grounded as never, grounding).length === 0, "tokens present in grounding sources pass");
+});
+
+check("mock deny-list: stays NARROW — ordinary concrete mock values never fire; uncomposed scenes skip", () => {
+  assert(findUngroundedMockValues(duoGood() as never, "").length === 0, "duoGood's prices/streaks/timestamps are not deniable classes");
+  const est = duoGood();
+  sceneOf(est, 0).composition.elements[0].interior[0] = 'crest "Established 1892" — heritage line';
+  assert(findUngroundedMockValues(est as never, "").length === 0, "'Established' long-form is NOT the EST badge class (narrow by design)");
+  const bare = [{ index: 0, label: "x", content: {} }] as unknown as CompScenes;
+  assert(findUngroundedMockValues(bare as never, "").length === 0, "scenes without compositions skip");
 });
 
 // — v9: masked values + the 'placeholder' word in interiors —

@@ -6,7 +6,7 @@
  * data-throughline attribute, a Generated alias — and that the output actually
  * COMPILES (esbuild tsx transform, the same verifyCompilable the build uses).
  */
-import { assembleComposition, type AssembleInput } from "./assemble";
+import { assembleComposition, clampPieceOffsets, type AssembleInput } from "./assemble";
 import { verifyCompilable } from "./code-extraction";
 import type { Theme, SceneManifest, Piece } from "../edit/piece-model";
 
@@ -180,6 +180,37 @@ await check("SHARED_KEYFRAMES itself is never renamed (pieces reference shared n
 await check("the keyframe-namespaced Composition.tsx COMPILES (esbuild tsx)", async () => {
   const err = await verifyCompilable(kfOut);
   assert(err === null, `should compile but: ${err}`);
+});
+
+// ── clampPieceOffsets (v10 — the deterministic edge-crop reposition) ────────
+
+await check("clampPieceOffsets shifts a named wrapper's literal top/left; everything else byte-identical", () => {
+  const r = clampPieceOffsets(out, [{ pieceId: "s0.panel", dy: -112 }]);
+  assert(r.applied.length === 1 && r.skipped.length === 0, `one applied move, got ${JSON.stringify({ a: r.applied, s: r.skipped })}`);
+  assert(r.applied[0].from.top === 140 && r.applied[0].to.top === 28, `140 → 28, got ${JSON.stringify(r.applied[0])}`);
+  assert(r.applied[0].from.left === 960 && r.applied[0].to.left === 960, "left untouched on a dy-only move");
+  assert(r.code.includes('data-piece="s0.panel" data-kind="diegetic" style={{ position: "absolute", left: 960, top: 28,'), "wrapper rewritten in place");
+  assert(!new RegExp(`data-piece="s0\\.panel"[^>]*top: 140`).test(r.code), "old offset gone");
+  // The move touches ONLY the named wrapper — the nested child keeps its own top.
+  assert(r.code.includes('data-piece="s0.panel.row" data-kind="diegetic" style={{ position: "absolute", left: 980, top: 200,'), "nested child wrapper untouched");
+});
+
+await check("clampPieceOffsets floors offsets at 0, applies dx, and the clamped code still compiles", async () => {
+  const r = clampPieceOffsets(out, [{ pieceId: "s0.text", dy: -500, dx: -30 }]);
+  assert(r.applied[0].to.top === 0 && r.applied[0].to.left === 50, `floored at 0 / left 50, got ${JSON.stringify(r.applied[0])}`);
+  const err = await verifyCompilable(r.code);
+  assert(err === null, `clamped composition must compile: ${err}`);
+});
+
+await check("clampPieceOffsets reports unclampable moves as skipped (atmosphere, unknown ids, zero moves)", () => {
+  const r = clampPieceOffsets(out, [
+    { pieceId: "s0.atmos", dy: -50 }, // inset:0 wrapper — no literal left/top
+    { pieceId: "s9.ghost", dy: -50 }, // not in the code
+    { pieceId: "s0.panel" }, // zero move
+  ]);
+  assert(r.applied.length === 0, "nothing applied");
+  assert(r.skipped.length === 3, `all three skipped with reasons, got ${JSON.stringify(r.skipped)}`);
+  assert(r.code === out, "code untouched when nothing applies");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

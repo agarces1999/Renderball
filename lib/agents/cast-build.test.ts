@@ -38,7 +38,9 @@ import {
   staticJsxDensity,
   substituteImgAssetIds,
   ensureHeroSurfaceContrast,
+  stripMaskedValueRuns,
   HERO_SURFACE_MIN_DELTA_L,
+  HERO_SURFACE_MIN_CONTRAST_FRAC,
   PRE_RENDER_HERO_MIN_ELEMENTS,
   PRE_RENDER_HERO_MIN_TEXT,
   HERO_MAX_TOKENS_CEREBRAS,
@@ -965,10 +967,49 @@ await check("surface backstop: quoted-hex primary rewrites in quoted form", () =
   assert(r.code.includes('backgroundColor: "#ffffff"'), `quoted hex must rewrite as a quoted hex, got: ${r.code}`);
 });
 
-await check("surface backstop: one contrasting panel anywhere → no-op", () => {
+await check("surface backstop: contrasting paint carrying real weight → no-op (count fallback: 1 of 2)", () => {
   const body = `<div style={{ background: CARD_FILL }}><div style={{ background: WHITE }} /></div>`;
   const r = ensureHeroSurfaceContrast(body, washTheme);
-  assert(!r.corrected && r.code === body, "a hero that paints contrast somewhere must pass untouched");
+  assert(!r.corrected && r.code === body, "50% of the painted panels contrast — passes the 25% floor untouched");
+});
+
+// ── v10: AREA-WEIGHTED contrast (dogfood cycle 1 — a token chip must not vouch
+//    for a washed-out hero) ──────────────────────────────────────────────────
+
+await check("surface backstop v10: a TINY contrasting chip among big canvas-tone panels no longer vouches — LARGEST panel lifted", () => {
+  const body = [
+    `<div style={{ width: 700, height: 400, background: CARD_FILL }}>`,
+    `<div style={{ width: 680, height: 200, background: "#141420" }} />`,
+    `<div style={{ width: 40, height: 16, background: WHITE }} />`, // the chip: 640px² of 420,600px²
+    `</div>`,
+  ].join("");
+  const r = ensureHeroSurfaceContrast(body, washTheme);
+  assert(r.corrected, "contrast under the area floor must correct");
+  assert(r.code.includes("width: 700, height: 400, background: WHITE"), `the LARGEST canvas-toned panel lifts, got: ${r.code}`);
+  assert(r.code.includes('background: "#141420"'), "smaller canvas-toned panel untouched");
+  assert(HERO_SURFACE_MIN_CONTRAST_FRAC === 0.25, "the area floor is the documented calibration");
+});
+
+await check("surface backstop v10: contrasting panel at ≥25% of painted area → no-op", () => {
+  const body = [
+    `<div style={{ width: 600, height: 400, background: CARD_FILL }}>`,
+    `<div style={{ width: 400, height: 300, background: WHITE }} /></div>`, // 120k of 360k = 33%
+  ].join("");
+  const r = ensureHeroSurfaceContrast(body, washTheme);
+  assert(!r.corrected && r.code === body, "a third of the painted area contrasts — untouched");
+});
+
+await check("surface backstop v10: unparseable sizes fall back to counting (1 of 5 panels = under-weighted → corrected)", () => {
+  const body = [
+    `<div style={{ width: "100%", background: CARD_FILL }}>`,
+    `<div style={{ background: "#141420" }} />`,
+    `<div style={{ background: "#12121c" }} />`,
+    `<div style={{ background: "#16161f" }} />`,
+    `<div style={{ background: WHITE }} /></div>`,
+  ].join("");
+  const r = ensureHeroSurfaceContrast(body, washTheme);
+  assert(r.corrected, "1 contrasting of 5 counted panels (20%) is under the 25% floor");
+  assert(r.code.includes("background: WHITE, ") || (r.code.match(/background: WHITE/g) ?? []).length === 2, `a canvas-toned panel lifted to WHITE, got: ${r.code}`);
 });
 
 await check("surface backstop: unresolvable paints (gradients/rgba/foreign consts) → no-op, never a guess", () => {
@@ -995,6 +1036,29 @@ await check("surface backstop: light canvas corrects toward the DARK token; floo
 
 await check("surface backstop end-to-end: golden build heroes paint contrast → zero corrections counted", () => {
   assert(result.telemetry.heroSurfaceCorrections === 0, `fixture heroes contrast already, got ${result.telemetry.heroSurfaceCorrections}`);
+});
+
+// ─── (d5) masked bullet-run strip (v10) ─────────────────────────────────────
+
+await check("stripMaskedValueRuns: bullet runs collapse to ONE bullet; legitimate singles survive", () => {
+  const r = stripMaskedValueRuns(`<span>●●●</span><span>• item</span><div>{"•••• 4242"}</div>`);
+  assert(r.stripped === 2, `two runs stripped, got ${r.stripped}`);
+  assert(r.code === `<span>•</span><span>• item</span><div>{"• 4242"}</div>`, `runs collapse, singles keep: ${r.code}`);
+  const clean = stripMaskedValueRuns(`<div>Sep • 2025 • $18.50</div>`);
+  assert(clean.stripped === 0 && clean.code.includes("Sep • 2025 • $18.50"), "separator bullets untouched");
+});
+
+await check("element system prompt carries the v10 accent-is-punctuation hard rule", async () => {
+  let system = "";
+  const inner = makeFakeCaller();
+  const spy = async (call: Parameters<typeof inner.caller>[0]) => {
+    system = call.system;
+    return inner.caller(call);
+  };
+  await castBuild(input, { caller: spy as never, concurrency: 4 });
+  assert(/accent is PUNCTUATION/.test(system), "the punctuation doctrine is stated");
+  assert(/NEVER paint a panel/.test(system), "panel fills are explicitly banned");
+  assert(/deterministic gate/.test(system), "the gate consequence is named (models comply better with a stated sensor)");
 });
 
 await check("elementOutcomes: clean build reports zero failed, repaired flags match telemetry", async () => {

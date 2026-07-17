@@ -95,6 +95,19 @@ export const SPLIT_HERO_VCENTER_FRAC = 0.25; // |heroCenterY − H/2| ≤ 25% of
  *  box pinned to the exact anchor sits far inside it). */
 const THROUGHLINE_SIZE = 200;
 
+/**
+ * Bottom reserve (v10 — the piece-edge-crop class). Dogfood cycle 1 shipped
+ * two bottom hero bands whose rendered content ran to the frame's bottom edge
+ * and read as CROPPED. The slot tables already end above this line; this
+ * invariant pins it so no future table edit can park a content slot against
+ * the frame edge: no content slot (hero/copy/throughline) may extend past
+ * BOTTOM_SAFE_FRAC of the canvas height. Full-canvas treatments (atmosphere,
+ * the full-bleed hero) and the chrome bar are exempt — they own the edge by
+ * design. The measured arm of this class lives in render-truth-gates
+ * (findEdgeCroppedPieces) + assemble (clampPieceOffsets).
+ */
+export const BOTTOM_SAFE_FRAC = 0.965;
+
 // ─── Content-field ownership ────────────────────────────────────────────────
 
 /** Copy fields (src/schema.ts Scene.content) — owned by the "copy" text slot.
@@ -225,6 +238,21 @@ const assertPlanInvariants = (plan: ScenePlan, aspect: Aspect, content: Record<s
     const { x, y, w, h } = el.bounds;
     if (w <= 0 || h <= 0 || x < 0 || y < 0 || x + w > W || y + h > H) {
       throw new Error(`layout-composer: "${el.id}" bounds ${JSON.stringify(el.bounds)} escape the ${W}×${H} canvas`);
+    }
+  }
+
+  // (b2) Bottom reserve (v10): content slots keep a bottom margin so rendered
+  // pieces never park against the frame edge (the piece-edge-crop class).
+  // Exempt: atmosphere + chrome (own the edge by design) and full-canvas
+  // treatments (the full-bleed hero IS the canvas).
+  for (const el of els) {
+    if (el.kind === "atmosphere" || el.kind === "chrome") continue;
+    const { w, h, y } = el.bounds;
+    if (w >= W && h >= H) continue; // full-canvas treatment
+    if (y + h > BOTTOM_SAFE_FRAC * H) {
+      throw new Error(
+        `layout-composer: "${el.id}" bottom edge ${y + h} crosses the bottom reserve (${Math.floor(BOTTOM_SAFE_FRAC * H)} = ${BOTTOM_SAFE_FRAC}·${H}) — content slots keep a reserved bottom margin`,
+      );
     }
   }
 

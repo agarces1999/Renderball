@@ -732,6 +732,83 @@ export const findStrandedHero = (
   return out;
 };
 
+// ── piece-edge crop (v10 — dogfood cycle 1: bottom mocks cropped at frame) ──
+// Cycle 1 shipped s0/s4 bottom hero bands whose RENDERED content ran past the
+// canvas bottom edge and read as cropped. The overflow gate is blind to it:
+// the clipped elements are panels/divs with no direct text, so isContentEl
+// excludes them. This check works at PIECE granularity — the union of a
+// piece's measured rects vs the canvas bottom/right edge — because the layout
+// composer promised each piece a slot that ends above the bottom reserve, so
+// a piece union crossing the frame edge is always a defect of the piece's own
+// content sizing, never a composition choice (full-canvas treatments exempt).
+//
+// Repair posture: DETERMINISTIC first. The finding carries the exact overflow;
+// the runner clamps the piece's wrapper offset in the assembled code
+// (assemble.ts clampPieceOffsets) and re-measures — regen is only for
+// residuals the clamp cannot fix (piece taller than the canvas).
+
+/** A piece's union may clip the canvas bottom/right by at most this fraction
+ *  of its OWN height/width before the finding blocks. */
+export const EDGE_CROP_FRAC = 0.02;
+/** Union area ≥ this fraction of the canvas = a full-canvas treatment (same
+ *  threshold findStrandedHero uses) — exempt from the edge-crop rule. */
+const EDGE_CROP_FULL_BLEED_FRAC = 0.85;
+/** Piece kinds that own the frame edge by design. */
+const EDGE_CROP_EXEMPT_KINDS = new Set(["atmosphere", "chrome"]);
+
+export interface EdgeCropFinding {
+  kind: "piece-edge-crop";
+  scene: number;
+  /** The piece whose rendered union clips the frame — routing + clamp target. */
+  pieceId: string;
+  blocking: true;
+  edge: "bottom" | "right";
+  /** How far past the canvas edge the piece's union extends, px. */
+  overflowPx: number;
+  union: { x: number; y: number; w: number; h: number };
+  detail: string;
+  repairInstruction: string;
+}
+
+/** Pieces whose rendered union clips the canvas bottom/right edge by more
+ *  than EDGE_CROP_FRAC of their own height/width. Pure geometry on measured
+ *  rects — zero screenshots, zero LLM. */
+export const findEdgeCroppedPieces = (m: SceneMeasurement): EdgeCropFinding[] => {
+  if (m.error) return [];
+  const out: EdgeCropFinding[] = [];
+  const canvasArea = m.width * m.height;
+  for (const box of pieceBoxes(m)) {
+    if (!box.id || EDGE_CROP_EXEMPT_KINDS.has(box.kind)) continue;
+    if (box.w <= 0 || box.h <= 0) continue;
+    if (box.w * box.h >= EDGE_CROP_FULL_BLEED_FRAC * canvasArea) continue; // canvas treatment
+    const checks: { edge: "bottom" | "right"; overflowPx: number; own: number }[] = [
+      { edge: "bottom", overflowPx: box.y + box.h - m.height, own: box.h },
+      { edge: "right", overflowPx: box.x + box.w - m.width, own: box.w },
+    ];
+    for (const c of checks) {
+      if (c.overflowPx <= Math.max(EDGE_TOL, EDGE_CROP_FRAC * c.own)) continue;
+      out.push({
+        kind: "piece-edge-crop",
+        scene: m.scene,
+        pieceId: box.id,
+        blocking: true,
+        edge: c.edge,
+        overflowPx: Math.round(c.overflowPx),
+        union: { x: box.x, y: box.y, w: box.w, h: box.h },
+        detail:
+          `scene ${m.scene}: piece "${box.id}" (rendered union ${box.w}×${box.h} at ${box.x},${box.y}) ` +
+          `runs ${Math.round(c.overflowPx)}px past the canvas ${c.edge} edge (${m.width}×${m.height}) — ` +
+          `${Math.round((c.overflowPx / c.own) * 100)}% of its own ${c.edge === "bottom" ? "height" : "width"} is cropped by the frame.`,
+        repairInstruction:
+          `Fit "${box.id}" fully inside the frame: the deterministic clamp repositions the piece first; ` +
+          `if it still clips, shrink the piece's own content to its declared slot (its wrapper owns ` +
+          `placement — never grow past the wrapper's bounds, and keep a visible margin above the frame edge).`,
+      });
+    }
+  }
+  return out;
+};
+
 export interface RenderTruthOptions {
   /** Which checks block. dead-region defaults to advisory (composition taste). */
   blockingKinds?: RenderTruthKind[];

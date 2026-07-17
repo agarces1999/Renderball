@@ -650,6 +650,20 @@ export const DARK_CANVAS_RX =
 export const LIGHT_SURFACE_RX =
   /\b(?:white|off-white|light|pale|cream|ivory|bright|luminous|frosted|silver|snow|paper|bone|chalk|high-luminance|high-contrast)\b/i;
 
+/** Light-canvas cue words in a composition.atmosphere string (v10 — the
+ *  CANVAS-AGNOSTIC washout contract; Glossier's pale-pink canvas is the
+ *  measured case). Deliberately narrow, mirror-image of DARK_CANVAS_RX: only
+ *  vocabulary that PROVES a light field ("soft glow" proves nothing). The
+ *  dark check wins when both match — "pale streaks over a black canvas" is a
+ *  dark scene with light details. */
+export const LIGHT_CANVAS_RX =
+  /\b(?:light|pale|white|off-white|cream|ivory|blush|pastel|powder|milky|airy|eggshell|porcelain)\b/i;
+
+/** Dark/saturated-surface cue words in a hero interior item — the light-canvas
+ *  arm's counterpart to LIGHT_SURFACE_RX. */
+export const DARK_SURFACE_RX =
+  /\b(?:dark|black|near-black|charcoal|ink|espresso|midnight|noir|obsidian|onyx|graphite|slate|deep|saturated|jet|carbon|cocoa|mahogany|plum)\b/i;
+
 /** Rec.709 luminance (0-1) of a #hex token, or null when unparseable. */
 const hexLuminance = (hex: string): number | null => {
   const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(hex.trim());
@@ -665,6 +679,17 @@ export const namesLightSurface = (item: string): boolean => {
   for (const m of item.matchAll(/#[0-9a-fA-F]{3,8}\b/g)) {
     const l = hexLuminance(m[0].slice(0, 7));
     if (l !== null && l >= 0.7) return true;
+  }
+  return false;
+};
+
+/** An interior item names a dark/saturated contrasting surface: cue word, or
+ *  a dark hex (L≤0.35) — the light-canvas arm's mirror of namesLightSurface. */
+export const namesDarkSurface = (item: string): boolean => {
+  if (DARK_SURFACE_RX.test(item)) return true;
+  for (const m of item.matchAll(/#[0-9a-fA-F]{3,8}\b/g)) {
+    const l = hexLuminance(m[0].slice(0, 7));
+    if (l !== null && l <= 0.35) return true;
   }
   return false;
 };
@@ -805,10 +830,14 @@ export const checkSceneComposition = (scenes: Scene[]): string[] => {
     // 2) HERO INVENTORY — ≥6 interior items, each concrete.
     // 3) TEMPLATE-LEAK + MASKED-VALUE + PLACEHOLDER-WORD GUARDS — every
     //    element's interior.
-    // 2b) HERO SURFACE CONTRAST (v9) — when the atmosphere reads dark, the
-    //     hero must name ≥1 light/high-luminance surface item (the static
-    //     mirror of the render-side hero-washout gate).
+    // 2b) HERO SURFACE CONTRAST (v9; v10 canvas-agnostic) — the static mirror
+    //     of the render-side hero-washout gate, BOTH directions: a dark
+    //     atmosphere demands ≥1 light/high-luminance surface item; a light
+    //     atmosphere (Glossier pale pink) demands ≥1 dark/saturated one. The
+    //     dark reading wins when both vocabularies match.
     const atmosphereReadsDark = typeof atmosphere === "string" && DARK_CANVAS_RX.test(atmosphere);
+    const atmosphereReadsLight =
+      !atmosphereReadsDark && typeof atmosphere === "string" && LIGHT_CANVAS_RX.test(atmosphere);
     elements.forEach((el, j) => {
       const interior = stringInterior(el);
       if (el?.role === "hero") {
@@ -831,6 +860,11 @@ export const checkSceneComposition = (scenes: Scene[]): string[] => {
         if (atmosphereReadsDark && interior.length > 0 && !interior.some(namesLightSurface)) {
           errors.push(
             `Scene ${i} hero: atmosphere reads dark but no interior item names a light/high-contrast surface — add one item naming the hero's primary panel tone (e.g. a crisp off-white panel surface).`,
+          );
+        }
+        if (atmosphereReadsLight && interior.length > 0 && !interior.some(namesDarkSurface)) {
+          errors.push(
+            `Scene ${i} hero: atmosphere reads light but no interior item names a dark/saturated contrasting surface — add one item naming the hero's primary panel tone (e.g. a deep ink panel on the pale canvas).`,
           );
         }
         for (const item of interior) {
@@ -960,6 +994,72 @@ export const checkSceneComposition = (scenes: Scene[]): string[] => {
     }
   });
 
+  return errors;
+};
+
+// ── Ungrounded mock-value deny-list (v10 — dogfood cycle 1) ─────────────────
+// The mock-value carve-out lets blueprints author plausible diegetic set
+// dressing (prices, balances, timestamps inside a fake UI). Cycle 1 showed the
+// model INVENTING fact-shaped values under that cover: an "EST 2024" badge
+// (the brand is EST 2017 — copy in the SAME video says so) and a "20% OFF"
+// promo chip. Both classes state a checkable brand FACT (founding date, an
+// active promotion), so they are only allowed when the token appears in a
+// grounding source. Deliberately NARROW: exactly these two regex classes —
+// the carve-out stays open for genuinely diegetic values.
+
+export const UNGROUNDED_MOCK_VALUE_CLASSES: {
+  rx: RegExp;
+  label: string;
+  /** What must appear in a grounding source for the token to pass. The EST
+   *  badge grounds on its YEAR ("Founded in 2017" grounds "EST 2017" — the
+   *  badge phrasing is the designer's, the fact is the year); a promo grounds
+   *  on the literal offer. */
+  groundKey: (token: string) => string;
+}[] = [
+  {
+    rx: /\bEST\.?\s*(?:19|20)\d{2}\b/gi,
+    label: "founding-date badge",
+    groundKey: (t) => /(?:19|20)\d{2}/.exec(t)?.[0] ?? t,
+  },
+  { rx: /\b\d{1,2}\s*%\s*OFF\b/gi, label: "promo discount", groundKey: (t) => t },
+];
+
+const normalizeForGrounding = (s: string): string => s.toLowerCase().replace(/\s+/g, " ").trim();
+
+/**
+ * Fact-shaped mock values in composed scenes' interior/subject strings that no
+ * grounding source states. Returns one ≤200-char error per hit, shaped for
+ * the head's verbatim-error repair loop. Scenes without compositions skip.
+ */
+export const findUngroundedMockValues = (scenes: Scene[], groundingText: string): string[] => {
+  const errors: string[] = [];
+  const grounded = normalizeForGrounding(groundingText);
+  scenes.forEach((scene, i) => {
+    const comp = scene?.composition;
+    if (!comp || typeof comp !== "object") return;
+    const rawElements = (comp as { elements?: unknown }).elements;
+    if (!Array.isArray(rawElements)) return;
+    (rawElements as RawElement[]).forEach((el, j) => {
+      const name =
+        typeof el?.role === "string" && el.role.trim() ? truncateForError(el.role.trim(), 16) : `element ${j}`;
+      const strings = [
+        ...stringInterior(el),
+        ...(typeof el?.subject === "string" ? [el.subject] : []),
+      ];
+      for (const item of strings) {
+        for (const cls of UNGROUNDED_MOCK_VALUE_CLASSES) {
+          cls.rx.lastIndex = 0;
+          for (const m of item.matchAll(cls.rx)) {
+            const token = m[0];
+            if (grounded.includes(normalizeForGrounding(cls.groundKey(token)))) continue;
+            errors.push(
+              `Scene ${i} ${name}: "${truncateForError(token, 24)}" (in "${truncateForError(item, 36)}") is a ${cls.label} no grounding source states — mock set dressing must never invent brand facts; drop it or use the real value.`,
+            );
+          }
+        }
+      }
+    });
+  });
   return errors;
 };
 

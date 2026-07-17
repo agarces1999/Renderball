@@ -17,6 +17,7 @@ import {
   CANVAS,
   SPLIT_HERO_MIN_W_FRAC,
   SPLIT_HERO_VCENTER_FRAC,
+  BOTTOM_SAFE_FRAC,
   type Aspect,
   type ElementSlot,
   type ScenePlan,
@@ -84,6 +85,20 @@ for (const aspect of ASPECTS) {
               els[i].allowedOverlaps.includes(els[j].id) || els[j].allowedOverlaps.includes(els[i].id);
             assert(declared, `overlap ${els[i].id}×${els[j].id} must be declared`);
           }
+        }
+      });
+
+      check(`${label}: content slots respect the bottom reserve (v10 piece-edge-crop, composer arm)`, () => {
+        const { w: W, h: H } = CANVAS[aspect];
+        const plan = composeSceneLayout({ register, content: FULL_CONTENT }, aspect, { hasThroughline });
+        for (const el of plan.elements) {
+          if (el.kind === "atmosphere" || el.kind === "chrome") continue; // own the edge by design
+          const { y, w, h } = el.bounds;
+          if (w >= W && h >= H) continue; // full-canvas treatment (full-bleed hero)
+          assert(
+            y + h <= BOTTOM_SAFE_FRAC * H,
+            `${el.id} bottom ${y + h} must stay above the reserve line ${Math.floor(BOTTOM_SAFE_FRAC * H)} (${BOTTOM_SAFE_FRAC}·${H})`,
+          );
         }
       });
 

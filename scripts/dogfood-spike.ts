@@ -1,7 +1,21 @@
 /**
- * DOGFOOD RUNNER (v9) — the acceptance8 pipeline, GENERALIZED to any stored
+ * DOGFOOD RUNNER (v10) — the acceptance8 pipeline, GENERALIZED to any stored
  * brief. Same stack, same gates, same retry discipline; the Klarna-specific
  * scaffolding (reference build, v7 comparison rows) is gone or optional.
+ *
+ * v10 (dogfood cycle 2 batch):
+ *   - ACCENT-AS-FILL blocking gate (lib/render/accent-fill.ts): the largest
+ *     flat accent-colored rectangle inside each hero region must stay under
+ *     30% of the piece area (cycle-1 s3's #00ff00 slab class).
+ *   - PIECE-EDGE-CROP: measured pieces clipping the canvas bottom/right by
+ *     >2% of their own size are CLAMPED deterministically in the assembled
+ *     code (assemble.ts clampPieceOffsets) and re-measured; only residuals
+ *     route to a regen. Composer side: the bottom-reserve invariant.
+ *   - SEQUENCE VISION fully detached: the gallery + report are written FIRST
+ *     with a pending marker; the verdict patches them in when/if it lands
+ *     (wall never includes it), and one abort SKIPS it (no retry).
+ *   - Blueprint validation adds the narrow ungrounded mock-value deny-list
+ *     (EST-dates / %-OFF against the grounding sources).
  *
  * PARAMS (env or argv):
  *   RB_DOGFOOD_BRIEF / --brief=<briefId>   the stored brief to build (loadBrief)
@@ -50,9 +64,12 @@ import { finalizeUndefinedRefs, assessInvalidLucideImports } from "../lib/agents
 import { measureScenes, type SceneMeasurement } from "../lib/render/measure-scene";
 import {
   findRenderTruthFailures,
+  findEdgeCroppedPieces,
+  type EdgeCropFinding,
   type RenderTruthFinding,
   type RenderTruthKind,
 } from "../lib/render/render-truth-gates";
+import { clampPieceOffsets } from "../lib/agents/assemble";
 import {
   assessDensity,
   renderSectionsForAnalysis,
@@ -80,6 +97,12 @@ import {
   type HeroLuminanceStats,
   type HeroWashoutFinding,
 } from "../lib/render/hero-contrast";
+import {
+  assessAccentFill,
+  ACCENT_FILL_MAX_FRAC,
+  type AccentFillFinding,
+  type AccentFillResult,
+} from "../lib/render/accent-fill";
 import {
   buildRubric,
   parseVerdict,
@@ -109,6 +132,7 @@ import {
   findUngroundedStageLabels,
   findTypeOnlyScenes,
   checkSceneComposition,
+  findUngroundedMockValues,
 } from "../lib/agents/schema-validator";
 import {
   findOverflowingElements,
@@ -189,6 +213,9 @@ const MODEL_PRICES: Record<string, [number, number]> = {
 const BLOCKING_KINDS: RenderTruthKind[] = [
   "overflow", "measure-error", "barbell", "cross-piece-overlap", "canvas-brightness", "stranded-hero",
 ];
+/** v10 edge-crop clamp: pieces shift up/left by the measured overflow PLUS
+ *  this breath, so a clamped piece never sits flush against the frame edge. */
+const EDGE_CLAMP_MARGIN_PX = 12;
 const SEVERE_RX =
   /unreadable|clipped|cut ?off|overlap|invisible|missing|broken|empty|flat|illegible|placeholder|masked|blank|loading|frozen|nav bar|pagination/i;
 
@@ -1088,9 +1115,12 @@ const runVisionRound = async (
   return out.sort((a, b) => a.scene - b.scene);
 };
 
-// ── sequence vision — ONCE, advisory, OFF the critical path ─────────────────
+// ── sequence vision — ONCE, advisory, FULLY DETACHED (v10) ──────────────────
+// Cycle-1 evidence: two 120s aborts on the critical path cost 244s (46% of
+// wall). v10 posture: the runner writes the gallery + report FIRST, the
+// verdict patches them in when/if it lands, and ONE abort skips it entirely.
 
-let sequenceRetried = false;
+let sequenceAborted = false;
 
 const runSequenceRound = async (
   measurements: SceneMeasurement[],
@@ -1110,11 +1140,12 @@ const runSequenceRound = async (
     .filter((m): m is SceneMeasurement & { screenshotPath: string } => !!m.screenshotPath)
     .sort((a, b) => a.scene - b.scene);
   const imagesB64 = await Promise.all(ordered.map(async (m) => (await fs.readFile(m.screenshotPath)).toString("base64")));
-  let findings = await judgeSequence(imagesB64, brandTruth, sequenceJudge);
-  if (findings.some((f) => f.issue.startsWith("SEQUENCE-JUDGE-ERROR:")) && visionBudgetOk()) {
-    console.warn(`  sequence verdict malformed (${findings[0]?.issue.slice(0, 120)}) — ONE retry`);
-    sequenceRetried = true;
-    findings = await judgeSequence(imagesB64, brandTruth, sequenceJudge);
+  const findings = await judgeSequence(imagesB64, brandTruth, sequenceJudge);
+  if (findings.some((f) => f.issue.startsWith("SEQUENCE-JUDGE-ERROR:"))) {
+    // v10: SKIP after the FIRST abort — no retry. The judge is advisory; a
+    // second 120s spin bought nothing in cycle 1 (it aborted again).
+    sequenceAborted = true;
+    console.warn(`  sequence verdict aborted (${findings[0]?.issue.slice(0, 120)}) — SKIPPED after first abort (no retry)`);
   }
   return findings;
 };
@@ -1131,9 +1162,11 @@ const computeTargets = (args: {
   profile: DensityProfile;
   rtBlocking: RenderTruthFinding[];
   washout: HeroWashoutFinding[];
+  accentFill: AccentFillFinding[];
+  edgeCropResidual: EdgeCropFinding[];
   vision: SceneVisionVerdict[];
 }): Map<string, string[]> => {
-  const { validPieceIds, density, profile, rtBlocking, washout, vision } = args;
+  const { validPieceIds, density, profile, rtBlocking, washout, accentFill, edgeCropResidual, vision } = args;
   const targets = new Map<string, string[]>();
   const add = (pieceId: string, sceneFallback: number, feedback: string): void => {
     let id = pieceId;
@@ -1195,6 +1228,15 @@ const computeTargets = (args: {
   for (const f of washout) {
     add(f.pieceId, f.scene, `[hero-contrast/hero-washout] ${f.detail}\n${f.repairInstruction}`);
   }
+  // v10: accent-as-fill routes to the named hero (blocking).
+  for (const f of accentFill) {
+    add(f.pieceId, f.scene, `[accent-fill/accent-as-fill] ${f.detail}\n${f.repairInstruction}`);
+  }
+  // v10: edge-crop RESIDUALS only — everything clampable was already clamped
+  // deterministically before this round's downstream gates ran.
+  for (const f of edgeCropResidual) {
+    add(f.pieceId, f.scene, `[render-truth/piece-edge-crop] ${f.detail}\n${f.repairInstruction}`);
+  }
   for (const f of rtBlocking) {
     if (f.kind === "measure-error" || f.scene < 0) continue;
     const named = (f.detail.match(PIECE_ID_RX) ?? []).filter((id) => !/\.chrome$/.test(id));
@@ -1236,6 +1278,13 @@ interface ScriptAttemptRow {
 }
 interface BlueprintAttemptRow { attempt: number; secs: number; tokensIn: number; tokensOut: number; stop: string | null; errors: string[] }
 
+interface EdgeCropEvent {
+  round: number;
+  pieceId: string;
+  action: "clamped" | "clamp-skipped" | "residual-after-clamp";
+  detail: string;
+}
+
 interface GateRoundReport {
   round: number;
   llmCallsThisRound: number;
@@ -1246,6 +1295,8 @@ interface GateRoundReport {
   renderTruthAll: RenderTruthFinding[];
   renderTruthBlocking: RenderTruthFinding[];
   heroContrast: { stats: HeroLuminanceStats[]; findings: HeroWashoutFinding[]; errors: string[] };
+  accentFill: { stats: AccentFillResult["stats"]; findings: AccentFillFinding[]; errors: string[] };
+  edgeCrop: { initial: EdgeCropFinding[]; residual: EdgeCropFinding[] };
   vision: SceneVisionVerdict[];
   targets: { pieceId: string; feedback: string[] }[];
 }
@@ -1289,13 +1340,19 @@ const rowGrid = (cells: RowCell[]): string =>
     })
     .join("\n");
 
-const gateLogHtml = (gateRounds: GateRoundReport[], sequenceFinal: VisionFinding[]): string => {
+const gateLogHtml = (gateRounds: GateRoundReport[]): string => {
   const rounds = gateRounds
     .map((g) => {
       const rows: string[] = [];
       for (const f of g.density) rows.push(`<li><b>density/${esc(f.kind)} (BLOCKING)</b> scene ${f.scene}: ${esc(f.detail.slice(0, 280))}</li>`);
       for (const f of g.heroContrast.findings) rows.push(`<li><b>hero-contrast/hero-washout (BLOCKING)</b> scene ${f.scene} → ${esc(f.pieceId)}: ${esc(f.detail.slice(0, 280))}</li>`);
       for (const e of g.heroContrast.errors) rows.push(`<li><b>hero-contrast</b> sampling error: ${esc(e.slice(0, 200))}</li>`);
+      for (const f of g.accentFill.findings) rows.push(`<li><b>accent-fill/accent-as-fill (BLOCKING)</b> scene ${f.scene} → ${esc(f.pieceId)}: ${esc(f.detail.slice(0, 280))}</li>`);
+      for (const e of g.accentFill.errors) rows.push(`<li><b>accent-fill</b> sampling error: ${esc(e.slice(0, 200))}</li>`);
+      for (const f of g.edgeCrop.initial) {
+        const residual = g.edgeCrop.residual.some((r) => r.pieceId === f.pieceId && r.edge === f.edge);
+        rows.push(`<li><b>piece-edge-crop${residual ? " (BLOCKING — residual after clamp)" : " (CLAMPED deterministically)"}</b> scene ${f.scene} → ${esc(f.pieceId)}: ${esc(f.detail.slice(0, 240))}</li>`);
+      }
       for (const f of g.structural) rows.push(`<li><b>structural/${esc(f.key)}</b> scene ${f.scene}: ${esc(f.detail.slice(0, 220))}</li>`);
       for (const f of g.renderTruthAll) rows.push(`<li><b>render-truth/${esc(f.kind)}${g.renderTruthBlocking.includes(f) ? " (BLOCKING)" : " (advisory)"}</b> scene ${f.scene}: ${esc(f.detail.slice(0, 220))}</li>`);
       for (const v of g.vision) {
@@ -1307,10 +1364,10 @@ const gateLogHtml = (gateRounds: GateRoundReport[], sequenceFinal: VisionFinding
       return `<h3>gate round ${g.round} — ${g.llmCallsThisRound} LLM calls this round · retry targets: [${esc(targets)}]</h3><ul>${rows.join("\n") || "<li>all clean</li>"}</ul>`;
     })
     .join("\n");
-  const seq = sequenceFinal.length
-    ? sequenceFinal.map((f) => `<li><b>sequence-vision (log-only, ran ONCE after the final round)</b>: ${esc(f.issue.slice(0, 320))}</li>`).join("\n")
-    : "<li>sequence vision: CLEAN</li>";
-  return `${rounds}<h3>final sequence-vision pass</h3><ul>${seq}</ul>`;
+  // v10: sequence vision is DETACHED — the gallery ships with a pending marker
+  // and the verdict is patched into this exact span when/if it lands.
+  const seqPending = `<!--RB_SEQ_START--><li>sequence vision (detached, advisory): PENDING — the verdict patches in here when it lands; the wall never includes it</li><!--RB_SEQ_END-->`;
+  return `${rounds}<h3>final sequence-vision pass (detached)</h3><ul>${seqPending}</ul>`;
 };
 
 const callLogHtml = (): string => {
@@ -1348,7 +1405,7 @@ const main = async (): Promise<void> => {
 
   const report: Record<string, unknown> = {
     experiment:
-      `DOGFOOD CYCLE ${CYCLE} (v9 batch): generalized acceptance8 runner on brief ${BRIEF_ID} (${TAG}) — washout head contract + deterministic hero surface backstop, comp-head over-compliance line, diegetic mock-value grounding carve-out, register archetype-variety validator. Same gates, budget, and retry discipline as acceptance8.`,
+      `DOGFOOD CYCLE ${CYCLE} (v10 batch): generalized acceptance8 runner on brief ${BRIEF_ID} (${TAG}) — accent-as-fill blocking gate + accent-is-punctuation head clause, piece-edge-crop (composer bottom reserve + measured check + deterministic clamp), fully-detached sequence vision (skip after first abort), area-weighted hero surface contrast, canvas-agnostic washout contract (light-canvas arm), narrow ungrounded mock-value deny-list, attempt-1 blueprint negative example. Same budget and retry discipline as acceptance8.`,
     briefId: BRIEF_ID,
     tag: TAG,
     cycle: CYCLE,
@@ -1357,6 +1414,7 @@ const main = async (): Promise<void> => {
       perHeroFloor: `density-gates clause (a2): any ".hero" piece must itself measure ≥${HERO_MIN_ELEMENTS}el/≥${HERO_MIN_TEXT_NODES}tx (kind thin-hero, blocking)`,
       heroWashout: `hero-contrast: hero region luminance spread<${WASHOUT_SPREAD_FLOOR} AND stdDev<${WASHOUT_STDDEV_FLOOR} → hero-washout (blocking), routed to the named hero`,
       v9: `washout killed at the HEAD (composition contract + checkSceneComposition mirror + cast-build ensureHeroSurfaceContrast backstop); register runs ≥3 rejected at script validation`,
+      v10: `accent-as-fill: largest flat accent rect in a hero region ≤${ACCENT_FILL_MAX_FRAC * 100}% of the piece area (blocking); piece-edge-crop: measured pieces clipping canvas bottom/right >2% of own size → deterministic clamp, residuals blocking; hero surface contrast area-weighted (≥25% painted weight); washout static mirror canvas-AGNOSTIC (light canvas → dark surface); sequence vision detached + skip-after-abort`,
     },
     terminalError: null,
   };
@@ -1368,6 +1426,8 @@ const main = async (): Promise<void> => {
   let profile: DensityProfile | null = null;
   let finalMeasurements: SceneMeasurement[] = [];
   let finalContrast: HeroContrastResult | null = null;
+  let finalAccentFill: AccentFillResult | null = null;
+  const edgeCropEvents: EdgeCropEvent[] = [];
   let script: LooseScript | null = null;
   let scriptStartS: number | null = null;
   let castStartS: number | null = null;
@@ -1392,9 +1452,11 @@ const main = async (): Promise<void> => {
     report.castRounds = roundTelemetry;
     report.gateRounds = gateRounds;
     report.sequenceFinal = sequenceFinal;
-    report.sequenceRetried = sequenceRetried;
+    report.sequenceSkippedAfterAbort = sequenceAborted;
     report.densityProfile = profile;
     report.finalContrast = finalContrast;
+    report.finalAccentFill = finalAccentFill;
+    report.edgeCropEvents = edgeCropEvents;
     report.finalize = finalize;
     report.calls = callLog;
     report.fastRouter = {
@@ -1639,6 +1701,13 @@ const main = async (): Promise<void> => {
       return { derived, ok: true, repaired, error: null as string | null, kfInjected: parsed.requiredKeyframesInjected! };
     });
     // ── PHASE 3 (∥ DS): BLUEPRINTS — generateComposition on gpt-oss ──────────
+    // v10: blueprint validation = the composition contract + the narrow
+    // ungrounded mock-value deny-list (EST-dates / %-OFF vs grounding sources).
+    const groundingText = claimGroundingSources(agentBrief);
+    const validateComposition = (scenes: Scene[]): string[] => [
+      ...checkSceneComposition(scenes),
+      ...findUngroundedMockValues(scenes, groundingText),
+    ];
     let headAttemptN = 0;
     const headCaller: CompositionCaller = async (call) => {
       headAttemptN += 1;
@@ -1657,7 +1726,7 @@ const main = async (): Promise<void> => {
         const result = await generateComposition({
           script: script as unknown as Script,
           caller: headCaller,
-          validate: checkSceneComposition,
+          validate: validateComposition,
           brandName: BRAND,
           paletteHint: `canvas ${canvasPlan.background} (${canvasPlan.mode}), signature accent ${signature}, brand palette: ${(be.palette ?? []).join(", ")}`,
           designNotes: `Design system consts available downstream: PALETTE (canvas/ink/accent/muted/softNeutral/cardFill/white), shared keyframes (glowBreathe, drift1-3, drawWidth, fadeRise, scaleIn). Fonts locked: display ${crawlFonts.display}, body ${crawlFonts.body}.`,
@@ -1668,10 +1737,10 @@ const main = async (): Promise<void> => {
           if (bucket) bucket.errors.push(m![2]);
           else blueprintAttempts.push({ attempt: -1, secs: 0, tokensIn: 0, tokensOut: 0, stop: null, errors: [e] });
         }
-        const residual = checkSceneComposition(result.scenes);
+        const residual = validateComposition(result.scenes);
         const validatedClean = residual.length === 0;
         report.blueprints = {
-          author: `${BLUEPRINT_MODEL} @ Cerebras, effort high (validate=checkSceneComposition incl. the v9 washout + masked-value + placeholder clauses)`,
+          author: `${BLUEPRINT_MODEL} @ Cerebras, effort high (validate=checkSceneComposition incl. the v9 washout + masked-value + placeholder clauses; v10: canvas-agnostic washout arm + ungrounded mock-value deny-list)`,
           attempts: result.attempts,
           validatedClean,
           threw: false,
@@ -1712,6 +1781,16 @@ const main = async (): Promise<void> => {
       accent: signature,
       fonts: [be.font_roles?.display, be.font_roles?.body].filter((f): f is string => !!f),
     };
+
+    // v10 accent-as-fill vocabulary: the signature accent + the DS theme's
+    // ACCENT token (deduped; only judgeable hexes survive accentSpecs anyway).
+    const accentHexes = [
+      ...new Set(
+        [signatureAccent, theme.palette.ACCENT].filter(
+          (h): h is string => typeof h === "string" && /^#[0-9a-fA-F]{3,8}$/.test(h),
+        ),
+      ),
+    ];
 
     // ── PHASES 4–5: cast (GLM-5.2-FAST @ Fireworks) + the gate loop ──────────
     const aspect = (["16:9", "9:16", "1:1"].includes(script.config?.aspect_ratio ?? "")
@@ -1786,10 +1865,48 @@ const main = async (): Promise<void> => {
       profile = buildDensityProfile(finalCode, script);
       console.log(`  density: ${density.length} blocking finding(s) [${density.map((f) => f.kind).join(", ") || "clean"}] · distinct sigs ${profile.distinctSignatures} · depths [${profile.scenes.map((s) => s.depth).join(", ")}]`);
 
-      // (b) structural + render-truth.
-      const structural = runStructuralGates(finalCode, script!);
-      const measurements = await phase(`measure-r${round}`, () => measureScenes(GEN_DIR, script, GEN_DIR));
+      // (b) measure, then the v10 piece-edge-crop arm: deterministic CLAMP in
+      // the assembled code + ONE re-measure, so every downstream gate (render-
+      // truth, contrast, accent, vision) judges the repositioned frame. Only
+      // residuals the clamp couldn't fix route to a regen.
+      let measurements = await phase(`measure-r${round}`, () => measureScenes(GEN_DIR, script, GEN_DIR));
+      const edgeCropInitial = measurements.flatMap((m) => findEdgeCroppedPieces(m));
+      let edgeCropResidual: EdgeCropFinding[] = [];
+      if (edgeCropInitial.length > 0) {
+        const moves = new Map<string, { pieceId: string; dx: number; dy: number }>();
+        for (const f of edgeCropInitial) {
+          const mv = moves.get(f.pieceId) ?? { pieceId: f.pieceId, dx: 0, dy: 0 };
+          if (f.edge === "bottom") mv.dy = -(f.overflowPx + EDGE_CLAMP_MARGIN_PX);
+          else mv.dx = -(f.overflowPx + EDGE_CLAMP_MARGIN_PX);
+          moves.set(f.pieceId, mv);
+        }
+        const clamp = clampPieceOffsets(finalCode, [...moves.values()]);
+        for (const a of clamp.applied) {
+          edgeCropEvents.push({ round, pieceId: a.pieceId, action: "clamped", detail: `wrapper ${a.from.left},${a.from.top} → ${a.to.left},${a.to.top}` });
+          console.log(`  [edge-crop] ${a.pieceId}: wrapper clamped ${a.from.left},${a.from.top} → ${a.to.left},${a.to.top} (deterministic, zero tokens)`);
+        }
+        for (const s of clamp.skipped) {
+          edgeCropEvents.push({ round, pieceId: s.pieceId, action: "clamp-skipped", detail: s.reason });
+          console.warn(`  [edge-crop] ${s.pieceId}: clamp skipped — ${s.reason}`);
+        }
+        if (clamp.applied.length > 0) {
+          finalCode = clamp.code;
+          await fs.writeFile(path.join(GEN_DIR, "Composition.tsx"), finalCode, "utf8");
+          measurements = await phase(`measure-clamped-r${round}`, () => measureScenes(GEN_DIR, script, GEN_DIR));
+        }
+        edgeCropResidual = measurements.flatMap((m) => findEdgeCroppedPieces(m));
+        for (const f of edgeCropResidual) {
+          edgeCropEvents.push({ round, pieceId: f.pieceId, action: "residual-after-clamp", detail: f.detail });
+        }
+        console.log(
+          `  edge-crop: ${edgeCropInitial.length} initial [${edgeCropInitial.map((f) => `${f.pieceId}:${f.edge}+${f.overflowPx}px`).join(", ")}] · ` +
+            `${clamp.applied.length} clamped · ${edgeCropResidual.length} residual${edgeCropResidual.length ? ` [${edgeCropResidual.map((f) => f.pieceId).join(", ")}] → routed to regen` : ""}`,
+        );
+      }
       finalMeasurements = measurements;
+
+      // Structural gates read the (possibly clamped) final code.
+      const structural = runStructuralGates(finalCode, script!);
       const rt = await phase(`render-truth-r${round}`, () =>
         findRenderTruthFailures(measurements, {
           brandBackground: canvasPlan.background,
@@ -1807,11 +1924,31 @@ const main = async (): Promise<void> => {
           `${contrast.errors.length ? ` · errors: ${contrast.errors.join(" | ")}` : ""}`,
       );
 
-      // (c) per-scene vision. (Sequence vision runs ONCE, after the final round.)
+      // (b3) accent-as-fill (v10) — proportion discipline on the hero regions:
+      // the brand accent is punctuation, never a panel fill.
+      const accentFill = await phase(`accent-fill-r${round}`, () => assessAccentFill(measurements, accentHexes));
+      finalAccentFill = accentFill;
+      console.log(
+        `  accent-fill: ${accentFill.stats.length} hero region(s) probed vs [${accentHexes.join(", ")}] · ` +
+          `largest-rect fracs [${accentFill.stats.map((s) => `${s.pieceId} ${(s.largestRectFrac * 100).toFixed(1)}%`).join(", ") || "none"}] · ` +
+          `${accentFill.findings.length} accent-as-fill${accentFill.findings.length ? ` [${accentFill.findings.map((f) => f.pieceId).join(", ")}]` : ""}` +
+          `${accentFill.errors.length ? ` · errors: ${accentFill.errors.join(" | ")}` : ""}`,
+      );
+
+      // (c) per-scene vision. (Sequence vision is detached — see below.)
       const vision = await phase(`vision-r${round}`, () => runVisionRound(measurements, script!, brandTruth));
 
       const validPieceIds = new Set(castResult.scenes.flatMap((s) => s.pieces.filter((p) => p.kind !== "chrome").map((p) => p.id)));
-      const targets = computeTargets({ validPieceIds, density, profile, rtBlocking: rt.blocking, washout: contrast.findings, vision });
+      const targets = computeTargets({
+        validPieceIds,
+        density,
+        profile,
+        rtBlocking: rt.blocking,
+        washout: contrast.findings,
+        accentFill: accentFill.findings,
+        edgeCropResidual,
+        vision,
+      });
 
       gateRounds.push({
         round,
@@ -1823,6 +1960,8 @@ const main = async (): Promise<void> => {
         renderTruthAll: rt.findings,
         renderTruthBlocking: rt.blocking,
         heroContrast: { stats: contrast.stats, findings: contrast.findings, errors: contrast.errors },
+        accentFill: { stats: accentFill.stats, findings: accentFill.findings, errors: accentFill.errors },
+        edgeCrop: { initial: edgeCropInitial, residual: edgeCropResidual },
         vision,
         targets: [...targets.entries()].map(([pieceId, feedback]) => ({ pieceId, feedback })),
       });
@@ -1832,6 +1971,10 @@ const main = async (): Promise<void> => {
           targets: [...targets.keys()],
           density: density.length,
           washouts: contrast.findings.length,
+          accentFills: accentFill.findings.length,
+          edgeCropsInitial: edgeCropInitial.length,
+          edgeCropsClamped: edgeCropEvents.filter((e) => e.round === 0 && e.action === "clamped").length,
+          edgeCropsResidual: edgeCropResidual.length,
           structural: structural.length,
           rtBlocking: rt.blocking.length,
           visionSevereScenes: vision.filter((v) => v.severe.length > 0).map((v) => v.scene),
@@ -1846,7 +1989,8 @@ const main = async (): Promise<void> => {
       await writeOut();
 
       console.log(
-        `  round ${round}: density ${density.length} · washout ${contrast.findings.length} · structural ${structural.length} · render-truth ${rt.findings.length} (${rt.blocking.length} blocking) · ` +
+        `  round ${round}: density ${density.length} · washout ${contrast.findings.length} · accent-fill ${accentFill.findings.length} · ` +
+          `edge-crop ${edgeCropInitial.length}→${edgeCropResidual.length} residual · structural ${structural.length} · render-truth ${rt.findings.length} (${rt.blocking.length} blocking) · ` +
           `vision actionable ${vision.reduce((n, v) => n + v.actionable.length, 0)} (severe on [${vision.filter((v) => v.severe.length).map((v) => v.scene).join(", ")}]) · ` +
           `retry targets [${[...targets.keys()].join(", ") || "none"}]`,
       );
@@ -1914,14 +2058,30 @@ const main = async (): Promise<void> => {
 
     if (finalCode) await fs.writeFile(path.join(OUT_DIR, "Composition.dogfood.tsx"), finalCode, "utf8");
 
-    // Sequence vision — ONCE, advisory, off the critical path (concurrent
-    // with the gallery-cell assembly below).
-    let sequencePromise: Promise<VisionFinding[]>;
+    // Sequence vision — ONCE, advisory, FULLY DETACHED (v10). Fired here and
+    // never awaited before the gallery/report: those are written with a
+    // pending marker, and the verdict PATCHES them in when/if it lands. The
+    // recorded wall never includes this call. Deliberately NOT phase-wrapped —
+    // a phase mark that lands after the report is written would be lost.
+    const sequenceStartS = nowS();
+    let sequenceLandedAtS: number | null = null;
+    let sequenceDone: Promise<VisionFinding[] | null>;
     if (finalMeasurements.some((m) => m.screenshotPath)) {
-      sequencePromise = phase("sequence-vision-final", () => runSequenceRound(finalMeasurements, brandTruth));
+      console.log(`\n▶ sequence-vision-detached (t=${sequenceStartS}s — off the critical path)`);
+      sequenceDone = runSequenceRound(finalMeasurements, brandTruth)
+        .then((f) => {
+          sequenceLandedAtS = nowS();
+          return f;
+        })
+        .catch((e) => {
+          sequenceAborted = true;
+          console.warn(`  sequence vision threw (detached, advisory): ${e instanceof Error ? e.message.split("\n")[0] : e}`);
+          sequenceLandedAtS = nowS();
+          return [] as VisionFinding[];
+        });
     } else {
       console.warn("  no screenshots — sequence vision skipped");
-      sequencePromise = Promise.resolve([]);
+      sequenceDone = Promise.resolve([] as VisionFinding[]);
     }
     await writeOut();
 
@@ -1935,11 +2095,25 @@ const main = async (): Promise<void> => {
       const rtb = finalRound?.renderTruthBlocking.filter((f) => f.scene === i) ?? [];
       const wash = finalRound?.heroContrast.findings.filter((f) => f.scene === i) ?? [];
       const cst = finalRound?.heroContrast.stats.filter((s) => s.scene === i) ?? [];
+      const afFind = finalRound?.accentFill.findings.filter((f) => f.scene === i) ?? [];
+      const afStats = finalRound?.accentFill.stats.filter((s) => s.scene === i) ?? [];
+      const ecInit = finalRound?.edgeCrop.initial.filter((f) => f.scene === i) ?? [];
+      const ecRes = finalRound?.edgeCrop.residual.filter((f) => f.scene === i) ?? [];
       const p = profile?.scenes.find((s) => s.scene === i);
       const note = [
         p ? (p.ssrError ? `density: SSR ERROR` : `diegetic ${p.bestDiegetic ? `${p.bestDiegetic.elements}el/${p.bestDiegetic.textNodes}txt` : "none"} · hero ${p.hero ? `${p.hero.elements}el/${p.hero.textNodes}tx` : "none"} · depth ${p.depth}`) : "density: n/a",
         cst.length ? `contrast: ${cst.map((c) => `${c.pieceId} spread ${c.spread}/std ${c.stdDev}`).join(" · ")}` : "contrast: no hero region",
         wash.length ? `HERO-WASHOUT: ${wash.map((f) => f.pieceId).join(", ")}` : "washout: clean",
+        afFind.length
+          ? `ACCENT-AS-FILL: ${afFind.map((f) => `${f.pieceId} ${(f.stats.largestRectFrac * 100).toFixed(0)}%`).join(", ")}`
+          : afStats.length
+            ? `accent-fill: ${afStats.map((s) => `${(s.largestRectFrac * 100).toFixed(1)}%`).join("/")} (≤${ACCENT_FILL_MAX_FRAC * 100}% ok)`
+            : "accent-fill: no hero region",
+        ecRes.length
+          ? `EDGE-CROP residual: ${ecRes.map((f) => `${f.pieceId}:${f.edge}`).join(", ")}`
+          : ecInit.length
+            ? `edge-crop: ${ecInit.length} clamped deterministically`
+            : "edge-crop: clean",
         dens.length ? `density findings: ${dens.map((f) => f.kind).join(", ")}` : "density findings: clean",
         rtb.length ? `render-truth blocking: ${rtb.map((f) => f.kind).join(", ")}` : "render-truth: clean",
         v ? (v.actionable.length === 0 ? "vision: CLEAN" : `vision: ${v.actionable.length} issue(s)${v.severe.length ? ` (${v.severe.length} severe)` : ""}`) : "vision: n/a",
@@ -1959,8 +2133,8 @@ const main = async (): Promise<void> => {
       washout: !!finalContrast?.findings.find((f) => f.scene === s.scene && f.pieceId === s.pieceId),
     }));
 
-    sequenceFinal = await sequencePromise;
-    for (const f of sequenceFinal) console.log(`  sequence: ${f.issue.slice(0, 160)}`);
+    // v10: NO sequence await here — the gallery + report ship with a pending
+    // marker; the detached verdict patches both after the run summary.
     await writeOut();
 
     // ── GALLERY (single row + telemetry panels) ──────────────────────────────
@@ -2002,26 +2176,28 @@ const main = async (): Promise<void> => {
       const cacheHtml = `
   <div class="sub">stop=length events <b>${stopLengthEvents.length}</b>${stopLengthEvents.length ? ` [${esc(stopLengthEvents.map((e) => `${e.label} ${e.cap}→${e.retryCap}${e.recovered ? " recovered" : " STILL TRUNCATED"}`).join(" · ")).slice(0, 400)}]` : ""} ·
   cache-bust / refuse-to-populate events <b>${cacheBustEvents.length}</b>${cacheBustEvents.length ? ` [${esc(cacheBustEvents.map((e) => e.pieceId).join(", ")).slice(0, 300)}]` : ""} ·
-  sequence-vision retry fired: ${sequenceRetried ? "<b>yes</b>" : "no"}</div>`;
+  sequence-vision: DETACHED (never on the wall)${sequenceAborted ? " · <b>skipped after first abort</b>" : ""}</div>`;
 
       const r0 = report.round0 as
-        | { passed: boolean; targets: string[]; density: number; washouts: number; structural: number; rtBlocking: number; visionSevereScenes: number[] }
+        | { passed: boolean; targets: string[]; density: number; washouts: number; accentFills: number; edgeCropsInitial: number; edgeCropsClamped: number; edgeCropsResidual: number; structural: number; rtBlocking: number; visionSevereScenes: number[] }
         | undefined;
       const round0Html = r0
         ? r0.passed
-          ? `<span class="ok-line"><b>ROUND 0 PASSED</b> — every blocking gate clean on the first cast</span>`
-          : `<span class="bad-line"><b>ROUND 0 FAILED</b></span> — ${r0.targets.length} retry target(s): [${esc(r0.targets.join(", "))}] · density ${r0.density} · washouts ${r0.washouts} · structural ${r0.structural} · rt-blocking ${r0.rtBlocking} · vision-severe scenes [${r0.visionSevereScenes.join(", ") || "none"}]`
+          ? `<span class="ok-line"><b>ROUND 0 PASSED</b> — every blocking gate clean on the first cast${r0.edgeCropsClamped ? ` (${r0.edgeCropsClamped} edge-crop(s) clamped deterministically en route)` : ""}</span>`
+          : `<span class="bad-line"><b>ROUND 0 FAILED</b></span> — ${r0.targets.length} retry target(s): [${esc(r0.targets.join(", "))}] · density ${r0.density} · washouts ${r0.washouts} · accent-as-fill ${r0.accentFills} · edge-crop ${r0.edgeCropsInitial}→${r0.edgeCropsResidual} residual (${r0.edgeCropsClamped} clamped) · structural ${r0.structural} · rt-blocking ${r0.rtBlocking} · vision-severe scenes [${r0.visionSevereScenes.join(", ") || "none"}]`
         : "no round-0 record (cast never ran)";
       const npEsc = noProgressEvents.filter((x) => x.action === "escalated");
       const npFlag = noProgressEvents.filter((x) => x.action === "accepted-and-flagged");
       const heroLifts = roundTelemetry.reduce((n, t) => n + t.heroSurfaceCorrections, 0);
+      const ecClamps = edgeCropEvents.filter((e) => e.action === "clamped");
       const retryPanel = `
   <div class="sub">${round0Html}</div>
   <div class="sub">script FULL attempts <b>${scriptAttemptLog.filter((a) => a.kind === "full").length}</b> (+${scriptAttemptLog.filter((a) => a.kind === "surgical").length} surgical) ·
   blueprint attempts <b>${blueprintAttempts.length}</b> ·
   stop=length cap-raises <b>${stopLengthEvents.length}</b> ·
   cache busts <b>${cacheBustEvents.length}</b> ·
-  hero surface lifts (deterministic washout backstop): <b>${heroLifts}</b> ·
+  hero surface lifts (area-weighted washout backstop): <b>${heroLifts}</b> ·
+  edge-crop clamps (deterministic reposition): <b>${ecClamps.length}</b>${ecClamps.length ? ` [${esc(ecClamps.map((e) => e.pieceId).join(", "))}]` : ""} ·
   fast-tier 429/errors: ${fastRetryEvents.length} jittered retr${fastRetryEvents.length === 1 ? "y" : "ies"} (${fastRetryEvents.filter((x) => x.recovered).length} recovered) + ${fastFallbacks.length} std fallback(s) ·
   no-progress breaker: ${npEsc.length} escalation(s)${npEsc.length ? ` [${esc(npEsc.map((x) => x.pieceId).join(", "))}]` : ""}, ${npFlag.length} accept-and-flag${npFlag.length ? ` [${esc(npFlag.map((x) => x.pieceId).join(", "))}]` : ""}</div>`;
 
@@ -2057,6 +2233,23 @@ const main = async (): Promise<void> => {
     ${SCENES.map((i) => `<tr><td>scene ${i}</td>${contrastCellHtml(contrastCells, i)}</tr>`).join("\n")}
   </table></div>`;
 
+      const afRows = SCENES.map((i) => {
+        const ss = (finalAccentFill?.stats ?? []).filter((s) => s.scene === i);
+        if (ss.length === 0) return `<tr><td>scene ${i}</td><td colspan="3">n/a</td></tr>`;
+        return ss
+          .map((s) => {
+            const bad = s.largestRectFrac > ACCENT_FILL_MAX_FRAC;
+            return `<tr><td>scene ${i}</td><td class="${bad ? "bad" : "ok"}">${esc(s.pieceId)}</td><td class="${bad ? "bad" : "ok"}">${(s.largestRectFrac * 100).toFixed(1)}%</td><td>${(s.coverageFrac * 100).toFixed(1)}%</td></tr>`;
+          })
+          .join("");
+      }).join("\n");
+      const accentTable = `
+  <div class="scroll"><table>
+    <tr><th>scene</th><th>hero piece</th><th>largest flat accent rect (ceiling ${ACCENT_FILL_MAX_FRAC * 100}%)</th><th>total accent coverage</th></tr>
+    ${afRows}
+  </table></div>
+  <div class="sub">accent vocabulary probed: ${esc((finalAccentFill?.stats[0]?.accents ?? accentHexes).join(", "))} — accent is punctuation (chips, rules, badges, highlights), never a panel fill.</div>`;
+
       const costSplit = Object.entries(cost.models)
         .map(([model, m]) => `${esc(model.split("/").pop() ?? model)} $${m.usd.toFixed(4)} (${m.calls} calls)`)
         .concat([`z.ai vision $${cost.zaiVision.usd.toFixed(4)} (${cost.zaiVision.calls} calls)`])
@@ -2076,7 +2269,7 @@ const main = async (): Promise<void> => {
 
       const finalG = gateRounds[gateRounds.length - 1];
       const summary = finalG
-        ? `final residuals: density ${finalG.density.length} · washout ${finalG.heroContrast.findings.length} · structural ${finalG.structural.length} · rt-blocking ${finalG.renderTruthBlocking.length} · vision-severe scenes [${finalG.vision.filter((v) => v.severe.length).map((v) => v.scene).join(", ") || "none"}] · sequence findings ${sequenceFinal.length}`
+        ? `final residuals: density ${finalG.density.length} · washout ${finalG.heroContrast.findings.length} · accent-as-fill ${finalG.accentFill.findings.length} · edge-crop ${finalG.edgeCrop.residual.length} · structural ${finalG.structural.length} · rt-blocking ${finalG.renderTruthBlocking.length} · vision-severe scenes [${finalG.vision.filter((v) => v.severe.length).map((v) => v.scene).join(", ") || "none"}] · sequence vision: detached (pending at publish)`
         : "NO GATE ROUNDS";
 
       const html = `<!doctype html>
@@ -2121,11 +2314,13 @@ const main = async (): Promise<void> => {
 </head>
 <body>
   <h1>Dogfood cycle ${esc(CYCLE)} — ${esc(BRAND)} (brief ${esc(BRIEF_ID)})</h1>
-  <div class="banner"><b>V9 BATCH:</b> washout killed at the head (composition surface-contrast contract +
-  static mirror + deterministic hero-surface backstop) · comp-head over-compliance line ("describe the copy
-  widget concretely — never 'placeholder'") · diegetic mock-value grounding carve-out (plausible values in
-  fake UI are set dressing; masks rejected) · register archetype-variety validator (no 3+ in a row) ·
-  generalized dogfood runner (no reference build required). Pipeline otherwise identical to acceptance8.</div>
+  <div class="banner"><b>V10 BATCH:</b> accent-as-fill blocking gate (largest flat accent rect in a hero ≤${ACCENT_FILL_MAX_FRAC * 100}%
+  of the piece) + "accent is punctuation" head clause · piece-edge-crop class (composer bottom reserve +
+  measured bottom/right clip check + deterministic wrapper clamp, regen only for residuals) · sequence vision
+  FULLY DETACHED (report+gallery ship first, verdict patches in; one abort = skip) · area-weighted hero
+  surface contrast (a token chip no longer vouches for a washed-out hero) · CANVAS-AGNOSTIC washout contract
+  (light canvas → dark/saturated hero surface — the Glossier arm) · narrow ungrounded mock-value deny-list
+  (EST-dates / %-OFF vs grounding) · attempt-1 blueprint negative example. Pipeline otherwise identical to v9.</div>
   <div class="sub">${esc(headline)}</div>
   <div class="sub">${esc(summary)}</div>
   <div class="sub">wall: script→preview ${wall.scriptToPreviewSeconds ?? "—"}s · cast wall ${wall.castWallSeconds}s · run total ${wall.totalRunSeconds.toFixed(1)}s ·
@@ -2151,6 +2346,9 @@ ${rowGrid(sceneCells)}
   <h2>Hero contrast — luminance spread / std-dev per scene</h2>
   ${contrastTable}
 
+  <h2>Accent-as-fill — largest flat accent rectangle per hero (v10)</h2>
+  ${accentTable}
+
   <h2>Script loop — attempts + surgical repairs (${esc(String(scriptRep.source ?? ""))})</h2>
   <ul>${scriptLogHtml || "<li>no attempts logged</li>"}</ul>
 
@@ -2163,7 +2361,7 @@ ${rowGrid(sceneCells)}
   ink ${dsRep.inkNeutralized ? "<b>NEUTRALIZED by neutralizeInk</b>" : "passed neutralizeInk unchanged"} ·
   required keyframes merged: ${esc(((dsRep.requiredKeyframesInjected as string[]) ?? []).join(", ") || "none")}</div>
 
-  <details><summary>gate log — round by round (density · hero-contrast · structural · render-truth · vision)</summary>${gateLogHtml(gateRounds, sequenceFinal)}</details>
+  <details><summary>gate log — round by round (density · hero-contrast · accent-fill · edge-crop · structural · render-truth · vision)</summary>${gateLogHtml(gateRounds)}</details>
   <details><summary>per-call log (label / model / secs / tokens / stop)</summary>${callLogHtml()}</details>
 
   <h2>Phase timeline</h2>
@@ -2174,10 +2372,11 @@ ${rowGrid(sceneCells)}
     Dogfood runner = the acceptance8 pipeline generalized to any stored brief: script attempt 1 at effort low +
     json mode with a low→medium→high ladder and ≤${SCRIPT_MAX_SURGICAL} surgical field-patch repairs (v9: register
     runs are patchable); DS ∥ composition blueprints; GLM-5.2-FAST element cast with pre-render hero-density,
-    img-src, and hero-surface-contrast gates; the v6/v7 blocking gate set + no-progress breaker; sequence vision
-    once, advisory, off the critical path. Fonts derive from the brand crawl and are data:-inlined at finalize.
-    Budget: ≤${TOTAL_LLM_CEILING} TOTAL LLM calls (text + vision); retries ≤${MAX_RETRY_ROUNDS} rounds. No
-    reference build required (reference row intentionally absent).
+    img-src, and area-weighted hero-surface-contrast gates; the v6/v7 blocking gate set + v10 accent-as-fill +
+    piece-edge-crop (deterministic clamp first) + no-progress breaker; sequence vision detached entirely (this
+    page is written before its verdict; the span above patches in). Fonts derive from the brand crawl and are
+    data:-inlined at finalize. Budget: ≤${TOTAL_LLM_CEILING} TOTAL LLM calls (text + vision); retries
+    ≤${MAX_RETRY_ROUNDS} rounds. No reference build required (reference row intentionally absent).
   </div>
 </body>
 </html>
@@ -2200,6 +2399,76 @@ ${rowGrid(sceneCells)}
     console.log(`fast router: median ${fr.medianTokS ?? "n/a"} tok/s · degraded=${fr.degraded} · fallbacks=${fr.fallbacks.length} · stop=length events ${stopLengthEvents.length} · cache-busts ${cacheBustEvents.length}`);
     console.log("\nPHASE TIMELINE:");
     for (const m of marks) console.log(`  ${m.phase.padEnd(34)} ${String(m.startS).padStart(7)}s → ${String(m.endS).padStart(7)}s  (${(m.endS - m.startS).toFixed(1)}s)`);
+
+    // ── detached sequence-vision settlement (v10) ────────────────────────────
+    // Everything above is DONE and on disk: wall, cost, gallery, report. Now —
+    // and only now — wait (bounded) for the advisory sequence verdict and
+    // PATCH it into the already-written artifacts. The recorded wall is never
+    // touched; a hard stop after 180s abandons the verdict honestly.
+    const SEQ_HARD_STOP_MS = 180_000;
+    const landed = await Promise.race([
+      sequenceDone,
+      new Promise<null>((resolve) => {
+        const t = setTimeout(() => resolve(null), SEQ_HARD_STOP_MS);
+        t.unref?.();
+      }),
+    ]);
+    if (landed !== null) sequenceFinal = landed;
+    for (const f of sequenceFinal) console.log(`  sequence (detached): ${f.issue.slice(0, 160)}`);
+    if (landed === null) console.warn(`  sequence vision never landed within ${SEQ_HARD_STOP_MS / 1000}s — abandoned (advisory; artifacts already shipped)`);
+
+    // Patch the report JSON in place — targeted fields only, never writeOut
+    // (writeOut would recompute the wall and swallow the detachment).
+    try {
+      const reportPath = path.join(OUT_DIR, "build-report.json");
+      const j = JSON.parse(await fs.readFile(reportPath, "utf8")) as Record<string, unknown>;
+      j.sequenceFinal = sequenceFinal;
+      j.sequenceSkippedAfterAbort = sequenceAborted;
+      j.sequenceDetached = {
+        startedAtS: sequenceStartS,
+        landedAtS: sequenceLandedAtS,
+        hardStopped: landed === null,
+        offCriticalPath: true,
+        note: "wall.totalRunSeconds was finalized BEFORE this verdict landed — sequence vision is never on the wall",
+      };
+      // The vision spend that settled after the report was written.
+      j.budget = { totalLlmCalls, ceiling: TOTAL_LLM_CEILING, budgetExhausted, visionCalls: zaiCalls };
+      const cost0 = j.cost as { models: Record<string, { usd: number }>; zaiVision: { usd: number }; totalUsd: number } | undefined;
+      if (cost0?.zaiVision) {
+        const zaiUsd = costUsd(VISION_MODEL, zaiUsage);
+        const textUsd = cost0.totalUsd - cost0.zaiVision.usd;
+        j.cost = {
+          ...cost0,
+          zaiVision: { calls: zaiCalls, inputTokens: zaiUsage.input_tokens, outputTokens: zaiUsage.output_tokens, model: VISION_MODEL, usd: zaiUsd },
+          totalUsd: textUsd + zaiUsd,
+        };
+      }
+      await fs.writeFile(reportPath, JSON.stringify(j, null, 2), "utf8");
+    } catch (e) {
+      console.warn(`  sequence patch: report update failed — ${e instanceof Error ? e.message.split("\n")[0] : e}`);
+    }
+
+    // Patch the gallery's pending span.
+    try {
+      const galleryPath = path.join(OUT_DIR, "index.html");
+      const html0 = await fs.readFile(galleryPath, "utf8");
+      const seqHtml =
+        landed === null
+          ? `<li><b>sequence-vision (detached)</b>: verdict never landed (${SEQ_HARD_STOP_MS / 1000}s hard stop) — advisory only, abandoned</li>`
+          : sequenceAborted && sequenceFinal.some((f) => f.issue.startsWith("SEQUENCE-JUDGE-ERROR:"))
+            ? `<li><b>sequence-vision (detached)</b>: aborted on the first attempt — SKIPPED (v10: no retry; advisory)</li>`
+            : sequenceFinal.length
+              ? sequenceFinal.map((f) => `<li><b>sequence-vision (detached, advisory)</b>: ${esc(f.issue.slice(0, 320))}</li>`).join("\n")
+              : `<li>sequence vision (detached): CLEAN</li>`;
+      await fs.writeFile(
+        galleryPath,
+        html0.replace(/<!--RB_SEQ_START-->[\s\S]*?<!--RB_SEQ_END-->/, `<!--RB_SEQ_START-->${seqHtml}<!--RB_SEQ_END-->`),
+        "utf8",
+      );
+      console.log(`  sequence verdict patched into report + gallery (landed at t=${sequenceLandedAtS ?? "n/a"}s; wall unchanged)`);
+    } catch (e) {
+      console.warn(`  sequence patch: gallery update failed — ${e instanceof Error ? e.message.split("\n")[0] : e}`);
+    }
   } catch (err) {
     report.terminalError = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
     console.error(`\nTERMINAL: ${report.terminalError}`);

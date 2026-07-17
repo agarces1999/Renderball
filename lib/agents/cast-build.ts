@@ -384,6 +384,23 @@ export const stripColorMutationFilters = (body: string): { code: string; strippe
 };
 
 /**
+ * (d5) Masked bullet-run strip (v10 — dogfood cycle 1: one "●●●" run leaked
+ * into s3's mock footer and shipped as the structural placeholder_data class).
+ * A run of 2+ bullet glyphs is the masked-value signature the placeholder
+ * lint rejects (quality-gates `[•●]{2,}`); a SINGLE bullet is legitimate UI
+ * chrome (separators, kebab dots, list markers). Collapse every run to one
+ * bullet deterministically at cast time — zero tokens, no repair round.
+ */
+export const stripMaskedValueRuns = (body: string): { code: string; stripped: number } => {
+  let stripped = 0;
+  const code = body.replace(/[•●]{2,}/g, () => {
+    stripped++;
+    return "•";
+  });
+  return { code, stripped };
+};
+
+/**
  * (d2) PRE-RENDER hero density gate (retry audit class 1). The hollow-bookend
  * hero class (scene 0/4 logo/CTA bookends measuring 1el/0tx post-render) was
  * the single largest retry sink: each one cost a full render+vision gate
@@ -765,19 +782,32 @@ export const neutralizeInk = (theme: Theme): { theme: Theme; corrected: boolean 
  * v8's last gate-round driver was heroes painting EVERY panel within a few
  * luminance points of the canvas (dark-plum-on-dark-plum, spread 12 vs floor
  * 45). The head prompt + blueprint validator now demand a contrasting surface;
- * this pass is the neutralizeInk-spirit backstop for what still slips through:
- * when EVERY statically-resolvable flat panel background in a hero body sits
- * within ΔL < HERO_SURFACE_MIN_DELTA_L of the theme canvas (Rec.709, 0-255),
- * the FIRST such panel — the primary surface — is rewritten to the theme's
- * most canvas-contrasting palette token (the "light token" on a dark canvas).
+ * this pass is the neutralizeInk-spirit backstop for what still slips through.
+ *
+ * v10 — AREA-WEIGHTED (dogfood cycle 1: the v9 "one contrasting paint
+ * anywhere → no-op" rule let s0.hero ship a washout because a single tiny
+ * contrasting chip existed while every big panel sat in the canvas tone). The
+ * contrasting paint must now carry ≥ HERO_SURFACE_MIN_CONTRAST_FRAC of the
+ * hero's painted panel weight:
+ *   - when EVERY resolvable paint has parseable px dims (bare-numeric
+ *     `width:`/`height:` in its own style object), weight = area;
+ *   - otherwise weight = paint count (flex/percent/unspecified sizes are not
+ *     statically convertible to px — counting is the honest fallback).
+ * Under the floor, the LARGEST canvas-toned panel (by parsed area, else the
+ * first) is rewritten to the theme's most canvas-contrasting palette token —
+ * canvas-agnostic BOTH directions by construction: the target maximizes
+ * |ΔL(token, canvas)|, so a dark canvas lifts to the light token and a light
+ * canvas (Glossier pale pink) drops to the darkest/saturated token.
  *
  * Judgment is deliberately conservative: only style-object `background:` /
  * `backgroundColor:` values that are a quoted hex or a bare palette const are
  * resolvable; gradients/rgba/derived values are unjudgeable statically and
- * make the pass a no-op (never a guess). One contrasting panel anywhere in
- * the body also makes it a no-op — the hero paints contrast somewhere.
+ * make the pass a no-op (never a guess).
  */
 export const HERO_SURFACE_MIN_DELTA_L = 15;
+/** Contrasting paint must carry at least this fraction of the hero's painted
+ *  panel weight (area when parseable, count otherwise). */
+export const HERO_SURFACE_MIN_CONTRAST_FRAC = 0.25;
 
 /** Rec.709 luminance (0-255) of a hex color, or null when unparseable. */
 const luminance709 = (hex: string): number | null => {
@@ -806,10 +836,25 @@ export const ensureHeroSurfaceContrast = (
   }
   if (!target || target.delta < HERO_SURFACE_MIN_DELTA_L) return { code: body, corrected: false };
 
+  // Parseable panel area: bare-numeric width/height px inside the paint's own
+  // style object (the nearest `{{ … }}` span). Quoted/percent/flex sizes are
+  // not statically convertible — those paints carry no area (count fallback).
+  const areaOfStyleSpan = (at: number): number | null => {
+    const open = body.lastIndexOf("{{", at);
+    if (open === -1) return null;
+    const close = body.indexOf("}}", at);
+    if (close === -1) return null;
+    const span = body.slice(open, close);
+    const w = /\bwidth\s*:\s*(\d+(?:\.\d+)?)(?![\d.%\w])/.exec(span);
+    const h = /\bheight\s*:\s*(\d+(?:\.\d+)?)(?![\d.%\w])/.exec(span);
+    if (!w || !h) return null;
+    return Number(w[1]) * Number(h[1]);
+  };
+
   // Every statically-resolvable flat background paint in the body.
   const paintRx =
     /(\b(?:background|backgroundColor)\s*:\s*)("#[0-9a-fA-F]{3,8}"|'#[0-9a-fA-F]{3,8}'|[A-Z][A-Z0-9_]{2,})/g;
-  const paints: { start: number; end: number; raw: string; l: number }[] = [];
+  const paints: { start: number; end: number; raw: string; l: number; area: number | null }[] = [];
   for (let m = paintRx.exec(body); m; m = paintRx.exec(body)) {
     const raw = m[2];
     const l = raw.startsWith('"') || raw.startsWith("'")
@@ -818,21 +863,36 @@ export const ensureHeroSurfaceContrast = (
         ? luminance709(theme.palette[raw])
         : null;
     if (l === null) continue; // unresolvable (foreign const, bad hex) — unjudged
-    paints.push({ start: m.index + m[1].length, end: m.index + m[0].length, raw, l });
+    paints.push({ start: m.index + m[1].length, end: m.index + m[0].length, raw, l, area: areaOfStyleSpan(m.index) });
   }
   if (paints.length === 0) return { code: body, corrected: false };
-  if (paints.some((p) => Math.abs(p.l - canvasL) >= HERO_SURFACE_MIN_DELTA_L)) {
-    return { code: body, corrected: false }; // a contrasting surface exists
+
+  // Area-weighted contrast share (v10): a contrasting paint only clears the
+  // pass when it carries real weight, not merely exists somewhere.
+  const contrasting = paints.filter((p) => Math.abs(p.l - canvasL) >= HERO_SURFACE_MIN_DELTA_L);
+  if (contrasting.length > 0) {
+    const everyAreaKnown = paints.every((p) => p.area !== null);
+    const frac = everyAreaKnown
+      ? contrasting.reduce((n, p) => n + (p.area ?? 0), 0) /
+        Math.max(1, paints.reduce((n, p) => n + (p.area ?? 0), 0))
+      : contrasting.length / paints.length;
+    if (frac >= HERO_SURFACE_MIN_CONTRAST_FRAC) return { code: body, corrected: false };
   }
 
-  // All panels sit in the canvas's own tone — lift the PRIMARY (first) panel
-  // to the contrast token, in the same value form it was authored.
-  const first = paints[0];
-  const replacement = first.raw.startsWith('"') || first.raw.startsWith("'")
+  // Contrast is absent or under-weighted — lift the LARGEST canvas-toned
+  // panel (by parsed area, else the first) to the contrast token, in the same
+  // value form it was authored.
+  const canvasToned = paints.filter((p) => Math.abs(p.l - canvasL) < HERO_SURFACE_MIN_DELTA_L);
+  if (canvasToned.length === 0) return { code: body, corrected: false };
+  let lift = canvasToned[0];
+  for (const p of canvasToned) {
+    if (p.area !== null && (lift.area === null || p.area > lift.area)) lift = p;
+  }
+  const replacement = lift.raw.startsWith('"') || lift.raw.startsWith("'")
     ? JSON.stringify(target.hex)
     : target.name;
   return {
-    code: body.slice(0, first.start) + replacement + body.slice(first.end),
+    code: body.slice(0, lift.start) + replacement + body.slice(lift.end),
     corrected: true,
   };
 };
@@ -865,6 +925,7 @@ const buildElementSystem = (theme: Theme): string => {
     `- Output ONLY JSX — no imports, no exports, no prose, no markdown fence, nothing at module scope.`,
     `- Your JSX is inlined into a positioned wrapper div at the exact BOUNDS in the brief. FILL the wrapper (width/height 100%; text flows inside its max width). NEVER position yourself with canvas coordinates — the wrapper owns placement.`,
     `- Paint ONLY with the palette roles the brief grants, via the const names below. Never invent colors — off-vocabulary hues are rewritten.`,
+    `- The brand accent is PUNCTUATION — chips, rules, badges, highlights, small buttons, data moments. NEVER paint a panel, card background, or any large region with the accent: a deterministic gate rejects any element where one flat accent-colored rectangle dominates the piece.`,
     `- Copy renders VERBATIM from the \`c\` binding (this scene's content object): {c.headline}, {c.bullets[0]}, … Tag every copy node with the exact data-content-path the brief gives it. Never invent numbers or claims IN COPY. Interior mock-UI values (prices, balances, timestamps inside the product you draw) are diegetic set dressing — render them concrete and plausible, NEVER masked ("$— — —", "•••", "$X,XXX" are rejected as broken half-loaded UI).`,
     `- CSS animation only, using ONLY the shared @keyframes names listed below${keyframeNames.length ? "" : " (none exist — emit static; the choreographer adds motion)"}. No Remotion hooks, no Math.random, no undefined components.`,
     `- Follow the design grammar: radii ${JSON.stringify(g.radiusScale)}, ${g.strokeWeight}px hairlines via ${g.hairline}, surfaces via ${g.panelBg}, shadow "${g.shadowRecipe}", ${g.dataFont === "mono" ? "FONT_MONO" : "FONT_BODY"} for data.`,
@@ -1403,6 +1464,9 @@ export const castBuild = async (
       let body = rewriteKeyframeInterpolations(raw, theme.keyframes).code;
       body = stripCanvasSelfPositioning(body, job.slot.bounds).code;
       body = stripColorMutationFilters(body).code;
+      // (d5) masked bullet-runs ("●●●") collapse to a single bullet — the
+      // placeholder-data class stripped deterministically at cast time.
+      body = stripMaskedValueRuns(body).code;
       // (d3) img-src gate: known asset ids substitute deterministically;
       // unknown non-fetchable srcs fail here (in-round repair) instead of at
       // the post-render whitelist a full gate round later.

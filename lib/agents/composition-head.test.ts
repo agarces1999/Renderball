@@ -204,6 +204,20 @@ await check("system: the v9 mock-value carve-out — diegetic set dressing is pl
   assert(system.includes(`"$— — —"`) && system.includes(`"•••"`), "masked forms named as failures");
 });
 
+await check("system: the v10 accent-discipline clause — accent is punctuation, never a panel fill", () => {
+  assert(system.includes("ACCENT DISCIPLINE"), "accent-discipline clause present");
+  assert(/accent is PUNCTUATION/.test(system), "the punctuation doctrine stated");
+  assert(system.includes("never a panel fill"), "panel fills banned verbatim");
+  assert(/deterministic gate rejects/.test(system), "the gate consequence named");
+});
+
+await check("system: the v10 attempt-1 negative example (placeholder 'A1' → concrete product card)", () => {
+  assert(system.includes("CONCRETENESS ON ATTEMPT 1"), "attempt-1 concreteness block present");
+  assert(system.includes(`product card placeholder "A1"`), "the BAD form quoted");
+  assert(system.includes(`product card "Mountain Water 12-pack — $14.99"`), "the GOOD form quoted");
+  assert(/BAD:.*GOOD:/s.test(system), "framed as a BAD→GOOD contrast pair");
+});
+
 await check("the Brewline worked example COMPLIES with the contract the prompt states (validator-verified)", () => {
   // The prompt's own exemplar must pass the validator it advertises (retry
   // audit class 9: blueprint attempt-1 failed 100% of builds on a rule the

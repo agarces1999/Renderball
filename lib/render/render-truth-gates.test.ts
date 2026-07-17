@@ -13,9 +13,11 @@ import {
   findTextOverlap,
   findCrossPieceOverlap,
   findEmptyBand,
+  findEdgeCroppedPieces,
   findRenderTruthFailures,
   hexLuminance,
   assessCanvasBrightness,
+  EDGE_CROP_FRAC,
 } from "./render-truth-gates";
 import type { SceneMeasurement, MeasuredElement } from "./measure-scene";
 
@@ -333,6 +335,46 @@ await check("barbell joins the blocking subset when requested", async () => {
   const { blocking } = await findRenderTruthFailures(ms, { blockingKinds: ["overflow", "measure-error", "barbell"] });
   await fs.unlink(shot).catch(() => {});
   assert(blocking.some((f) => f.kind === "barbell"), `barbell should block: ${JSON.stringify(blocking)}`);
+});
+
+// ── piece-edge crop (v10 — dogfood cycle-1 bottom-cropped mocks) ────────────
+
+await check("edge-crop: a piece union running past the canvas bottom by >2% of its height FIRES, named + blocking", () => {
+  // Cycle-1 shape: a bottom hero band whose content renders taller than its
+  // slot — union 560,700 → 1180 (100px past the 1080 bottom = 26% of h=480).
+  const m = scene(0, [
+    el({ piece: "s0.hero", pieceKind: "diegetic", x: 560, y: 700, w: 800, h: 380 }),
+    el({ piece: "s0.hero", pieceKind: "diegetic", x: 600, y: 900, w: 400, h: 280 }),
+  ]);
+  const r = findEdgeCroppedPieces(m);
+  assert(r.length === 1, `one finding, got ${r.length}: ${JSON.stringify(r)}`);
+  const f = r[0];
+  assert(f.kind === "piece-edge-crop" && f.blocking === true, "kind + blocking");
+  assert(f.pieceId === "s0.hero" && f.edge === "bottom" && f.overflowPx === 100, `names piece/edge/overflow: ${JSON.stringify(f)}`);
+  assert(f.detail.includes("s0.hero") && /bottom/.test(f.detail), `humanized detail: ${f.detail}`);
+  assert(f.repairInstruction.length > 60, "actionable repair instruction");
+});
+
+await check("edge-crop: right-edge clip fires; within-tolerance clip does not", () => {
+  const right = scene(1, [el({ piece: "s1.hero", pieceKind: "diegetic", x: 1600, y: 300, w: 400, h: 300 })]);
+  const rf = findEdgeCroppedPieces(right);
+  assert(rf.length === 1 && rf[0].edge === "right" && rf[0].overflowPx === 80, `right clip fires: ${JSON.stringify(rf)}`);
+  // 2% of h=500 = 10px tolerance; 8px past the bottom stays under it.
+  const ok = scene(2, [el({ piece: "s2.hero", pieceKind: "diegetic", x: 100, y: 588, w: 600, h: 500 })]);
+  assert(findEdgeCroppedPieces(ok).length === 0, "sub-tolerance clip must not fire");
+  assert(EDGE_CROP_FRAC === 0.02, "the tolerance is the documented 2%");
+});
+
+await check("edge-crop: atmosphere/chrome and full-canvas treatments are exempt; measure-error scenes skip", () => {
+  const m = scene(3, [
+    el({ piece: "s3.atmosphere", pieceKind: "atmosphere", x: 0, y: 0, w: 1920, h: 1200 }),
+    el({ piece: "s3.chrome", pieceKind: "chrome", x: 0, y: 1008, w: 1920, h: 90 }),
+    // full-bleed hero: ≥85% of canvas area = a canvas treatment, owns the edge
+    el({ piece: "s3.hero", pieceKind: "diegetic", x: 0, y: 0, w: 1920, h: 1120 }),
+  ]);
+  assert(findEdgeCroppedPieces(m).length === 0, "exempt kinds + canvas treatments never fire");
+  const err = { ...scene(4, [el({ piece: "s4.hero", pieceKind: "diegetic", x: 0, y: 900, w: 500, h: 400 })]), error: "boom" };
+  assert(findEdgeCroppedPieces(err).length === 0, "measure-error scenes skip (fail-closed elsewhere)");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);
