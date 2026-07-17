@@ -154,7 +154,7 @@ await check("system: the director contract (roles, subject, interior floor, owne
   assert(system.includes(`"hero" | "copy" | "atmosphere" | "connector" | "throughline"`), "the role vocabulary");
   assert(system.includes("AT LEAST 6"), "hero interior floor ≥6");
   assert(system.includes("REAL value authored for THIS brand and THIS scene"), "real-values demand");
-  assert(system.includes("NEVER sample or placeholder values"), "anti-placeholder demand");
+  assert(system.includes("NEVER sample, masked, or placeholder values"), "anti-placeholder/anti-mask demand");
   assert(system.includes("Ownership is exclusive"), "ownsCopy exclusivity");
   assert(system.includes("headline is owned EXACTLY once"), "headline owned exactly once");
   assert(system.includes("tied BY NAME to an item in that element's interior list"), "motion tied to a named interior item");
@@ -178,6 +178,32 @@ await check("system: the bookend-hero density contract + interior/ownsCopy owner
   assert(system.includes("no interior[] item anywhere in the scene may restate it"), "ownsCopy bullet amended");
 });
 
+await check("system: the v9 washout contract — hero surface tone must CONTRAST with the scene canvas", () => {
+  assert(system.includes("SURFACE CONTRAST"), "surface-contrast clause present");
+  assert(
+    system.includes("if the scene canvas is dark, the hero's primary panel must be a light surface or carry high-luminance content"),
+    "the concrete dark-canvas rule, verbatim",
+  );
+  assert(system.includes("renders as a washout and is a validation failure"), "washout named a validation failure");
+});
+
+await check("system: the v9 over-compliance line — copy widgets described concretely, never 'placeholder'", () => {
+  assert(system.includes("Describe the copy widget CONCRETELY"), "copy-widget concreteness line present");
+  assert(system.includes(`"headline set in display type"`), "the worked phrasing");
+  assert(system.includes(`NEVER with the word "placeholder"`), "the word 'placeholder' banned explicitly");
+});
+
+await check("system: the v9 adjacent-scene variety clause (archetype ≤2 in a row, vary artifact + side)", () => {
+  assert(system.includes("ADJACENT-SCENE VARIETY"), "variety clause present");
+  assert(system.includes("more than 2 in a row"), "the 2-in-a-row bound stated");
+  assert(system.includes("implied placement side"), "hero placement side named");
+});
+
+await check("system: the v9 mock-value carve-out — diegetic set dressing is plausible+concrete, masks are failures", () => {
+  assert(system.includes("set dressing, not marketing claims"), "carve-out stated");
+  assert(system.includes(`"$— — —"`) && system.includes(`"•••"`), "masked forms named as failures");
+});
+
 await check("the Brewline worked example COMPLIES with the contract the prompt states (validator-verified)", () => {
   // The prompt's own exemplar must pass the validator it advertises (retry
   // audit class 9: blueprint attempt-1 failed 100% of builds on a rule the
@@ -198,10 +224,21 @@ await check("the Brewline worked example COMPLIES with the contract the prompt s
   }] as unknown as Scene[];
   const errors = checkSceneComposition(brewScene);
   assert(errors.length === 0, `the worked example must pass its own contract, got ${JSON.stringify(errors)}`);
-  // The hero's text-bearing floor is met with margin (all 6 items carry text).
+  // The hero's text-bearing floor is met with margin.
   const hero = example[0].elements.find((e) => e.role === "hero")!;
   const textBearing = hero.interior.filter((i) => /\d/.test(i) || /["'“”‘’][^"'“”‘’]*["'“”‘’]/.test(i)).length;
   assert(textBearing >= 4, `hero example must model ≥4 text-bearing items, got ${textBearing}`);
+  // v9 washout contract: the example MODELS the surface-tone item (a light
+  // surface named against the roast-brown wash).
+  assert(
+    hero.interior.some((i) => /\boff-white\b/i.test(i)),
+    "the hero example must model the named contrasting surface tone",
+  );
+  // v9 over-compliance: no interior anywhere says "placeholder"; the copy
+  // widget is described concretely.
+  const allItems = example[0].elements.flatMap((e) => e.interior);
+  assert(!allItems.some((i) => /placeholder/i.test(i)), "no example interior may contain the word 'placeholder'");
+  assert(!allItems.some((i) => /[•●]{2,}|[—–]\s?[—–]|\$\s?[—–]/.test(i)), "no example interior may carry a masked value");
   // No interior anywhere retypes the owned eyebrow/headline/lede text.
   const copyEl = example[0].elements.find((e) => e.role === "copy")!;
   assert(!copyEl.interior.some((i) => /NEVER RUN DRY/i.test(i)), "the copy element must reference the widget, not the words");

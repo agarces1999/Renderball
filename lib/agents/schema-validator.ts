@@ -613,6 +613,62 @@ export const TEMPLATE_LEAK_RX = new RegExp(
 export const GENERIC_FILLER_RX =
   /\b(some|various|placeholder|sample|example|generic|content|items?|data|stuff|elements?)\b/i;
 
+/**
+ * Masked/unresolved mock values in ANY interior item (v9, the grounding
+ * carve-out's flip side): plausible diegetic values are ENCOURAGED set
+ * dressing, but a masked value ("$— — —", "•••", "$X,XXX") ships on screen
+ * as a broken half-loaded product. Mirrors quality-gates' placeholder-data
+ * lint at the BLUEPRINT stage — the cheapest place to stop it. Kept /i-only
+ * (no /g) so .test() stays stateless in loops.
+ */
+export const MASKED_VALUE_RX =
+  /[•●]{2,}|[—–]\s?[—–]|\$\s?[—–]|\$\s?X{1,3}(?![A-Za-z])|\bX{1,3}(?:,X{3})+\b|\bXX+\s?%/i;
+
+/**
+ * The over-compliance word (v9, retry evidence: v8 authored "headline
+ * placeholder element" interiors — the word itself tripped the filler check
+ * and, when it survives, ships verbatim on screen). Any element's interior.
+ */
+export const PLACEHOLDER_WORD_RX = /\bplaceholder\b/i;
+
+// ── Hero surface-contrast mirror (v9 — the washout class at the HEAD) ──────
+// The render-side hero-washout gate (lib/render/hero-contrast.ts) fires when a
+// hero's painted region has neither luminance spread nor variance — measured
+// dark-plum-on-dark-plum on 3/5 v8 heroes, the last gate-round driver. The
+// prompt now demands one interior item NAME a contrasting surface tone; this
+// static mirror enforces the DARK-canvas case (the measured failure mode):
+// when a composed scene's atmosphere reads dark, each hero interior must name
+// at least one explicit light/high-luminance surface item.
+
+/** Dark-canvas cue words in a composition.atmosphere string. Deliberately
+ *  narrow (near-black vocabulary only) — a "deep teal wash" is not proof of a
+ *  dark canvas, and a false positive here burns a head repair round. */
+export const DARK_CANVAS_RX =
+  /\b(?:dark|black|near-black|charcoal|midnight|noir|obsidian|onyx|jet-black|pitch-black|blackened)\b/i;
+
+/** Light-surface cue words in a hero interior item. */
+export const LIGHT_SURFACE_RX =
+  /\b(?:white|off-white|light|pale|cream|ivory|bright|luminous|frosted|silver|snow|paper|bone|chalk|high-luminance|high-contrast)\b/i;
+
+/** Rec.709 luminance (0-1) of a #hex token, or null when unparseable. */
+const hexLuminance = (hex: string): number | null => {
+  const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(hex.trim());
+  if (!m) return null;
+  const h = m[1].length === 3 ? m[1].split("").map((c) => c + c).join("") : m[1];
+  const [r, g, b] = [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16) / 255);
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+};
+
+/** An interior item names a light surface: cue word, or a light hex (L≥0.7). */
+export const namesLightSurface = (item: string): boolean => {
+  if (LIGHT_SURFACE_RX.test(item)) return true;
+  for (const m of item.matchAll(/#[0-9a-fA-F]{3,8}\b/g)) {
+    const l = hexLuminance(m[0].slice(0, 7));
+    if (l !== null && l >= 0.7) return true;
+  }
+  return false;
+};
+
 /** A quoted literal value inside an item ("streak flame '7'"). */
 const QUOTED_VALUE_RX = /["'“”‘’][^"'“”‘’]*["'“”‘’]/;
 // Glue words that can't serve as the "specific noun" of a ≥3-word item.
@@ -747,7 +803,12 @@ export const checkSceneComposition = (scenes: Scene[]): string[] => {
     }
 
     // 2) HERO INVENTORY — ≥6 interior items, each concrete.
-    // 3) TEMPLATE-LEAK GUARD — every element's interior.
+    // 3) TEMPLATE-LEAK + MASKED-VALUE + PLACEHOLDER-WORD GUARDS — every
+    //    element's interior.
+    // 2b) HERO SURFACE CONTRAST (v9) — when the atmosphere reads dark, the
+    //     hero must name ≥1 light/high-luminance surface item (the static
+    //     mirror of the render-side hero-washout gate).
+    const atmosphereReadsDark = typeof atmosphere === "string" && DARK_CANVAS_RX.test(atmosphere);
     elements.forEach((el, j) => {
       const interior = stringInterior(el);
       if (el?.role === "hero") {
@@ -767,6 +828,11 @@ export const checkSceneComposition = (scenes: Scene[]): string[] => {
             `Scene ${i} hero: only ${textBearing} of ${interior.length} interior item(s) carry quoted text or a concrete value — a hero needs ≥${HERO_TEXT_ITEMS_MIN} text-bearing items (chips, timestamps, labels, values with real micro-copy).`,
           );
         }
+        if (atmosphereReadsDark && interior.length > 0 && !interior.some(namesLightSurface)) {
+          errors.push(
+            `Scene ${i} hero: atmosphere reads dark but no interior item names a light/high-contrast surface — add one item naming the hero's primary panel tone (e.g. a crisp off-white panel surface).`,
+          );
+        }
         for (const item of interior) {
           const problem = heroItemProblem(item);
           if (problem === "generic") {
@@ -784,6 +850,15 @@ export const checkSceneComposition = (scenes: Scene[]): string[] => {
         if (TEMPLATE_LEAK_RX.test(item)) {
           errors.push(
             `Scene ${i} ${elName(el, j)}: interior item "${truncateForError(item)}" is a template example value — author real values for THIS brand.`,
+          );
+        }
+        if (MASKED_VALUE_RX.test(item)) {
+          errors.push(
+            `Scene ${i} ${elName(el, j)}: interior item "${truncateForError(item)}" carries a masked value — mock-UI set dressing must be a plausible concrete value ("$18.50", never "$— — —"/"•••"/"$X,XXX").`,
+          );
+        } else if (PLACEHOLDER_WORD_RX.test(item)) {
+          errors.push(
+            `Scene ${i} ${elName(el, j)}: interior item "${truncateForError(item)}" contains the word "placeholder" — describe the widget concretely ("headline set in display type"), never as a placeholder.`,
           );
         }
       }
@@ -1353,6 +1428,22 @@ export const validateScript = (
   // repair call always works against a structurally sound script. Skipped
   // for stored scripts via opts.richness === false (back-compat).
   if (opts.richness !== false) {
+    // Archetype variety (v9 — the sequence judge's standing finding since v6:
+    // "4 consecutive split layouts"): no register may run 3+ scenes in a row.
+    // Generation-path only (register is a generation-era field; stored scripts
+    // opt out with the rest of the richness contract). backfillSceneRegisters'
+    // no-two-adjacent nudge means backfilled scripts pass by construction.
+    const regs = (scenes as Record<string, unknown>[]).map((sc) =>
+      typeof sc.register === "string" ? sc.register : "",
+    );
+    for (let i = 2; i < regs.length; i++) {
+      if (regs[i] && regs[i] === regs[i - 1] && regs[i] === regs[i - 2]) {
+        return {
+          ok: false,
+          error: `Scenes ${i - 2}-${i} all use register "${regs[i]}" — no register may appear 3+ times in a row. Reassign at least one of them (stat | quote | full-bleed | split | list | centered) and keep its visual_concept consistent with the new register.`,
+        };
+      }
+    }
     const richness = checkScriptRichness(scenes as RichnessSceneInput[]);
     if (richness.length > 0) {
       return { ok: false, error: richness.join(" | ") };

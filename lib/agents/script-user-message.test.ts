@@ -6,7 +6,8 @@
  * overridden at design time and then reads as plan-infidelity to the vision
  * gate. The storyteller must be told the ground it is painting on.
  */
-import { buildUserMessage, type AgentBrief } from "./script-generator";
+import { buildUserMessage, sceneClaimCopy, type AgentBrief } from "./script-generator";
+import { findUngroundedClaims } from "./schema-validator";
 
 let passed = 0;
 let failed = 0;
@@ -80,6 +81,71 @@ check("beat floor: uneven division rounds honestly (20s/3 → D=6.7s, floor 3.3s
     msg.includes("(D=6.7s): your latest timed beat must be ≥0.5×6.7 = 3.3s, target ≥0.6×6.7 = 4.0s"),
     `expected the rounded arithmetic, got:\n${msg.split("BEAT-COVERAGE")[1]?.slice(0, 500)}`,
   );
+});
+
+// ── v9: the diegetic mock-value grounding carve-out ──────────────────────────
+// The invented-claim gate scans VIEWER-FACING copy only (sceneClaimCopy).
+// Mock-UI set dressing — prices/balances inside a rendered fake UI, authored
+// in visual_concept or a composition interior — is exempt BY CONSTRUCTION:
+// those fields never enter the scanned text. These tests pin that contract in
+// both directions (v8 masked prices as "$— — —" because the prompt told the
+// model the guardrail applied everywhere).
+
+const SOURCE = "We build billing tools for coffee roasters."; // grounds NOTHING numeric
+
+check("carve-out: an ungrounded price in visual_concept / composition interiors is NOT flagged", () => {
+  const scenes = [
+    {
+      visual_concept:
+        "A checkout mock with an order row 'Colombia 12oz — $18.50', a pay button, and a loyalty banner '340 beans'.",
+      composition: {
+        atmosphere: "warm wash",
+        elements: [{ role: "hero", subject: "checkout", interior: ['price line "Subtotal $18.50"', "balance chip $2.4M"], ownsCopy: [] }],
+      },
+      content: { headline: "Never run dry again", asset_ids: [] },
+    },
+  ];
+  const copy = sceneClaimCopy(scenes as never);
+  assert(!copy.includes("$18.50") && !copy.includes("$2.4M"), "mock values must never enter the scanned copy");
+  const flagged = findUngroundedClaims(copy, SOURCE);
+  assert(flagged.length === 0, `mock-UI set dressing must be exempt, got ${JSON.stringify(flagged)}`);
+});
+
+check("carve-out: the same ungrounded stat IN THE HEADLINE is still rejected", () => {
+  const scenes = [
+    { visual_concept: "A checkout mock.", content: { headline: "Save $18.50 every single order", asset_ids: [] } },
+  ];
+  const flagged = findUngroundedClaims(sceneClaimCopy(scenes as never), SOURCE);
+  assert(flagged.some((t) => t.includes("$18.50")), `an ungrounded headline stat must stay rejected, got ${JSON.stringify(flagged)}`);
+});
+
+check("carve-out: lede/bullets/meta stay strict too", () => {
+  const scenes = [
+    {
+      visual_concept: "x",
+      content: {
+        headline: "The story",
+        lede: "Processing 99.8% of orders",
+        bullets: ["10x faster grind"],
+        meta: [{ label: "Volume", value: "$2.4M" }],
+        asset_ids: [],
+      },
+    },
+  ];
+  const flagged = findUngroundedClaims(sceneClaimCopy(scenes as never), SOURCE);
+  assert(flagged.includes("99.8%") && flagged.includes("10x") && flagged.includes("$2.4M"), `all three copy-field stats must flag, got ${JSON.stringify(flagged)}`);
+});
+
+check("carve-out: the user message states the field scope + bans masked syntax", () => {
+  const msg = buildUserMessage({
+    duration_seconds: 30,
+    moment_count: 5,
+    freeform_prompt: "Launch video.",
+    verified_claims: "12,000 roasters served",
+  });
+  assert(msg.includes("scans VIEWER-FACING copy fields only"), "field scope stated");
+  assert(msg.includes("set dressing and exempt"), "the exemption stated");
+  assert(/never masked/i.test(msg), "masking banned");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

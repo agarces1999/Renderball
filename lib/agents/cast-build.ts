@@ -90,6 +90,10 @@ export interface CastBuildResult {
     /** True when the ink guard neutralized a chromatic body-text color on the
      *  incoming theme (see neutralizeInk). */
     inkCorrected: boolean;
+    /** Hero bodies whose primary panel was lifted to the theme's contrast
+     *  token because every flat panel sat within ΔL<15 of the canvas
+     *  (see ensureHeroSurfaceContrast — the deterministic washout backstop). */
+    heroSurfaceCorrections: number;
   };
   /**
    * Per-element outcome — which pieces shipped the MODEL's body (repaired or
@@ -754,6 +758,85 @@ export const neutralizeInk = (theme: Theme): { theme: Theme; corrected: boolean 
   };
 };
 
+/**
+ * (g) Hero surface-contrast backstop (v9 — the washout class, deterministic
+ * arm). The render-side hero-washout gate (lib/render/hero-contrast.ts) fires
+ * when a hero's painted region has neither luminance spread nor variance —
+ * v8's last gate-round driver was heroes painting EVERY panel within a few
+ * luminance points of the canvas (dark-plum-on-dark-plum, spread 12 vs floor
+ * 45). The head prompt + blueprint validator now demand a contrasting surface;
+ * this pass is the neutralizeInk-spirit backstop for what still slips through:
+ * when EVERY statically-resolvable flat panel background in a hero body sits
+ * within ΔL < HERO_SURFACE_MIN_DELTA_L of the theme canvas (Rec.709, 0-255),
+ * the FIRST such panel — the primary surface — is rewritten to the theme's
+ * most canvas-contrasting palette token (the "light token" on a dark canvas).
+ *
+ * Judgment is deliberately conservative: only style-object `background:` /
+ * `backgroundColor:` values that are a quoted hex or a bare palette const are
+ * resolvable; gradients/rgba/derived values are unjudgeable statically and
+ * make the pass a no-op (never a guess). One contrasting panel anywhere in
+ * the body also makes it a no-op — the hero paints contrast somewhere.
+ */
+export const HERO_SURFACE_MIN_DELTA_L = 15;
+
+/** Rec.709 luminance (0-255) of a hex color, or null when unparseable. */
+const luminance709 = (hex: string): number | null => {
+  const rgb = hexToRgb(hex.trim());
+  if (!rgb) return null;
+  return 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2];
+};
+
+export const ensureHeroSurfaceContrast = (
+  body: string,
+  theme: Theme,
+): { code: string; corrected: boolean } => {
+  const canvasHex = theme.palette[tokenForRole(theme, "canvas")];
+  const canvasL = canvasHex ? luminance709(canvasHex) : null;
+  if (canvasL === null) return { code: body, corrected: false };
+
+  // The rewrite target: the palette token most luminance-distant from the
+  // canvas (WHITE-class on a dark canvas, near-black on a light one). A
+  // mono-luminance palette (best delta under the floor) disables the pass.
+  let target: { name: string; hex: string; delta: number } | null = null;
+  for (const [name, hex] of Object.entries(theme.palette)) {
+    const l = luminance709(hex);
+    if (l === null) continue;
+    const delta = Math.abs(l - canvasL);
+    if (!target || delta > target.delta) target = { name, hex, delta };
+  }
+  if (!target || target.delta < HERO_SURFACE_MIN_DELTA_L) return { code: body, corrected: false };
+
+  // Every statically-resolvable flat background paint in the body.
+  const paintRx =
+    /(\b(?:background|backgroundColor)\s*:\s*)("#[0-9a-fA-F]{3,8}"|'#[0-9a-fA-F]{3,8}'|[A-Z][A-Z0-9_]{2,})/g;
+  const paints: { start: number; end: number; raw: string; l: number }[] = [];
+  for (let m = paintRx.exec(body); m; m = paintRx.exec(body)) {
+    const raw = m[2];
+    const l = raw.startsWith('"') || raw.startsWith("'")
+      ? luminance709(raw.slice(1, -1))
+      : raw in theme.palette
+        ? luminance709(theme.palette[raw])
+        : null;
+    if (l === null) continue; // unresolvable (foreign const, bad hex) — unjudged
+    paints.push({ start: m.index + m[1].length, end: m.index + m[0].length, raw, l });
+  }
+  if (paints.length === 0) return { code: body, corrected: false };
+  if (paints.some((p) => Math.abs(p.l - canvasL) >= HERO_SURFACE_MIN_DELTA_L)) {
+    return { code: body, corrected: false }; // a contrasting surface exists
+  }
+
+  // All panels sit in the canvas's own tone — lift the PRIMARY (first) panel
+  // to the contrast token, in the same value form it was authored.
+  const first = paints[0];
+  const replacement = first.raw.startsWith('"') || first.raw.startsWith("'")
+    ? JSON.stringify(target.hex)
+    : target.name;
+  return {
+    code: body.slice(0, first.start) + replacement + body.slice(first.end),
+    corrected: true,
+  };
+};
+
 // ─── The element system prompt ──────────────────────────────────────────────
 
 /**
@@ -782,7 +865,7 @@ const buildElementSystem = (theme: Theme): string => {
     `- Output ONLY JSX — no imports, no exports, no prose, no markdown fence, nothing at module scope.`,
     `- Your JSX is inlined into a positioned wrapper div at the exact BOUNDS in the brief. FILL the wrapper (width/height 100%; text flows inside its max width). NEVER position yourself with canvas coordinates — the wrapper owns placement.`,
     `- Paint ONLY with the palette roles the brief grants, via the const names below. Never invent colors — off-vocabulary hues are rewritten.`,
-    `- Copy renders VERBATIM from the \`c\` binding (this scene's content object): {c.headline}, {c.bullets[0]}, … Tag every copy node with the exact data-content-path the brief gives it. Never invent numbers or claims.`,
+    `- Copy renders VERBATIM from the \`c\` binding (this scene's content object): {c.headline}, {c.bullets[0]}, … Tag every copy node with the exact data-content-path the brief gives it. Never invent numbers or claims IN COPY. Interior mock-UI values (prices, balances, timestamps inside the product you draw) are diegetic set dressing — render them concrete and plausible, NEVER masked ("$— — —", "•••", "$X,XXX" are rejected as broken half-loaded UI).`,
     `- CSS animation only, using ONLY the shared @keyframes names listed below${keyframeNames.length ? "" : " (none exist — emit static; the choreographer adds motion)"}. No Remotion hooks, no Math.random, no undefined components.`,
     `- Follow the design grammar: radii ${JSON.stringify(g.radiusScale)}, ${g.strokeWeight}px hairlines via ${g.hairline}, surfaces via ${g.panelBg}, shadow "${g.shadowRecipe}", ${g.dataFont === "mono" ? "FONT_MONO" : "FONT_BODY"} for data.`,
     `- Rich, production-grade, dense — an element of a premium brand video.`,
@@ -1166,6 +1249,7 @@ interface ElementOutcome {
   failed: boolean;
   colorRewrites: number;
   fontRewrites: number;
+  heroSurfaceCorrected: boolean;
 }
 
 const round2 = (n: number): number => Math.round(n * 100) / 100;
@@ -1299,7 +1383,8 @@ export const castBuild = async (
     const attempt = async (
       user: string,
     ): Promise<
-      { ok: true; body: string; rewrites: number; fontRewrites: number } | { ok: false; raw: string; error: string }
+      | { ok: true; body: string; rewrites: number; fontRewrites: number; heroSurface: boolean }
+      | { ok: false; raw: string; error: string }
     > => {
       let text: string;
       try {
@@ -1354,6 +1439,8 @@ export const castBuild = async (
       // inside the cast round (~10s repair) instead of a 44-100s render+
       // vision gate round. Measured on the stripped/normalized body so
       // stolen copy can't pad the count.
+      let finalBody = guard.code;
+      let heroSurface = false;
       if (job.slot.id === "hero") {
         const density = staticJsxDensity(guard.code);
         if (density.elements < PRE_RENDER_HERO_MIN_ELEMENTS || density.textNodes < PRE_RENDER_HERO_MIN_TEXT) {
@@ -1367,20 +1454,33 @@ export const castBuild = async (
               `artifact with a furnished interior — every inventory item in the brief visibly present, plus supporting diegetic chrome`,
           };
         }
+        // (g) Surface-contrast backstop: a hero whose every flat panel sits in
+        // the canvas's own luminance band ships a washout — lift the primary
+        // panel to the theme's contrast token deterministically (zero tokens)
+        // instead of paying a render+vision gate round to discover it.
+        const surface = ensureHeroSurfaceContrast(guard.code, theme);
+        if (surface.corrected) {
+          finalBody = surface.code;
+          heroSurface = true;
+          console.warn(
+            `[cast-build] ${job.pieceId}: hero panels all within ΔL<${HERO_SURFACE_MIN_DELTA_L} of the canvas — primary panel lifted to the theme's contrast token`,
+          );
+        }
       }
-      const compileErr = await verifyFragment(guard.code);
+      const compileErr = await verifyFragment(finalBody);
       if (compileErr) return { ok: false, raw, error: compileErr };
       return {
         ok: true,
-        body: guard.code,
+        body: finalBody,
         rewrites: changes.reduce((n, ch) => n + ch.count, 0),
         fontRewrites: fonts.rewrites + (fonts.injected ? 1 : 0),
+        heroSurface,
       };
     };
 
     const first = await attempt(job.brief);
     if (first.ok) {
-      return { pieceId: job.pieceId, body: first.body, outputTokens: tokens, repaired: false, failed: false, colorRewrites: first.rewrites, fontRewrites: first.fontRewrites };
+      return { pieceId: job.pieceId, body: first.body, outputTokens: tokens, repaired: false, failed: false, colorRewrites: first.rewrites, fontRewrites: first.fontRewrites, heroSurfaceCorrected: first.heroSurface };
     }
 
     // ONE surgical repair: the same brief + the broken output + the exact
@@ -1397,11 +1497,11 @@ export const castBuild = async (
       ].join("\n"),
     );
     if (second.ok) {
-      return { pieceId: job.pieceId, body: second.body, outputTokens: tokens, repaired: true, failed: false, colorRewrites: second.rewrites, fontRewrites: second.fontRewrites };
+      return { pieceId: job.pieceId, body: second.body, outputTokens: tokens, repaired: true, failed: false, colorRewrites: second.rewrites, fontRewrites: second.fontRewrites, heroSurfaceCorrected: second.heroSurface };
     }
 
     console.warn(`[cast-build] ${job.pieceId}: broken through repair — shipping placeholder (${second.error.slice(0, 120)})`);
-    return { pieceId: job.pieceId, body: placeholderBody(theme, job.slot), outputTokens: tokens, repaired: false, failed: true, colorRewrites: 0, fontRewrites: 0 };
+    return { pieceId: job.pieceId, body: placeholderBody(theme, job.slot), outputTokens: tokens, repaired: false, failed: true, colorRewrites: 0, fontRewrites: 0, heroSurfaceCorrected: false };
   };
 
   const outcomes = await Promise.all(jobs.map((job) => limiter.with(() => runElement(job))));
@@ -1441,6 +1541,7 @@ export const castBuild = async (
       normalizedColors: outcomes.reduce((n, o) => n + o.colorRewrites, 0),
       fontRewrites: outcomes.reduce((n, o) => n + o.fontRewrites, 0),
       inkCorrected: inkGuard.corrected,
+      heroSurfaceCorrections: outcomes.filter((o) => o.heroSurfaceCorrected).length,
     },
     elementOutcomes: outcomes.map((o) => ({ pieceId: o.pieceId, failed: o.failed, repaired: o.repaired })),
   };

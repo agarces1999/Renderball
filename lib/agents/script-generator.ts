@@ -384,7 +384,7 @@ export const generateScript = async (
         const msgs: string[] = [];
         if (ungrounded.length > 0)
           msgs.push(
-            `These numeric claims are NOT grounded in any allowed source (the user's brief, verified claims, or the crawled site content): ${ungrounded.join(", ")}. For EACH of those exact tokens, either (a) replace it with qualitative copy (e.g. "38ms" → "in milliseconds", "$840M processed" → "billions processed"), or (b) replace it with a fact that appears VERBATIM in the crawled site content or verified claims — never invent specific stats, and never reuse the flagged number with a different unit.`,
+            `These numeric claims are NOT grounded in any allowed source (the user's brief, verified claims, or the crawled site content): ${ungrounded.join(", ")}. For EACH of those exact tokens, either (a) replace it with qualitative copy (e.g. "38ms" → "in milliseconds", "$840M processed" → "billions processed"), or (b) replace it with a fact that appears VERBATIM in the crawled site content or verified claims — never invent specific stats, and never reuse the flagged number with a different unit. (The flagged tokens live in viewer-facing copy fields; plausible mock values inside a diegetic UI described in visual_concept are exempt set dressing — keep those concrete, never masked.)`,
           );
         if (ungroundedStages.length > 0)
           msgs.push(
@@ -629,7 +629,7 @@ export const buildUserMessage = (brief: AgentBrief): string => {
       lines.push(`  ✓ ${line}`);
     }
     lines.push(
-      "These are SAFE to use as specific numbers in scene.content (headline, lede, bullets, meta values). Stat-shaped numbers (currency, %, multipliers like 10x, K/M/B counts, latency like 38ms, percentiles like p50) NOT in this list AND not in the crawled site copy may NOT be invented — the hallucination guardrail matches the FULL token (number + unit) and will fail Pass 1.",
+      "These are SAFE to use as specific numbers in scene.content (headline, lede, bullets, meta values). Stat-shaped numbers (currency, %, multipliers like 10x, K/M/B counts, latency like 38ms, percentiles like p50) NOT in this list AND not in the crawled site copy may NOT be invented — the hallucination guardrail matches the FULL token (number + unit) and will fail Pass 1. The guardrail scans VIEWER-FACING copy fields only (headline, lede, bullets, caption, eyebrow, meta, cta) — plausible mock values INSIDE a diegetic UI described in visual_concept are set dressing and exempt; write those concrete, never masked.",
     );
     lines.push("");
   }

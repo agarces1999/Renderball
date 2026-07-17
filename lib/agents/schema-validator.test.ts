@@ -1153,6 +1153,106 @@ check("composition: motion referencing ANOTHER element's interior does not count
   );
 });
 
+// — v9: hero surface contrast (the washout class, mirrored statically) —
+check("washout mirror: dark atmosphere + hero with no light-surface item fails", () => {
+  const s = duoGood();
+  sceneOf(s, 0).composition.atmosphere = "Near-black charcoal wash swallows the frame edge to edge";
+  const e = checkSceneComposition(s);
+  assert(
+    e.some((x) => /Scene 0 hero: atmosphere reads dark but no interior item names a light\/high-contrast surface/.test(x)),
+    `expected the washout error, got ${JSON.stringify(e)}`,
+  );
+});
+
+check("washout mirror: dark atmosphere + a named light surface passes (cue word)", () => {
+  const s = duoGood();
+  sceneOf(s, 0).composition.atmosphere = "Pitch-black metal field with faint smoke drifting upward slowly";
+  sceneOf(s, 0).composition.elements[0].interior[0] = "lesson card on a bone-white panel surface, XP bar 340/500";
+  const e = checkSceneComposition(s);
+  assert(!e.some((x) => /reads dark/.test(x)), `light-surface item must satisfy the check, got ${JSON.stringify(e)}`);
+});
+
+check("washout mirror: a light HEX in an interior item also satisfies it", () => {
+  const s = duoGood();
+  sceneOf(s, 0).composition.atmosphere = "Midnight gradient field, dark and heavy across the whole canvas";
+  sceneOf(s, 0).composition.elements[0].interior[0] = "lesson card panel painted #f7f8fa, XP bar 340/500";
+  const e = checkSceneComposition(s);
+  assert(!e.some((x) => /reads dark/.test(x)), `light hex must satisfy the check, got ${JSON.stringify(e)}`);
+});
+
+check("washout mirror: a DARK hex does NOT satisfy it, and non-dark atmospheres never fire", () => {
+  const s = duoGood();
+  sceneOf(s, 0).composition.atmosphere = "Jet-black void with grain and slow dust motes drifting sideways";
+  sceneOf(s, 0).composition.elements[0].interior[0] = "lesson card panel painted #14161c, XP bar 340/500";
+  const dark = checkSceneComposition(s);
+  assert(dark.some((x) => /reads dark/.test(x)), `a dark hex must not count as a light surface, got ${JSON.stringify(dark)}`);
+  // duoGood's own atmospheres (confetti / sunrise) read light → never fires.
+  assert(!checkSceneComposition(duoGood()).some((x) => /reads dark/.test(x)), "non-dark atmosphere must never fire the check");
+});
+
+// — v9: masked values + the 'placeholder' word in interiors —
+check("masked values in ANY interior fail; plausible concrete values pass", () => {
+  const s = duoGood();
+  sceneOf(s, 0).composition.elements[0].interior[0] = 'price line "$— — —" in the cart panel';
+  const e = checkSceneComposition(s);
+  assert(e.some((x) => /carries a masked value/.test(x)), `expected the masked-value error, got ${JSON.stringify(e)}`);
+  const bullets = duoGood();
+  sceneOf(bullets, 1).composition.elements[0].interior[0] = "balance field •••• shown in the header";
+  assert(checkSceneComposition(bullets).some((x) => /carries a masked value/.test(x)), "bullet-run masks must fail");
+  const xxx = duoGood();
+  sceneOf(xxx, 0).composition.elements[0].interior[0] = 'income field "$X,XXX" awaiting input';
+  assert(checkSceneComposition(xxx).some((x) => /carries a masked value/.test(x)), "$X,XXX masks must fail");
+  // The plausible-concrete direction: duoGood's real values stay clean.
+  assert(!checkSceneComposition(duoGood()).some((x) => /masked value/.test(x)), "concrete mock values must pass");
+});
+
+check("the word 'placeholder' in any interior fails (v8 over-compliance class)", () => {
+  const s = duoGood();
+  sceneOf(s, 0).composition.elements[1].interior[0] = "headline placeholder element at the top";
+  const e = checkSceneComposition(s);
+  assert(
+    e.some((x) => /contains the word "placeholder"/.test(x)),
+    `expected the placeholder-word error, got ${JSON.stringify(e)}`,
+  );
+});
+
+// — v9: register archetype variety (no 3+ consecutive) —
+const scriptWithRegisters = (registers: string[]) => ({
+  config: { duration_seconds: registers.length * 6, aspect_ratio: "16:9" },
+  brief: {},
+  assets: [],
+  scenes: registers.map((register, i) => ({
+    start_seconds: i * 6,
+    end_seconds: (i + 1) * 6,
+    label: `Scene ${i}`,
+    register,
+    // Distinct per-scene ambient so the atmosphere anti-copy check stays out
+    // of the way — this fixture isolates the register rule.
+    visual_concept: `${RICH_BASE} ${["The chart baseline shimmer loops infinite from 0s.", "Two ember sparks drift infinite with sin motion from 0s.", "The gauge ring breathes infinite (4s loop) from 1s.", "Five paper scraps drift infinite with sin motion from 1s.", "The rim shadows breathe infinite (6s cycle) from 0.5s."][i % 5]}`,
+    content: { headline: `Story beat ${i}`, asset_ids: [] },
+  })),
+});
+
+check("register variety: 3 consecutive identical registers fail on the generation path", () => {
+  const r = validateScript(scriptWithRegisters(["split", "split", "split"]));
+  assert(!r.ok, "3x split must fail");
+  if (!r.ok) {
+    assert(
+      /Scenes 0-2 all use register "split"/.test(r.error) && /3\+ times in a row/.test(r.error),
+      `error must name the run and the rule, got: ${r.error}`,
+    );
+  }
+});
+
+check("register variety: 2 in a row passes; a mid-run break passes; stored scripts opt out", () => {
+  const two = validateScript(scriptWithRegisters(["split", "split", "stat"]));
+  assert(two.ok, `2 in a row must pass, got ${two.ok ? "" : two.error}`);
+  const broken = validateScript(scriptWithRegisters(["split", "split", "stat", "split", "split"]));
+  assert(broken.ok, `an interrupted run must pass, got ${broken.ok ? "" : broken.error}`);
+  const stored = validateScript(scriptWithRegisters(["split", "split", "split"]), RICHNESS_OFF);
+  assert(stored.ok, `stored scripts (richness off) must keep loading, got ${stored.ok ? "" : stored.error}`);
+});
+
 // — error hygiene: ≤200 chars, scene named, repair-loop ready —
 check("composition errors each stay ≤200 chars and name the scene", () => {
   const broken = duoGood();

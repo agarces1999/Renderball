@@ -37,6 +37,8 @@ import {
   maxTokensFor,
   staticJsxDensity,
   substituteImgAssetIds,
+  ensureHeroSurfaceContrast,
+  HERO_SURFACE_MIN_DELTA_L,
   PRE_RENDER_HERO_MIN_ELEMENTS,
   PRE_RENDER_HERO_MIN_TEXT,
   HERO_MAX_TOKENS_CEREBRAS,
@@ -932,6 +934,67 @@ await check("build-level: an UNKNOWN non-fetchable src is a gate failure routed 
   assert(heroCalls.length === 2, `bad src must earn the in-round repair, got ${heroCalls.length}`);
   assert(/non-fetchable <Img> src\(s\): "site_img_7"/.test(heroCalls[1].user), "repair prompt names the bad src");
   assert(!r.code.includes('src="site_img_7"'), "the blank-rectangle src never ships");
+});
+
+// ─── (g) hero surface-contrast backstop (v9 — the washout class) ────────────
+
+// A dark-canvas theme whose panel tokens sit in the canvas's own luminance
+// band (the v8 dark-plum-on-dark-plum signature), plus one honest light token.
+const washTheme: Theme = {
+  ...theme,
+  palette: {
+    CANVAS: "#101018", INK: "#f5f8fa", ACCENT: "#b43cff",
+    CARD_FILL: "#181824", SOFT_NEUTRAL: "#26262f", WHITE: "#ffffff",
+  },
+};
+
+await check("surface backstop: all-canvas-tone panels → PRIMARY panel lifted to the contrast token", () => {
+  const body = `<div style={{ width: "100%", background: CARD_FILL }}><div style={{ background: "#141420" }} /></div>`;
+  const r = ensureHeroSurfaceContrast(body, washTheme);
+  assert(r.corrected, "must correct — every panel sits within ΔL<15 of the canvas");
+  assert(r.code.includes("background: WHITE"), `primary panel must lift to the most contrasting token, got: ${r.code}`);
+  assert(r.code.includes('"#141420"'), "only the PRIMARY (first) panel is rewritten");
+  // Idempotent: the corrected body now paints contrast → second pass no-ops.
+  const again = ensureHeroSurfaceContrast(r.code, washTheme);
+  assert(!again.corrected && again.code === r.code, "second pass must be a no-op");
+});
+
+await check("surface backstop: quoted-hex primary rewrites in quoted form", () => {
+  const r = ensureHeroSurfaceContrast(`<div style={{ backgroundColor: "#12121c", padding: 20 }} />`, washTheme);
+  assert(r.corrected, "canvas-tone hex panel must correct");
+  assert(r.code.includes('backgroundColor: "#ffffff"'), `quoted hex must rewrite as a quoted hex, got: ${r.code}`);
+});
+
+await check("surface backstop: one contrasting panel anywhere → no-op", () => {
+  const body = `<div style={{ background: CARD_FILL }}><div style={{ background: WHITE }} /></div>`;
+  const r = ensureHeroSurfaceContrast(body, washTheme);
+  assert(!r.corrected && r.code === body, "a hero that paints contrast somewhere must pass untouched");
+});
+
+await check("surface backstop: unresolvable paints (gradients/rgba/foreign consts) → no-op, never a guess", () => {
+  const grad = `<div style={{ background: "linear-gradient(180deg, #101018, #26262f)" }} />`;
+  assert(!ensureHeroSurfaceContrast(grad, washTheme).corrected, "gradient values are unjudgeable");
+  const rgba = `<div style={{ background: PANEL_BG }} />`; // PANEL_BG not in washTheme
+  assert(!ensureHeroSurfaceContrast(rgba, washTheme).corrected, "a foreign const resolves to nothing");
+  assert(!ensureHeroSurfaceContrast(`<div style={{ color: INK }} />`, washTheme).corrected, "no backgrounds at all");
+});
+
+await check("surface backstop: light canvas corrects toward the DARK token; floor honored", () => {
+  const lightTheme: Theme = {
+    ...theme,
+    palette: { CANVAS: "#faf9f7", INK: "#101018", ACCENT: "#ffd60a", CARD_FILL: "#f2f1ee", WHITE: "#ffffff" },
+  };
+  const r = ensureHeroSurfaceContrast(`<div style={{ background: CARD_FILL }} />`, lightTheme);
+  assert(r.corrected, "pale-on-pale must correct");
+  assert(r.code.includes("background: INK"), `light canvas lifts toward the darkest token, got: ${r.code}`);
+  assert(HERO_SURFACE_MIN_DELTA_L === 15, "the ΔL floor is the documented calibration");
+  // A mono-luminance palette (nothing clears the floor) disables the pass.
+  const mono: Theme = { ...theme, palette: { CANVAS: "#101018", CARD_FILL: "#12121a" } };
+  assert(!ensureHeroSurfaceContrast(`<div style={{ background: CARD_FILL }} />`, mono).corrected, "no target above the floor → no-op");
+});
+
+await check("surface backstop end-to-end: golden build heroes paint contrast → zero corrections counted", () => {
+  assert(result.telemetry.heroSurfaceCorrections === 0, `fixture heroes contrast already, got ${result.telemetry.heroSurfaceCorrections}`);
 });
 
 await check("elementOutcomes: clean build reports zero failed, repaired flags match telemetry", async () => {
