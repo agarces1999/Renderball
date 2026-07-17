@@ -38,6 +38,7 @@ import {
   staticJsxDensity,
   substituteImgAssetIds,
   ensureHeroSurfaceContrast,
+  forceHeroSurfaceLift,
   stripMaskedValueRuns,
   extractJsxTextSegments,
   isMetaTextSegment,
@@ -1046,6 +1047,72 @@ await check("surface backstop: light canvas corrects toward the DARK token; floo
 
 await check("surface backstop end-to-end: golden build heroes paint contrast → zero corrections counted", () => {
   assert(result.telemetry.heroSurfaceCorrections === 0, `fixture heroes contrast already, got ${result.telemetry.heroSurfaceCorrections}`);
+});
+
+// ─── (g2) FORCED hero surface lift (v12 — gate→backstop closure) ────────────
+// The washout GATE measured the region — static conservatism no longer
+// applies. Cycle 3's s4.hero: gradients/unparseable styles no-op'd the v9
+// backstop for 3 straight rounds (spread 9 vs floor 45, corrections 0).
+
+await check("forced lift: a canvas-toned GRADIENT panel (v9-backstop-invisible) rewrites to the contrast hex", () => {
+  const grad = `<div style={{ background: "linear-gradient(180deg, #101018, #26262f)" }} />`;
+  assert(!ensureHeroSurfaceContrast(grad, washTheme).corrected, "precondition: the conservative pass no-ops");
+  const r = forceHeroSurfaceLift(grad, washTheme, { canvasColor: "#101018" });
+  assert(r.lifted && r.via === "paint-rewrite", `gradient must lift, got ${JSON.stringify({ lifted: r.lifted, via: r.via })}`);
+  assert(r.code.includes('background: "#ffffff"'), `gradient value replaced by the contrast hex: ${r.code}`);
+  assert(!/gradient/.test(r.code), "the washed-out gradient is gone");
+  assert(r.targetToken === "WHITE", `target is the max-|ΔL| token, got ${r.targetToken}`);
+});
+
+await check("forced lift: dilute rgba paint reads as canvas tone and lifts", () => {
+  const r = forceHeroSurfaceLift(`<div style={{ backgroundColor: "rgba(255,255,255,0.06)" }} />`, washTheme, {});
+  assert(r.lifted && r.code.includes('backgroundColor: "#ffffff"'), `dilute tint lifts: ${r.code}`);
+});
+
+await check("forced lift: the MEASURED dominant panel color picks WHICH paint lifts", () => {
+  const body = `<div style={{ background: "#030304" }}><div style={{ background: "#1c1c26" }} /></div>`;
+  const r = forceHeroSurfaceLift(body, washTheme, { measuredPanelColor: "rgb(28, 28, 38)", canvasColor: "#101018" });
+  assert(r.lifted && r.via === "paint-rewrite", "lifts");
+  assert(r.code.includes('background: "#030304"'), `the non-dominant paint stays: ${r.code}`);
+  assert(!r.code.includes("#1c1c26") && r.code.includes('"#ffffff"'), `the measured dominant panel is the one rewritten: ${r.code}`);
+});
+
+await check("forced lift: an unresolvable foreign const is still a rewrite site (measured truth beats static doubt)", () => {
+  const r = forceHeroSurfaceLift(`<div style={{ background: PANEL_BG }} />`, washTheme, {});
+  assert(r.lifted && r.code.includes('background: "#ffffff"'), `foreign const rewritten: ${r.code}`);
+});
+
+await check("forced lift: NO background anywhere → override appended LAST to the root style object", () => {
+  const r = forceHeroSurfaceLift(`<div style={{ width: 700, padding: 24 }}><span>rows</span></div>`, washTheme, {});
+  assert(r.lifted && r.via === "root-override", `root override, got ${r.via}`);
+  assert(r.code.includes(`width: 700, padding: 24, background: "#ffffff"`), `override appended last: ${r.code}`);
+});
+
+await check("forced lift: contrasting paints are never overwritten — the root gets the override instead", () => {
+  const body = `<div style={{ width: 40, height: 16, background: WHITE }} />`;
+  const r = forceHeroSurfaceLift(body, washTheme, {});
+  assert(r.lifted && r.via === "root-override", `contrast paints stay; root overrides: ${JSON.stringify(r.via)}`);
+  assert(r.code.includes(`background: "#ffffff" }}`), `override appended: ${r.code}`);
+});
+
+await check("forced lift: no style at all → a style attr is injected on the first tag", () => {
+  const r = forceHeroSurfaceLift(`<section><span>bare</span></section>`, washTheme, {});
+  assert(r.lifted && r.via === "root-override", "injects");
+  assert(r.code.startsWith(`<section style={{ background: "#ffffff" }}>`), `style injected on the root: ${r.code}`);
+});
+
+await check("forced lift: the MEASURED canvas color overrides the theme canvas (light-canvas arm)", () => {
+  // washTheme's canvas is dark, but the MEASURED scene canvas is pale — the
+  // lift must push toward the DARKEST token, not white.
+  const r = forceHeroSurfaceLift(`<div style={{ background: "#f2f1ee" }} />`, washTheme, { canvasColor: "#faf7f7" });
+  assert(r.lifted, "pale-on-pale lifts");
+  assert(r.targetToken === "CANVAS" && r.code.includes('"#101018"'), `darkest token wins on a light canvas: ${r.code} (target ${r.targetToken})`);
+});
+
+await check("forced lift: a mono-luminance palette stays a no-op (nothing to lift toward)", () => {
+  const mono: Theme = { ...theme, palette: { CANVAS: "#101018", CARD_FILL: "#12121a" } };
+  const r = forceHeroSurfaceLift(`<div style={{ background: CARD_FILL }} />`, mono, {});
+  assert(!r.lifted && r.via === null, "no target above the ΔL floor → honest no-op");
 });
 
 // ─── (d5) masked bullet-run strip (v10) ─────────────────────────────────────

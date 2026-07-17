@@ -177,6 +177,14 @@ await check("system: the v11 full-bleed vertical-fill clause is STATED (cycle-2 
   assert(/fails a blocking gate/.test(system), "the gate consequence is named (models comply better with a stated sensor)");
 });
 
+await check("system: the v12 mock-territory clause — a full-canvas app shell forfeits the copy column (cycle-3 s1 interleave)", () => {
+  assert(system.includes("MOCK TERRITORY"), "clause present");
+  assert(system.includes("the mock FORFEITS the copy column"), "the forfeit rule stated");
+  assert(system.includes("never author a full-canvas app shell on such a scene"), "full-canvas shells banned when a copy element exists");
+  assert(/fails a blocking collision gate/.test(system), "the collision-gate consequence named");
+  assert(system.includes("author the copy as interior items ON one of the shell's own panels"), "the full-canvas escape hatch stated");
+});
+
 await check("system: the bookend-hero density contract + interior/ownsCopy ownership rule are STATED (retry audit classes 1+9)", () => {
   assert(system.includes("AT LEAST 4 of a hero's items must CARRY TEXT"), "hero text-bearing floor stated");
   assert(system.includes("NESTED structure"), "nested-structure demand stated");

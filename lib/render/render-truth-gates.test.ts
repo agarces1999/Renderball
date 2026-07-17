@@ -293,6 +293,41 @@ await check("does NOT flag full-bleed backgrounds as panels", () => {
   assert(findCrossPieceOverlap(m).length === 0, "the canvas itself is not a panel");
 });
 
+// ── Case D (v12): copy WOVEN through a foreign mock's rows (Linear s1) ──────
+
+await check("Case D: 28px lede woven through TWO mock rows DOES flag (the Linear interleave, above the old 20px band)", () => {
+  const lede = { tag: "p", text: "One issue. One focus. The noise is gone", fontSize: 28, x: 480, y: 750, w: 460, h: 60, piece: "s1.copy", coveredAtCenter: false };
+  const row1 = { tag: "span", text: "Alex Diaz set status to In Progress", fontSize: 14, x: 560, y: 752, w: 300, h: 18, piece: "s1.hero", onOpaqueSurface: true };
+  const row2 = { tag: "span", text: "Jordan Ngo changed priority", fontSize: 14, x: 560, y: 786, w: 280, h: 18, piece: "s1.hero", onOpaqueSurface: true };
+  const m = scene(1, [el(lede), el(row1), el(row2)]);
+  const r = findCrossPieceOverlap(m);
+  assert(r.length === 1 && /printed across 2 text node/.test(r[0].detail), JSON.stringify(r));
+  assert(/s1\.hero/.test(r[0].detail) && /s1\.copy/.test(r[0].detail), `both pieces named for dual routing: ${r[0].detail}`);
+});
+
+await check("Case D: 28px lede grazing ONE label stays exempt (the Loom-overlay sanction holds above 20px)", () => {
+  const lede = { tag: "p", text: "Back-to-back syncs and quick calls", fontSize: 28, x: 260, y: 300, w: 700, h: 34, piece: "s0.copy", coveredAtCenter: false };
+  const label = { tag: "span", text: "Budget Sync", fontSize: 15, x: 300, y: 306, w: 110, h: 18, piece: "s0.mock", onOpaqueSurface: true };
+  const m = scene(0, [el(lede), el(label)]);
+  assert(findCrossPieceOverlap(m).length === 0, JSON.stringify(findCrossPieceOverlap(m)));
+});
+
+await check("Case D: 16px copy over one 24px row still flags (annotation band, label side widened past 20px)", () => {
+  const copy = { tag: "p", text: "The noise is gone — and the work that", fontSize: 16, x: 480, y: 760, w: 440, h: 22, piece: "s1.copy", coveredAtCenter: false };
+  const row = { tag: "div", text: "Faster app launch", fontSize: 24, x: 520, y: 756, w: 260, h: 30, piece: "s1.hero", onOpaqueSurface: true };
+  const m = scene(1, [el(copy), el(row)]);
+  const r = findCrossPieceOverlap(m);
+  assert(r.length === 1 && /printed across/.test(r[0].detail), JSON.stringify(r));
+});
+
+await check("Case D: 40px display copy woven through rows stays A/B territory (no text-on-text fire)", () => {
+  const display = { tag: "h1", text: "Switch to Linear today", fontSize: 40, x: 480, y: 740, w: 700, h: 90, piece: "s4.copy", coveredAtCenter: false };
+  const row1 = { tag: "span", text: "Faster app launch", fontSize: 14, x: 560, y: 752, w: 220, h: 18, piece: "s4.hero", onOpaqueSurface: true };
+  const row2 = { tag: "span", text: "Performance P1", fontSize: 14, x: 560, y: 790, w: 200, h: 18, piece: "s4.hero", onOpaqueSurface: true };
+  const m = scene(4, [el(display), el(row1), el(row2)]);
+  assert(findCrossPieceOverlap(m).length === 0, JSON.stringify(findCrossPieceOverlap(m)));
+});
+
 // ── findEmptyBand (barbell) — needs a real settled-frame screenshot ─────────
 // Full 1920×1080 dark canvas with bright content strips at given y-bands.
 const frameWithBands = async (bands: [number, number][]): Promise<string> => {

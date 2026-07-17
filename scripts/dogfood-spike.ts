@@ -1,7 +1,36 @@
 /**
- * DOGFOOD RUNNER (v11) — the acceptance8 pipeline, GENERALIZED to any stored
+ * DOGFOOD RUNNER (v12) — the acceptance8 pipeline, GENERALIZED to any stored
  * brief. Same stack, same gates, same retry discipline; the Klarna-specific
  * scaffolding (reference build, v7 comparison rows) is gone or optional.
+ *
+ * v12 (dogfood cycle 4 batch):
+ *   - CLASS-MATCHED no-progress breaker: retry progress is measured on the
+ *     finding class that TARGETED the piece (washout → the gate's measured
+ *     spread/std; render-truth → that piece's blocking-finding count;
+ *     density → el/tx; accent-fill → largest-rect frac). One escalation max;
+ *     a same-class failure after escalation ACCEPTS-AND-FLAGS — never a third
+ *     identical round (cycle 3 escalated a 148el/54tx hero for "density
+ *     unmoved" while its real problem was cross-piece overlap).
+ *   - GATE→BACKSTOP washout closure: when the render-side washout gate fires,
+ *     the runner FORCES the surface lift (cast-build forceHeroSurfaceLift)
+ *     using the MEASURED screenshot colors — gradients/rgba/unparseable
+ *     styles included (root-override arm) — then re-measures; only residuals
+ *     route to regen, with an EXPLICIT lighten/darken instruction. Invariant:
+ *     a washout finding on round N produces a lift or an explicit regen by
+ *     round N+1, never a no-op (cycle 3's s4.hero washed out 3 rounds with
+ *     heroSurfaceCorrections=0).
+ *   - CROSS-PIECE text collision generalized (render-truth-gates Case D):
+ *     copy-class canvas text overlapping ANOTHER piece's text nodes at any
+ *     size pairing = blocking, routed to BOTH pieces with role-split repair
+ *     instructions (hero shrinks into its slot / copy gets an opaque panel);
+ *     composition head gains the MOCK TERRITORY clause (a full-canvas app
+ *     shell forfeits the copy column).
+ *   - BROKEN-IMAGE swap at measure time: any <img> whose decoded
+ *     naturalWidth === 0 (the browser's own verdict — cycle 3 shipped three
+ *     differently-corrupted logo data: URIs that all probed "fetchable")
+ *     swaps deterministically to a text wordmark in the display face
+ *     (image-integrity swapBrokenImagesForWordmark) + structural finding
+ *     img_broken.
  *
  * v11 (dogfood cycle 3 batch):
  *   - META-TEXT LEAK gate (cast-build stripMetaText): reasoning prose rendered
@@ -71,7 +100,8 @@
  */
 import { promises as fs } from "fs";
 import path from "path";
-import { castBuild, neutralizeInk, type CastBuildResult } from "../lib/agents/cast-build";
+import { castBuild, neutralizeInk, forceHeroSurfaceLift, type CastBuildResult } from "../lib/agents/cast-build";
+import { findBrokenRenderedImages, swapBrokenImagesForWordmark } from "../lib/render/image-integrity";
 import { castCall, castConfigured, type CastResult } from "../lib/llm/cast-provider";
 import { generateComposition, type CompositionCaller } from "../lib/agents/composition-head";
 import type { Theme } from "../lib/edit/piece-model";
@@ -84,6 +114,7 @@ import {
   findRenderTruthFailures,
   findEdgeCroppedPieces,
   planEdgeCropMoves,
+  hexLuminance,
   type EdgeCropFinding,
   type RenderTruthFinding,
   type RenderTruthKind,
@@ -388,8 +419,33 @@ const sequenceNotesBlock = (): string[] =>
 
 const stopLengthEvents: { label: string; cap: number; retryCap: number; recovered: boolean }[] = [];
 const cacheBustEvents: { pieceId: string; reason: string }[] = [];
-const regenHistory = new Map<string, { metric: string; escalated: boolean }>();
-const noProgressEvents: { pieceId: string; round: number; action: "escalated" | "accepted-and-flagged"; metric: string }[] = [];
+/** v12 (#1): CLASS-MATCHED retry history — progress is judged on the finding
+ *  class that targeted the piece, not a proxy metric. */
+type FailureClass = "washout" | "render-truth" | "accent-fill" | "density" | "vision";
+const regenHistory = new Map<string, { cls: FailureClass; value: number; aux: number; escalated: boolean }>();
+const noProgressEvents: {
+  pieceId: string;
+  round: number;
+  action: "escalated" | "accepted-and-flagged";
+  cls: FailureClass;
+  metric: string;
+  /** accept-and-flag only: the residual finding shipped, verbatim head. */
+  finding?: string;
+}[] = [];
+/** v12 (#2): the washout gate→backstop closure ledger — every washout finding
+ *  MUST land here as a forced lift or an explicit regen route (the invariant). */
+const washoutLiftEvents: {
+  round: number;
+  pieceId: string;
+  action: "forced-lift" | "lift-noop-regen-routed";
+  via: "paint-rewrite" | "root-override" | null;
+  targetToken: string | null;
+  before: { spread: number; std: number };
+  after: { spread: number; std: number } | null;
+  cleared: boolean | null;
+}[] = [];
+/** v12 (#4): broken rendered images swapped to the text wordmark. */
+const imgSwapEvents: { round: number; scene: number; pieceId: string; src: string; via: string }[] = [];
 const ESCALATION_MARK = "[NO-PROGRESS ESCALATION]";
 
 const verifyFragmentCheap = (body: string): Promise<string | null> =>
@@ -551,6 +607,38 @@ const cssKeyframeBlock = (css: string, name: string): string | null => {
     }
   }
   return null;
+};
+
+/** Alpha of a css rgb()/rgba() color (opaque hex/rgb → 1; unparseable → 0). */
+const cssAlphaOf = (color: string): number => {
+  if (/^#/.test(color?.trim() ?? "")) return 1;
+  const m = /rgba?\(([^)]+)\)/.exec(color || "");
+  if (!m) return 0;
+  const p = m[1].split(",").map((v) => parseFloat(v.trim()));
+  return p.length >= 4 ? (Number.isNaN(p[3]) ? 1 : p[3]) : 1;
+};
+
+/** The span of ONE piece's wrapper + own body inside the ASSEMBLED composition:
+ *  from its `data-piece` wrapper's opening `<div` to just before the NEXT
+ *  data-piece wrapper (child pieces included — they carry their own markers) or
+ *  the Section's <Chrome mount. Used by the v12 forced washout lift to rewrite
+ *  a hero's paints in-place without re-running the assembler. */
+const pieceSpanInCode = (code: string, pieceId: string): { start: number; end: number } | null => {
+  const marker = `data-piece=${JSON.stringify(pieceId)}`;
+  const at = code.indexOf(marker);
+  if (at === -1) return null;
+  const start = code.lastIndexOf("<div", at);
+  if (start === -1) return null;
+  const nextMarker = code.indexOf("data-piece=", at + marker.length);
+  const nextChrome = code.indexOf("<Chrome sceneIndex=", at + marker.length);
+  let end = code.length;
+  if (nextMarker !== -1) {
+    // The next wrapper's `<div` sits just before its data-piece attr.
+    const wrapperOpen = code.lastIndexOf("<div", nextMarker);
+    end = wrapperOpen > start ? wrapperOpen : nextMarker;
+  }
+  if (nextChrome !== -1 && nextChrome < end) end = nextChrome;
+  return { start, end };
 };
 
 // ── loose script shape ───────────────────────────────────────────────────────
@@ -1281,7 +1369,21 @@ const computeTargets = (args: {
     if (f.kind === "measure-error" || f.scene < 0) continue;
     const named = (f.detail.match(PIECE_ID_RX) ?? []).filter((id) => !/\.chrome$/.test(id));
     if (named.length > 0) {
-      for (const id of new Set(named)) add(id, f.scene, `[render-truth/${f.kind}] ${f.detail}`);
+      for (const id of new Set(named)) {
+        let fb = `[render-truth/${f.kind}] ${f.detail}`;
+        // v12 (#3): cross-piece collisions route BOTH pieces with ROLE-SPLIT
+        // instructions — the mock shrinks into its own slot, the copy takes an
+        // opaque panel (cycle 3's s1 interleave regen'd both pieces 3 rounds
+        // with the same undifferentiated instruction and never converged).
+        if (f.kind === "cross-piece-overlap") {
+          if (/\.hero$/.test(id)) {
+            fb += `\nYOUR ROLE IN THE FIX (${id}): your mock must NOT own the full canvas — keep EVERY row, label, and panel strictly inside your own wrapper (width/height 100% max, overflow hidden). Content extending under the neighboring copy column is the defect; shrink or crop the shell so the copy column is untouched canvas.`;
+          } else if (/\.copy$/.test(id)) {
+            fb += `\nYOUR ROLE IN THE FIX (${id}): set the ENTIRE copy stack on ONE opaque panel — a solid palette-token surface (contrasting the canvas) with real padding behind every line — so the column owns a readable surface whatever sits behind it; keep all text inside your wrapper.`;
+          }
+        }
+        add(id, f.scene, fb);
+      }
     } else if (f.kind === "barbell") {
       // v11 (#4): register-aware barbell repair. On a FULL-BLEED scene the
       // hero owns the frame — the empty band is the hero's under-furnished
@@ -1350,6 +1452,12 @@ interface GateRoundReport {
   renderTruthAll: RenderTruthFinding[];
   renderTruthBlocking: RenderTruthFinding[];
   heroContrast: { stats: HeroLuminanceStats[]; findings: HeroWashoutFinding[]; errors: string[] };
+  /** v12 (#2): washout findings BEFORE the forced lift (the gate's raw fire). */
+  washoutsAtGate: number;
+  /** v12 (#2): this round's forced-lift ledger entries. */
+  washoutLifts: (typeof washoutLiftEvents)[number][];
+  /** v12 (#4): this round's broken-image swaps. */
+  imgSwaps: (typeof imgSwapEvents)[number][];
   accentFill: { stats: AccentFillResult["stats"]; findings: AccentFillFinding[]; errors: string[] };
   edgeCrop: { initial: EdgeCropFinding[]; residual: EdgeCropFinding[] };
   vision: SceneVisionVerdict[];
@@ -1402,6 +1510,14 @@ const gateLogHtml = (gateRounds: GateRoundReport[]): string => {
       for (const f of g.density) rows.push(`<li><b>density/${esc(f.kind)} (BLOCKING)</b> scene ${f.scene}: ${esc(f.detail.slice(0, 280))}</li>`);
       for (const f of g.heroContrast.findings) rows.push(`<li><b>hero-contrast/hero-washout (BLOCKING)</b> scene ${f.scene} → ${esc(f.pieceId)}: ${esc(f.detail.slice(0, 280))}</li>`);
       for (const e of g.heroContrast.errors) rows.push(`<li><b>hero-contrast</b> sampling error: ${esc(e.slice(0, 200))}</li>`);
+      for (const e of g.washoutLifts ?? []) {
+        rows.push(
+          `<li><b>washout-lift/${esc(e.action)}</b> ${esc(e.pieceId)}: ${esc(e.via ?? "no-op")} → ${esc(e.targetToken ?? "-")} · spread/std ${e.before.spread}/${e.before.std}${e.after ? ` → ${e.after.spread}/${e.after.std}` : ""} · ${e.cleared === true ? "CLEARED (zero tokens)" : e.cleared === false ? "residual → regen (explicit direction)" : "regen-routed (explicit direction)"}</li>`,
+        );
+      }
+      for (const e of g.imgSwaps ?? []) {
+        rows.push(`<li><b>img-broken (v12)</b> scene ${e.scene} ${esc(e.pieceId || "(chrome)")}: …${esc(e.src.slice(-40))} → text wordmark (${esc(e.via)})</li>`);
+      }
       for (const f of g.accentFill.findings) rows.push(`<li><b>accent-fill/accent-as-fill (BLOCKING)</b> scene ${f.scene} → ${esc(f.pieceId)}: ${esc(f.detail.slice(0, 280))}</li>`);
       for (const e of g.accentFill.errors) rows.push(`<li><b>accent-fill</b> sampling error: ${esc(e.slice(0, 200))}</li>`);
       for (const f of g.edgeCrop.initial) {
@@ -1460,7 +1576,7 @@ const main = async (): Promise<void> => {
 
   const report: Record<string, unknown> = {
     experiment:
-      `DOGFOOD CYCLE ${CYCLE} (v11 batch): generalized acceptance8 runner on brief ${BRIEF_ID} (${TAG}) — META-TEXT LEAK gate (leaked reasoning prose stripped/rejected at the element gate), unowned-copy BINDING check (c.<field> theft + widened value coverage), clamp-vs-slot routing (oversized/neighbor-invading pieces regen directly), full-bleed vertical-fill head clause + register-aware barbell repair, logo-glyph count finding, interior-clip advisory, sequence verdict threaded in-run into regen prompts. All v10 gates retained; same budget and retry discipline as acceptance8.`,
+      `DOGFOOD CYCLE ${CYCLE} (v12 batch): generalized acceptance8 runner on brief ${BRIEF_ID} (${TAG}) — CLASS-MATCHED no-progress breaker (progress judged on the finding class that targeted the piece; one escalation max, same-class failure after escalation accepts-and-flags), GATE→BACKSTOP washout closure (forced surface lift from MEASURED screenshot colors + re-measure; residuals regen with an explicit lighten/darken direction), cross-piece text collision generalized to any size pairing with role-split dual routing + the head's MOCK TERRITORY clause, broken-image swap at measure time (naturalWidth===0 → text wordmark + img_broken finding). All v10/v11 gates retained; same budget and retry discipline as acceptance8.`,
     briefId: BRIEF_ID,
     tag: TAG,
     cycle: CYCLE,
@@ -1471,6 +1587,7 @@ const main = async (): Promise<void> => {
       v9: `washout killed at the HEAD (composition contract + checkSceneComposition mirror + cast-build ensureHeroSurfaceContrast backstop); register runs ≥3 rejected at script validation`,
       v10: `accent-as-fill: largest flat accent rect in a hero region ≤${ACCENT_FILL_MAX_FRAC * 100}% of the piece area (blocking); piece-edge-crop: measured pieces clipping canvas bottom/right >2% of own size → deterministic clamp, residuals blocking; hero surface contrast area-weighted (≥25% painted weight); washout static mirror canvas-AGNOSTIC (light canvas → dark surface); sequence vision detached + skip-after-abort`,
       v11: `meta-text leak: rendered text segments carrying repair vocabulary/coordinate-math prose strip deterministically at the element gate (dominant prose = reject); unowned-copy BINDING check: c.<field> references for unowned fields strip/reject in-round (+ value coverage widened to eyebrow/caption/cta, trailing-punct + case variants); clamp-vs-slot: oversized (>25% over slot) or neighbor-invading clamps route regen directly; full-bleed barbell routes to the HERO with a vertical-fill instruction (head carries the matching clause); logo-glyph count >1 per hero mock = finding; interior-clip advisory (text protruding >30% past its piece union); detached sequence verdict fires on round-0 frames and threads into round-1+ regen prompts`,
+      v12: `class-matched breaker: retry progress judged on the targeting class (washout → measured spread/std delta; render-truth → per-piece blocking count; density → el/tx; accent-fill → largest-rect frac), one escalation max, same-class failure after escalation = accept-and-flag; washout gate→backstop closure: forceHeroSurfaceLift with MEASURED panel+canvas colors (gradients/rgba/root-override included) fires the moment the gate does, re-measures, residuals regen with an explicit lighten/darken direction (invariant: never a no-op); cross-piece text collision Case D: copy-class canvas text (≤32px) over ANOTHER piece's text nodes = blocking, routed to BOTH pieces role-split (hero shrinks into slot / copy takes an opaque panel) + composition-head MOCK TERRITORY clause (full-canvas app shell forfeits the copy column); broken-image swap: measured naturalWidth===0 → deterministic text-wordmark swap (tag sites + the chrome logoSrc binding) + structural img_broken`,
     },
     terminalError: null,
   };
@@ -1534,6 +1651,18 @@ const main = async (): Promise<void> => {
       fastRetryEvents,
       fastFallbacks,
       noProgressEvents,
+      washoutLiftEvents,
+      imgSwapEvents,
+    };
+    // v12 (#2): the washout-closure invariant, machine-checkable — every gate
+    // fire produced a forced lift or an explicit regen route; no silent no-op.
+    report.washoutClosure = {
+      invariant: "every hero-washout finding on round N produces a forced surface lift (measured colors) or a regen with an explicit lighten/darken instruction — never a no-op",
+      gateFires: washoutLiftEvents.length,
+      forcedLifts: washoutLiftEvents.filter((e) => e.action === "forced-lift").length,
+      liftsCleared: washoutLiftEvents.filter((e) => e.cleared === true).length,
+      regenRouted: washoutLiftEvents.filter((e) => e.action === "lift-noop-regen-routed" || e.cleared === false).length,
+      events: washoutLiftEvents,
     };
     report.budget = { totalLlmCalls, ceiling: TOTAL_LLM_CEILING, budgetExhausted, visionCalls: zaiCalls };
     report.cost = {
@@ -1963,6 +2092,37 @@ const main = async (): Promise<void> => {
       // truth, contrast, accent, vision) judges the repositioned frame. Only
       // residuals the clamp couldn't fix route to a regen.
       let measurements = await phase(`measure-r${round}`, () => measureScenes(GEN_DIR, script, GEN_DIR));
+
+      // v12 (#4): BROKEN-IMAGE swap — any measured <img> whose decoded
+      // naturalWidth is 0 renders as a broken-image glyph regardless of URL
+      // "fetchability" (cycle 3: three differently-corrupted logo data: URIs).
+      // Deterministic, zero tokens: the mount swaps to a text wordmark in the
+      // display face; the cached bodies get the same transform so replays keep
+      // it; ONE re-measure so every downstream gate judges the repaired frame.
+      const brokenImgs = findBrokenRenderedImages(measurements);
+      if (brokenImgs.length > 0) {
+        const srcs = brokenImgs.map((b) => b.src);
+        const swap = swapBrokenImagesForWordmark(finalCode, srcs, BRAND);
+        for (const b of brokenImgs) {
+          const via = swap.swapped.find((s) => s.src === b.src)?.via ?? "unswappable";
+          imgSwapEvents.push({ round, scene: b.scene, pieceId: b.pieceId, src: b.src.slice(0, 120), via });
+          console.warn(
+            `  [img-broken] scene ${b.scene} ${b.pieceId || "(chrome)"}: <img> decoded naturalWidth=0 (src …${b.src.slice(-48)}) — ${
+              via === "unswappable" ? "no swappable mount found (finding ships)" : `swapped to the "${BRAND}" text wordmark (${via})`
+            }`,
+          );
+        }
+        if (swap.swapped.length > 0) {
+          finalCode = swap.code;
+          await fs.writeFile(path.join(GEN_DIR, "Composition.tsx"), finalCode, "utf8");
+          for (const [pid, cachedBody] of pieceCache) {
+            const s2 = swapBrokenImagesForWordmark(cachedBody, srcs, BRAND, { constSource: finalCode });
+            if (s2.swapped.length > 0) pieceCache.set(pid, s2.code);
+          }
+          measurements = await phase(`measure-imgswap-r${round}`, () => measureScenes(GEN_DIR, script, GEN_DIR));
+        }
+      }
+
       const edgeCropInitial = measurements.flatMap((m) => findEdgeCroppedPieces(m));
       let edgeCropResidual: EdgeCropFinding[] = [];
       if (edgeCropInitial.length > 0) {
@@ -2037,6 +2197,18 @@ const main = async (): Promise<void> => {
           });
         }
       }
+      // v12 (#4): broken rendered images (measured naturalWidth === 0) —
+      // structural finding img_broken; the mount was already swapped to the
+      // text wordmark deterministically where a swap site existed.
+      for (const ev of imgSwapEvents.filter((e) => e.round === round)) {
+        structural.push({
+          scene: ev.scene,
+          key: "img_broken",
+          detail: `broken <img> (decoded naturalWidth 0) in ${ev.pieceId || "(chrome)"} — src …${ev.src.slice(-60)}; ${
+            ev.via === "unswappable" ? "NO swappable mount found" : `swapped deterministically to the "${BRAND}" text wordmark (${ev.via})`
+          }.`,
+        });
+      }
       const rt = await phase(`render-truth-r${round}`, () =>
         findRenderTruthFailures(measurements, {
           brandBackground: canvasPlan.background,
@@ -2046,13 +2218,102 @@ const main = async (): Promise<void> => {
       );
 
       // (b2) hero-washout — deterministic contrast on the hero regions.
-      const contrast = await phase(`hero-contrast-r${round}`, () => assessHeroWashout(measurements));
-      finalContrast = contrast;
+      const contrastRaw = await phase(`hero-contrast-r${round}`, () => assessHeroWashout(measurements));
       console.log(
-        `  hero-contrast: ${contrast.stats.length} hero region(s) sampled · ${contrast.findings.length} washout(s)` +
-          `${contrast.findings.length ? ` [${contrast.findings.map((f) => f.pieceId).join(", ")}]` : ""}` +
-          `${contrast.errors.length ? ` · errors: ${contrast.errors.join(" | ")}` : ""}`,
+        `  hero-contrast: ${contrastRaw.stats.length} hero region(s) sampled · ${contrastRaw.findings.length} washout(s)` +
+          `${contrastRaw.findings.length ? ` [${contrastRaw.findings.map((f) => f.pieceId).join(", ")}]` : ""}` +
+          `${contrastRaw.errors.length ? ` · errors: ${contrastRaw.errors.join(" | ")}` : ""}`,
       );
+
+      // v12 (#2): GATE→BACKSTOP CLOSURE — the washout gate FIRED, so force the
+      // surface lift NOW with the MEASURED colors (cycle 3's s4.hero washed out
+      // all 3 rounds while the static backstop no-op'd on unparseable styles).
+      // Deterministic-first, exactly like the edge-crop clamp: rewrite the
+      // hero's dominant canvas-toned paint (or override the piece root) to the
+      // max-|ΔL| palette token, re-measure, and only route RESIDUALS to regen —
+      // with an explicit lighten/darken instruction. Invariant: every washout
+      // finding produces a lift or an explicit regen — never a no-op.
+      let contrast = contrastRaw;
+      if (contrastRaw.findings.length > 0) {
+        let anyLifted = false;
+        for (const f of contrastRaw.findings) {
+          const m = measurements.find((mm) => mm.scene === f.scene);
+          // Measured dominant panel color inside the washed-out hero region:
+          // the largest opaque-painted element of the piece.
+          let panelColor: string | undefined;
+          let bestArea = 0;
+          for (const e of m?.elements ?? []) {
+            if (e.piece !== f.pieceId || e.opacity <= 0.05) continue;
+            if (cssAlphaOf(e.bg) < 0.5) continue;
+            const area = e.w * e.h;
+            if (area > bestArea) {
+              bestArea = area;
+              panelColor = e.bg;
+            }
+          }
+          const liftCtx = { measuredPanelColor: panelColor, canvasColor: canvasPlan.background };
+          const span = pieceSpanInCode(finalCode, f.pieceId);
+          const spanLift = span ? forceHeroSurfaceLift(finalCode.slice(span.start, span.end), theme, liftCtx) : null;
+          if (span && spanLift?.lifted) {
+            finalCode = finalCode.slice(0, span.start) + spanLift.code + finalCode.slice(span.end);
+            anyLifted = true;
+            washoutLiftEvents.push({
+              round,
+              pieceId: f.pieceId,
+              action: "forced-lift",
+              via: spanLift.via,
+              targetToken: spanLift.targetToken,
+              before: { spread: f.stats.spread, std: f.stats.stdDev },
+              after: null,
+              cleared: null,
+            });
+            console.warn(
+              `  [washout-lift] ${f.pieceId}: FORCED surface lift (${spanLift.via} → ${spanLift.targetToken ?? spanLift.targetHex}) — measured spread ${f.stats.spread}/std ${f.stats.stdDev}, panel ${panelColor ?? "(none opaque)"}`,
+            );
+            // Persist into the cached raw body so replays/reassembly keep it.
+            const cached = pieceCache.get(f.pieceId);
+            if (cached) {
+              const bodyLift = forceHeroSurfaceLift(cached, theme, liftCtx);
+              if (bodyLift.lifted) pieceCache.set(f.pieceId, bodyLift.code);
+            }
+          } else {
+            washoutLiftEvents.push({
+              round,
+              pieceId: f.pieceId,
+              action: "lift-noop-regen-routed",
+              via: null,
+              targetToken: null,
+              before: { spread: f.stats.spread, std: f.stats.stdDev },
+              after: null,
+              cleared: null,
+            });
+            console.warn(`  [washout-lift] ${f.pieceId}: lift unavailable (${span ? "no liftable paint/root" : "piece span not found"}) — routing to regen with an explicit direction`);
+          }
+        }
+        if (anyLifted) {
+          await fs.writeFile(path.join(GEN_DIR, "Composition.tsx"), finalCode, "utf8");
+          measurements = await phase(`measure-washout-lift-r${round}`, () => measureScenes(GEN_DIR, script, GEN_DIR));
+          finalMeasurements = measurements;
+          contrast = await phase(`hero-contrast-relift-r${round}`, () => assessHeroWashout(measurements));
+          for (const ev of washoutLiftEvents.filter((e) => e.round === round && e.action === "forced-lift")) {
+            const st = contrast.stats.find((s) => s.pieceId === ev.pieceId);
+            ev.after = st ? { spread: st.spread, std: st.stdDev } : null;
+            ev.cleared = !contrast.findings.some((ff) => ff.pieceId === ev.pieceId);
+            console.log(
+              `  [washout-lift] ${ev.pieceId}: re-measured spread ${st?.spread ?? "?"}/std ${st?.stdDev ?? "?"} — ${ev.cleared ? "CLEARED (zero tokens)" : "residual → regen"}`,
+            );
+          }
+        }
+        // Residual washouts regen with an EXPLICIT direction (the invariant's
+        // regen arm): the measured canvas tells us which way to push.
+        const canvasLum = hexLuminance(canvasPlan.background);
+        const lightCanvas = canvasLum !== null && canvasLum > 0.5;
+        for (const f of contrast.findings) {
+          f.repairInstruction +=
+            ` EXPLICIT DIRECTION: the scene canvas ${canvasPlan.background} is ${lightCanvas ? "LIGHT" : "DARK"} — repaint your primary panel/surface decisively ${lightCanvas ? "DARKER" : "LIGHTER"} than the canvas (a flat, opaque, high-|ΔL| surface), never another near-canvas tone.`;
+        }
+      }
+      finalContrast = contrast;
 
       // (b3) accent-as-fill (v10) — proportion discipline on the hero regions:
       // the brand accent is punctuation, never a panel fill.
@@ -2091,6 +2352,9 @@ const main = async (): Promise<void> => {
         renderTruthAll: rt.findings,
         renderTruthBlocking: rt.blocking,
         heroContrast: { stats: contrast.stats, findings: contrast.findings, errors: contrast.errors },
+        washoutsAtGate: contrastRaw.findings.length,
+        washoutLifts: washoutLiftEvents.filter((e) => e.round === round),
+        imgSwaps: imgSwapEvents.filter((e) => e.round === round),
         accentFill: { stats: accentFill.stats, findings: accentFill.findings, errors: accentFill.errors },
         edgeCrop: { initial: edgeCropInitial, residual: edgeCropResidual },
         vision,
@@ -2103,8 +2367,11 @@ const main = async (): Promise<void> => {
           passed: targets.size === 0,
           targets: [...targets.keys()],
           density: density.length,
+          washoutsAtGate: contrastRaw.findings.length,
+          washoutsLifted: washoutLiftEvents.filter((e) => e.round === 0 && e.action === "forced-lift").length,
           washouts: contrast.findings.length,
           accentFills: accentFill.findings.length,
+          brokenImgs: imgSwapEvents.filter((e) => e.round === 0).length,
           edgeCropsInitial: edgeCropInitial.length,
           edgeCropsClamped: edgeCropEvents.filter((e) => e.round === 0 && e.action === "clamped").length,
           edgeCropsResidual: edgeCropResidual.length,
@@ -2122,7 +2389,7 @@ const main = async (): Promise<void> => {
       await writeOut();
 
       console.log(
-        `  round ${round}: density ${density.length} · washout ${contrast.findings.length} · accent-fill ${accentFill.findings.length} · ` +
+        `  round ${round}: density ${density.length} · washout ${contrastRaw.findings.length}→${contrast.findings.length} residual (${washoutLiftEvents.filter((e) => e.round === round && e.action === "forced-lift").length} forced lift(s)) · accent-fill ${accentFill.findings.length} · ` +
           `edge-crop ${edgeCropInitial.length}→${edgeCropResidual.length} residual · structural ${structural.length} · render-truth ${rt.findings.length} (${rt.blocking.length} blocking) · ` +
           `vision actionable ${vision.reduce((n, v) => n + v.actionable.length, 0)} (severe on [${vision.filter((v) => v.severe.length).map((v) => v.scene).join(", ")}]) · ` +
           `retry targets [${[...targets.keys()].join(", ") || "none"}]`,
@@ -2132,45 +2399,105 @@ const main = async (): Promise<void> => {
         console.log(`  all scene-scoped blocking gates clean — done after round ${round}`);
         break;
       }
-      // NO-PROGRESS BREAKER: one escalation, then accept-and-flag.
-      const metricOf = (pieceId: string): string => {
+      // v12 (#1): CLASS-MATCHED NO-PROGRESS BREAKER — one escalation, then
+      // accept-and-flag. Progress is measured on the finding CLASS that
+      // targeted the piece, not a proxy: cycle 3 escalated a 148el/54tx hero
+      // for "density unmoved" when its real failure was cross-piece overlap
+      // (and the escalation's fresh emission made render-truth WORSE, 3→13).
+      const densityMetricOf = (pieceId: string): { value: number; aux: number } => {
         const sceneIdx = Number(/^s(\d+)\./.exec(pieceId)?.[1] ?? -1);
         const st = profile?.scenes.find((s) => s.scene === sceneIdx)?.pieces.find((pp) => pp.id === pieceId);
-        return st ? `${st.elements}el/${st.textNodes}tx` : "unmeasured";
+        return { value: st?.elements ?? 0, aux: st?.textNodes ?? 0 };
       };
-      const isProgress = (prevM: string, curM: string): boolean => {
-        if (prevM === curM) return false;
-        const p = /(\d+)el\/(\d+)tx/.exec(prevM);
-        const c = /(\d+)el\/(\d+)tx/.exec(curM);
-        if (!p || !c) return true;
-        return Number(c[1]) > Number(p[1]) || Number(c[2]) > Number(p[2]);
+      const classMetricOf = (
+        pieceId: string,
+        feedback: string[],
+      ): { cls: FailureClass; value: number; aux: number; metric: string } => {
+        const joined = feedback.join("\n");
+        if (joined.includes("[hero-contrast/hero-washout]")) {
+          const st = contrast.stats.find((s) => s.pieceId === pieceId);
+          return { cls: "washout", value: st?.spread ?? 0, aux: st?.stdDev ?? 0, metric: `spread ${st?.spread ?? 0}/std ${st?.stdDev ?? 0}` };
+        }
+        if (joined.includes("[render-truth/")) {
+          const sceneIdx = Number(/^s(\d+)\./.exec(pieceId)?.[1] ?? -1);
+          let count =
+            rt.blocking.filter((f) => f.detail.includes(pieceId)).length +
+            edgeCropResidual.filter((f) => f.pieceId === pieceId).length;
+          if (count === 0) {
+            // Scene-fallback-routed findings (no piece named in the detail).
+            count = rt.blocking.filter((f) => f.scene === sceneIdx && !(f.detail.match(PIECE_ID_RX) ?? []).length).length;
+          }
+          return { cls: "render-truth", value: count, aux: 0, metric: `${count} blocking render-truth finding(s) on this piece` };
+        }
+        if (joined.includes("[accent-fill/")) {
+          const st = accentFill.stats.find((s) => s.pieceId === pieceId);
+          const frac = Math.round((st?.largestRectFrac ?? 0) * 1000) / 10;
+          return { cls: "accent-fill", value: frac, aux: 0, metric: `largest accent rect ${frac}% of piece` };
+        }
+        const d = densityMetricOf(pieceId);
+        const cls: FailureClass = joined.includes("[density/") ? "density" : "vision";
+        return { cls, value: d.value, aux: d.aux, metric: `${d.value}el/${d.aux}tx` };
+      };
+      /** Same-class progress: did the class's own measurement actually move? */
+      const isClassProgress = (
+        cls: FailureClass,
+        prev: { value: number; aux: number },
+        cur: { value: number; aux: number },
+      ): boolean => {
+        switch (cls) {
+          case "washout":
+            // The gate's own numbers must rise meaningfully (measurement noise
+            // on a re-rendered frame stays within ~2-3 luminance points).
+            return cur.value > prev.value + 4 || cur.aux > prev.aux + 2;
+          case "render-truth":
+            return cur.value < prev.value; // fewer blocking findings on the piece
+          case "accent-fill":
+            return cur.value < prev.value - 2; // largest-rect frac shrank
+          default:
+            return cur.value > prev.value || cur.aux > prev.aux; // el/tx grew
+        }
       };
       for (const [pieceId, feedback] of [...targets.entries()]) {
-        const metric = metricOf(pieceId);
+        const cur = classMetricOf(pieceId, feedback);
         const prev = regenHistory.get(pieceId);
         if (!prev) {
-          regenHistory.set(pieceId, { metric, escalated: false });
+          regenHistory.set(pieceId, { cls: cur.cls, value: cur.value, aux: cur.aux, escalated: false });
           continue;
         }
-        if (isProgress(prev.metric, metric)) {
-          regenHistory.set(pieceId, { metric, escalated: prev.escalated });
+        if (prev.cls !== cur.cls) {
+          // The previously-failing class is FIXED — a different class firing
+          // now is progress by definition; track the new class (escalation
+          // budget stays spent if it was spent — one escalation per piece).
+          console.log(`  [no-progress] ${pieceId}: failure class moved ${prev.cls} → ${cur.cls} (the ${prev.cls} defect was fixed) — regen continues on the new class`);
+          regenHistory.set(pieceId, { cls: cur.cls, value: cur.value, aux: cur.aux, escalated: prev.escalated });
+          continue;
+        }
+        if (isClassProgress(cur.cls, prev, cur)) {
+          regenHistory.set(pieceId, { cls: cur.cls, value: cur.value, aux: cur.aux, escalated: prev.escalated });
           continue;
         }
         if (!prev.escalated) {
           pieceCache.delete(pieceId);
-          cacheBustEvents.push({ pieceId, reason: "no-progress escalation — cached emission evicted for a FRESH re-emission" });
+          cacheBustEvents.push({ pieceId, reason: `no-progress escalation (${cur.cls}) — cached emission evicted for a FRESH re-emission` });
           targets.set(pieceId, [
-            `${ESCALATION_MARK} two consecutive rounds measured this piece at ${metric} with the same blocking findings — a repaired variant of the previous approach is NOT working.`,
+            `${ESCALATION_MARK} two consecutive rounds measured this piece failing the SAME class — ${cur.cls} (${cur.metric}, unmoved) — a repaired variant of the previous approach is NOT working.`,
             `The previous round's failures, verbatim:`,
             ...feedback,
           ]);
-          noProgressEvents.push({ pieceId, round, action: "escalated", metric });
-          regenHistory.set(pieceId, { metric, escalated: true });
-          console.warn(`  [no-progress] ${pieceId}: density unmoved at ${metric} — ESCALATED to a fresh full emission (cache busted, blueprint authoritative)`);
+          noProgressEvents.push({ pieceId, round, action: "escalated", cls: cur.cls, metric: cur.metric });
+          regenHistory.set(pieceId, { cls: cur.cls, value: cur.value, aux: cur.aux, escalated: true });
+          console.warn(`  [no-progress] ${pieceId}: ${cur.cls} unmoved (${cur.metric}) — ESCALATED to a fresh full emission (cache busted, blueprint authoritative)`);
         } else {
           targets.delete(pieceId);
-          noProgressEvents.push({ pieceId, round, action: "accepted-and-flagged", metric });
-          console.warn(`  [no-progress] ${pieceId}: escalation did not move density (${metric}) — ACCEPTED AND FLAGGED (residual findings ship honestly)`);
+          noProgressEvents.push({
+            pieceId,
+            round,
+            action: "accepted-and-flagged",
+            cls: cur.cls,
+            metric: cur.metric,
+            finding: feedback[0]?.slice(0, 220),
+          });
+          console.warn(`  [no-progress] ${pieceId}: escalation did not move ${cur.cls} (${cur.metric}) — ACCEPTED AND FLAGGED (residual finding ships honestly in the report)`);
         }
       }
       if (targets.size === 0) {

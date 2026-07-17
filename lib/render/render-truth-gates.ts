@@ -98,14 +98,22 @@ const XP_MIN_FRAC = 0.2; // ≥20% of the text box intersected ⇒ a collision
 const XP_STRADDLE_MIN_PX = 14; // catches 18px annotation bullets
 const XP_STRADDLE_MIN_FRAC = 0.12; // below: grazing contact (descenders touching an edge)
 const XP_STRADDLE_MAX_FRAC = 0.9; // above: effectively contained = overlay
-// Cross-piece TEXT-ON-TEXT for ANNOTATION-class type on BOTH sides: an 18px
-// bullet printed across a mock's 13px internal label is a defect (Fuse s3).
-// Larger copy over dimmed mock labels is the sanctioned overlay — replayed on
-// 4 live builds, the ≤20px-both-sides rule fires on the Fuse collision and on
-// nothing else (Loom's dimmed-calendar overlay pairs always involve ≥24px copy).
-const XP_TT_MAX_PX = 20;
-const XP_TT_MIN_PX = 11;
-const XP_TT_MIN_FRAC = 0.25; // of the smaller text box
+// Cross-piece TEXT-ON-TEXT (Cases C+D). Case C (v11, Fuse s3): ANNOTATION-band
+// canvas text (11-20px) printed across ONE foreign label = a collision —
+// replayed on 4 live builds, fires on Fuse and nothing else. Case D (v12 —
+// dogfood cycle 3, Linear s1): COPY-band canvas text (21-32px) WOVEN through a
+// foreign piece's rows — the copy column interleaved through a full-canvas
+// app-shell's activity feed. The discriminator vs the sanctioned Loom overlay
+// (a 24px lede composed over ONE dimmed calendar label — a replayed
+// false-positive class that must stay exempt): a weave hits ≥2 DISTINCT text
+// nodes of the SAME foreign piece; a deliberate overlay grazes at most one.
+// Display-size copy (≥33px) stays governed by Cases A/B entirely.
+const XP_TT_MAX_PX = 20; // annotation band: single overlapped label fires
+const XP_ANY_TT_MIN_FRAC = 0.25; // of the smaller text box
+const XP_ANY_TT_MIN_OTHER_LEN = 3; // the run-over text must be real copy, not a glyph
+const XP_ANY_TT_MAX_CANVAS_PX = 32; // copy band ceiling; ≥33px = display (A/B territory)
+const XP_ANY_TT_MIN_OTHER_PX = 8; // run-over text can be mock micro-labels
+const XP_ANY_TT_MIN_WEAVE_HITS = 2; // 21-32px copy must hit ≥2 nodes of one piece
 
 /** Free-standing text from piece A colliding with piece B: covered-under-panel,
  *  straddling a panel edge, or printed across another piece's text. */
@@ -133,9 +141,8 @@ export const findCrossPieceOverlap = (m: SceneMeasurement): RenderTruthFinding[]
     (e) =>
       !e.isImg &&
       e.piece &&
-      e.text.trim().length >= 4 &&
-      e.fontSize >= XP_TT_MIN_PX &&
-      e.fontSize <= XP_TT_MAX_PX &&
+      e.text.trim().length >= XP_ANY_TT_MIN_OTHER_LEN &&
+      e.fontSize >= XP_ANY_TT_MIN_OTHER_PX &&
       e.opacity > 0.3,
   );
   const out: RenderTruthFinding[] = [];
@@ -184,9 +191,14 @@ export const findCrossPieceOverlap = (m: SceneMeasurement): RenderTruthFinding[]
         });
       }
     }
-    // Case C — BODY-size text printed across ANOTHER piece's text (annotation
-    // bullets over a mock's internal labels). Display-size overlays are exempt.
-    if (t.fontSize > XP_TT_MAX_PX) continue;
+    // Cases C/D — copy-class text printed across ANOTHER piece's text nodes.
+    // C: annotation band (≤20px) fires on a single overlapped label (Fuse).
+    // D (v12): copy band (21-32px) fires when it WEAVES through ≥2 distinct
+    // text nodes of the same foreign piece (the Linear s1 interleave); a
+    // single grazed label stays the sanctioned Loom overlay. Display ≥33px
+    // is Cases A/B territory.
+    if (t.fontSize > XP_ANY_TT_MAX_CANVAS_PX) continue;
+    const hitsByPiece = new Map<string, { o: MeasuredElement; frac: number }[]>();
     for (const o of otherTexts) {
       if (o.piece === t.piece) continue;
       const ix = Math.min(t.x + t.w, o.x + o.w) - Math.max(t.x, o.x);
@@ -194,14 +206,23 @@ export const findCrossPieceOverlap = (m: SceneMeasurement): RenderTruthFinding[]
       if (ix <= 0 || iy <= 0) continue;
       const minArea = Math.max(1, Math.min(t.w * t.h, o.w * o.h));
       const frac = (ix * iy) / minArea;
-      if (frac < XP_TT_MIN_FRAC) continue;
-      push(`tt|${t.piece}|${o.piece}|${t.text.slice(0, 14)}|${o.text.slice(0, 14)}`, {
+      if (frac < XP_ANY_TT_MIN_FRAC) continue;
+      hitsByPiece.set(o.piece, [...(hitsByPiece.get(o.piece) ?? []), { o, frac }]);
+    }
+    for (const [oPiece, hits] of hitsByPiece) {
+      const distinctNodes = new Set(hits.map((h) => `${h.o.text}|${h.o.x},${h.o.y}`)).size;
+      const fires = t.fontSize <= XP_TT_MAX_PX ? true : distinctNodes >= XP_ANY_TT_MIN_WEAVE_HITS;
+      if (!fires) continue;
+      const worst = hits.slice().sort((a, b) => b.frac - a.frac)[0];
+      push(`tt|${t.piece}|${oPiece}|${t.text.slice(0, 14)}`, {
         scene: m.scene,
         kind: "cross-piece-overlap",
         detail:
-          `body text "${t.text.slice(0, 32)}" (piece ${t.piece}, ${t.fontSize}px) is printed across ` +
-          `"${o.text.slice(0, 32)}" from piece ${o.piece} — ${Math.round(frac * 100)}% of the smaller ` +
-          `box overlaps. Move the annotation clear of the mock, or move its content INTO the mock.`,
+          `text "${t.text.slice(0, 32)}" (piece ${t.piece}, ${t.fontSize}px) is printed across ` +
+          `${distinctNodes} text node(s) of piece ${oPiece} (worst: "${worst.o.text.slice(0, 32)}", ` +
+          `${Math.round(worst.frac * 100)}% of the smaller box). Fix BOTH sides: ${oPiece} must keep ` +
+          `every row/label strictly inside its own slot (never extend under the copy column), and ` +
+          `${t.piece} must set its text on an opaque panel that owns its column (or move fully clear).`,
       });
     }
   }

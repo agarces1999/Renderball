@@ -78,6 +78,10 @@ export interface MeasuredElement {
   text: string;
   isImg: boolean;
   src?: string;
+  /** <img> only: the DECODED intrinsic width. 0 = the image failed to load/
+   *  decode (renders as the broken-image glyph) — the v12 broken-image swap
+   *  keys off this. Undefined for non-imgs and for older fixtures. */
+  imgNaturalWidth?: number;
   fontSize: number;
   opacity: number;
   /** Enclosing LEGO piece id (closest [data-piece]), "" when outside any piece. */
@@ -167,6 +171,7 @@ const PAGE_WALK = `(() => {
       text,
       isImg: el.tagName === "IMG",
       src: el.tagName === "IMG" ? el.getAttribute("src") || undefined : undefined,
+      imgNaturalWidth: el.tagName === "IMG" ? (typeof el.naturalWidth === "number" ? el.naturalWidth : 0) : undefined,
       fontSize: parseFloat(cs.fontSize) || 0,
       opacity: parseFloat(cs.opacity),
       piece,

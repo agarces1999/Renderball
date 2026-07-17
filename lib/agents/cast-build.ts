@@ -1043,6 +1043,235 @@ export const ensureHeroSurfaceContrast = (
   };
 };
 
+/**
+ * (g2) FORCED hero surface lift (v12 — dogfood cycle 3 gate→backstop closure).
+ * ensureHeroSurfaceContrast is deliberately conservative: it only judges
+ * statically-resolvable flat paints, so a hero painted with gradients, rgba(),
+ * or unresolvable values no-ops the pass — cycle 3's s4.hero flagged washout
+ * on ALL three rounds (measured spread 9 vs floor 45) while
+ * heroSurfaceCorrections stayed 0. This pass is the aggressive arm the RUNNER
+ * invokes only when the RENDER-SIDE washout gate has already MEASURED the
+ * region as a washout — the screenshot is the proof, so static conservatism
+ * no longer applies:
+ *   1. every background/backgroundColor style value is scanned, including
+ *      quoted gradients, rgba()/rgb() strings, template literals, and bare
+ *      palette consts;
+ *   2. the lift candidate is the paint matching the MEASURED dominant panel
+ *      color when one is supplied (the gate's own screenshot stats), else the
+ *      largest parseable panel, else the first canvas-toned/unjudgeable paint;
+ *   3. the candidate's ENTIRE value is rewritten to the palette token most
+ *      luminance-distant from the (measured) canvas;
+ *   4. when NOTHING parses, an override `background` is appended to the FIRST
+ *      style object in the body (the piece root's primary panel) — appended
+ *      LAST so the shorthand wins over any earlier paint, gradients included.
+ * The invariant this closes: a washout finding on round N produces a LIFT or
+ * an explicit regen by round N+1 — never a silent no-op.
+ */
+export interface ForcedLiftContext {
+  /** Measured dominant panel color inside the washed-out hero region —
+   *  css rgb()/rgba() or hex, straight from the measure walk. */
+  measuredPanelColor?: string;
+  /** The scene canvas color (hex) — the luminance anchor. Falls back to the
+   *  theme's canvas token when omitted. */
+  canvasColor?: string;
+}
+
+export interface ForcedLiftResult {
+  code: string;
+  lifted: boolean;
+  via: "paint-rewrite" | "root-override" | null;
+  targetHex: string | null;
+  targetToken: string | null;
+}
+
+/** Luminance (Rec.709, 0-255) of any css color value: #hex, rgb(), rgba().
+ *  rgba() with alpha < 0.5 barely tints its backdrop → resolves to `dilute`
+ *  (treated as canvas-toned by callers). Unparseable → null. */
+const cssLuminance709 = (value: string): number | "dilute" | null => {
+  const v = value.trim();
+  const hexL = luminance709(v);
+  if (hexL !== null) return hexL;
+  const m = /^rgba?\(([^)]+)\)$/.exec(v);
+  if (!m) return null;
+  const p = m[1].split(",").map((s) => parseFloat(s.trim()));
+  if (p.length < 3 || p.slice(0, 3).some((n) => Number.isNaN(n))) return null;
+  const alpha = p.length >= 4 && !Number.isNaN(p[3]) ? p[3] : 1;
+  if (alpha < 0.5) return "dilute";
+  return 0.2126 * p[0] + 0.7152 * p[1] + 0.0722 * p[2];
+};
+
+/** First balanced `{{ … }}` span at/after `from` (string-aware). */
+const balancedStyleSpan = (s: string, from: number): { start: number; end: number } | null => {
+  if (s.slice(from, from + 2) !== "{{") return null;
+  let depth = 0;
+  let quote: string | null = null;
+  for (let i = from; i < s.length; i++) {
+    const c = s[i];
+    if (quote) {
+      if (c === "\\") i++;
+      else if (c === quote) quote = null;
+      continue;
+    }
+    if (c === '"' || c === "'" || c === "`") { quote = c; continue; }
+    if (c === "{") depth++;
+    else if (c === "}") {
+      depth--;
+      if (depth === 0) return { start: from, end: i + 1 };
+    }
+  }
+  return null;
+};
+
+export const forceHeroSurfaceLift = (
+  body: string,
+  theme: Theme,
+  ctx: ForcedLiftContext = {},
+): ForcedLiftResult => {
+  const noop: ForcedLiftResult = { code: body, lifted: false, via: null, targetHex: null, targetToken: null };
+  const canvasRaw = ctx.canvasColor ?? theme.palette[tokenForRole(theme, "canvas")];
+  const canvasLRaw = canvasRaw ? cssLuminance709(canvasRaw) : null;
+  const canvasL = canvasLRaw === "dilute" ? null : canvasLRaw;
+  if (canvasL === null) return noop;
+
+  // Rewrite target: the palette token most luminance-distant from the canvas.
+  let target: { name: string; hex: string; delta: number } | null = null;
+  for (const [name, hex] of Object.entries(theme.palette)) {
+    const l = cssLuminance709(hex);
+    if (l === null || l === "dilute") continue;
+    const delta = Math.abs(l - canvasL);
+    if (!target || delta > target.delta) target = { name, hex, delta };
+  }
+  if (!target || target.delta < HERO_SURFACE_MIN_DELTA_L) return noop;
+  const targetHex = /^#/.test(target.hex) ? target.hex : canvasL < 128 ? "#ffffff" : "#111111";
+
+  const measuredL = ctx.measuredPanelColor ? cssLuminance709(ctx.measuredPanelColor) : null;
+
+  // Scan EVERY background paint: quoted strings (hex/rgb/gradients), template
+  // literals, bare palette consts. Value luminance where resolvable; a
+  // gradient's luminance is the mean of its resolvable stops.
+  interface Paint { start: number; end: number; l: number | null; area: number | null }
+  const paints: Paint[] = [];
+  const paintRx = /\b(?:background|backgroundColor)\s*:\s*/g;
+  for (let m = paintRx.exec(body); m; m = paintRx.exec(body)) {
+    const at = m.index + m[0].length;
+    const c = body[at];
+    let raw: string | null = null;
+    let end = at;
+    if (c === '"' || c === "'" || c === "`") {
+      const close = body.indexOf(c, at + 1);
+      if (close === -1) continue;
+      raw = body.slice(at + 1, close);
+      end = close + 1;
+    } else {
+      const bare = /^[A-Z][A-Z0-9_]{2,}/.exec(body.slice(at, at + 48));
+      if (!bare) continue;
+      raw = bare[0] in theme.palette ? theme.palette[bare[0]] : null;
+      end = at + bare[0].length;
+      if (raw === null) {
+        // Unresolvable foreign const — still a rewrite site (measured washout).
+        paints.push({ start: at, end, l: null, area: styleAreaAt(body, m.index) });
+        continue;
+      }
+    }
+    let l: number | "dilute" | null = cssLuminance709(raw);
+    if (l === null && /gradient\(/i.test(raw)) {
+      const stops = [
+        ...[...raw.matchAll(/#[0-9a-fA-F]{3,8}\b/g)].map((s) => cssLuminance709(s[0])),
+        ...[...raw.matchAll(/rgba?\([^)]+\)/g)].map((s) => cssLuminance709(s[0])),
+      ].filter((x): x is number => typeof x === "number");
+      if (stops.length > 0) l = stops.reduce((a, b) => a + b, 0) / stops.length;
+    }
+    paints.push({
+      start: at,
+      end,
+      l: l === "dilute" ? canvasL : l, // a diluted tint reads as the canvas
+      area: styleAreaAt(body, m.index),
+    });
+  }
+
+  // Candidates: canvas-toned or unjudgeable paints. (Contrasting paints are
+  // real surfaces — never overwrite one; the measured washout means whatever
+  // contrast exists carries no area on the frame.)
+  const candidates = paints.filter((p) => p.l === null || Math.abs(p.l - canvasL) < HERO_SURFACE_MIN_DELTA_L);
+  if (candidates.length > 0) {
+    let lift: Paint | null = null;
+    if (typeof measuredL === "number") {
+      // Prefer the paint that IS the measured dominant panel tone: the
+      // closest luminance match within ±12 L of the screenshot's own number.
+      let bestDelta = Infinity;
+      for (const p of candidates) {
+        if (typeof p.l !== "number") continue;
+        const d = Math.abs(p.l - measuredL);
+        if (d <= 12 && d < bestDelta) {
+          bestDelta = d;
+          lift = p;
+        }
+      }
+    }
+    if (!lift) {
+      for (const p of candidates) {
+        if (!lift || (p.area !== null && (lift.area === null || p.area > lift.area))) lift = p;
+      }
+    }
+    if (!lift) lift = candidates[0];
+    return {
+      code: body.slice(0, lift.start) + JSON.stringify(targetHex) + body.slice(lift.end),
+      lifted: true,
+      via: "paint-rewrite",
+      targetHex,
+      targetToken: target.name,
+    };
+  }
+
+  // Nothing parsed — override the piece root's primary panel: append a
+  // `background` shorthand LAST in the FIRST style object (last-wins over any
+  // earlier background/backgroundColor/backgroundImage, gradients included).
+  const styleAt = body.search(/\bstyle\s*=\s*\{\{/);
+  if (styleAt !== -1) {
+    const open = body.indexOf("{{", styleAt);
+    const span = balancedStyleSpan(body, open);
+    if (span) {
+      const inner = body.slice(span.start + 2, span.end - 2).trim().replace(/,\s*$/, "");
+      const rebuilt = `{{ ${inner}${inner ? ", " : ""}background: ${JSON.stringify(targetHex)} }}`;
+      return {
+        code: body.slice(0, span.start) + rebuilt + body.slice(span.end),
+        lifted: true,
+        via: "root-override",
+        targetHex,
+        targetToken: target.name,
+      };
+    }
+  }
+  // No style object anywhere — give the first opening tag one.
+  const tagM = /<([A-Za-z][A-Za-z0-9]*)\b/.exec(body);
+  if (tagM) {
+    const insertAt = tagM.index + tagM[0].length;
+    return {
+      code: body.slice(0, insertAt) + ` style={{ background: ${JSON.stringify(targetHex)} }}` + body.slice(insertAt),
+      lifted: true,
+      via: "root-override",
+      targetHex,
+      targetToken: target.name,
+    };
+  }
+  return noop;
+};
+
+/** Parseable px area of the style object surrounding a paint at `at` — bare
+ *  numeric width/height inside the nearest `{{ … }}` span (mirrors
+ *  ensureHeroSurfaceContrast's areaOfStyleSpan). */
+const styleAreaAt = (body: string, at: number): number | null => {
+  const open = body.lastIndexOf("{{", at);
+  if (open === -1) return null;
+  const close = body.indexOf("}}", at);
+  if (close === -1) return null;
+  const span = body.slice(open, close);
+  const w = /\bwidth\s*:\s*(\d+(?:\.\d+)?)(?![\d.%\w])/.exec(span);
+  const h = /\bheight\s*:\s*(\d+(?:\.\d+)?)(?![\d.%\w])/.exec(span);
+  if (!w || !h) return null;
+  return Number(w[1]) * Number(h[1]);
+};
+
 // ─── The element system prompt ──────────────────────────────────────────────
 
 /**
