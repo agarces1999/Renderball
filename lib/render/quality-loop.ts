@@ -1005,6 +1005,13 @@ export async function runQualityLoop(
         `${castResult.telemetry.tokensOut} tok out · ${castResult.telemetry.normalizedColors} hue-locked · ${castResult.telemetry.heroSurfaceCorrections} hero-surface lift(s) · ` +
         `${castResult.telemetry.metaTextStrips} meta-text strip(s) · ${castResult.telemetry.wallSeconds}s`,
     );
+    // P4b capacity budgets — the fire rate this layer is judged on. Logged on
+    // its own line so it stays greppable in a build log.
+    log(
+      `  cast r${round} budgets: ${castResult.telemetry.fontsCalibrated} face(s) calibrated / ${castResult.telemetry.fontsEstimated} estimated · ` +
+        `${castResult.telemetry.budgetsCalibrated} element budget(s) measured / ${castResult.telemetry.budgetsEstimated} estimated · ` +
+        `${castResult.telemetry.overflowRejections} copy-overflow rejection(s), ${castResult.telemetry.overflowRepaired} repaired`,
+    );
 
     finalCode = await phase(`finalize-r${round}`, async () => {
       // No clean corner logo (app-icon-only / no logo) → the wordmark text is

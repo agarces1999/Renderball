@@ -51,6 +51,21 @@ import { applyChoreography } from "./choreograph";
 import { stripCodeFence, verifyCompilable } from "./code-extraction";
 import { pickElevatedSurface } from "../render/void-furnish";
 import { AccountLimiter } from "./account-limiter";
+import { capacityFor, describeCapacity, type Capacity } from "../render/capacity";
+import type { FontMetrics } from "../render/font-metrics";
+import { deriveTypeScale, describeTypeScale, type ResolvedTypeScale } from "../render/type-scale";
+import {
+  checkCopyOverflow,
+  overflowRepairMessage,
+  type CopyEntry,
+} from "../render/copy-fit";
+import {
+  calibrateBuildFonts,
+  resolveMetricsFor,
+  DISPLAY_WEIGHT,
+  BODY_WEIGHT,
+  type BuildFontTable,
+} from "../render/calibrate-build-fonts";
 
 // ─── Public contract ────────────────────────────────────────────────────────
 
@@ -98,6 +113,21 @@ export interface CastBuildResult {
     /** Meta-text segments (leaked reasoning prose rendered as JSX text nodes)
      *  stripped from shipped bodies (v11 — the cycle-2 s2 leak class). */
     metaTextStrips: number;
+    /** P4b CAPACITY BUDGETS. Brand faces whose glyph advances were really
+     *  measured in Chromium this build (cache hits included) vs faces that fell
+     *  back to synthesized advances. */
+    fontsCalibrated: number;
+    fontsEstimated: number;
+    /** Elements handed a budget built on MEASURED metrics vs one flagged as an
+     *  estimate. The ratio is how much of the frame the budget layer actually
+     *  speaks for. */
+    budgetsCalibrated: number;
+    budgetsEstimated: number;
+    /** Emissions rejected because the element's owned copy overflowed its box,
+     *  and how many of those elements a re-emission then fixed. Fire rate is
+     *  the criterion for whether this layer earns its keep. */
+    overflowRejections: number;
+    overflowRepaired: number;
   };
   /**
    * Per-element outcome — which pieces shipped the MODEL's body (repaired or
@@ -1623,6 +1653,42 @@ export const copyLines = (content: SceneContent | undefined, owned: string[]): s
   return out;
 };
 
+/**
+ * The same owned-copy set as `copyLines`, STRUCTURED — `{path, text}` pairs the
+ * overflow check measures (lib/render/copy-fit.ts).
+ *
+ * Deliberately derived from `copyLines` rather than re-walking `content`: the
+ * two must not drift. If the brief tells an element to render a field, the fit
+ * check measures that exact field; if `copyLines` drops one (the headline-echo
+ * rule), the check must not charge the element for text it was told to omit.
+ * `meta.N` lines carry both a label and a value, so only the tagged VALUE — the
+ * part the element renders as its own text node — is measured.
+ */
+export const ownedCopyEntries = (
+  content: SceneContent | undefined,
+  owned: string[],
+): CopyEntry[] => {
+  const out: CopyEntry[] = [];
+  for (const line of copyLines(content, owned)) {
+    const pathM = /data-content-path="([^"]+)"/.exec(line);
+    if (!pathM) continue;
+    const path = pathM[1];
+    // The verbatim value is the first JSON string literal on the line; for a
+    // `meta.N` line that is the LABEL, so take the one after `value `.
+    const src = path.endsWith(".value") ? line.slice(line.indexOf(", value ") + 1) : line;
+    const valM = /"(?:[^"\\]|\\.)*"/.exec(src);
+    if (!valM) continue;
+    try {
+      const text = JSON.parse(valM[0]) as string;
+      if (typeof text === "string" && text.trim()) out.push({ path, text });
+    } catch {
+      // A value that will not round-trip is not measurable; skip it rather than
+      // manufacture an overflow out of a parse artifact.
+    }
+  }
+  return out;
+};
+
 /** Residual-REJECTION floor for unowned copy. A short single-token value —
  *  the brand name "Klarna" as a one-word headline — appears legitimately
  *  inside a hero mock's wordmark, URL bar, and chrome, so rejecting the
@@ -1885,8 +1951,12 @@ const elementBrief = (args: {
   slot: ElementSlot;
   pieceId: string;
   throughline: string;
+  /** P4b: the deterministic type scale this element must set (type-scale.ts). */
+  typeScale?: ResolvedTypeScale;
+  /** P4b: what that scale actually FITS in these bounds (capacity.ts). */
+  capacity?: Capacity;
 }): string => {
-  const { theme, script, sceneIndex, register, slot, pieceId, throughline } = args;
+  const { theme, script, sceneIndex, register, slot, pieceId, throughline, typeScale, capacity } = args;
   const scene = script.scenes[sceneIndex];
   const spec = specForSlot(scene, slot.id);
   const owned = ownedCopyFields(scene, slot);
@@ -1898,6 +1968,14 @@ const elementBrief = (args: {
     `BOUNDS: your wrapper is ${b.w}×${b.h}px at canvas (${b.x},${b.y})${slot.kind === "text" ? " — width is a MAX, height flows" : ""}. Fill it.`,
     `PALETTE ROLES you may paint with: ${slot.paletteRoles.map((r) => `${r} → ${tokenForRole(theme, r)}`).join(", ")}.`,
   ];
+
+  // P4b CAPACITY BUDGET. A leaf writes BLIND — it never sees the rendered frame
+  // — so "fill your bounds" is only half an instruction without the other half:
+  // how much content those bounds actually hold. The scale is stated FIRST
+  // because the budget is only true at that size (describeTypeScale says so),
+  // and the budget itself self-labels when it rests on an uncalibrated face.
+  if (typeScale) lines.push(describeTypeScale(typeScale));
+  if (capacity) lines.push(`CAPACITY: ${describeCapacity(capacity)}`);
 
   // Composed scenes: the brief LEADS with the head's blueprint. The generic
   // checklist/archetype/menu text below is the FALLBACK for un-composed scenes.
@@ -2421,6 +2499,16 @@ interface ElementJob {
   slot: ElementSlot;
   pieceId: string;
   brief: string;
+  /** P4b — the scale declared in the brief, and therefore the scale the
+   *  post-emission fit check measures against. */
+  typeScale: ResolvedTypeScale;
+  capacity: Capacity;
+  /** The metrics the budget was built on (display face for copy, body face
+   *  otherwise — see castBuild). */
+  metrics: FontMetrics;
+  /** The verbatim copy this element owns; empty ⇒ nothing exactly measurable,
+   *  so no overflow rejection can fire for it. */
+  copyEntries: CopyEntry[];
 }
 
 interface ElementOutcome {
@@ -2441,9 +2529,22 @@ interface ElementOutcome {
    *  a white headline on the light placeholder). The assembler flips that copy's
    *  ink to contrast the panel. False for a real/salvaged/neutral emission. */
   shippedBlueprintPlaceholder: boolean;
+  /** P4b: emissions this element lost to the copy-overflow check, and whether a
+   *  later attempt then fit. */
+  overflowRejections: number;
+  overflowRepaired: boolean;
 }
 
 const round2 = (n: number): number => Math.round(n * 100) / 100;
+
+/**
+ * Salvage rank for a body rejected ONLY for copy overflow. Zero on purpose: it
+ * competes with the hero DENSITY salvage (scored by interior richness), and a
+ * thin-but-fitting hero is the better ship than an overflowing one. It still
+ * beats no salvage at all, which is what keeps an overflow rejection from ever
+ * costing the scene its copy.
+ */
+const OVERFLOW_SALVAGE_SCORE = 0;
 
 /**
  * Drive one full element-cast build: settle contracts, fire every element
@@ -2458,7 +2559,13 @@ const round2 = (n: number): number => Math.round(n * 100) / 100;
  */
 export const castBuild = async (
   input: CastBuildInput,
-  opts?: { caller?: typeof castCall; concurrency?: number },
+  opts?: {
+    caller?: typeof castCall;
+    concurrency?: number;
+    /** P4b: injectable font calibration (tests assert it runs ONCE per build,
+     *  and run without Playwright/network). Production uses the real one. */
+    calibrate?: typeof calibrateBuildFonts;
+  },
 ): Promise<CastBuildResult> => {
   const t0 = Date.now();
   const { script, palette, aspect } = input;
@@ -2540,18 +2647,63 @@ export const castBuild = async (
     ),
   }));
 
+  // ── 1b. CAPACITY BUDGETS (P4b) — calibrate the brand faces ONCE, here ─────
+  // Deliberately awaited BEFORE the fan-out and never inside it: the burst
+  // fires ~20 element calls in parallel, so a per-element calibration would
+  // both serialize the burst behind a browser launch and repeat the identical
+  // measurement once per element. Every failure mode inside degrades to flagged
+  // fallback metrics (wider margin), so this can slow a build by a second or
+  // two but can never wedge one.
+  const fontTable: BuildFontTable = await (opts?.calibrate ?? calibrateBuildFonts)({
+    fonts: script.assets?.fonts ?? [],
+    stacks: { display: theme.fonts.display, body: theme.fonts.body },
+  }).catch(() => ({ metrics: {}, calibrated: 0, estimated: 0 }) as BuildFontTable);
+  if (fontTable.estimated > 0) {
+    console.warn(
+      `[cast-build] ${fontTable.estimated} brand face(s) uncalibrated — their capacity budgets ship as flagged ESTIMATES (wider margin)`,
+    );
+  }
+  // Resolved once, read synchronously per element. A copy column's budget is
+  // dominated by DISPLAY type (its headline is the string that overflows); every
+  // other element is dominated by body/label type (rows, chips, interior
+  // labels), so each gets the face its own largest text actually renders in.
+  const displayMetrics = resolveMetricsFor(theme.fonts.display, fontTable.metrics, DISPLAY_WEIGHT);
+  const bodyMetrics = resolveMetricsFor(theme.fonts.body, fontTable.metrics, BODY_WEIGHT);
+  const metricsForSlot = (slot: ElementSlot): FontMetrics =>
+    slot.id === "copy" ? displayMetrics : bodyMetrics;
+
   // ── 2. Element briefs — chrome earns NO call (Section emits Chrome itself,
   //       see assemble.ts) ──────────────────────────────────────────────────
   const system = buildElementSystem(theme);
+  const canvas = CANVAS[aspect];
   const jobs: ElementJob[] = plans.flatMap((plan, i) =>
     slotsFor(plan, i)
       .filter((slot) => slot.kind !== "chrome")
-      .map((slot) => ({
-        sceneIndex: i,
-        slot,
-        pieceId: `s${i}.${slot.id}`,
-        brief: elementBrief({ theme, script, sceneIndex: i, register: plan.register, slot, pieceId: `s${i}.${slot.id}`, throughline }),
-      })),
+      .map((slot): ElementJob => {
+        const typeScale = deriveTypeScale({ role: slot.id, box: slot.bounds, canvas });
+        const metrics = metricsForSlot(slot);
+        const capacity = capacityFor(slot.bounds, typeScale, metrics);
+        return {
+          sceneIndex: i,
+          slot,
+          pieceId: `s${i}.${slot.id}`,
+          brief: elementBrief({
+            theme,
+            script,
+            sceneIndex: i,
+            register: plan.register,
+            slot,
+            pieceId: `s${i}.${slot.id}`,
+            throughline,
+            typeScale,
+            capacity,
+          }),
+          typeScale,
+          capacity,
+          metrics,
+          copyEntries: ownedCopyEntries(script.scenes[i]?.content, ownedCopyFields(script.scenes[i], slot)),
+        };
+      }),
   );
 
   // ── 3+4. Fire ALL calls through the semaphore; per result: extract →
@@ -2564,6 +2716,8 @@ export const castBuild = async (
 
   const runElement = async (job: ElementJob): Promise<ElementOutcome> => {
     let tokens = 0;
+    // P4b: attempts lost to the copy-overflow gate for THIS element.
+    let overflowRejections = 0;
     const model = modelFor(job.slot.id);
     const effort = effortFor(job.slot.id, model);
     // Verbatim copy this element does NOT own. Ownership lives in the slot —
@@ -2759,6 +2913,41 @@ export const castBuild = async (
       }
       const compileErr = await verifyFragment(finalBody);
       if (compileErr) return { ok: false, raw, error: compileErr };
+      // (P4b) COPY-OVERFLOW gate — the budget's enforcement arm. Runs LAST, on
+      // the same body that would ship, and only for elements owning verbatim
+      // scene copy (the one text class whose string, box and size are all
+      // exactly known — see copy-fit.ts). An overflow here costs one ~10s
+      // re-emission instead of a 44-100s render + vision gate round.
+      //
+      // It carries `salvage`, so if the repair budget exhausts the element
+      // ships this real (if tight) body rather than a placeholder: overflowing
+      // copy is a design nit, a placeholdered copy column is a lost headline.
+      if (job.copyEntries.length > 0) {
+        const fit = checkCopyOverflow({
+          body: finalBody,
+          entries: job.copyEntries,
+          box: job.slot.bounds,
+          scale: job.typeScale,
+          metrics: job.metrics,
+          // A copy column's largest type IS its headline, so an untagged
+          // headline may inherit the body's largest declared size. A hero's
+          // largest type may be an unrelated stat, so it may not.
+          inheritLargestForDisplay: job.slot.kind === "text",
+        });
+        if (fit.overflows) {
+          overflowRejections++;
+          console.warn(
+            `[cast-build] ${job.pieceId}: owned copy overflows its ${Math.round(job.slot.bounds.h)}px box ` +
+              `(~${fit.totalPx}px needed / ${fit.availablePx}px available${fit.estimated ? ", ESTIMATED metrics" : ""}) — re-emitting at a tighter scale`,
+          );
+          return {
+            ok: false,
+            raw,
+            error: overflowRepairMessage(fit, job.typeScale),
+            salvage: { body: finalBody, score: OVERFLOW_SALVAGE_SCORE },
+          };
+        }
+      }
       return {
         ok: true,
         body: finalBody,
@@ -2797,7 +2986,7 @@ export const castBuild = async (
 
     const first = await attempt(job.brief);
     if (first.ok) {
-      return { pieceId: job.pieceId, body: first.body, outputTokens: tokens, repaired: false, failed: false, colorRewrites: first.rewrites, fontRewrites: first.fontRewrites, heroSurfaceCorrected: first.heroSurface, metaTextStrips: first.metaStrips, shippedBlueprintPlaceholder: false };
+      return { pieceId: job.pieceId, body: first.body, outputTokens: tokens, repaired: false, failed: false, colorRewrites: first.rewrites, fontRewrites: first.fontRewrites, heroSurfaceCorrected: first.heroSurface, metaTextStrips: first.metaStrips, shippedBlueprintPlaceholder: false, overflowRejections, overflowRepaired: false };
     }
     noteSalvage(first);
 
@@ -2846,7 +3035,7 @@ export const castBuild = async (
         leanMode,
       );
       if (next.ok) {
-        return { pieceId: job.pieceId, body: next.body, outputTokens: tokens, repaired: true, failed: false, colorRewrites: next.rewrites, fontRewrites: next.fontRewrites, heroSurfaceCorrected: next.heroSurface, metaTextStrips: next.metaStrips, shippedBlueprintPlaceholder: false };
+        return { pieceId: job.pieceId, body: next.body, outputTokens: tokens, repaired: true, failed: false, colorRewrites: next.rewrites, fontRewrites: next.fontRewrites, heroSurfaceCorrected: next.heroSurface, metaTextStrips: next.metaStrips, shippedBlueprintPlaceholder: false, overflowRejections, overflowRepaired: overflowRejections > 0 };
       }
       noteSalvage(next);
       prev = next;
@@ -2857,9 +3046,16 @@ export const castBuild = async (
     // counted as a failure for telemetry/cache-invalidation) rather than the
     // blank placeholder. Only fall back to the neutral placeholder when NO
     // compilable body was ever produced (every call errored or stayed broken).
+    // P4b widens the same invariant to the copy-overflow gate: an element whose
+    // only remaining defect is tight copy ships that copy. A placeholdered copy
+    // column loses the headline outright, which is strictly worse than a
+    // headline that runs a line long.
     if (bestSalvage) {
-      console.warn(`[cast-build] ${job.pieceId}: hero stayed under the density floor through ${maxRepairs} repair(s) — shipping the richest real emission (score ${bestSalvage.score}) rather than an empty placeholder`);
-      return { pieceId: job.pieceId, body: bestSalvage.body, outputTokens: tokens, repaired: false, failed: true, colorRewrites: 0, fontRewrites: 0, heroSurfaceCorrected: false, metaTextStrips: 0, shippedBlueprintPlaceholder: false };
+      const why = overflowRejections > 0 && bestSalvage.score === OVERFLOW_SALVAGE_SCORE
+        ? `copy still overflows after ${maxRepairs} repair(s)`
+        : `hero stayed under the density floor through ${maxRepairs} repair(s)`;
+      console.warn(`[cast-build] ${job.pieceId}: ${why} — shipping the richest real emission (score ${bestSalvage.score}) rather than an empty placeholder`);
+      return { pieceId: job.pieceId, body: bestSalvage.body, outputTokens: tokens, repaired: false, failed: true, colorRewrites: 0, fontRewrites: 0, heroSurfaceCorrected: false, metaTextStrips: 0, shippedBlueprintPlaceholder: false, overflowRejections, overflowRepaired: false };
     }
     // P3-C6 #1: a DECORATIVE motif (throughline/connector) that broke with no
     // salvage must VANISH, not ship the neutral placeholder's empty bordered
@@ -2868,7 +3064,7 @@ export const castBuild = async (
     // stands on its own.
     if (MOTIF_DECO_SLOT_IDS.has(job.slot.id)) {
       console.warn(`[cast-build] ${job.pieceId}: decorative motif broke through repair — shipping an EMPTY fragment (a placeholdered motif is not an intentional motif; render nothing rather than a stray box)`);
-      return { pieceId: job.pieceId, body: "<></>", outputTokens: tokens, repaired: false, failed: true, colorRewrites: 0, fontRewrites: 0, heroSurfaceCorrected: false, metaTextStrips: 0, shippedBlueprintPlaceholder: false };
+      return { pieceId: job.pieceId, body: "<></>", outputTokens: tokens, repaired: false, failed: true, colorRewrites: 0, fontRewrites: 0, heroSurfaceCorrected: false, metaTextStrips: 0, shippedBlueprintPlaceholder: false, overflowRejections, overflowRepaired: false };
     }
     // No salvageable emission (every attempt errored or compile-broke). For a
     // COMPOSED hero this is the catastrophic case — the blank shell would ship a
@@ -2880,7 +3076,7 @@ export const castBuild = async (
     const jobScene = script.scenes[job.sceneIndex];
     const fallback = isHero && heroSpec ? heroBlueprintPlaceholder(theme, job.slot, heroSpec, aspect, jobScene) : placeholderBody(theme, job.slot, jobScene);
     console.warn(`[cast-build] ${job.pieceId}: broken through repair — shipping ${isHero && heroSpec ? "BLUEPRINT-populated" : "neutral"} placeholder (${prev.error.slice(0, 120)})`);
-    return { pieceId: job.pieceId, body: fallback, outputTokens: tokens, repaired: false, failed: true, colorRewrites: 0, fontRewrites: 0, heroSurfaceCorrected: false, metaTextStrips: 0, shippedBlueprintPlaceholder: shipsFillPanel };
+    return { pieceId: job.pieceId, body: fallback, outputTokens: tokens, repaired: false, failed: true, colorRewrites: 0, fontRewrites: 0, heroSurfaceCorrected: false, metaTextStrips: 0, shippedBlueprintPlaceholder: shipsFillPanel, overflowRejections, overflowRepaired: false };
   };
 
   const outcomes = await Promise.all(jobs.map((job) => limiter.with(() => runElement(job))));
@@ -2927,6 +3123,12 @@ export const castBuild = async (
       inkCorrected: inkGuard.corrected,
       heroSurfaceCorrections: outcomes.filter((o) => o.heroSurfaceCorrected).length,
       metaTextStrips: outcomes.reduce((n, o) => n + o.metaTextStrips, 0),
+      fontsCalibrated: fontTable.calibrated,
+      fontsEstimated: fontTable.estimated,
+      budgetsCalibrated: jobs.filter((j) => !j.capacity.estimated).length,
+      budgetsEstimated: jobs.filter((j) => j.capacity.estimated).length,
+      overflowRejections: outcomes.reduce((n, o) => n + o.overflowRejections, 0),
+      overflowRepaired: outcomes.filter((o) => o.overflowRepaired).length,
     },
     elementOutcomes: outcomes.map((o) => ({ pieceId: o.pieceId, failed: o.failed, repaired: o.repaired })),
   };
