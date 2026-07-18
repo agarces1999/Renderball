@@ -81,6 +81,26 @@ const MIN_REGION_PX = 8;
 /** Sampling stride cap: at most ~250k pixels are sampled per region. */
 const MAX_SAMPLED_PIXELS = 250_000;
 
+// ── secondary-panel washout (P3-C2 #3) ───────────────────────────────────────
+// The whole-hero region samples as ONE box, so a hero with a BRIGHT primary
+// panel and a near-canvas GHOST secondary panel (Brex s1: white "MANUAL
+// WORKFLOW" card on the left, an all-but-invisible "47:32:18 / STUCK" panel on
+// the right) passes — the bright half lifts the union's spread/variance while
+// the ghost half ships black-on-black. This gate samples each CARD-SIZED
+// sub-panel of a hero individually and flags a secondary panel that (a) breaches
+// BOTH washout floors AND (b) sits within NEAR_CANVAS_L luminance of the brand
+// canvas — a ghost that dissolves into the background, not a legit dark surface.
+/** A hero sub-panel must cover at least this fraction of the canvas to be a
+ *  "card" worth judging (a chip/badge is smaller). */
+const SUBPANEL_MIN_FRAC = 0.04;
+/** …and at most this, so the whole-hero region isn't re-judged as its own panel. */
+const SUBPANEL_MAX_FRAC = 0.55;
+/** Neither side of a sub-panel may be thinner than this (excludes rules/bars). */
+const SUBPANEL_MIN_DIM = 120;
+/** A secondary panel is a GHOST only when its mean luminance is within this many
+ *  0–255 units of the brand canvas luminance (blends into the background). */
+const NEAR_CANVAS_L = 30;
+
 // ── types ────────────────────────────────────────────────────────────────────
 
 export interface HeroRegion {
@@ -90,7 +110,56 @@ export interface HeroRegion {
   y: number;
   w: number;
   h: number;
+  /** P3-C2 #3: a card-sized SUB-panel of the hero (judged for ghost washout
+   *  against the canvas), not the whole-hero region. */
+  secondary?: boolean;
 }
+
+const cssAlphaOfBgLocal = (c: string): number => {
+  const m = /rgba?\(([^)]+)\)/.exec(c || "");
+  if (!m) return 0;
+  const p = m[1].split(",").map((v) => parseFloat(v.trim()));
+  return p.length >= 4 ? (Number.isNaN(p[3]) ? 1 : p[3]) : 1;
+};
+
+/** Rec.709 luminance (0–255) of a #rrggbb string, or null when unparseable. */
+export const hexLum255 = (hex: string): number | null => {
+  const m = /^#?([0-9a-fA-F]{6})$/.exec((hex ?? "").trim());
+  if (!m) return null;
+  const n = parseInt(m[1], 16);
+  const r = (n >> 16) & 255;
+  const g = (n >> 8) & 255;
+  const b = n & 255;
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+};
+
+/**
+ * Card-sized sub-panels of each hero: measured elements belonging to a ".hero"
+ * piece that paint a solid-ish surface (opaque bg or a rounded card with a
+ * background), sized like a card (SUBPANEL_MIN_FRAC..MAX_FRAC of the canvas,
+ * min-dim ≥ SUBPANEL_MIN_DIM). Pure — no PNG work.
+ */
+export const heroSubPanelRegions = (m: SceneMeasurement): HeroRegion[] => {
+  if (m.error) return [];
+  const canvasArea = m.width * m.height;
+  if (canvasArea <= 0) return [];
+  const out: HeroRegion[] = [];
+  for (const e of m.elements) {
+    if (!e.piece || !e.piece.endsWith(".hero")) continue;
+    if (e.isImg || e.opacity <= 0.05) continue;
+    const surface = cssAlphaOfBgLocal(e.bg) >= 0.5 || (!!e.hasBgImage && (e.radius ?? 0) > 0);
+    if (!surface) continue;
+    const x = Math.max(0, Math.floor(e.x));
+    const y = Math.max(0, Math.floor(e.y));
+    const w = Math.min(m.width, Math.ceil(e.x + e.w)) - x;
+    const h = Math.min(m.height, Math.ceil(e.y + e.h)) - y;
+    if (w < SUBPANEL_MIN_DIM || h < SUBPANEL_MIN_DIM) continue;
+    const frac = (w * h) / canvasArea;
+    if (frac < SUBPANEL_MIN_FRAC || frac > SUBPANEL_MAX_FRAC) continue;
+    out.push({ scene: m.scene, pieceId: e.piece, x, y, w, h, secondary: true });
+  }
+  return out;
+};
 
 export interface HeroLuminanceStats {
   scene: number;
@@ -305,6 +374,26 @@ const findingFor = (stats: HeroLuminanceStats): HeroWashoutFinding => ({
   stats,
 });
 
+/** P3-C2 #3: a secondary (card-sized) hero panel that is a near-canvas ghost. */
+const secondaryFindingFor = (stats: HeroLuminanceStats): HeroWashoutFinding => ({
+  kind: "hero-washout",
+  scene: stats.scene,
+  pieceId: stats.pieceId,
+  blocking: true,
+  detail:
+    `scene ${stats.scene}: hero piece "${stats.pieceId}" ships a SECONDARY panel that is a near-canvas WASHOUT — ` +
+    `the sub-panel region (${stats.region.w}x${stats.region.h} at ${stats.region.x},${stats.region.y}) has luminance ` +
+    `spread ${round1(stats.spread)} (floor ≥${WASHOUT_SPREAD_FLOOR}), std-dev ${round1(stats.stdDev)} (floor ≥${WASHOUT_STDDEV_FLOOR}), ` +
+    `and mean ${round1(stats.mean)} — it dissolves into the brand canvas. The hero's PRIMARY panel is fine, but this ` +
+    `second card is a black-on-black ghost; half the frame reads empty.`,
+  repairInstruction:
+    `Lift the SECONDARY panel too. This hero has more than one card and one of them (at ${stats.region.x},${stats.region.y}, ` +
+    `${stats.region.w}x${stats.region.h}) is painted tone-on-tone with the canvas. Give EVERY card in the hero a surface + ` +
+    `interior that separates from the background: an opaque panel a clear step off the canvas, ink/accent interior content, ` +
+    `and readable labels — do not leave any panel near-invisible. Every card's region must clear the washout floors, not just the largest.`,
+  stats,
+});
+
 const nearMissFor = (stats: HeroLuminanceStats): HeroWashoutNearMiss => ({
   kind: "washout-near-miss",
   scene: stats.scene,
@@ -334,9 +423,10 @@ const nearMissFor = (stats: HeroLuminanceStats): HeroWashoutNearMiss => ({
  */
 export const assessHeroWashout = async (
   measurements: SceneMeasurement[],
-  opts?: { page?: Page },
+  opts?: { page?: Page; canvasBackground?: string },
 ): Promise<HeroContrastResult> => {
   const result: HeroContrastResult = { stats: [], findings: [], advisories: [], errors: [] };
+  const canvasLum = opts?.canvasBackground ? hexLum255(opts.canvasBackground) : null;
   const work: { m: SceneMeasurement; regions: HeroRegion[] }[] = [];
   for (const m of measurements) {
     if (!m.screenshotPath) {
@@ -345,7 +435,11 @@ export const assessHeroWashout = async (
       continue;
     }
     const regions = heroRegionsFromMeasurement(m);
-    if (regions.length > 0) work.push({ m, regions });
+    // P3-C2 #3: also sample card-sized sub-panels (needs the canvas ref for the
+    // near-canvas ghost test). Full-frame heroes with a single card yield none.
+    const subPanels = canvasLum !== null ? heroSubPanelRegions(m) : [];
+    const all = [...regions, ...subPanels];
+    if (all.length > 0) work.push({ m, regions: all });
   }
   if (work.length === 0) return result;
 
@@ -388,6 +482,10 @@ export const assessHeroWashout = async (
         result.errors.push(`scene ${m.scene}: sampling failed — ${err instanceof Error ? err.message.split("\n")[0] : String(err)}`);
         continue;
       }
+      // Primary heroes flagged this scene — so a secondary-panel finding never
+      // double-reports a hero whose whole-region already failed.
+      const primaryFailed = new Set<string>();
+      const secondaryCandidates: HeroLuminanceStats[] = [];
       for (const [i, r] of raw.entries()) {
         const region = regions[i];
         if (r.error || r.mean === undefined) {
@@ -405,9 +503,19 @@ export const assessHeroWashout = async (
           spread: (r.p95 ?? 0) - (r.p05 ?? 0),
           sampledPixels: r.sampledPixels ?? 0,
         };
+        if (region.secondary) {
+          // P3-C2 #3: a card-sized sub-panel — flag only when it breaches BOTH
+          // floors AND its mean sits within NEAR_CANVAS_L of the brand canvas.
+          const nearCanvas = canvasLum !== null && Math.abs(stats.mean - canvasLum) <= NEAR_CANVAS_L;
+          if (stats.spread < WASHOUT_SPREAD_FLOOR && stats.stdDev < WASHOUT_STDDEV_FLOOR && nearCanvas) {
+            secondaryCandidates.push(stats);
+          }
+          continue; // sub-panels never contribute to primary stats/near-miss
+        }
         result.stats.push(stats);
         if (stats.spread < WASHOUT_SPREAD_FLOOR && stats.stdDev < WASHOUT_STDDEV_FLOOR) {
           result.findings.push(findingFor(stats));
+          primaryFailed.add(stats.pieceId);
         } else if (
           stats.spread < WASHOUT_SPREAD_FLOOR &&
           stats.stdDev < WASHOUT_STDDEV_FLOOR + WASHOUT_NEAR_MISS_STD_MARGIN
@@ -415,6 +523,15 @@ export const assessHeroWashout = async (
           // v13 (#3): the near-miss band — advisory only, never blocking.
           result.advisories.push(nearMissFor(stats));
         }
+      }
+      // At most ONE secondary finding per hero (the darkest ghost), and never
+      // when the whole hero already failed (that finding routes the same regen).
+      const emittedSecondary = new Set<string>();
+      for (const s of secondaryCandidates.sort((a, b) => a.mean - b.mean)) {
+        if (primaryFailed.has(s.pieceId) || emittedSecondary.has(s.pieceId)) continue;
+        emittedSecondary.add(s.pieceId);
+        result.stats.push(s);
+        result.findings.push(secondaryFindingFor(s));
       }
     }
   } finally {

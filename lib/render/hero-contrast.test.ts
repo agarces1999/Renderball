@@ -27,6 +27,8 @@ import path from "path";
 import {
   assessHeroWashout,
   heroRegionsFromMeasurement,
+  heroSubPanelRegions,
+  hexLum255,
   WASHOUT_SPREAD_FLOOR,
   WASHOUT_STDDEV_FLOOR,
   WASHOUT_NEAR_MISS_STD_MARGIN,
@@ -84,6 +86,37 @@ await check("heroRegionsFromMeasurement: zero-size members ignored; degenerate h
   ]);
   const regions = heroRegionsFromMeasurement(m);
   assert(regions.length === 1 && regions[0].pieceId === "s2.heroB.hero", `only the measurable hero survives, got ${regions.map((r) => r.pieceId).join(",")}`);
+});
+
+// ── P3-C2 #3: secondary-panel sub-region selection + luminance helper ─────────
+await check("hexLum255: dark brand canvas #15191e ≈ 24, white ≈ 255", () => {
+  const dark = hexLum255("#15191e");
+  const white = hexLum255("#ffffff");
+  assert(dark !== null && Math.abs(dark - 24) < 3, `dark got ${dark}`);
+  assert(white !== null && Math.round(white) === 255, `white got ${white}`);
+  assert(hexLum255("nope") === null, "unparseable → null");
+});
+
+await check("heroSubPanelRegions: picks card-sized opaque hero panels (Brex s1 split), skips chips/bars/transparent", () => {
+  const surface = (piece: string, x: number, y: number, w: number, h: number, bg: string): MeasuredElement =>
+    ({ ...el(piece, x, y, w, h), bg, radius: 12 });
+  const m = measurement(1, [
+    surface("s1.hero", 140, 180, 800, 540, "rgb(245,246,248)"), // left bright card — card-sized ✓
+    surface("s1.hero", 980, 180, 800, 540, "rgb(21,25,30)"),    // right ghost card — card-sized ✓ (near-canvas)
+    surface("s1.hero", 200, 300, 70, 30, "rgb(255,89,0)"),      // a chip — too small ✗
+    surface("s1.hero", 200, 700, 600, 6, "rgb(255,89,0)"),      // a thin rule — min-dim ✗
+    { ...el("s1.hero", 300, 300, 400, 400), bg: "rgba(0,0,0,0)" }, // transparent wrapper ✗
+    surface("s1.copy", 240, 760, 900, 200, "rgb(20,20,24)"),    // not a .hero piece ✗
+  ]);
+  const r = heroSubPanelRegions(m);
+  assert(r.length === 2 && r.every((p) => p.secondary === true), `two hero cards selected, got ${r.length}: ${JSON.stringify(r.map((p) => [p.x, p.w]))}`);
+});
+
+await check("heroSubPanelRegions: a hero with a single full card yields no oversized sub-panel (>MAX_FRAC skipped)", () => {
+  const m = measurement(2, [
+    { ...el("s2.hero", 0, 0, 1900, 1060), bg: "rgb(20,22,26)" }, // ~97% of canvas → not a 'card'
+  ]);
+  assert(heroSubPanelRegions(m).length === 0, "whole-frame surface is not a sub-panel");
 });
 
 // ── real fixtures ────────────────────────────────────────────────────────────

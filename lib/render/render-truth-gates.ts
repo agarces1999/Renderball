@@ -30,6 +30,9 @@ export type RenderTruthKind =
   | "canvas-brightness"
   | "canvas-coherence"
   | "corner-mark-collision"
+  | "hollow-cta"
+  | "intra-piece-overlap"
+  | "ghost-fragment"
   | "stranded-hero"
   | "interior-clip"
   | "measure-error";
@@ -299,6 +302,15 @@ const cssAlpha = (color: string): number => {
   if (!m) return 0; // no parseable bg ⇒ treat as transparent
   const p = m[1].split(",").map((v) => parseFloat(v.trim()));
   return p.length >= 4 ? (Number.isNaN(p[3]) ? 1 : p[3]) : 1;
+};
+
+/** [r,g,b] of a CSS rgb()/rgba() string (0-255), or null when unparseable. */
+const rgbTriplet = (color: string): [number, number, number] | null => {
+  const m = /rgba?\(([^)]+)\)/.exec(color || "");
+  if (!m) return null;
+  const p = m[1].split(",").map((v) => parseFloat(v.trim()));
+  if (p.length < 3 || p.slice(0, 3).some((v) => Number.isNaN(v))) return null;
+  return [p[0], p[1], p[2]];
 };
 
 // Inline text containers — emphasis tags AND span/a/label — sit INSIDE a parent
@@ -1496,11 +1508,32 @@ export interface MotifClutterFinding {
   kind: "motif-clutter";
   scene: number;
   pieceId: string;
-  form: "decorative-glyph" | "floating-brand-mark" | "floating-motif";
+  form: "decorative-glyph" | "floating-brand-mark" | "floating-motif" | "protruding-motif";
   text: string;
   rect: { x: number; y: number; w: number; h: number };
   detail: string;
 }
+
+// ── protruding-motif calibration (P3-C2 #1) ──────────────────────────────────
+// The recurring residual (Fuse, Klarna, Brex): the head authors the throughline
+// INSIDE the hero (Brex s2 bounds 340,420,210,32; s3 760,430,400,36; s4
+// 820,480,280,28), but the CAST re-emits it as an absolutely-positioned chip
+// pinned near the hero's right edge — protruding past the hero's painted
+// envelope into empty canvas (Brex s2 "RECEIPT AUTO-MATCHED" sits fully right of
+// the 300..1360 dashboard; s3 "9.8M RECEIPTS…" pokes ~45px past the 320..1565
+// card, over the 30x tile; s4 "RECEIPTS AUTOMATED…" juts ~140px past the
+// 460..1460 onboarding mock). The gap arm keeps them (they're <80px off the hero
+// edge — "on content" by its measure), so they slip. This arm CLAMPS the defect:
+// a throughline/connector chip whose box sticks out past the hero's envelope by
+// ≥ PROTRUSION_MIN_PX into canvas that no other content covers is removed. A
+// throughline fully contained in the hero (the reference's in-mock slot) stays.
+/** Min single-edge overhang (px) past the hero envelope, in EMPTY canvas, for a
+ *  throughline chip to count as protruding. Brex s3 pokes ~45px (nearest fire);
+ *  a rounded-corner sliver (~10px) or a fully-contained motif (0) stays. */
+export const PROTRUSION_MIN_PX = 36;
+/** A protruding strip this-or-more covered by OTHER content (copy panel, an
+ *  adjacent card) is a chip legitimately bridging two panels → kept, not clamped. */
+const PROTRUSION_COVER_FRAC = 0.5;
 
 export interface MotifClutterOptions {
   /** Brand name — enables the floating-brand-mark arm (omit ⇒ glyph arm only). */
@@ -1609,6 +1642,23 @@ export const findMotifClutter = (
       decoPieceRects.set(e.piece, [...(decoPieceRects.get(e.piece) ?? []), { x: e.x, y: e.y, w: e.w, h: e.h }]);
     }
   }
+  // The hero's painted envelope (union of its non-full-bleed elements) — the box
+  // a throughline chip must stay inside. A full-bleed hero (its members ARE the
+  // canvas) yields no bounded envelope, so nothing can "protrude" past it.
+  const heroEls = visible.filter(
+    (e) => !!e.piece && e.piece.endsWith(".hero") && e.w * e.h < EDGE_CROP_FULL_BLEED_FRAC * canvasArea,
+  );
+  const heroBox =
+    heroEls.length > 0
+      ? (() => {
+          const x0 = Math.min(...heroEls.map((e) => e.x));
+          const y0 = Math.min(...heroEls.map((e) => e.y));
+          return { x: x0, y: y0, w: Math.max(...heroEls.map((e) => e.x + e.w)) - x0, h: Math.max(...heroEls.map((e) => e.y + e.h)) - y0 };
+        })()
+      : null;
+  // Content that is NOT the hero (a copy column, an adjacent card) — a chip whose
+  // overhang lands ON one of these bridges two panels legitimately → not clamped.
+  const otherContent = anchors.filter((a) => !(a.piece && a.piece.endsWith(".hero")));
   for (const [pieceId, rects] of decoPieceRects) {
     if (seenMarkPiece.has(pieceId) || seenGlyphPiece.has(pieceId)) continue; // already flagged
     const x0 = Math.min(...rects.map((r) => r.x));
@@ -1616,19 +1666,89 @@ export const findMotifClutter = (
     const box = { x: x0, y: y0, w: Math.max(...rects.map((r) => r.x + r.w)) - x0, h: Math.max(...rects.map((r) => r.y + r.h)) - y0 };
     if (box.w <= 0 || box.h <= 0) continue;
     const gap = anchors.length ? Math.min(...anchors.map((a) => rectGap(box, { x: a.x, y: a.y, w: a.w, h: a.h }))) : Infinity;
-    if (gap < isolationPx) continue; // integrated with content → keep
-    seenMarkPiece.add(pieceId);
-    out.push({
-      kind: "motif-clutter",
-      scene: m.scene,
-      pieceId,
-      form: "floating-motif",
-      text: "",
-      rect: box,
-      detail: `scene ${m.scene}: throughline/connector piece ${pieceId} floats ${Math.round(gap)}px off all content (floor ${isolationPx}px) — a motif pinned in the void, disconnected from the frame. Remove it.`,
-    });
+    if (gap >= isolationPx) {
+      seenMarkPiece.add(pieceId);
+      out.push({
+        kind: "motif-clutter",
+        scene: m.scene,
+        pieceId,
+        form: "floating-motif",
+        text: "",
+        rect: box,
+        detail: `scene ${m.scene}: throughline/connector piece ${pieceId} floats ${Math.round(gap)}px off all content (floor ${isolationPx}px) — a motif pinned in the void, disconnected from the frame. Remove it.`,
+      });
+      continue;
+    }
+    // Attached to content (gap < floor) but possibly PROTRUDING past the hero's
+    // envelope into empty canvas — the Brex s2/s3/s4 pinned-right proof chips.
+    const overPx = heroBox ? motifProtrusionPx(box, heroBox, otherContent) : 0;
+    if (overPx >= PROTRUSION_MIN_PX) {
+      seenMarkPiece.add(pieceId);
+      out.push({
+        kind: "motif-clutter",
+        scene: m.scene,
+        pieceId,
+        form: "protruding-motif",
+        text: "",
+        rect: box,
+        detail: `scene ${m.scene}: throughline/connector piece ${pieceId} protrudes ~${Math.round(overPx)}px past the hero's envelope (${Math.round(heroBox!.x)},${Math.round(heroBox!.y)} ${Math.round(heroBox!.w)}×${Math.round(heroBox!.h)}) into empty canvas — a motif chip pinned outside the frame's content, not the in-hero slot the head authored. Remove it (or nest it fully inside the hero).`,
+      });
+    }
   }
   return out;
+};
+
+/** Rect-intersection area. */
+const rectIntersectArea = (
+  a: { x: number; y: number; w: number; h: number },
+  b: { x: number; y: number; w: number; h: number },
+): number => {
+  const w = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
+  const h = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
+  return w > 0 && h > 0 ? w * h : 0;
+};
+
+/**
+ * How far a throughline chip's box sticks out past the hero's envelope, measured
+ * as the widest single-edge overhang whose strip lands in EMPTY canvas (covered
+ * < PROTRUSION_COVER_FRAC by any non-hero content). 0 when the chip is fully
+ * contained, or when every overhang lands on an adjacent content panel.
+ */
+export const motifProtrusionPx = (
+  box: { x: number; y: number; w: number; h: number },
+  hero: { x: number; y: number; w: number; h: number },
+  otherContent: { x: number; y: number; w: number; h: number }[],
+): number => {
+  const heroR = hero.x + hero.w;
+  const heroB = hero.y + hero.h;
+  const boxR = box.x + box.w;
+  const boxB = box.y + box.h;
+  // The protruding strip on each side (the part of `box` beyond that hero edge).
+  const strips: { px: number; strip: { x: number; y: number; w: number; h: number } }[] = [];
+  if (boxR > heroR) {
+    const sx = Math.max(heroR, box.x);
+    strips.push({ px: boxR - sx, strip: { x: sx, y: box.y, w: boxR - sx, h: box.h } });
+  }
+  if (box.x < hero.x) {
+    const sw = Math.min(hero.x, boxR) - box.x;
+    strips.push({ px: sw, strip: { x: box.x, y: box.y, w: sw, h: box.h } });
+  }
+  if (boxB > heroB) {
+    const sy = Math.max(heroB, box.y);
+    strips.push({ px: boxB - sy, strip: { x: box.x, y: sy, w: box.w, h: boxB - sy } });
+  }
+  if (box.y < hero.y) {
+    const sh = Math.min(hero.y, boxB) - box.y;
+    strips.push({ px: sh, strip: { x: box.x, y: box.y, w: box.w, h: sh } });
+  }
+  let maxEmpty = 0;
+  for (const { px, strip } of strips) {
+    if (px <= 0 || strip.w <= 0 || strip.h <= 0) continue;
+    const stripArea = strip.w * strip.h;
+    const covered = otherContent.reduce((acc, o) => acc + rectIntersectArea(strip, o), 0);
+    if (covered / stripArea < PROTRUSION_COVER_FRAC) maxEmpty = Math.max(maxEmpty, px);
+  }
+  return maxEmpty;
 };
 
 // ── corner-mark collision (a duplicate brand lockup in the corner chrome) ────
@@ -1704,6 +1824,177 @@ export const findCornerMarkCollision = (
         `brand logo/wordmark in the frame's upper-left. Remove the brand mark from ${owner} (a stat, headline, or ` +
         `product detail belongs there instead); a brand mark may appear only as diegetic chrome INSIDE a device/app ` +
         `mock, well clear of the frame corner.`,
+    });
+  }
+  return out;
+};
+
+// ── hollow CTA (P3-C2 #2: a label-less accent button) ────────────────────────
+// Brex s4 shipped a SECOND CTA below the tagline as a solid orange pill with NO
+// text inside — a button-shaped accent slab that reads as a broken/unfinished
+// control. This is the button-scale sibling of the hollow-hero floor: a saturated
+// accent fill, button-sized and pill-shaped, carrying no own text and no text
+// descendant. A real CTA ("Start now") carries its label and is exempt; an accent
+// PANEL (large) is accent-as-fill's job; a thin accent RULE is a stray fragment's.
+const CTA_MIN_W = 56;
+const CTA_MAX_W = 460;
+const CTA_MIN_H = 26;
+const CTA_MAX_H = 96;
+const CTA_MIN_ASPECT = 1.6;   // wider than tall — a label-bearing button, not a square icon chip
+const CTA_MAX_ASPECT = 9;
+/** Min chroma (max−min channel) for a fill to read as a saturated ACCENT (not a
+ *  neutral card). Brex orange #ff5900 → 255; a neutral panel → <20. */
+const CTA_ACCENT_CHROMA_MIN = 45;
+/** The accent fill must sit this far (RGB dist) off the brand canvas so a
+ *  saturated-canvas brand doesn't flag its own background. */
+const CTA_CANVAS_DIST_MIN = 60;
+
+/** A label-less accent button-shape on a content piece. Pure geometry + color. */
+export const findHollowCta = (
+  m: SceneMeasurement,
+  opts: { brandBackground?: string } = {},
+): RenderTruthFinding[] => {
+  if (m.error) return [];
+  const canvasRgb = opts.brandBackground ? hexRgb(opts.brandBackground) : null;
+  const out: RenderTruthFinding[] = [];
+  const seen = new Set<string>();
+  for (const e of m.elements) {
+    if (e.opacity <= 0.5 || e.isImg) continue;
+    if (e.pieceKind === "atmosphere" || e.pieceKind === "chrome") continue;
+    if (!e.piece || MOTIF_DECO_PIECE_RX.test(e.piece)) continue;
+    // no own text AND no text anywhere in the subtree → truly label-less
+    if (e.text.trim() !== "" || e.hasTextDesc === true) continue;
+    if (e.w < CTA_MIN_W || e.w > CTA_MAX_W || e.h < CTA_MIN_H || e.h > CTA_MAX_H) continue;
+    const aspect = e.w / e.h;
+    if (aspect < CTA_MIN_ASPECT || aspect > CTA_MAX_ASPECT) continue;
+    if (cssAlpha(e.bg) < 0.9) continue; // must be a SOLID fill (a real button surface)
+    const rgb = rgbTriplet(e.bg);
+    if (!rgb) continue;
+    if (chromaOf(rgb[0], rgb[1], rgb[2]) < CTA_ACCENT_CHROMA_MIN) continue; // neutral card → not a CTA
+    if (canvasRgb && canvasRgbDist(rgb, canvasRgb) < CTA_CANVAS_DIST_MIN) continue; // ≈ the brand canvas → skip
+    if (seen.has(e.piece)) continue;
+    seen.add(e.piece);
+    out.push({
+      scene: m.scene,
+      kind: "hollow-cta",
+      detail:
+        `scene ${m.scene}: piece ${e.piece} paints a solid accent button (${Math.round(e.w)}×${Math.round(e.h)} at ` +
+        `${Math.round(e.x)},${Math.round(e.y)}, fill ${e.bg}) with NO label — a CTA-shaped pill carrying no own text and ` +
+        `no text descendant reads as a broken/unfinished control. Re-emit this button WITH its action label inside it ` +
+        `(the CTA verb, e.g. "Start now"/"Get started"), or REMOVE it if it duplicates the scene's real, labeled CTA. ` +
+        `A solid accent pill must never ship empty.`,
+    });
+  }
+  return out;
+};
+
+// ── intra-piece overlap (P3-C2 #4b: a control colliding with copy) ───────────
+// Brex s0 shipped, inside ONE hero, a "Submit for Approval" pill overlapping the
+// "1 required field missing…" helper line AND the receipt footer. findTextOverlap
+// misses it: (1) it's ADVISORY, not blocking, and (2) isOverlapText excludes any
+// element with a solid bg, so the BUTTON pill is never one of the pair. This gate
+// is the blocking, SAME-piece, SEVERE subset — a control OR readable text block
+// overlapping DIFFERENT text of its own piece by ≥ half the smaller box (a real
+// collision, not an adjacent chip). Cross-piece collisions are cross-piece-overlap's.
+const INTRA_OVERLAP_FRAC = 0.5;
+const isIntraControl = (e: MeasuredElement): boolean =>
+  !e.isImg &&
+  !INLINE_TEXT_TAGS.has(e.tag.toLowerCase()) &&
+  e.text.trim().length >= 2 &&
+  e.opacity > 0.5 &&
+  cssAlpha(e.bg) >= 0.5 &&
+  e.pieceKind !== "chrome" &&
+  e.pieceKind !== "atmosphere";
+const isIntraText = (e: MeasuredElement): boolean =>
+  !e.isImg &&
+  !INLINE_TEXT_TAGS.has(e.tag.toLowerCase()) &&
+  e.text.trim().length >= 3 &&
+  e.fontSize >= OVERLAP_MIN_TEXT_PX &&
+  e.opacity > 0.3 &&
+  e.pieceKind !== "chrome" &&
+  e.pieceKind !== "atmosphere";
+
+/** SAME-piece severe collisions where at least one side is a solid control. */
+export const findIntraPieceOverlap = (m: SceneMeasurement): RenderTruthFinding[] => {
+  if (m.error) return [];
+  const cands = m.elements.filter((e) => e.w > 0 && e.h > 0 && !!e.piece && (isIntraControl(e) || isIntraText(e)));
+  const out: RenderTruthFinding[] = [];
+  const seenPiece = new Set<string>();
+  for (let i = 0; i < cands.length; i++) {
+    for (let j = i + 1; j < cands.length; j++) {
+      const a = cands[i];
+      const b = cands[j];
+      if (a.piece !== b.piece) continue; // SAME piece only (cross-piece is another gate)
+      if (seenPiece.has(a.piece)) continue;
+      // At least one side must be a solid control — the defect shape isOverlapText misses.
+      if (!(isIntraControl(a) || isIntraControl(b))) continue;
+      const at = a.text.trim();
+      const bt = b.text.trim();
+      if (at === bt || at.includes(bt) || bt.includes(at)) continue; // label/child/repeat
+      const ix = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
+      const iy = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
+      if (ix <= 0 || iy <= 0) continue;
+      const areaA = a.w * a.h;
+      const areaB = b.w * b.h;
+      const inter = ix * iy;
+      const minArea = Math.min(areaA, areaB);
+      if (minArea <= 0) continue;
+      // Full containment = a parent/child by design (a label on its own surface).
+      if (inter >= 0.92 * minArea) continue;
+      const frac = inter / minArea;
+      if (frac < INTRA_OVERLAP_FRAC) continue;
+      seenPiece.add(a.piece);
+      out.push({
+        scene: m.scene,
+        kind: "intra-piece-overlap",
+        detail:
+          `scene ${m.scene}: inside piece ${a.piece}, "${at.slice(0, 28)}" (${a.tag}@${Math.round(a.x)},${Math.round(a.y)} ` +
+          `${Math.round(a.w)}×${Math.round(a.h)}${cssAlpha(a.bg) >= 0.5 ? " button" : ""}) collides with "${bt.slice(0, 28)}" ` +
+          `(${b.tag}@${Math.round(b.x)},${Math.round(b.y)} ${Math.round(b.w)}×${Math.round(b.h)}) — ${Math.round(frac * 100)}% of ` +
+          `the smaller box. Two controls/labels stacked on the same spot read as broken. Reflow ${a.piece} so every button, ` +
+          `helper line, and label owns its own row with real spacing — nothing overlapping.`,
+      });
+    }
+  }
+  return out;
+};
+
+// ── oversized ghost text fragment (P3-C2 #4a: the "DRAFT" watermark) ──────────
+// Brex s0's head authored a "'DRAFT' watermark in #42578a in the upper third" —
+// it rendered as a giant faint word-fragment drifting behind the headline, pure
+// clutter. A real display headline is full-opacity and multi-word; a giant stat
+// counter is a full-opacity number. This flags the specific ghost shape: an
+// OVERSIZED (font ≥ 130px), LOW-OPACITY (≤ 0.4), single-token decorative word on
+// a hero/atmosphere layer — never a readable copy line or a legible counter.
+const GHOST_FRAGMENT_MIN_FONT_PX = 130;
+const GHOST_FRAGMENT_MAX_OPACITY = 0.4;
+
+/** Oversized low-opacity single-word text fragments (decorative watermarks). */
+export const findGhostFragment = (m: SceneMeasurement): RenderTruthFinding[] => {
+  if (m.error) return [];
+  const out: RenderTruthFinding[] = [];
+  const seen = new Set<string>();
+  for (const e of m.elements) {
+    if (e.isImg) continue;
+    if (INLINE_TEXT_TAGS.has(e.tag.toLowerCase())) continue;
+    const t = e.text.trim();
+    if (t.length < 2) continue;
+    if (e.pieceKind === "chrome") continue;
+    if (e.fontSize < GHOST_FRAGMENT_MIN_FONT_PX) continue; // must be OVERSIZED
+    if (e.opacity > GHOST_FRAGMENT_MAX_OPACITY) continue;   // must be a GHOST (faint)
+    // single decorative token — a watermark, not a copy line or a comma-grouped stat
+    if (/\s/.test(t) || t.length > 16) continue;
+    const key = `${e.piece}|${t}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      scene: m.scene,
+      kind: "ghost-fragment",
+      detail:
+        `scene ${m.scene}: ${e.piece || "(no piece)"} paints an OVERSIZED low-opacity word "${t}" ` +
+        `(font ${Math.round(e.fontSize)}px, opacity ${e.opacity.toFixed(2)}, box ${Math.round(e.w)}×${Math.round(e.h)} at ` +
+        `${Math.round(e.x)},${Math.round(e.y)}) — a giant ghost watermark drifting behind the content, pure clutter. ` +
+        `Remove the oversized decorative word entirely; convey the state with a small, legible label instead of a huge faint fragment.`,
     });
   }
   return out;
@@ -1912,8 +2203,10 @@ export const exciseMotifClutter = (
 ): MotifRepairResult => {
   if (findings.length === 0) return { code: spanSlice, action: "none", detail: "no findings" };
   const pieceId = findings[0].pieceId;
-  const hasFloatingPiece = findings.some((f) => f.form === "floating-brand-mark" || f.form === "floating-motif");
-  // A floating brand pill / motif IS a throughline/connector piece → blank it.
+  const hasFloatingPiece = findings.some(
+    (f) => f.form === "floating-brand-mark" || f.form === "floating-motif" || f.form === "protruding-motif",
+  );
+  // A floating / protruding brand pill or motif IS a throughline/connector piece → blank it.
   if (hasFloatingPiece && MOTIF_DECO_PIECE_RX.test(pieceId)) {
     const r = blankPieceInner(spanSlice);
     if (r.blanked) return { code: r.code, action: "blanked", detail: `blanked floating motif piece ${pieceId}` };
@@ -1969,6 +2262,9 @@ export const findRenderTruthFailures = async (
     findings.push(...findStrandedHero(m, opts.registers?.[m.scene]));
     findings.push(...findInteriorClip(m));
     findings.push(...findCornerMarkCollision(m, { brandName: opts.brandName }));
+    findings.push(...findHollowCta(m, { brandBackground: opts.brandBackground }));
+    findings.push(...findIntraPieceOverlap(m));
+    findings.push(...findGhostFragment(m));
     findings.push(...(await findEmptyBand(m)));
     findings.push(...(await findContrast(m)));
     findings.push(...(await findDeadRegion(m)));

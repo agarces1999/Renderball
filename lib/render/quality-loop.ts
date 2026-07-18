@@ -228,7 +228,7 @@ export interface MotifClutterEvent {
   round: number;
   scene: number;
   pieceId: string;
-  form: "decorative-glyph" | "floating-brand-mark" | "floating-motif";
+  form: "decorative-glyph" | "floating-brand-mark" | "floating-motif" | "protruding-motif";
   action: "blanked" | "stripped" | "none";
   detail: string;
 }
@@ -638,10 +638,13 @@ export const computeTargets = (args: {
   occupancyVoids?: OccupancyVoidFinding[];
   textContrastBlocking?: TextContrastFinding[];
   registers?: (string | undefined)[];
+  /** Brand canvas token (#rrggbb) — named in the canvas-coherence repair so the
+   *  head is forced onto the exact brand background (P3-C2 #5). */
+  canvasBackground?: string;
   /** Piece bodies, for the density/img-src owner lookup. */
   pieceCache: Map<string, string>;
 }): Map<string, string[]> => {
-  const { validPieceIds, density, profile, rtBlocking, washout, accentFill, edgeCropResidual, vision, underscale, skeletonBlocking, occupancyVoids, textContrastBlocking, registers, pieceCache } = args;
+  const { validPieceIds, density, profile, rtBlocking, washout, accentFill, edgeCropResidual, vision, underscale, skeletonBlocking, occupancyVoids, textContrastBlocking, registers, canvasBackground, pieceCache } = args;
   const targets = new Map<string, string[]>();
   const add = (pieceId: string, sceneFallback: number, feedback: string): void => {
     let id = pieceId;
@@ -747,11 +750,26 @@ export const computeTargets = (args: {
       } else {
         add(`s${f.scene}.copy`, f.scene, `[render-truth/barbell] ${f.detail}`);
       }
+    } else if (f.kind === "canvas-coherence" || f.kind === "canvas-brightness") {
+      // Canvas-wash defects: the atmosphere owns the full-bleed canvas. P3-C2 #5
+      // (Brex s0): when the HERO is full-bleed it IS the canvas — it shipped a
+      // pure-white full-canvas "before" UI that covered the (dark) atmosphere, so
+      // repainting only the atmosphere never converged. Route BOTH pieces and
+      // force the brand canvas token, banning the full-canvas light UI outright.
+      const register = registers?.[f.scene];
+      const forceCanvas =
+        `\nMANDATORY (this scene ships an OFF-BRAND canvas): the full-bleed background MUST be the brand canvas ${canvasBackground} exactly — NOT a lighter tint, NOT white, NOT a neutral near-black. Do not fabricate a different tone.`;
+      add(`s${f.scene}.atmosphere`, f.scene, `[render-truth/${f.kind}] ${f.detail}${forceCanvas}`);
+      if (register === "full-bleed") {
+        add(
+          `s${f.scene}.hero`,
+          f.scene,
+          `[render-truth/${f.kind}] ${f.detail}${forceCanvas}\nYOUR ROLE (full-bleed hero = the canvas): a full-canvas LIGHT product UI ("before" draft/dashboard) painted over the whole frame is BANNED — it makes the scene read as a different, off-brand video. Set your outermost surface to the brand canvas ${canvasBackground} and render the tension in COLD GRAYS / muted brand-palette ink ON that dark canvas (a dim receipt card, faded rows, an inert button) — never a bright white sheet filling the frame.`,
+        );
+      }
     } else {
-      // canvas brightness/coherence are canvas-wash defects → the atmosphere
-      // owns the full-bleed canvas; everything else routes to the hero.
-      const slot = f.kind === "canvas-brightness" || f.kind === "canvas-coherence" ? "atmosphere" : "hero";
-      add(`s${f.scene}.${slot}`, f.scene, `[render-truth/${f.kind}] ${f.detail}`);
+      // everything else routes to the hero.
+      add(`s${f.scene}.hero`, f.scene, `[render-truth/${f.kind}] ${f.detail}`);
     }
   }
   for (const v of vision) {
@@ -804,6 +822,10 @@ export async function runQualityLoop(
   const bindCopyEvents: BindCopyEvent[] = [];
   const edgeCropEvents: EdgeCropEvent[] = [];
   const regenHistory = new Map<string, { cls: FailureClass; value: number; aux: number; escalated: boolean }>();
+  // P3-C2 #5: canvas-coherence gets exactly ONE convergence round past the
+  // budget when it is the only class left — a frame on the wrong canvas must
+  // converge, not ship flagged.
+  let coherenceBonusUsed = false;
 
   const gateRounds: GateRoundReport[] = [];
   const roundTelemetry: CastBuildResult["telemetry"][] = [];
@@ -1229,7 +1251,7 @@ export async function runQualityLoop(
     );
 
     // (b2) hero-washout.
-    const contrastRaw = await phase(`hero-contrast-r${round}`, () => assessHeroWashout(measurements));
+    const contrastRaw = await phase(`hero-contrast-r${round}`, () => assessHeroWashout(measurements, { canvasBackground }));
     log(
       `  hero-contrast: ${contrastRaw.stats.length} hero region(s) sampled · ${contrastRaw.findings.length} washout(s)` +
         `${contrastRaw.findings.length ? ` [${contrastRaw.findings.map((f) => f.pieceId).join(", ")}]` : ""}` +
@@ -1298,7 +1320,7 @@ export async function runQualityLoop(
         await hooks.writeComposition(finalCode);
         measurements = await phase(`measure-washout-lift-r${round}`, () => measureScenes(genDir, script, genDir));
         finalMeasurements = measurements;
-        contrast = await phase(`hero-contrast-relift-r${round}`, () => assessHeroWashout(measurements));
+        contrast = await phase(`hero-contrast-relift-r${round}`, () => assessHeroWashout(measurements, { canvasBackground }));
         for (const ev of washoutLiftEvents.filter((e) => e.round === round && e.action === "forced-lift")) {
           const st = contrast.stats.find((s) => s.pieceId === ev.pieceId);
           ev.after = st ? { spread: st.spread, std: st.stdDev } : null;
@@ -1411,6 +1433,7 @@ export async function runQualityLoop(
       occupancyVoids: occupancyBlocking,
       textContrastBlocking: textContrast.findings,
       registers: sceneRegisters,
+      canvasBackground,
       pieceCache,
     });
     for (const a of contrast.advisories) {
@@ -1674,8 +1697,30 @@ export async function runQualityLoop(
       break;
     }
     if (round >= config.maxRetryRounds) {
-      warn(`  targets remain [${[...targets.keys()].join(", ")}] but the ${config.maxRetryRounds}-round retry budget is spent — shipping with residual findings (honest)`);
-      break;
+      // P3-C2 #5: grant the canvas-coherence class ONE extra round when it is
+      // the ONLY thing left — every remaining target's feedback is exclusively
+      // a canvas-coherence/brightness tag. Its repair (repaint the full-bleed
+      // canvas onto the brand token) is deterministic-shaped and lands quickly.
+      // Every [bracket-tag] in the feedback (e.g. "render-truth/canvas-coherence",
+      // "hero-contrast/hero-washout", "vision") — the FULL inner so a co-occurring
+      // non-coherence class is never mistaken for coherence-only.
+      const bracketTags = (fb: string[]): string[] =>
+        fb.flatMap((line) => [...line.matchAll(/\[([^\]]+)\]/g)].map((mm) => mm[1]));
+      const isCoherenceTag = (t: string): boolean =>
+        t === "render-truth/canvas-coherence" || t === "render-truth/canvas-brightness";
+      const onlyCoherenceLeft =
+        targets.size > 0 &&
+        [...targets.values()].every((fb) => {
+          const tags = bracketTags(fb);
+          return tags.length > 0 && tags.every(isCoherenceTag);
+        });
+      if (onlyCoherenceLeft && !coherenceBonusUsed) {
+        coherenceBonusUsed = true;
+        warn(`  [canvas-coherence] budget spent but only canvas-coherence targets remain [${[...targets.keys()].join(", ")}] — granting ONE extra convergence round (a frame on the wrong canvas must converge, not ship flagged)`);
+      } else {
+        warn(`  targets remain [${[...targets.keys()].join(", ")}] but the ${config.maxRetryRounds}-round retry budget is spent — shipping with residual findings (honest)`);
+        break;
+      }
     }
     if (hooks.shouldStopForBudget()) {
       warn(`  budget ceiling reached — shipping with residual findings (honest)`);

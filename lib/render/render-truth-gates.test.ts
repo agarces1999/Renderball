@@ -22,6 +22,9 @@ import {
   assessCanvasCoherence,
   findCanvasCoherence,
   findCornerMarkCollision,
+  findHollowCta,
+  findIntraPieceOverlap,
+  findGhostFragment,
   CANVAS_COHERENCE_RGB_DELTA,
   findStrayFragments,
   exciseStrayFragment,
@@ -716,6 +719,78 @@ await check("a throughline that sits ON the hero is NOT flagged as floating-moti
   assert(findMotifClutter(m, { brandName: "Klarna", brandMarkOwner: "throughline" }).length === 0, "integrated throughline stays");
 });
 
+// ── P3-C2 #1: throughline PROTRUSION clamp (Brex s2/s3/s4 pinned-right chips) ──
+// The chip is <80px off the hero edge (the gap arm keeps it) but sticks out past
+// the hero's painted envelope into empty canvas. Coordinates from the real Brex
+// composition + frame geometry (hero envelopes measured from the frames).
+await check("Brex s2: 'RECEIPT AUTO-MATCHED' chip fully right of the dashboard → protruding-motif", () => {
+  const m = scene(2, [
+    // dashboard hero: 300..1360 (bounded, browser-style frame)
+    el({ piece: "s2.hero", pieceKind: "diegetic", bg: "rgb(20,22,26)", x: 300, y: 130, w: 1060, h: 815 }),
+    // copy column content ends ~y640 (above the chip) — chip is not covered by it
+    el({ piece: "s2.copy", pieceKind: "text", text: "Expenses that manage themselves", x: 1420, y: 300, w: 360, h: 340 }),
+    // the chip the cast pinned at bottom-right, 11px off the hero edge, below the copy
+    el({ piece: "s2.throughline", pieceKind: "diegetic", bg: "rgba(0,0,0,0)", text: "RECEIPT AUTO-MATCHED", x: 1371, y: 705, w: 159, h: 22 }),
+  ]);
+  const r = findMotifClutter(m, { brandName: "Brex", brandMarkOwner: "throughline" });
+  assert(r.length === 1 && r[0].form === "protruding-motif" && r[0].pieceId === "s2.throughline", `got ${JSON.stringify(r)}`);
+});
+
+await check("Brex s3: '9.8M RECEIPTS…' chip pokes ~45px past the card's right edge → protruding-motif", () => {
+  const m = scene(3, [
+    // stat card hero: painted envelope 355..1565
+    el({ piece: "s3.hero", pieceKind: "diegetic", bg: "rgb(22,25,30)", x: 355, y: 205, w: 1210, h: 665 }),
+    // chip 1310..1610 overlaps the 30x tile inside the card AND juts 45px past 1565
+    el({ piece: "s3.throughline", pieceKind: "diegetic", bg: "rgba(0,0,0,0)", text: "9.8M RECEIPTS AUTOMATED THIS QUARTER", x: 1310, y: 628, w: 300, h: 24 }),
+  ]);
+  const r = findMotifClutter(m, { brandName: "Brex", brandMarkOwner: "throughline" });
+  assert(r.length === 1 && r[0].form === "protruding-motif", `got ${JSON.stringify(r)}`);
+});
+
+await check("Brex s4: 'RECEIPTS AUTOMATED — NOTHING TO CHASE' juts ~140px past the mock → protruding-motif", () => {
+  const m = scene(4, [
+    // onboarding mock hero: 460..1460
+    el({ piece: "s4.hero", pieceKind: "diegetic", bg: "rgb(26,20,16)", x: 460, y: 255, w: 1000, h: 560 }),
+    el({ piece: "s4.throughline", pieceKind: "diegetic", bg: "rgba(0,0,0,0)", text: "RECEIPTS AUTOMATED — NOTHING TO CHASE", x: 1345, y: 630, w: 255, h: 20 }),
+  ]);
+  const r = findMotifClutter(m, { brandName: "Brex", brandMarkOwner: "throughline" });
+  assert(r.length === 1 && r[0].form === "protruding-motif", `got ${JSON.stringify(r)}`);
+});
+
+await check("a throughline FULLY INSIDE the hero envelope (the reference's in-mock slot) is KEPT", () => {
+  const m = scene(2, [
+    el({ piece: "s2.hero", pieceKind: "diegetic", bg: "rgb(20,22,26)", x: 300, y: 130, w: 1060, h: 815 }),
+    // authored-in-hero chip at 340,420,210,32 — comfortably inside 300..1360
+    el({ piece: "s2.throughline", pieceKind: "diegetic", bg: "rgba(0,0,0,0)", text: "RECEIPT AUTO-MATCHED", x: 340, y: 420, w: 210, h: 32 }),
+  ]);
+  assert(findMotifClutter(m, { brandName: "Brex", brandMarkOwner: "throughline" }).length === 0, "in-hero motif stays");
+});
+
+await check("a chip whose overhang lands ON the copy column bridges two panels → KEPT (not protruding)", () => {
+  const m = scene(2, [
+    el({ piece: "s2.hero", pieceKind: "diegetic", bg: "rgb(20,22,26)", x: 300, y: 130, w: 1060, h: 815 }),
+    // tall copy panel whose surface DOES cover the chip's overhang region
+    el({ piece: "s2.copy", pieceKind: "text", bg: "rgb(24,26,30)", text: "Expenses that manage themselves", x: 1400, y: 300, w: 380, h: 520 }),
+    el({ piece: "s2.throughline", pieceKind: "diegetic", bg: "rgba(0,0,0,0)", text: "RECEIPT AUTO-MATCHED", x: 1330, y: 500, w: 200, h: 30 }),
+  ]);
+  assert(findMotifClutter(m, { brandName: "Brex", brandMarkOwner: "throughline" }).length === 0, "chip bridging hero→copy stays");
+});
+
+await check("a small in-hero motif poking a rounded-corner sliver (~10px) past the hero is KEPT", () => {
+  const m = scene(4, [
+    el({ piece: "s4.hero", pieceKind: "diegetic", bg: "rgb(26,20,16)", x: 460, y: 255, w: 1000, h: 560 }),
+    // chip poking only 10px past the right edge — below the PROTRUSION_MIN_PX floor
+    el({ piece: "s4.throughline", pieceKind: "diegetic", bg: "rgba(0,0,0,0)", text: "chip", x: 1400, y: 500, w: 70, h: 24 }),
+  ]);
+  assert(findMotifClutter(m, { brandName: "Brex", brandMarkOwner: "throughline" }).length === 0, "sub-floor sliver stays");
+});
+
+await check("exciseMotifClutter blanks a PROTRUDING throughline piece end-to-end", () => {
+  const thr = '<div data-piece="s2.throughline" data-kind="diegetic"><div><span>RECEIPT AUTO-MATCHED</span></div></div>';
+  const r = exciseMotifClutter(thr, [{ kind: "motif-clutter", scene: 2, pieceId: "s2.throughline", form: "protruding-motif", text: "", rect: { x: 1371, y: 705, w: 159, h: 22 }, detail: "" }], { brandName: "Brex" });
+  assert(r.action === "blanked" && !r.code.includes("AUTO-MATCHED"), `got ${JSON.stringify(r)}`);
+});
+
 await check("SVG-drawn ghost checkmark in atmosphere fires (measured as a small <svg>)", () => {
   const m = scene(4, [
     el({ piece: "s4.atmosphere", pieceKind: "atmosphere", tag: "svg", text: "", x: 300, y: 320, w: 26, h: 26, opacity: 0.06 }),
@@ -819,6 +894,112 @@ await check("findCornerMarkCollision: no corner chrome mark → nothing to colli
 await check("findCornerMarkCollision: no brand name → gate skipped", () => {
   const m = scene(0, [chromeMark("Fuse"), el({ text: "Fuse", piece: "s0.hero", x: 52, y: 50, w: 120, h: 44 })]);
   assert(findCornerMarkCollision(m, {}).length === 0, "no brandName → skip");
+});
+
+// ── P3-C2 #2: hollow CTA (Brex s4 empty orange pill) ─────────────────────────
+const BREX_BG = "#15191e";
+await check("findHollowCta: Brex s4 empty orange pill (80×30, no text) FIRES", () => {
+  const m = scene(4, [
+    el({ piece: "s4.hero", pieceKind: "diegetic", bg: "rgb(255,89,0)", text: "", hasTextDesc: false, x: 855, y: 655, w: 80, h: 30 }),
+  ]);
+  const r = findHollowCta(m, { brandBackground: BREX_BG });
+  assert(r.length === 1 && r[0].kind === "hollow-cta" && /s4\.hero/.test(r[0].detail), `got ${JSON.stringify(r)}`);
+});
+await check("findHollowCta: a LABELED CTA ('Start now') PASSES", () => {
+  const m = scene(4, [
+    el({ piece: "s4.copy", pieceKind: "text", bg: "rgb(255,89,0)", text: "Start now", hasTextDesc: true, x: 900, y: 210, w: 120, h: 44 }),
+  ]);
+  assert(findHollowCta(m, { brandBackground: BREX_BG }).length === 0, "labeled CTA is not hollow");
+});
+await check("findHollowCta: a pill with a text DESCENDANT (label in a child span) PASSES", () => {
+  const m = scene(4, [
+    el({ piece: "s4.hero", pieceKind: "diegetic", bg: "rgb(255,89,0)", text: "", hasTextDesc: true, x: 855, y: 655, w: 120, h: 40 }),
+  ]);
+  assert(findHollowCta(m, { brandBackground: BREX_BG }).length === 0, "text descendant → labeled");
+});
+await check("findHollowCta: a NEUTRAL empty card (low chroma) PASSES (accent-only)", () => {
+  const m = scene(4, [
+    el({ piece: "s4.hero", pieceKind: "diegetic", bg: "rgb(34,38,44)", text: "", hasTextDesc: false, x: 855, y: 655, w: 120, h: 40 }),
+  ]);
+  assert(findHollowCta(m, { brandBackground: BREX_BG }).length === 0, "neutral panel is not an accent CTA");
+});
+await check("findHollowCta: a thin accent RULE (h<26) PASSES (stray-fragment territory)", () => {
+  const m = scene(4, [
+    el({ piece: "s4.hero", pieceKind: "diegetic", bg: "rgb(255,89,0)", text: "", hasTextDesc: false, x: 855, y: 655, w: 200, h: 6 }),
+  ]);
+  assert(findHollowCta(m, { brandBackground: BREX_BG }).length === 0, "thin rule is not a button");
+});
+await check("findHollowCta: a large accent PANEL (w>460) PASSES (accent-as-fill territory)", () => {
+  const m = scene(4, [
+    el({ piece: "s4.hero", pieceKind: "diegetic", bg: "rgb(255,89,0)", text: "", hasTextDesc: false, x: 300, y: 400, w: 900, h: 80 }),
+  ]);
+  assert(findHollowCta(m, { brandBackground: BREX_BG }).length === 0, "big slab is accent-as-fill, not hollow-cta");
+});
+await check("findHollowCta: a SQUARE icon chip (aspect ~1) PASSES", () => {
+  const m = scene(4, [
+    el({ piece: "s4.hero", pieceKind: "diegetic", bg: "rgb(255,89,0)", text: "", hasTextDesc: false, x: 855, y: 655, w: 44, h: 40 }),
+  ]);
+  assert(findHollowCta(m, { brandBackground: BREX_BG }).length === 0, "square icon chip is not a label-bearing button");
+});
+
+// ── P3-C2 #4b: intra-piece control/copy collision (Brex s0 bottom-center) ─────
+await check("findIntraPieceOverlap: a 'Submit for Approval' pill overlapping helper text in the SAME hero FIRES", () => {
+  const m = scene(0, [
+    // the button pill (solid bg) — excluded by isOverlapText, so text-overlap misses it
+    el({ piece: "s0.hero", pieceKind: "diegetic", tag: "button", bg: "rgb(111,115,123)", text: "Submit for Approval", fontSize: 18, x: 848, y: 862, w: 227, h: 40 }),
+    // the helper line it lands on
+    el({ piece: "s0.hero", pieceKind: "diegetic", bg: "rgba(0,0,0,0)", text: "1 required field missing · receipt not yet categorized", fontSize: 14, x: 755, y: 878, w: 380, h: 20 }),
+  ]);
+  const r = findIntraPieceOverlap(m);
+  assert(r.length === 1 && r[0].kind === "intra-piece-overlap" && /s0\.hero/.test(r[0].detail), `got ${JSON.stringify(r)}`);
+});
+await check("findIntraPieceOverlap: two ADJACENT chips (no overlap) PASS", () => {
+  const m = scene(2, [
+    el({ piece: "s2.hero", pieceKind: "diegetic", bg: "rgb(255,89,0)", text: "AUTO-CATEGORIZED", fontSize: 13, x: 1190, y: 440, w: 130, h: 26 }),
+    el({ piece: "s2.hero", pieceKind: "diegetic", bg: "rgba(0,0,0,0)", text: "Uber — $24.50 — Travel", fontSize: 16, x: 700, y: 435, w: 300, h: 24 }),
+  ]);
+  assert(findIntraPieceOverlap(m).length === 0, "chip beside a row is not a collision");
+});
+await check("findIntraPieceOverlap: a button LABEL fully inside its own button (containment) PASSES", () => {
+  const m = scene(4, [
+    el({ piece: "s4.hero", pieceKind: "diegetic", tag: "button", bg: "rgb(255,89,0)", text: "Start now", fontSize: 20, x: 900, y: 210, w: 130, h: 48 }),
+    el({ piece: "s4.hero", pieceKind: "diegetic", tag: "span", bg: "rgba(0,0,0,0)", text: "Start now", fontSize: 20, x: 915, y: 222, w: 100, h: 24 }),
+  ]);
+  assert(findIntraPieceOverlap(m).length === 0, "label inside its own control is by design");
+});
+await check("findIntraPieceOverlap: a collision across DIFFERENT pieces is NOT this gate's job", () => {
+  const m = scene(0, [
+    el({ piece: "s0.hero", pieceKind: "diegetic", tag: "button", bg: "rgb(111,115,123)", text: "Submit for Approval", fontSize: 18, x: 848, y: 862, w: 227, h: 40 }),
+    el({ piece: "s0.copy", pieceKind: "text", bg: "rgba(0,0,0,0)", text: "1 required field missing", fontSize: 14, x: 800, y: 878, w: 300, h: 20 }),
+  ]);
+  assert(findIntraPieceOverlap(m).length === 0, "cross-piece is cross-piece-overlap's job");
+});
+
+// ── P3-C2 #4a: oversized ghost word-fragment (Brex s0 'DRAFT' watermark) ──────
+await check("findGhostFragment: a giant faint 'DRAFT' watermark FIRES", () => {
+  const m = scene(0, [
+    el({ piece: "s0.hero", pieceKind: "diegetic", text: "DRAFT", fontSize: 220, opacity: 0.2, x: 1000, y: 90, w: 700, h: 240 }),
+  ]);
+  const r = findGhostFragment(m);
+  assert(r.length === 1 && r[0].kind === "ghost-fragment" && /DRAFT/.test(r[0].detail), `got ${JSON.stringify(r)}`);
+});
+await check("findGhostFragment: a full-opacity display HEADLINE (multi-word) PASSES", () => {
+  const m = scene(0, [
+    el({ piece: "s0.copy", pieceKind: "text", text: "The expense report is still on someone's desk", fontSize: 72, opacity: 1, x: 240, y: 120, w: 1200, h: 90 }),
+  ]);
+  assert(findGhostFragment(m).length === 0, "readable headline is not a ghost fragment");
+});
+await check("findGhostFragment: a giant FULL-OPACITY stat counter '35,000' PASSES (not faint)", () => {
+  const m = scene(3, [
+    el({ piece: "s3.hero", pieceKind: "diegetic", text: "35,000", fontSize: 200, opacity: 1, x: 640, y: 300, w: 460, h: 180 }),
+  ]);
+  assert(findGhostFragment(m).length === 0, "a legible counter is full-opacity → kept");
+});
+await check("findGhostFragment: a faint but SMALL label PASSES (must be oversized)", () => {
+  const m = scene(0, [
+    el({ piece: "s0.hero", pieceKind: "diegetic", text: "held", fontSize: 20, opacity: 0.25, x: 900, y: 600, w: 80, h: 24 }),
+  ]);
+  assert(findGhostFragment(m).length === 0, "small faint label is fine");
 });
 
 // ── real-frame calibration for the two P3-C1 gates (skipped when .data absent) ─

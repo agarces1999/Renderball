@@ -103,6 +103,20 @@ check("computeTargets: severe copy-vision routes to the copy slot", () => {
   assert(t.get("s0.copy")![0].startsWith("[vision]"), "vision tag");
 });
 
+check("P3-C2 #5: canvas-coherence on a FULL-BLEED scene routes to BOTH atmosphere and hero + names the brand token", () => {
+  const rtBlocking = [{ scene: 0, kind: "canvas-coherence", detail: "scene 0 ships an OFF-BRAND canvas" }] as RenderTruthFinding[];
+  const t = computeTargets({ ...baseArgs(), rtBlocking, registers: ["full-bleed", "split"], canvasBackground: "#15191e" });
+  assert(t.has("s0.atmosphere") && t.has("s0.hero"), `both pieces targeted: ${[...t.keys()]}`);
+  assert(t.get("s0.hero")!.some((l) => l.includes("#15191e") && /BANNED/.test(l)), "hero instruction names the brand token + bans the white full-canvas UI");
+  assert(t.get("s0.atmosphere")!.some((l) => l.includes("#15191e")), "atmosphere instruction names the brand token");
+});
+
+check("P3-C2 #5: canvas-coherence on a NON-full-bleed scene routes to the atmosphere only", () => {
+  const rtBlocking = [{ scene: 1, kind: "canvas-coherence", detail: "scene 1 ships an OFF-BRAND canvas" }] as RenderTruthFinding[];
+  const t = computeTargets({ ...baseArgs(), validPieceIds: new Set(["s1.hero", "s1.atmosphere"]), rtBlocking, registers: ["split", "split"], canvasBackground: "#15191e" });
+  assert(t.has("s1.atmosphere") && !t.has("s1.hero"), `atmosphere only: ${[...t.keys()]}`);
+});
+
 check("computeTargets: unknown piece falls back to the scene hero", () => {
   const washout = [{
     scene: 0, pieceId: "s0.nonexistent", detail: "x",
