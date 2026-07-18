@@ -925,10 +925,21 @@ export const buildUserMessage = (brief: AgentBrief): string => {
       // model which LANGUAGE to write — so it followed the English worked examples
       // and shipped English headlines over a Spanish brand's mocks (Rappi). One
       // unconditional HARD directive, anchored to the copy already quoted above.
+      //
+      // The DIRECTION-FIELD CARVE-OUT is load-bearing, not politeness: the first
+      // build of this directive failed script-gen outright on Rappi because the
+      // model applied the language rule to `visual_concept` too, and every scene
+      // validator that reads visual_concept is ENGLISH-vocabulary (CONTAINER_RX,
+      // countInteriorSpecifics, drawable-noun count, motionGrams — schema-validator
+      // .ts). visual_concept is an internal instruction to the design agent and is
+      // never rendered, so it MUST stay English or the schema rejects every attempt.
       lines.push(
-        `    LANGUAGE (HARD): write ALL viewer-facing copy — headline, eyebrow, lede, bullets, caption, meta, cta, AND every diegetic mock label — in the SAME language as the site copy quoted above${
+        `    LANGUAGE (HARD): write every viewer-facing COPY VALUE — headline, eyebrow, lede, bullets, caption, meta, cta, AND every diegetic mock label — in the SAME language as the site copy quoted above${
           b.site_lang ? ` (the brand's site language is "${b.site_lang}")` : ""
-        }; a mixed-language video is broken; the English worked examples elsewhere in this prompt illustrate STRUCTURE, not language.`,
+        }; a mixed-language video is broken, and the English worked examples elsewhere in this prompt illustrate STRUCTURE, not language.`,
+      );
+      lines.push(
+        `      → This applies ONLY to on-screen copy values. \`visual_concept\`, the atmosphere/motion direction, and every other DIRECTION field stay in ENGLISH — they are internal instructions to the design agent, never rendered on screen, and writing them in another language breaks the downstream validators.`,
       );
     }
     if (hasFiles) {

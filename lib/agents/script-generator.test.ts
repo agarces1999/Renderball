@@ -224,6 +224,12 @@ await check("buildUserMessage: emits the HARD copy-language directive when a bra
   assert(/diegetic mock label/.test(msg), "directive covers diegetic mock labels");
   assert(/site language is "es"/.test(msg), "threads site_lang when present");
   assert(/illustrate STRUCTURE, not language/.test(msg), "clarifies the English examples are structural");
+  // REGRESSION LOCK: the first build of this directive failed script-gen on Rappi
+  // because the model wrote visual_concept in Spanish too, and every visual_concept
+  // validator is English-vocabulary. The direction-field carve-out must ship with it.
+  assert(/visual_concept`?, the atmosphere\/motion direction/.test(msg), "the direction-field carve-out must be present");
+  assert(/stay in ENGLISH/.test(msg), "direction fields must be pinned to English");
+  assert(/ONLY to on-screen copy values/.test(msg), "the language rule must be scoped to on-screen copy");
 });
 
 await check("buildUserMessage: the directive fires even without a site_lang (anchored to quoted copy)", () => {
