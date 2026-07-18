@@ -54,6 +54,7 @@ import { AccountLimiter } from "./account-limiter";
 import { capacityFor, describeCapacity, type Capacity } from "../render/capacity";
 import type { FontMetrics } from "../render/font-metrics";
 import { deriveTypeScale, describeTypeScale, type ResolvedTypeScale } from "../render/type-scale";
+import { maybeRefineScenePlan } from "../render/optical-refine";
 import {
   checkCopyOverflow,
   overflowRepairMessage,
@@ -2592,7 +2593,7 @@ export const castBuild = async (
   const hasThroughline = throughline.length > 0;
   const slug = slugify(throughline);
 
-  const plans = script.scenes.map((scene) =>
+  const rawPlans = script.scenes.map((scene) =>
     // Frame-authoring: pass the head's composition so composeSceneLayout
     // consumes its authored bounds for the content slots (hero/copy) instead
     // of the content-blind table.
@@ -2630,23 +2631,6 @@ export const castBuild = async (
     return slots;
   };
 
-  const scenes: SceneManifest[] = plans.map((plan, i) => ({
-    scene: i,
-    background: tokenForRole(theme, "canvas"),
-    pieces: slotsFor(plan, i).map(
-      (slot): Piece => ({
-        id: `s${i}.${slot.id}`, // the Piece id convention (see ElementSlot.id)
-        kind: slot.kind,
-        // Virtual path — cast bodies stay in-memory (the resolver below); this
-        // is the manifest slot a future decompose-to-disk step will fill.
-        file: `scene${i}/${slot.id}.tsx`,
-        bounds: slot.bounds,
-        ...(slot.kind === "text" ? { contentRef: `scenes[${i}].content` } : {}),
-        ...(slot.id === "throughline" ? { throughlineSlug: slug } : {}),
-      }),
-    ),
-  }));
-
   // ── 1b. CAPACITY BUDGETS (P4b) — calibrate the brand faces ONCE, here ─────
   // Deliberately awaited BEFORE the fan-out and never inside it: the burst
   // fires ~20 element calls in parallel, so a per-element calibration would
@@ -2672,15 +2656,59 @@ export const castBuild = async (
   const metricsForSlot = (slot: ElementSlot): FontMetrics =>
     slot.id === "copy" ? displayMetrics : bodyMetrics;
 
+  const canvas = CANVAS[aspect];
+  const typeScaleForSlot = (slot: ElementSlot): ResolvedTypeScale =>
+    deriveTypeScale({ role: slot.id, box: slot.bounds, canvas });
+
+  // ── 1c. OPTICAL REFINEMENT (P5a) — deterministic, flag-gated, zero-LLM ────
+  // Applied HERE and nowhere else: this is the last point at which bounds are
+  // still a plan, and the first at which the font metrics + type scale the ink
+  // inset needs are resolved. Everything downstream (the manifest, the capacity
+  // budgets, the element briefs) then reads ONE set of bounds, so a budget is
+  // never computed against a box the emitter was not shown.
+  //
+  // OFF unless RB_OPTICAL_REFINE=on. It cannot introduce a plan violation (it
+  // re-validates and reverts), and any throw inside degrades to the input plan.
+  const plans = rawPlans.map((plan, i) =>
+    maybeRefineScenePlan(plan, {
+      aspect,
+      composition: script.scenes[i]?.composition,
+      content: script.scenes[i]?.content as Record<string, unknown> | undefined,
+      metricsFor: metricsForSlot,
+      typeScaleFor: typeScaleForSlot,
+    }),
+  );
+
+  const scenes: SceneManifest[] = plans.map((plan, i) => ({
+    scene: i,
+    background: tokenForRole(theme, "canvas"),
+    pieces: slotsFor(plan, i).map(
+      (slot): Piece => ({
+        id: `s${i}.${slot.id}`, // the Piece id convention (see ElementSlot.id)
+        kind: slot.kind,
+        // Virtual path — cast bodies stay in-memory (the resolver below); this
+        // is the manifest slot a future decompose-to-disk step will fill.
+        file: `scene${i}/${slot.id}.tsx`,
+        bounds: slot.bounds,
+        ...(slot.kind === "text" ? { contentRef: `scenes[${i}].content` } : {}),
+        ...(slot.id === "throughline" ? { throughlineSlug: slug } : {}),
+      }),
+    ),
+  }));
+
   // ── 2. Element briefs — chrome earns NO call (Section emits Chrome itself,
   //       see assemble.ts) ──────────────────────────────────────────────────
   const system = buildElementSystem(theme);
-  const canvas = CANVAS[aspect];
   const jobs: ElementJob[] = plans.flatMap((plan, i) =>
     slotsFor(plan, i)
       .filter((slot) => slot.kind !== "chrome")
       .map((slot): ElementJob => {
-        const typeScale = deriveTypeScale({ role: slot.id, box: slot.bounds, canvas });
+        // Derived from the bounds the emitter is ACTUALLY handed (refined, when
+        // the flag is on) so the declared scale and the capacity budget below it
+        // are computed against the same box. The optical pass derives its own
+        // scale off the PRE-refinement box — deliberately, so the ink inset can
+        // never feed back into itself and the pass stays idempotent.
+        const typeScale = typeScaleForSlot(slot);
         const metrics = metricsForSlot(slot);
         const capacity = capacityFor(slot.bounds, typeScale, metrics);
         return {
