@@ -2,7 +2,7 @@
 // Tests for the skeleton-bar detector (v13 #4) — the measured arm of the
 // NO_PLACEHOLDER contract. Hand-built measurement fixtures: a qualifying row
 // is ≥3 SIBLING flat mid-grey rounded no-text bars, each >60px wide;
-// advisory at 1 row, blocking at ≥2 rows in one piece.
+// Audit-1 Medium #5: advisory-only now (never blocks — see skeleton-bars.ts).
 //
 import {
   findSkeletonBars,
@@ -64,10 +64,11 @@ check("three sibling bars = ONE row → advisory finding naming the piece", () =
   assert(/REAL rendered content/.test(f[0].repairInstruction), "repair demands real content");
 });
 
-check(`${SKELETON_BLOCKING_MIN_ROWS} rows in one piece → BLOCKING`, () => {
+check(`${SKELETON_BLOCKING_MIN_ROWS} rows in one piece → still ADVISORY (Audit-1 Medium #5: gate downgraded)`, () => {
   const f = findSkeletonBars(scene([bar(5), bar(5), bar(5), bar(9), bar(9), bar(9)]));
   assert(f.length === 1 && f[0].rows === 2 && f[0].bars === 6, `merged piece finding, got ${JSON.stringify(f)}`);
-  assert(f[0].blocking === true, "two rows must block");
+  assert(f[0].blocking === false, "skeleton-bars never blocks now (advisory-only)");
+  assert(/whole panel of it/.test(f[0].detail), "two rows still noted as a whole panel in the detail");
 });
 
 check("two sibling bars never fire; three bars under DIFFERENT parents never fire (cycle-4 s3's real shape)", () => {

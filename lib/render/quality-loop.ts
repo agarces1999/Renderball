@@ -143,9 +143,13 @@ export type FailureClass =
   | "accent-fill"
   | "density"
   | "vision"
-  | "hero-scale"
+  // Audit-1 Medium #5: hero-underscale + occupancy-void are ONE judgment now —
+  // "the hero owns a void frame". Merging them into a single breaker class stops
+  // a small-hero-in-a-void scene from oscillating between the two classes every
+  // round (which reset the no-progress tracker and burned the whole retry budget
+  // without converging).
+  | "hero-void"
   | "skeleton"
-  | "occupancy"
   | "text-contrast";
 
 export interface StructuralFinding {
@@ -662,10 +666,14 @@ export const computeTargets = (args: {
   /** Brand canvas token (#rrggbb) — named in the canvas-coherence repair so the
    *  head is forced onto the exact brand background (P3-C2 #5). */
   canvasBackground?: string;
+  /** Pieces that compile-broke / shipped a placeholder this round. Audit-1 High
+   *  #3: their occupancy-void does NOT route a regen (regen can't fix a hero GLM
+   *  keeps breaking) — the deterministic post-loop furnish owns it. */
+  castFailedPieces?: Set<string>;
   /** Piece bodies, for the density/img-src owner lookup. */
   pieceCache: Map<string, string>;
 }): Map<string, string[]> => {
-  const { validPieceIds, density, profile, rtBlocking, washout, accentFill, edgeCropResidual, vision, underscale, skeletonBlocking, occupancyVoids, textContrastBlocking, registers, canvasBackground, pieceCache } = args;
+  const { validPieceIds, density, profile, rtBlocking, washout, accentFill, edgeCropResidual, vision, underscale, skeletonBlocking, occupancyVoids, textContrastBlocking, registers, canvasBackground, castFailedPieces, pieceCache } = args;
   const targets = new Map<string, string[]>();
   const add = (pieceId: string, sceneFallback: number, feedback: string): void => {
     let id = pieceId;
@@ -734,6 +742,10 @@ export const computeTargets = (args: {
     add(f.pieceId, f.scene, `[structural/skeleton_bars] ${f.detail}\n${f.repairInstruction}`);
   }
   for (const f of occupancyVoids ?? []) {
+    // Audit-1 High #3: skip the regen for a compile-broken/placeholder hero — a
+    // regen can't fix a hero the model keeps breaking; the deterministic furnish
+    // fills its void post-loop. Non-failed heroes still get the regen route.
+    if (castFailedPieces?.has(f.pieceId)) continue;
     add(f.pieceId, f.scene, `[occupancy/occupancy-void] ${f.detail}\n${f.repairInstruction}`);
   }
   for (const f of textContrastBlocking ?? []) {
@@ -1385,7 +1397,7 @@ export async function runQualityLoop(
     if (probeAccents.length < accentHexes.length) {
       log(`  accent-fill: dropped ${accentHexes.length - probeAccents.length} near-canvas accent(s) from the probe vocabulary (monochrome-luxury calibration, ΔRGB<${ACCENT_CANVAS_DE_FLOOR} vs ${canvasBackground})`);
     }
-    const accentFill = await phase(`accent-fill-r${round}`, () => assessAccentFill(measurements, probeAccents));
+    const accentFill = await phase(`accent-fill-r${round}`, () => assessAccentFill(measurements, probeAccents, { registers: sceneRegisters }));
     finalAccentFill = accentFill;
     log(
       `  accent-fill: ${accentFill.stats.length} hero region(s) probed vs [${accentHexes.join(", ")}] · ` +
@@ -1441,6 +1453,14 @@ export async function runQualityLoop(
       : [];
 
     const validPieceIds = new Set(castResult.scenes.flatMap((s) => s.pieces.filter((p) => p.kind !== "chrome").map((p) => p.id)));
+    // Audit-1 High #3 edit (3): heroes that compile-broke / shipped a placeholder
+    // this round (the deterministic fallback) — a REGEN can't help them (GLM keeps
+    // breaking the same complex hero), so their void routes straight to the
+    // post-loop deterministic FURNISH instead of thrashing a regen that never
+    // converges (the audit's central void-non-convergence finding).
+    const castFailedPieces = new Set(
+      castResult.elementOutcomes.filter((o) => o.failed).map((o) => o.pieceId),
+    );
     const targets = computeTargets({
       validPieceIds,
       density,
@@ -1456,6 +1476,7 @@ export async function runQualityLoop(
       textContrastBlocking: textContrast.findings,
       registers: sceneRegisters,
       canvasBackground,
+      castFailedPieces,
       pieceCache,
     });
     for (const a of contrast.advisories) {
@@ -1627,19 +1648,21 @@ export async function runQualityLoop(
         const frac = Math.round((st?.largestRectFrac ?? 0) * 1000) / 10;
         return { cls: "accent-fill", value: frac, aux: 0, metric: `largest accent rect ${frac}% of piece` };
       }
-      if (joined.includes("[hero-scale/")) {
-        const f = underscale.find((u) => u.pieceId === pieceId);
-        const pct = Math.round((f?.paintedFrac ?? 0) * 1000) / 10;
-        return { cls: "hero-scale", value: pct, aux: 0, metric: `painted union ${pct}% of canvas` };
+      // Audit-1 Medium #5: hero-underscale AND occupancy-void are ONE class —
+      // both mean "the hero owns a void frame". value = void-run % (want it to
+      // shrink), aux = painted-union % (want it to grow); either improving is
+      // progress. One class = the breaker sees continuous no-progress instead of
+      // resetting each round as the defect flips names.
+      if (joined.includes("[hero-scale/") || joined.includes("[occupancy/")) {
+        const u = underscale.find((x) => x.pieceId === pieceId);
+        const o = occupancyBlocking.find((x) => x.pieceId === pieceId);
+        const voidPct = Math.round((o?.runFracW ?? 0) * 1000) / 10;
+        const paintedPct = Math.round((u?.paintedFrac ?? 0) * 1000) / 10;
+        return { cls: "hero-void", value: voidPct, aux: paintedPct, metric: `void ${voidPct}% / painted ${paintedPct}% of frame` };
       }
       if (joined.includes("[structural/skeleton_bars]")) {
         const f = skeletonBars.find((s) => s.pieceId === pieceId);
         return { cls: "skeleton", value: f?.bars ?? 0, aux: f?.rows ?? 0, metric: `${f?.bars ?? 0} skeleton bar(s) in ${f?.rows ?? 0} row(s)` };
-      }
-      if (joined.includes("[occupancy/")) {
-        const f = occupancyBlocking.find((o) => o.pieceId === pieceId);
-        const pct = Math.round((f?.runFracW ?? 0) * 1000) / 10;
-        return { cls: "occupancy", value: pct, aux: 0, metric: `void run ${pct}% of frame width` };
       }
       if (joined.includes("[text-contrast/")) {
         const f = textContrast.findings.filter((t) => t.pieceId === pieceId).sort((a, b) => a.ratio - b.ratio)[0];
@@ -1662,12 +1685,11 @@ export async function runQualityLoop(
           return cur.value < prev.value;
         case "accent-fill":
           return cur.value < prev.value - 2;
-        case "hero-scale":
-          return cur.value > prev.value + 1;
+        case "hero-void":
+          // progress when the void shrinks OR the painted area grows.
+          return cur.value < prev.value - 1 || cur.aux > prev.aux + 1;
         case "skeleton":
           return cur.value < prev.value || cur.aux < prev.aux;
-        case "occupancy":
-          return cur.value < prev.value - 1;
         case "text-contrast":
           return cur.value > prev.value + 0.3;
         default:
@@ -1786,14 +1808,16 @@ export async function runQualityLoop(
       finalMeasurements = await measureScenes(genDir, script, genDir);
     }
 
-    // P3-C3 — DETERMINISTIC VOID CONVERGENCE (the guarantee). Any blocking void
-    // that survived the loop OR was opened by the final motif-blank is filled
-    // deterministically with a brand furnish panel built from the scene's own
-    // blueprint — a void can no longer ship flagged. (Fuse s3 / Deel s1: the
-    // occupancy gate detected these voids for four brands but the model never
-    // converged them; this closes the loop without a regen round.)
+    // DETERMINISTIC VOID CONVERGENCE (the guarantee). Audit-1 High #3: furnish
+    // fills EVERY flagged void — blocking, severe, OR advisory — regardless of
+    // register, because void-furnish is the ONE terminal arbiter (occupancy
+    // detects, furnish converges). Widening from blocking-only closes the hole
+    // where a severe split/list void (now advisory, per the register-posture fix)
+    // detected but shipped: the model never converged it, so furnish must. A void
+    // can no longer ship, whatever its register. (Fuse s3 / Deel s1: detected for
+    // four brands, never regen-converged; this closes the loop without a regen.)
     const postOcc = await assessOccupancy(finalMeasurements, sceneRegisters);
-    const survivingVoids = postOcc.findings.filter((f) => f.blocking);
+    const survivingVoids = postOcc.findings; // all flagged voids, not only blocking
     if (survivingVoids.length > 0) {
       const canvas = CANVAS[config.castInput.aspect] ?? CANVAS["16:9"];
       const surfaceHex = pickFurnishSurface(Object.values(theme.palette), canvasBackground);
@@ -1826,11 +1850,22 @@ export async function runQualityLoop(
         let values = extractQuotedValues(interiors);
         if (values.length < 2) {
           const content = (script.scenes?.[scene]?.content ?? {}) as Record<string, unknown>;
-          values = [...new Set(collectContentStrings(content))];
+          values = [...new Set([...values, ...collectContentStrings(content)])];
+        }
+        // Audit-1 High #3 edit (5): a void can't ship for want of content. If the
+        // scene is value-thin, pad with the eyebrow/caption/meta and the brand
+        // name (never the headline — the copy piece owns it) so the panel always
+        // has ≥2 rows to render.
+        if (values.length < 2) {
+          const content = (script.scenes?.[scene]?.content ?? {}) as Record<string, unknown>;
+          const pad = [content.eyebrow, content.caption, content.meta, BRAND]
+            .filter((v): v is string => typeof v === "string" && v.trim().length >= 2)
+            .map((v) => v.trim());
+          values = [...new Set([...values, ...pad])];
         }
         const title = placeholderTitleFromSubject(heroEl?.subject);
         const rect = furnishRectForBand(f.band, canvas);
-        if (!rect || values.length < 2) {
+        if (!rect || values.length < 1) {
           voidFurnishEvents.push({ scene, pieceId: f.pieceId, runFracW: f.runFracW, region: f.region, action: "skipped", detail: `${f.detail} (no furnishable rect/values → residual flagged)` });
           warn(`  [void-furnish] scene ${scene}: ${(f.runFracW * 100).toFixed(0)}% void unfurnishable (rect=${!!rect}, values=${values.length}) — residual ships FLAGGED (honest)`);
           continue;
@@ -1861,7 +1896,9 @@ export async function runQualityLoop(
         finalMeasurements = await measureScenes(genDir, script, genDir);
         // Confirm the fill CONVERGED the void; mark any still-blocking as residual.
         const confirmOcc = await assessOccupancy(finalMeasurements, sceneRegisters);
-        const stillVoid = new Set(confirmOcc.findings.filter((v) => v.blocking).map((v) => v.scene));
+        // Any still-flagged void (blocking OR advisory) in a furnished scene = the
+        // fill didn't converge → mark residual (honest). Mirrors the widened filter.
+        const stillVoid = new Set(confirmOcc.findings.map((v) => v.scene));
         for (const ev of voidFurnishEvents.filter((e) => e.action === "furnished")) {
           if (stillVoid.has(ev.scene)) {
             ev.action = "furnished-residual";

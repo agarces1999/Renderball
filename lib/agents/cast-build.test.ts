@@ -1015,10 +1015,29 @@ await check("heroBlueprintPlaceholder: a FULL-BLEED hero FILLS its bounds (P3-C3
   // (the Deel s2 90%-void defect was exactly a 540px card in a full-bleed hero).
   assert(!/min\(540px/.test(body), "a full-bleed hero must NOT ship a 540px stamp");
   assert(/gridTemplateColumns/.test(body), "fills with a value grid");
-  // A clean header lifted from the subject (clause before the em-dash).
-  assert(body.includes("a full-bleed Deel payroll dashboard"), "renders a header from the subject");
+  // Audit-1 P0 #2: the subject is a DESCRIPTOR (article + UI noun) — it must NOT
+  // render as a title (the Faire s2 defect); the footer falls back to "Overview".
+  assert(!body.includes("a full-bleed Deel payroll dashboard"), "descriptor subject must NOT ship as a title");
+  assert(body.includes("Overview"), "no title → footer falls back to Overview");
+  // The grid stretches vertically so the lower half isn't sparse (Faire polish).
+  assert(/alignContent: "stretch"/.test(body), "grid rows stretch to fill the panel");
   const err = await verifyCompilable(`const __P = () => (\n<div>\n${body}\n</div>\n);`);
   assert(err === null, `blueprint placeholder must compile, got ${err}`);
+});
+
+await check("heroBlueprintPlaceholder: a NON-descriptor subject still renders a header", async () => {
+  const spec = {
+    role: "hero" as const,
+    subject: "Expenses that manage themselves",
+    interior: ["row 'Adobe $52.00'", "row 'Uber $18.40'", "row 'Delta $410.00'", "chip 'AI-matched'"],
+    ownsCopy: [],
+    focalRank: 1,
+  };
+  const heroSlot = { id: "hero", kind: "diegetic", bounds: { x: 0, y: 0, w: 1920, h: 1080 }, paletteRoles: [], contentFields: [] } as never;
+  const body = heroBlueprintPlaceholder(theme, heroSlot, spec, "16:9");
+  assert(body.includes("Expenses that manage themselves"), "a real product-surface name renders as the header");
+  const err = await verifyCompilable(`const __P = () => (\n<div>\n${body}\n</div>\n);`);
+  assert(err === null, `placeholder must compile, got ${err}`);
 });
 
 await check("heroBlueprintPlaceholder: a genuinely BOUNDED hero keeps the centered card", async () => {
@@ -1038,12 +1057,28 @@ await check("heroBlueprintPlaceholder: a genuinely BOUNDED hero keeps the center
 });
 
 await check("placeholderTitleFromSubject: a clean short header from a sprawling subject", () => {
+  // A real product-surface name (not article + UI-noun) is kept as a header.
   assert(
-    placeholderTitleFromSubject("a full-bleed Deel dashboard — a clean left sidebar, a payroll panel") ===
-      "a full-bleed Deel dashboard",
+    placeholderTitleFromSubject("Expenses that manage themselves — Adobe, Uber, Delta rows") ===
+      "Expenses that manage themselves",
     "clause before the em-dash, capped",
   );
   assert(placeholderTitleFromSubject(undefined) === "", "undefined → empty");
+});
+
+await check("placeholderTitleFromSubject: a DESCRIPTOR subject is DROPPED (Audit-1 P0 #2)", () => {
+  // The Faire s2 defect: the raw blueprint subject rendered as a 32px title.
+  assert(
+    placeholderTitleFromSubject("a large Faire marketplace browser-chrome mock") === "",
+    `article + UI-noun descriptor must drop → "", got ${JSON.stringify(placeholderTitleFromSubject("a large Faire marketplace browser-chrome mock"))}`,
+  );
+  assert(placeholderTitleFromSubject("the Deel payroll dashboard") === "", "the + dashboard → dropped");
+  assert(placeholderTitleFromSubject("a full-bleed checkout window") === "", "a + window → dropped");
+  // A name that merely CONTAINS a UI word but isn't article-led is kept.
+  assert(
+    placeholderTitleFromSubject("Global onboarding tracker") === "Global onboarding tracker",
+    "no leading article → real header kept",
+  );
 });
 
 await check("heroBlueprintPlaceholder: too few blueprint values → falls back to the neutral shell", () => {

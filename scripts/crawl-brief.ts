@@ -22,6 +22,7 @@
  */
 import { extractBrand, type CrawlUsageCollector } from "../lib/crawl/extract-brand";
 import { preflightBrandTruth } from "../lib/crawl/brand-truth";
+import { brandShortName } from "../lib/crawl/brand-identity";
 import { saveBrief, DEV_OWNER_ID, type StoredBrief, type StoredMoment } from "../lib/store";
 import { withDbRetry } from "../lib/db";
 import { ulid } from "../lib/ulid";
@@ -83,7 +84,10 @@ const genericMoments = (brand: string): StoredMoment[] => [
     process.exit(3);
   }
 
-  const brand = (extract.title ?? "").trim() || "Brand";
+  // Audit-1 P0 #1: the ONE brand-name source of truth — was the raw <title>, so
+  // Faire's CTA shipped "Get started with Your" and the wordmark the whole
+  // tagline. brandShortName host-matches + tagline-guards → "Faire".
+  const brand = brandShortName(extract);
   const palette = extract.palette ?? [];
   const visionRan = [...modelsUsed].some((m) => /glm-?4?\.?5?v|vision|haiku|sonnet|opus|claude/i.test(m));
   log(`crawl OK — brand "${brand}"`);
@@ -109,10 +113,11 @@ const genericMoments = (brand: string): StoredMoment[] => [
   const purpose =
     process.env.RB_BRIEF_PURPOSE ||
     `Product launch for ${brand}${extract.description ? ` — ${extract.description.slice(0, 180)}` : ""}`;
-  const cta = process.env.RB_BRIEF_CTA || `Get started with ${brand.split(/[\s|—-]/)[0]}`;
+  // `brand` is already the clean short name (SSOT) — no ad-hoc split needed.
+  const cta = process.env.RB_BRIEF_CTA || `Get started with ${brand}`;
   const moments: StoredMoment[] = process.env.RB_BRIEF_MOMENTS
     ? (JSON.parse(process.env.RB_BRIEF_MOMENTS) as StoredMoment[])
-    : genericMoments(brand.split(/[\s|—-]/)[0] || brand);
+    : genericMoments(brand);
 
   const brief: StoredBrief = {
     id: ulid(),

@@ -17,16 +17,13 @@
  * Findings are returned, not thrown; the pipeline decides blocking vs advisory.
  */
 import path from "path";
-import { assessFrameInk, assessEmptyBand, QUADRANT_FLOOR, INK_FLOOR } from "./painted-content";
+import { assessEmptyBand } from "./painted-content";
 import type { SceneMeasurement, MeasuredElement } from "./measure-scene";
 
 export type RenderTruthKind =
   | "overflow"
-  | "text-overlap"
   | "cross-piece-overlap"
   | "barbell"
-  | "contrast"
-  | "dead-region"
   | "canvas-brightness"
   | "canvas-coherence"
   | "corner-mark-collision"
@@ -34,7 +31,6 @@ export type RenderTruthKind =
   | "intra-piece-overlap"
   | "ghost-fragment"
   | "stranded-hero"
-  | "interior-clip"
   | "measure-error";
 
 export interface RenderTruthFinding {
@@ -46,8 +42,7 @@ export interface RenderTruthFinding {
 // px tolerance so sub-pixel rounding / intentional full-bleed don't false-fire.
 const EDGE_TOL = 3;
 // Only content elements can be "clipped"; a full-bleed background/atmosphere
-// legitimately fills or exceeds the canvas. Content = has own text, or is an
-// <img>, or is a small-ish decorated box (handled by contrast/dead-region).
+// legitimately fills or exceeds the canvas. Content = has own text or is an <img>.
 const isContentEl = (e: MeasuredElement): boolean =>
   (e.text.length >= 2 || e.isImg) && e.opacity > 0.05;
 
@@ -282,17 +277,9 @@ export const findEmptyBand = async (m: SceneMeasurement): Promise<RenderTruthFin
   }
 };
 
-// ── text-on-text overlap (the wrapping-headline-buries-the-lede defect) ──────
-// Two DISTINCT text blocks printed on top of each other — both unreadable. The
-// canonical cause: a scene stacks eyebrow/headline/lede/bullets with per-block
-// `position:absolute; top:…`, then a headline wraps to more lines than the
-// hardcoded gap reserved, overrunning the block below. The overflow gate misses
-// it (nothing crosses the canvas edge — the collision is INSIDE the frame). The
-// design-agent prompt rule ("stacked text MUST flow") is the primary fix; this is
-// the deterministic detector. ADVISORY by default (not in blockingKinds) so it
-// surfaces the defect without risking a wrongful regen of a good scene.
+// OVERLAP_MIN_TEXT_PX — shared by findIntraPieceOverlap below (a text node must
+// be a real block, not a hairline caption, to count in an overlap).
 const OVERLAP_MIN_TEXT_PX = 12;
-const OVERLAP_MIN_FRAC = 0.3; // intersection ≥30% of the SMALLER box ⇒ a collision
 
 // Alpha of a CSS rgb/rgba color. rgb(...) (no alpha) ⇒ opaque (1). Used to keep
 // the check to text sitting on the CANVAS — text on an opaque chip/card/badge
@@ -325,52 +312,10 @@ const INLINE_TEXT_TAGS = new Set([
   "em", "i", "b", "strong", "mark", "sub", "sup", "small", "u", "s", "code", "kbd", "abbr",
 ]);
 
-// A free-standing text BLOCK on the canvas (not a chip/badge label, not an icon,
-// not an inline accent inside another block).
-const isOverlapText = (e: MeasuredElement): boolean =>
-  !e.isImg &&
-  !INLINE_TEXT_TAGS.has(e.tag.toLowerCase()) &&
-  e.text.trim().length >= 2 &&
-  e.fontSize >= OVERLAP_MIN_TEXT_PX &&
-  e.opacity > 0.1 &&
-  cssAlpha(e.bg) < 0.15;
-
-/**
- * Distinct text blocks whose measured boxes significantly overlap. Pairs are
- * skipped when one element's text CONTAINS the other's — that's a container/child
- * (e.g. a <ul> box around its <li>s, or a wrapper around its text node), not a
- * collision. What remains — two blocks with different copy overlapping ≥30% of
- * the smaller box — is the headline-buries-lede defect.
- */
-export const findTextOverlap = (m: SceneMeasurement): RenderTruthFinding[] => {
-  if (m.error) return []; // measure-error already surfaced by findOverflow
-  const texts = m.elements.filter(isOverlapText);
-  const out: RenderTruthFinding[] = [];
-  for (let i = 0; i < texts.length; i++) {
-    for (let j = i + 1; j < texts.length; j++) {
-      const a = texts[i];
-      const b = texts[j];
-      // Container/child or a repeated string — not a collision.
-      if (a.text.includes(b.text) || b.text.includes(a.text)) continue;
-      const ix = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
-      const iy = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
-      if (ix <= 0 || iy <= 0) continue; // no intersection
-      const minArea = Math.min(a.w * a.h, b.w * b.h);
-      if (minArea <= 0) continue;
-      const frac = (ix * iy) / minArea;
-      if (frac < OVERLAP_MIN_FRAC) continue;
-      out.push({
-        scene: m.scene,
-        kind: "text-overlap",
-        detail:
-          `text "${a.text.slice(0, 24)}" overlaps text "${b.text.slice(0, 24)}" — ` +
-          `${Math.round(frac * 100)}% of the smaller box ` +
-          `(${a.tag}@${a.x},${a.y} ${a.w}×${a.h} ∩ ${b.tag}@${b.x},${b.y} ${b.w}×${b.h})`,
-      });
-    }
-  }
-  return out;
-};
+// Audit-1 Medium #5: findTextOverlap (the whole-box text-on-text advisory) was
+// DELETED — it never reached blockingKinds and is superseded by the per-node
+// findIntraPieceOverlap (same-piece control-over-text) + findCrossPieceOverlap
+// (cross-piece) below. isOverlapText / OVERLAP_MIN_FRAC went with it.
 
 // ── color/luminance helpers (WCAG relative luminance) ────────────────────────
 const relLum = (r: number, g: number, b: number): number => {
@@ -381,116 +326,12 @@ const relLum = (r: number, g: number, b: number): number => {
   return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b);
 };
 
-// Floors are deliberately lenient — these flag genuinely-broken (near-invisible)
-// content, not aesthetic borderline cases (false-negative direction).
-const LOGO_RANGE_FLOOR = 0.1; // logo whose luminance barely varies vs its card
-const MIN_LOGO = { w: 36, h: 18 };
-
-/**
- * Sampled-from-pixels contrast — LOGO ARM ONLY as of v15. Logo image: internal
- * luminance range (a washed-out logo on a same-tone card barely varies).
- *
- * v15 RETIREMENT: the TEXT arm (computed color vs the mean luminance of the
- * text's own box) is retired — the box mean averages the glyphs themselves in,
- * so it false-fired on legible text (cycle-4 s4: "1.15:1" on a readable
- * navy-on-cream headline) and under-fired on real ghosts. Per-text-node
- * contrast against the sampled LOCAL backdrop (lib/render/text-contrast.ts,
- * dominant-cluster sampling that excludes the glyphs) replaces it with a
- * blocking arm + advisory band.
- *
- * Needs the screenshot; sharp is dynamic-imported so its absence degrades to
- * no contrast findings (not a crash).
- */
-export const findContrast = async (
-  m: SceneMeasurement,
-): Promise<RenderTruthFinding[]> => {
-  if (m.error || !m.screenshotPath) return [];
-  const sharpMod = await import("sharp").catch(() => null);
-  if (!sharpMod) return [];
-  const sharp = sharpMod.default;
-  const out: RenderTruthFinding[] = [];
-
-  const sampleBox = async (
-    x: number,
-    y: number,
-    w: number,
-    h: number,
-  ): Promise<{ mean: number; range: number } | null> => {
-    const left = Math.max(0, Math.round(x));
-    const top = Math.max(0, Math.round(y));
-    const width = Math.min(m.width - left, Math.round(w));
-    const height = Math.min(m.height - top, Math.round(h));
-    if (width < 2 || height < 2) return null;
-    try {
-      const { data } = await sharp(m.screenshotPath)
-        .extract({ left, top, width, height })
-        .raw()
-        .toBuffer({ resolveWithObject: true });
-      let lo = 1,
-        hi = 0,
-        sum = 0,
-        n = 0;
-      for (let i = 0; i + 2 < data.length; i += 3) {
-        const L = relLum(data[i], data[i + 1], data[i + 2]);
-        if (L < lo) lo = L;
-        if (L > hi) hi = L;
-        sum += L;
-        n++;
-      }
-      return n ? { mean: sum / n, range: hi - lo } : null;
-    } catch {
-      return null;
-    }
-  };
-
-  for (const e of m.elements) {
-    if (e.opacity <= 0.05) continue;
-    if (e.isImg) {
-      if (e.w < MIN_LOGO.w || e.h < MIN_LOGO.h) continue;
-      // Skip corner brand-chrome marks (small, top band): a monochrome SVG
-      // wordmark legitimately has near-zero internal luminance range yet reads
-      // fine against the canvas. The internal-range proxy only makes sense for
-      // larger logo cards (partner/customer logos on a surface). Logo-vs-surface
-      // readability is owned by the vision gate, not this proxy — so contrast is
-      // ADVISORY, never blocking, until that proxy is replaced with ink-vs-surface.
-      if (e.y < 130 || (e.w < 120 && e.h < 60)) continue;
-      const s = await sampleBox(e.x, e.y, e.w, e.h);
-      if (s && s.range < LOGO_RANGE_FLOOR) {
-        out.push({
-          scene: m.scene,
-          kind: "contrast",
-          detail: `logo <img ${(e.src || "").slice(-28)}> nearly invisible against its surface (luminance range ${s.range.toFixed(3)} < ${LOGO_RANGE_FLOOR})`,
-        });
-      }
-    }
-    // v15: text nodes are judged by lib/render/text-contrast.ts (per-node
-    // local-backdrop sampling) — the whole-box text arm here is RETIRED.
-  }
-  return out;
-};
-
-/** Measured empty quadrants on the rendered frame (reuses painted-content). */
-export const findDeadRegion = async (
-  m: SceneMeasurement,
-): Promise<RenderTruthFinding[]> => {
-  if (m.error || !m.screenshotPath) return [];
-  try {
-    const ink = await assessFrameInk(m.screenshotPath);
-    const out: RenderTruthFinding[] = [];
-    if (ink.inkRatio < INK_FLOOR) {
-      out.push({ scene: m.scene, kind: "dead-region", detail: `near-empty frame (ink ${ink.inkRatio.toFixed(4)} < ${INK_FLOOR})` });
-    }
-    const empties = (Object.entries(ink.quadrants) as [string, number][])
-      .filter(([, v]) => v < QUADRANT_FLOOR)
-      .map(([k]) => k);
-    if (empties.length > 0 && ink.inkRatio >= INK_FLOOR) {
-      out.push({ scene: m.scene, kind: "dead-region", detail: `empty quadrant(s): ${empties.join(", ")}` });
-    }
-    return out;
-  } catch {
-    return [];
-  }
-};
+// Audit-1 Medium #5: findContrast (logo-luminance-range advisory — a dup of the
+// image-integrity gate; its text arm was already retired in v15) and
+// findDeadRegion (quadrant-ink advisory — superseded by the occupancy gate +
+// deterministic void furnish) were both DELETED. Neither reached blockingKinds;
+// LOGO_RANGE_FLOOR / MIN_LOGO / INK_FLOOR / QUADRANT_FLOOR / assessFrameInk went
+// with them. Logo readability is the vision/image-integrity gate's job.
 
 // ── canvas-brightness (light brand shipped on a dark canvas) ─────────────────
 // The #1 brand-fidelity miss: a fundamentally LIGHT brand (Glossier, Canva,
@@ -609,6 +450,9 @@ export const CANVAS_COHERENCE_RGB_DELTA = 30;
  *  canvas color, an independent incoherence signal. */
 const CANVAS_BRAND_CHROMATIC_MIN = 30;
 const CANVAS_NEUTRAL_CHROMA = 14;
+/** Two chromatic canvases whose hues differ by more than this (degrees) read as
+ *  DIFFERENT brand colors — an off-brand hue drift, not a lightness inversion. */
+const CANVAS_HUE_DRIFT_TOL = 40;
 
 const hexRgb = (hex: string): [number, number, number] | null => {
   const m = /^#?([0-9a-fA-F]{6})$/.exec((hex ?? "").trim());
@@ -621,8 +465,32 @@ const chromaOf = (r: number, g: number, b: number): number =>
 const canvasRgbDist = (a: [number, number, number], b: [number, number, number]): number =>
   Math.round(Math.sqrt((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2));
 
-/** Median RGB of the downsampled frame — the canvas dominates the area, so the
- *  median ≈ the canvas color, robust to foreground content. null on failure. */
+/** HSV hue in degrees (0-360), or null for a near-neutral color (no meaningful
+ *  hue). Audit-1 High #4: lets coherence tell a HUE drift (off-brand) from a
+ *  pure LIGHTNESS swing (a deliberate contrast scene keeping the brand hue). */
+const HUE_MIN_CHROMA = 20; // below this a color has no reliable hue
+export const hueOf = (r: number, g: number, b: number): number | null => {
+  const max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min;
+  if (d < HUE_MIN_CHROMA) return null;
+  let h: number;
+  if (max === r) h = ((g - b) / d) % 6;
+  else if (max === g) h = (b - r) / d + 2;
+  else h = (r - g) / d + 4;
+  h *= 60;
+  return h < 0 ? h + 360 : h;
+};
+const hueDelta = (a: number, b: number): number => {
+  const d = Math.abs(a - b) % 360;
+  return d > 180 ? 360 - d : d;
+};
+
+/** Median RGB of the frame's BORDER/GUTTER ring, NOT the whole frame. Audit-1
+ *  High #4: the canvas is what shows at the edges behind every element; sampling
+ *  the whole-frame median let a large centered furnish panel (the deterministic
+ *  void fill) BE the median and read as an off-brand canvas — a fill↔coherence
+ *  oscillation. The outer ring is the real canvas even when the center is full.
+ *  null on failure. */
+const BORDER_RING_FRAC = 0.1;
 const frameCanvasColor = async (
   screenshotPath: string,
 ): Promise<[number, number, number] | null> => {
@@ -635,9 +503,17 @@ const frameCanvasColor = async (
       .raw()
       .toBuffer({ resolveWithObject: true });
     const ch = info.channels;
+    const W = info.width, H = info.height;
+    const mx = Math.max(1, Math.round(W * BORDER_RING_FRAC));
+    const my = Math.max(1, Math.round(H * BORDER_RING_FRAC));
     const rs: number[] = [], gs: number[] = [], bs: number[] = [];
-    for (let i = 0; i + 2 < data.length; i += ch) {
-      rs.push(data[i]); gs.push(data[i + 1]); bs.push(data[i + 2]);
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        // Border ring only: the outer margin on any side.
+        if (x >= mx && x < W - mx && y >= my && y < H - my) continue;
+        const i = (y * W + x) * ch;
+        rs.push(data[i]); gs.push(data[i + 1]); bs.push(data[i + 2]);
+      }
     }
     if (rs.length === 0) return null;
     const med = (a: number[]): number => {
@@ -652,9 +528,19 @@ const frameCanvasColor = async (
 
 /**
  * PURE: given the brand canvas color + each scene's measured canvas color, flag
- * scenes whose canvas has drifted off-brand (RGB distance ≥ delta, OR chroma
- * collapse below neutral when the brand canvas is chromatic). Separated from the
- * pixel read so the rule is unit-tested without an image.
+ * scenes whose canvas has drifted OFF-BRAND. Audit-1 High #4 reconciles this with
+ * the canvas-BRIGHTNESS gate, which allows MAX_DARK_SCENES deliberate contrast
+ * scenes: coherence now grants the SAME budget. A scene that trips the RGB delta
+ * is classified —
+ *   • chroma-collapse (brand is chromatic, scene went neutral)  → ALWAYS off-brand
+ *   • invented hue (scene is chromatic, brand is neutral)        → ALWAYS off-brand
+ *   • hue drift (both chromatic, hues far apart)                 → ALWAYS off-brand
+ *   • pure LUMINANCE inversion (same hue family / neutral swing) → BUDGETED: the
+ *     first MAX_DARK_SCENES are allowed (a deliberate contrast scene keeps the
+ *     brand hue, only its lightness inverts); the EXCESS is flagged.
+ * This kills the old contradiction where brightness permitted one dark contrast
+ * scene but coherence blocked it for being far from a light brand's canvas.
+ * Separated from the pixel read so the rule is unit-tested without an image.
  */
 export const assessCanvasCoherence = (
   brandBackground: string | undefined,
@@ -663,27 +549,60 @@ export const assessCanvasCoherence = (
   const brand = brandBackground ? hexRgb(brandBackground) : null;
   if (!brand) return []; // no reference → skip (never fabricate a canvas truth)
   const brandChroma = chromaOf(brand[0], brand[1], brand[2]);
-  const out: RenderTruthFinding[] = [];
+  const brandChromatic = brandChroma >= CANVAS_BRAND_CHROMATIC_MIN;
+  const brandHue = hueOf(brand[0], brand[1], brand[2]);
+  const off: RenderTruthFinding[] = [];
+  const inversions: { scene: number; rgb: [number, number, number]; dist: number }[] = [];
   for (const s of sceneColors) {
     if (!s.rgb) continue;
+    const [r, g, b] = s.rgb;
     const dist = canvasRgbDist(s.rgb, brand);
-    const sceneChroma = chromaOf(s.rgb[0], s.rgb[1], s.rgb[2]);
-    const chromaCollapse =
-      brandChroma >= CANVAS_BRAND_CHROMATIC_MIN && sceneChroma < CANVAS_NEUTRAL_CHROMA;
-    if (dist < CANVAS_COHERENCE_RGB_DELTA && !chromaCollapse) continue;
-    out.push({
+    const sceneChroma = chromaOf(r, g, b);
+    const chromaCollapse = brandChromatic && sceneChroma < CANVAS_NEUTRAL_CHROMA;
+    if (dist < CANVAS_COHERENCE_RGB_DELTA && !chromaCollapse) continue; // coherent
+
+    const sceneHue = hueOf(r, g, b);
+    const inventedHue = !brandChromatic && sceneChroma >= CANVAS_BRAND_CHROMATIC_MIN;
+    const hueDrift =
+      brandHue !== null && sceneHue !== null && hueDelta(brandHue, sceneHue) > CANVAS_HUE_DRIFT_TOL;
+
+    if (chromaCollapse || inventedHue || hueDrift) {
+      const why = chromaCollapse
+        ? `its chroma collapsed to ${sceneChroma} (brand chroma ${brandChroma}) — a neutral where the brand is colored`
+        : inventedHue
+          ? `it invented a saturated hue (chroma ${sceneChroma}) the neutral brand canvas does not have`
+          : `its hue drifted off-brand (${Math.round(sceneHue ?? 0)}° vs brand ${Math.round(brandHue ?? 0)}°)`;
+      off.push({
+        scene: s.scene,
+        kind: "canvas-coherence",
+        detail:
+          `scene ${s.scene} ships an OFF-BRAND canvas: measured border color rgb(${r},${g},${b}) is ${dist} away ` +
+          `from the brand canvas ${brandBackground} (floor ${CANVAS_COHERENCE_RGB_DELTA}), and ${why}. ` +
+          `Every scene must share ONE coherent brand canvas; this reads as a different video. Repaint the ` +
+          `full-bleed canvas/atmosphere to the brand background ${brandBackground} (or a deliberate brand-palette ` +
+          `tint of it), never a neutral or an unrelated tone.`,
+      });
+    } else {
+      // A pure lightness swing that keeps the brand hue family — a deliberate
+      // contrast scene. Budgeted below (same as canvas-brightness).
+      inversions.push({ scene: s.scene, rgb: s.rgb, dist });
+    }
+  }
+  // Grant MAX_DARK_SCENES luminance inversions; flag the excess (too many
+  // inverted canvases break coherence just as too many dark scenes do).
+  const excess = inversions.slice(MAX_DARK_SCENES);
+  for (const s of excess) {
+    off.push({
       scene: s.scene,
       kind: "canvas-coherence",
       detail:
-        `scene ${s.scene} ships an OFF-BRAND canvas: measured median color rgb(${s.rgb.join(",")}) ` +
-        `is ${dist} away from the brand canvas ${brandBackground} (floor ${CANVAS_COHERENCE_RGB_DELTA})` +
-        `${chromaCollapse ? `, and its chroma collapsed to ${sceneChroma} (brand chroma ${brandChroma}) — a neutral near-black where the brand is warm/colored` : ""}. ` +
-        `Every scene must share ONE coherent brand canvas; this scene reads as a different video. Repaint the ` +
-        `full-bleed canvas/atmosphere to the brand background ${brandBackground} (or a deliberate brand-palette ` +
-        `tint of it), never a neutral near-black or an unrelated tone.`,
+        `scene ${s.scene} ships one contrast canvas too many: measured border color rgb(${s.rgb.join(",")}) is ` +
+        `${s.dist} away from the brand canvas ${brandBackground}. At most ${MAX_DARK_SCENES} deliberate ` +
+        `luminance-inversion scene is allowed; this one exceeds the budget. Repaint it to the brand canvas ` +
+        `${brandBackground} so the video reads as ONE coherent canvas.`,
     });
   }
-  return out;
+  return off.sort((a, b) => a.scene - b.scene);
 };
 
 /** Measure each scene's canvas color + apply the coherence rule. */
@@ -952,68 +871,10 @@ export const findEdgeCroppedPieces = (m: SceneMeasurement): EdgeCropFinding[] =>
   return out;
 };
 
-// ── interior clip (v11 — dogfood cycle 2: price chips cut mid-glyph) ─────────
-// Cycle 2 s2 shipped mock price chips ("$36.0", "4.8") clipped at their
-// panel's edge — inside the frame, so every edge gate was blind. Measured
-// truth: a text element sticking out past the union of its OWN piece's other
-// elements by more than a third of its own width/height reads as content
-// falling off its panel. ADVISORY by design: overhang is also a legitimate
-// design pattern (badges breaking a card edge), so this surfaces the defect
-// for the report/regen feedback without risking a wrongful blocking round.
-
-/** Fraction of its own width/height a text element may extend past its
- *  piece's other-elements union before the advisory fires. */
-export const INTERIOR_CLIP_FRAC = 0.3;
-const IC_MIN_TEXT_LEN = 2;
-const IC_MIN_SIBLING_AREA = 40_000; // the reduced union must be a real panel
-const IC_MAX_PER_SCENE = 4;
-
-/** Text elements protruding past their own piece's union (computed WITHOUT
- *  the element itself) by > INTERIOR_CLIP_FRAC of their own size. */
-export const findInteriorClip = (m: SceneMeasurement): RenderTruthFinding[] => {
-  if (m.error) return [];
-  const byPiece = new Map<string, MeasuredElement[]>();
-  for (const e of m.elements) {
-    if (!e.piece || e.opacity <= 0.05) continue;
-    byPiece.set(e.piece, [...(byPiece.get(e.piece) ?? []), e]);
-  }
-  const out: RenderTruthFinding[] = [];
-  for (const [pieceId, els] of byPiece) {
-    if (els.length < 3) continue; // a union of one sibling is not a panel
-    for (const e of els) {
-      if (out.length >= IC_MAX_PER_SCENE) return out;
-      if (e.isImg || e.text.trim().length < IC_MIN_TEXT_LEN) continue;
-      const siblings = els.filter((s) => s !== e);
-      const x1 = Math.min(...siblings.map((s) => s.x));
-      const y1 = Math.min(...siblings.map((s) => s.y));
-      const x2 = Math.max(...siblings.map((s) => s.x + s.w));
-      const y2 = Math.max(...siblings.map((s) => s.y + s.h));
-      if ((x2 - x1) * (y2 - y1) < IC_MIN_SIBLING_AREA) continue;
-      // The element must be MOSTLY inside (its center within the union) —
-      // fully-outside elements are their own composition, not a clip.
-      const cx = e.x + e.w / 2;
-      const cy = e.y + e.h / 2;
-      if (cx < x1 || cx > x2 || cy < y1 || cy > y2) continue;
-      const overs: { edge: string; px: number; own: number }[] = [
-        { edge: "right", px: e.x + e.w - x2, own: e.w },
-        { edge: "left", px: x1 - e.x, own: e.w },
-        { edge: "bottom", px: e.y + e.h - y2, own: e.h },
-        { edge: "top", px: y1 - e.y, own: e.h },
-      ];
-      const worst = overs.filter((o) => o.own > 0 && o.px / o.own > INTERIOR_CLIP_FRAC).sort((a, b) => b.px / b.own - a.px / a.own)[0];
-      if (!worst) continue;
-      out.push({
-        scene: m.scene,
-        kind: "interior-clip",
-        detail:
-          `text "${e.text.slice(0, 24)}" (piece ${pieceId}) protrudes ${Math.round(worst.px)}px past its piece's ` +
-          `${worst.edge} edge — ${Math.round((worst.px / worst.own) * 100)}% of its own ${worst.edge === "right" || worst.edge === "left" ? "width" : "height"} ` +
-          `sticks out of the panel (likely clipped mid-glyph). Keep interior values fully inside their panel.`,
-      });
-    }
-  }
-  return out;
-};
+// Audit-1 Medium #5: findInteriorClip (a text node protruding past its OWN
+// piece's sibling union — advisory only) was DELETED; it never reached
+// blockingKinds and is covered by findIntraPieceOverlap + the piece-edge-crop
+// clamp below. INTERIOR_CLIP_FRAC / IC_* went with it.
 
 // ── clamp-vs-slot planner (v11 — dogfood cycle 2: the s2.hero clamp ricochet) ─
 // Cycle 2's deterministic edge-crop clamp moved an OVERSIZED piece (content
@@ -2242,32 +2103,26 @@ export interface RenderTruthOptions {
 /**
  * Run all render-truth checks across measured scenes. Returns every finding;
  * `blocking` is the subset whose kind is in blockingKinds (default:
- * overflow + contrast + measure-error — the unambiguous correctness failures).
+ * overflow + measure-error — the unambiguous correctness failures).
  */
 export const findRenderTruthFailures = async (
   measurements: SceneMeasurement[],
   opts: RenderTruthOptions = {},
 ): Promise<{ findings: RenderTruthFinding[]; blocking: RenderTruthFinding[] }> => {
   // Default blockers: overflow (proven, zero-FP) + measure-error (fail-closed).
-  // contrast + dead-region are ADVISORY: the contrast proxy false-positives on
-  // monochrome logos, and logo-readability/taste is the vision gate's job.
   const blockingKinds = new Set<RenderTruthKind>(
     opts.blockingKinds ?? ["overflow", "measure-error"],
   );
   const findings: RenderTruthFinding[] = [];
   for (const m of measurements) {
     findings.push(...findOverflow(m));
-    findings.push(...findTextOverlap(m));
     findings.push(...findCrossPieceOverlap(m));
     findings.push(...findStrandedHero(m, opts.registers?.[m.scene]));
-    findings.push(...findInteriorClip(m));
     findings.push(...findCornerMarkCollision(m, { brandName: opts.brandName }));
     findings.push(...findHollowCta(m, { brandBackground: opts.brandBackground }));
     findings.push(...findIntraPieceOverlap(m));
     findings.push(...findGhostFragment(m));
     findings.push(...(await findEmptyBand(m)));
-    findings.push(...(await findContrast(m)));
-    findings.push(...(await findDeadRegion(m)));
   }
   // Cross-scene: light brand shipped on a dark canvas (advisory by default).
   findings.push(...(await findCanvasBrightness(measurements, opts.brandBackground)));

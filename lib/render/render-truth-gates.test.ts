@@ -2,7 +2,7 @@
  * Tests for the render-truth gates. findOverflow is pure (operates on measured
  * rects) so it's fully unit-testable without a browser. findRenderTruthFailures
  * is exercised for its blocking-subset logic with screenshot-less measurements
- * (contrast/dead-region no-op without a screenshot — overflow is the blocker).
+ * (the screenshot-only gates no-op without a screenshot — overflow is the blocker).
  */
 import { promises as fs, existsSync } from "fs";
 import os from "os";
@@ -10,12 +10,10 @@ import path from "path";
 import sharp from "sharp";
 import {
   findOverflow,
-  findTextOverlap,
   findCrossPieceOverlap,
   findEmptyBand,
   findEdgeCroppedPieces,
   findRenderTruthFailures,
-  findInteriorClip,
   planEdgeCropMoves,
   hexLuminance,
   assessCanvasBrightness,
@@ -37,7 +35,6 @@ import {
   STRAY_ISOLATION_MIN_PX,
   EDGE_CROP_FRAC,
   EDGE_CLAMP_OVERSIZE_FRAC,
-  INTERIOR_CLIP_FRAC,
   type EdgeCropFinding,
   type SlotTerritory,
 } from "./render-truth-gates";
@@ -122,69 +119,8 @@ await check("blocking subset = overflow + measure-error (contrast/dead-region ad
   assert(findings.length >= 1, "should have at least the overflow finding");
 });
 
-// ── text-on-text overlap (wrapping headline buries the lede) ─────────────────
-const txt = (p: Partial<MeasuredElement>): MeasuredElement =>
-  el({ fontSize: 24, text: "x", bg: "rgba(0,0,0,0)", ...p });
-
-await check("flags a wrapped headline overrunning the lede (the Canva scene-2/4 defect)", () => {
-  // headline @top:132 wraps to ~336px tall (ends ~468); lede hardcoded @top:340
-  // sits entirely inside the headline's box — a full collision.
-  const m = scene(2, [
-    txt({ tag: "h1", text: "One design, every surface", x: 80, y: 132, w: 440, h: 336, fontSize: 80 }),
-    txt({ tag: "p", text: "Make one design for any format in a tap.", x: 80, y: 340, w: 440, h: 80 }),
-  ]);
-  const r = findTextOverlap(m);
-  assert(r.length === 1 && r[0].kind === "text-overlap", `got ${JSON.stringify(r)}`);
-});
-
-await check("does NOT flag a container whose text contains the child's (ul ⊇ li)", () => {
-  const m = scene(0, [
-    txt({ tag: "ul", text: "Real-time · Fractional · Free", x: 80, y: 470, w: 440, h: 120 }),
-    txt({ tag: "li", text: "Real-time", x: 80, y: 470, w: 440, h: 36 }),
-  ]);
-  assert(findTextOverlap(m).length === 0, "container/child text containment must not flag");
-});
-
-await check("does NOT flag text sitting on an opaque chip/card (intentional overlap)", () => {
-  // a label on a colored badge: the label's own bg is the chip color (opaque).
-  const m = scene(1, [
-    txt({ tag: "span", text: "SALE", x: 600, y: 270, w: 80, h: 40, bg: "rgba(216,27,96,1)" }),
-    txt({ tag: "span", text: "Social Post", x: 690, y: 275, w: 120, h: 30, bg: "rgba(216,27,96,1)" }),
-  ]);
-  assert(findTextOverlap(m).length === 0, "text on an opaque surface must not flag");
-});
-
-await check("does NOT flag cleanly stacked, non-overlapping text", () => {
-  const m = scene(0, [
-    txt({ tag: "h1", text: "Headline here", x: 80, y: 120, w: 600, h: 160, fontSize: 80 }),
-    txt({ tag: "p", text: "A lede comfortably below.", x: 80, y: 320, w: 600, h: 70 }),
-  ]);
-  assert(findTextOverlap(m).length === 0, "non-overlapping stack must not flag");
-});
-
-await check("does NOT flag an inline accent (em OR span) inside its headline", () => {
-  // measure-scene reports the h1 and its inline accent as separate elements; the
-  // accent sits inside the h1 by design — never a collision, whatever the tag.
-  const em = scene(1, [
-    txt({ tag: "h1", text: "The market was built for the", x: 96, y: 188, w: 760, h: 162, fontSize: 78 }),
-    txt({ tag: "em", text: "few", x: 538, y: 262, w: 130, h: 95, fontSize: 78 }),
-  ]);
-  assert(findTextOverlap(em).length === 0, "inline <em> accent must not flag");
-  // The real Robinhood case: "everyone" is a styled <span> inside the headline.
-  const span = scene(1, [
-    txt({ tag: "h1", text: "Investing for", x: 393, y: 139, w: 1135, h: 120, fontSize: 96 }),
-    txt({ tag: "span", text: "everyone", x: 1041, y: 139, w: 486, h: 120, fontSize: 96 }),
-  ]);
-  assert(findTextOverlap(span).length === 0, "inline <span> accent must not flag");
-});
-
-await check("does NOT flag a tiny (<30%) incidental overlap", () => {
-  const m = scene(0, [
-    txt({ tag: "h1", text: "Alpha", x: 80, y: 120, w: 400, h: 120 }),
-    txt({ tag: "p", text: "Bravo", x: 80, y: 235, w: 400, h: 120 }), // only ~4% overlap
-  ]);
-  assert(findTextOverlap(m).length === 0, "minor incidental overlap must not flag");
-});
+// Audit-1 Medium #5: findTextOverlap DELETED (superseded by intra/cross-piece
+// overlap gates) — its tests were removed with it.
 
 // ── canvas-brightness gate (light brand shipped dark) ────────────────────────
 await check("hexLuminance: white ≈ 1, black = 0, off-white > 0.6, near-black < 0.1", () => {
@@ -507,48 +443,8 @@ await check("planEdgeCropMoves: an ALREADY-overlapping neighbor doesn't block th
   assert(plan.moves.length === 1 && plan.regens.length === 0, `pre-existing overlap tolerated: ${JSON.stringify(plan)}`);
 });
 
-// ─── interior clip advisory (v11 #6 — cycle-2 s2 price chips cut mid-glyph) ──
-
-/** A hero panel (3 siblings forming a big union) + one chip. */
-const interiorScene = (chip: MeasuredElement): SceneMeasurement =>
-  scene(2, [
-    el({ piece: "s2.hero", pieceKind: "diegetic", x: 1100, y: 200, w: 700, h: 500, bg: "rgb(255,255,255)" }),
-    el({ piece: "s2.hero", pieceKind: "diegetic", tag: "span", text: "Futuredew", x: 1130, y: 240, w: 200, h: 24, fontSize: 14 }),
-    el({ piece: "s2.hero", pieceKind: "diegetic", tag: "span", text: "serum + oil", x: 1130, y: 280, w: 200, h: 24, fontSize: 12 }),
-    chip,
-  ]);
-
-await check("findInteriorClip: a price chip protruding >30% of its width past the panel edge fires (advisory)", () => {
-  // Panel union (without the chip) ends at x=1800; the chip is 120 wide with
-  // 60px (50%) sticking out — the cycle-2 "$36.0" mid-glyph class.
-  const chip = el({ piece: "s2.hero", pieceKind: "diegetic", tag: "span", text: "$36.00", x: 1740, y: 300, w: 120, h: 24, fontSize: 12 });
-  const r = findInteriorClip(interiorScene(chip));
-  assert(r.length === 1 && r[0].kind === "interior-clip", `got ${JSON.stringify(r)}`);
-  assert(/\$36\.0/.test(r[0].detail) && /right/.test(r[0].detail), "names the clipped value and edge");
-  assert(0.5 > INTERIOR_CLIP_FRAC, "fixture is genuinely over the 30% line");
-});
-
-await check("findInteriorClip: chips fully inside, mild overhang, and fully-outside elements never fire", () => {
-  const inside = el({ piece: "s2.hero", tag: "span", text: "$36.00", x: 1600, y: 300, w: 120, h: 24 });
-  assert(findInteriorClip(interiorScene(inside)).length === 0, "inside → clean");
-  // 24px of 120 (20%) overhang — a sanctioned badge-breaks-the-edge pattern.
-  const mild = el({ piece: "s2.hero", tag: "span", text: "$36.00", x: 1704, y: 300, w: 120, h: 24 });
-  assert(findInteriorClip(interiorScene(mild)).length === 0, "≤30% overhang → clean");
-  // Center outside the union = its own composition, not a clip.
-  const outside = el({ piece: "s2.hero", tag: "span", text: "$36.00", x: 1810, y: 300, w: 120, h: 24 });
-  assert(findInteriorClip(interiorScene(outside)).length === 0, "fully-outside → clean");
-});
-
-await check("findInteriorClip: tiny pieces (no panel-scale union) and measure-error scenes are skipped", () => {
-  const m = scene(1, [
-    el({ piece: "s1.badge", tag: "span", text: "hello", x: 0, y: 0, w: 60, h: 20 }),
-    el({ piece: "s1.badge", tag: "span", text: "world", x: 40, y: 0, w: 60, h: 20 }),
-    el({ piece: "s1.badge", x: 0, y: 0, w: 80, h: 30 }),
-  ]);
-  assert(findInteriorClip(m).length === 0, "sub-panel unions never fire");
-  const err = { ...scene(1, []), error: "boom" };
-  assert(findInteriorClip(err).length === 0, "measure-error scenes skip");
-});
+// Audit-1 Medium #5: findInteriorClip DELETED (superseded by intra-piece
+// overlap + edge-crop) — its tests + the interiorScene fixture removed with it.
 
 // ── v15 (#4): stray motif fragments ──────────────────────────────────────────
 // Measured bg is always the browser's computed rgb()/rgba() (never hex); the
@@ -860,6 +756,36 @@ await check("assessCanvasCoherence: neutral-canvas brand (no chroma reference) n
 await check("assessCanvasCoherence: unparseable / missing brand bg → skipped (never fabricates)", () => {
   assert(assessCanvasCoherence(undefined, [{ scene: 0, rgb: [0, 0, 0] }]).length === 0, "undefined bg skips");
   assert(assessCanvasCoherence("not-a-hex", [{ scene: 0, rgb: [0, 0, 0] }]).length === 0, "bad hex skips");
+});
+
+// ── Audit-1 High #4: coherence gets the SAME dark-scene budget as brightness ──
+await check("assessCanvasCoherence: a LIGHT brand's ONE deliberate dark scene PASSES (budget), a SECOND is flagged", () => {
+  const WHITE = "#ffffff";
+  const one = assessCanvasCoherence(WHITE, [
+    { scene: 0, rgb: [250, 250, 250] }, // canvas
+    { scene: 1, rgb: [252, 252, 252] }, // canvas
+    { scene: 2, rgb: [20, 20, 24] }, // ONE deliberate dark contrast scene
+  ]);
+  assert(one.length === 0, `one luminance-inversion scene is within budget, got ${JSON.stringify(one.map((f) => f.scene))}`);
+  const two = assessCanvasCoherence(WHITE, [
+    { scene: 0, rgb: [250, 250, 250] },
+    { scene: 1, rgb: [20, 20, 24] }, // dark #1 — allowed
+    { scene: 2, rgb: [22, 22, 26] }, // dark #2 — over budget → flagged
+  ]);
+  assert(two.length === 1 && two[0].scene === 2, `the excess inversion is flagged, got ${JSON.stringify(two.map((f) => f.scene))}`);
+  assert(/contrast canvas too many/.test(two[0].detail), "names the budget overflow");
+});
+
+await check("assessCanvasCoherence: a HUE-DRIFT scene is off-brand regardless of budget", () => {
+  // Brand blue; a green canvas is a different hue, not a lightness inversion.
+  const off = assessCanvasCoherence("#1e5fb8", [{ scene: 0, rgb: [40, 150, 60] }]);
+  assert(off.length === 1 && /hue drifted/.test(off[0].detail), `hue drift must fire off-brand: ${JSON.stringify(off)}`);
+});
+
+await check("assessCanvasCoherence: a neutral brand + an INVENTED saturated hue is off-brand", () => {
+  // Near-white brand; a scene that paints a saturated teal invented a color.
+  const off = assessCanvasCoherence("#f4f4f6", [{ scene: 0, rgb: [16, 150, 150] }]);
+  assert(off.length === 1 && /invented a saturated hue/.test(off[0].detail), `invented hue must fire: ${JSON.stringify(off)}`);
 });
 
 // ── corner-mark collision (P3-C1: a duplicate brand lockup in the corner) ────

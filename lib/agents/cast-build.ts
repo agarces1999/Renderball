@@ -1992,14 +1992,29 @@ export const extractQuotedValues = (interior: string[]): string[] => {
   return out;
 };
 
+/** A DESCRIPTOR subject reads as a debug/placeholder string when rendered as a
+ *  title: an article-led noun phrase naming a UI artifact ("a large Faire
+ *  marketplace browser-chrome mock", "the Deel dashboard"). Rendering it as a
+ *  32px header is the Faire s2 defect — a literal blueprint description on
+ *  screen. Audit-1 P0 #2: detect and DROP these (the value grid carries the
+ *  content; the header is omitted). A real product-surface name ("Expenses",
+ *  "Global onboarding") does not lead with an article + UI noun and is kept. */
+const DESCRIPTOR_SUBJECT_RX =
+  /\b(mock(?:up)?|dashboard|window|browser[- ]?chrome|panel|chart|screen|view|interface|ui|screenshot|wireframe|modal|dialog|widget|console|graph|diagram|layout|frame)\b/i;
+const isDescriptorSubject = (head: string): boolean =>
+  /^(?:a|an|the)\b/i.test(head.trim()) && DESCRIPTOR_SUBJECT_RX.test(head);
+
 /** A short, clean title lifted from a hero's blueprint subject: the clause
  *  before the first em/en-dash/comma, capped to ~6 words / 52 chars, so a
  *  sprawling "a full-bleed Deel dashboard — a clean left sidebar, a payroll…"
- *  subject becomes a legible header ("a full-bleed Deel dashboard"). JSX-text
- *  safe (angle/brace stripped). Empty → "". */
+ *  subject becomes a legible header. JSX-text safe (angle/brace stripped).
+ *  Audit-1 P0 #2: a raw DESCRIPTOR subject (article + UI noun) is DROPPED → ""
+ *  so the fallback panel never renders a blueprint description as a title.
+ *  Empty → "". */
 export const placeholderTitleFromSubject = (subject: string | undefined): string => {
   if (!subject) return "";
   const head = subject.split(/[—–,:;(]/)[0].trim().replace(/[<>{}]/g, "");
+  if (isDescriptorSubject(head)) return ""; // debug-string subject → no title
   const words = head.split(/\s+/).filter(Boolean).slice(0, 6).join(" ");
   return words.length > 52 ? words.slice(0, 52).trim() : words;
 };
@@ -2072,7 +2087,7 @@ export const heroBlueprintPlaceholder = (
       (title
         ? `      <div style={{ display: "flex", alignItems: "center", gap: 14 }}><span style={{ width: 5, height: 30, borderRadius: 3, background: ${accent}, flexShrink: 0 }} /><span style={{ fontFamily: FONT_DISPLAY, fontSize: 32, fontWeight: 600, color: ${ink}, lineHeight: 1.05 }}>${title}</span></div>\n`
         : "") +
-      `      <div style={{ flex: 1, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gridAutoRows: "min-content", gap: 14, alignContent: "start" }}>\n` +
+      `      <div style={{ flex: 1, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gridAutoRows: "1fr", gap: 14, alignContent: "stretch" }}>\n` +
       `${cards}\n` +
       `      </div>\n` +
       `      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontFamily: FONT_BODY, fontSize: 14, color: ${ink}, opacity: 0.68 }}><span>${title || "Overview"}</span><span>${values.length} items</span></div>\n` +

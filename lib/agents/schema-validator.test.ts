@@ -19,6 +19,7 @@ import {
   countInteriorSpecifics,
   BEAT_COVERAGE_MIN_FRACTION,
   checkSceneComposition,
+  frameFillAdvisories,
   checkColdOpenVoice,
   findUngroundedMockValues,
   TEMPLATE_LEAK_RX,
@@ -1553,19 +1554,33 @@ const setBounds = (s: CompScenes, role: "hero" | "copy", b: { x: number; y: numb
 const setRegister = (s: CompScenes, reg: string) => {
   (s[0] as unknown as { register?: string }).register = reg;
 };
-const coverageErr = (s: CompScenes) => checkSceneComposition(s).filter((x) => /authored content covers only/.test(x));
-const emptyHalfErr = (s: CompScenes) => checkSceneComposition(s).filter((x) => /half of the frame is authored EMPTY/.test(x));
+// Audit-1 High #3 edit (1): frame-fill is now ADVISORY (frameFillAdvisories),
+// never a blocking checkSceneComposition error. These tests assert the advisory
+// calibration AND that checkSceneComposition no longer blocks on fill.
+const coverageErr = (s: CompScenes) => frameFillAdvisories(s).filter((x) => /authored content covers only/.test(x));
+const emptyHalfErr = (s: CompScenes) => frameFillAdvisories(s).filter((x) => /half of the frame is authored near-EMPTY/.test(x));
 
-check("frame-fill: the clean frameGood fixture (38% cov) passes the coverage floor", () => {
+check("frame-fill: the fill check is ADVISORY — a hollow void produces NO blocking checkSceneComposition error", () => {
+  const s = frameGood();
+  setRegister(s, "centered");
+  setBounds(s, "hero", { x: 760, y: 340, w: 400, h: 360 });
+  setBounds(s, "copy", { x: 690, y: 760, w: 540, h: 180 });
+  assert(
+    checkSceneComposition(s).filter((x) => /covers only|authored (?:near-)?EMPTY/.test(x)).length === 0,
+    `frame-fill must NOT block (advisory-only now), got ${JSON.stringify(checkSceneComposition(s))}`,
+  );
+});
+
+check("frame-fill: the clean frameGood fixture (38% cov) passes the advisory floor", () => {
   assert(coverageErr(frameGood()).length === 0, `clean fixture must clear the fill floor, got ${JSON.stringify(coverageErr(frameGood()))}`);
 });
 
-check("frame-fill: a hollow centered void (Brex s4-shaped ~11%) is REJECTED", () => {
+check("frame-fill: a hollow centered void (Brex s4-shaped ~11%) trips the ADVISORY", () => {
   const s = frameGood();
   setRegister(s, "centered");
   setBounds(s, "hero", { x: 760, y: 340, w: 400, h: 360 }); // small centered focal object
   setBounds(s, "copy", { x: 690, y: 760, w: 540, h: 180 }); // small caption below
-  assert(coverageErr(s).length === 1, `expected a marooned-void coverage error, got ${JSON.stringify(checkSceneComposition(s))}`);
+  assert(coverageErr(s).length === 1, `expected a marooned-void coverage advisory, got ${JSON.stringify(frameFillAdvisories(s))}`);
 });
 
 check("frame-fill: a reference-grade quote scene (Brex s2-shaped ~53%) PASSES", () => {
@@ -1576,26 +1591,34 @@ check("frame-fill: a reference-grade quote scene (Brex s2-shaped ~53%) PASSES", 
   assert(coverageErr(s).length === 0, `reference-grade quote must pass, got ${JSON.stringify(coverageErr(s))}`);
 });
 
-check("frame-fill: a filling (split) register with an EMPTY half is rejected", () => {
+check("frame-fill: a filling (split) register with an EMPTY half trips the advisory", () => {
   const s = frameGood();
   setRegister(s, "split");
   setBounds(s, "hero", { x: 100, y: 130, w: 780, h: 820 }); // all left
   setBounds(s, "copy", { x: 120, y: 900, w: 720, h: 150 }); // also left → right half empty
-  assert(emptyHalfErr(s).length === 1, `expected an empty-half error, got ${JSON.stringify(checkSceneComposition(s))}`);
+  assert(emptyHalfErr(s).length === 1, `expected an empty-half advisory, got ${JSON.stringify(frameFillAdvisories(s))}`);
 });
 
-check("frame-fill: a balanced split (both halves carried) trips no empty-half error", () => {
+check("frame-fill: full-bleed is EXEMPT from the head fill advisory (barbell/occupancy owns it)", () => {
+  const s = frameGood();
+  setRegister(s, "full-bleed");
+  setBounds(s, "hero", { x: 100, y: 130, w: 780, h: 820 }); // all left, right half empty
+  setBounds(s, "copy", { x: 120, y: 900, w: 720, h: 150 });
+  assert(frameFillAdvisories(s).length === 0, `full-bleed must be exempt (render barbell owns it), got ${JSON.stringify(frameFillAdvisories(s))}`);
+});
+
+check("frame-fill: a balanced split (both halves carried) trips no empty-half advisory", () => {
   const s = frameGood();
   setRegister(s, "split");
   // frameGood hero right {900,..} + copy left {140,..} → both halves carry content.
   assert(emptyHalfErr(s).length === 0, `balanced split must not flag an empty half, got ${JSON.stringify(emptyHalfErr(s))}`);
 });
 
-check("frame-fill: a stat scene breathes — the stat floor is gentler", () => {
+check("frame-fill: a stat scene breathes — the stat floor is the gentlest (Low #7)", () => {
   const s = frameGood();
   setRegister(s, "stat");
-  // A big number + subtiles at ~40% coverage: passes stat (0.35) though it would
-  // fail a filling register (0.45).
+  // A big number + subtiles at ~40% coverage: passes stat (0.32) though it would
+  // fail a filling register (0.45). stat is now strictly gentler than default.
   setBounds(s, "hero", { x: 360, y: 200, w: 1200, h: 520 });
   setBounds(s, "copy", { x: 360, y: 760, w: 1200, h: 190 });
   assert(coverageErr(s).length === 0, `a breathing stat scene must pass, got ${JSON.stringify(coverageErr(s))}`);

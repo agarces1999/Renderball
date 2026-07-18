@@ -8,11 +8,15 @@
  * (quality-loop.ts's own post-loop comment: "we cannot regen post-loop … ships
  * FLAGGED"). Detecting harder never made a void converge.
  *
- * This module is the CONVERGENCE GUARANTEE: when a blocking void survives the
- * loop (or a motif-blank empties a region post-loop), we DETERMINISTICALLY fill
- * the void band with a brand-consistent panel — a real secondary surface built
- * from the scene's own blueprint values — injected straight into the assembled
- * composition. No model, no retry: a void can no longer ship.
+ * This module is the CONVERGENCE GUARANTEE and the ONE terminal void arbiter
+ * (occupancy detects, furnish converges). Audit-1 High #3: it fills EVERY flagged
+ * void — blocking, severe, OR advisory, on ANY register (not only blocking ones)
+ * — when the void survives the loop or a motif-blank empties a region. We
+ * DETERMINISTICALLY fill the band with a brand-consistent panel — a real
+ * secondary surface built from the scene's own blueprint values (padded with the
+ * brand name if the scene is value-thin, so a void can't ship for want of
+ * content) — injected straight into the assembled composition, at the Chrome
+ * anchor or the section root. No model, no retry: a void can no longer ship.
  *
  * The panel is SELF-CONTAINED by construction — literal hex colors, literal font
  * families, inline styles, literal text — so it compiles wherever it is injected
@@ -169,8 +173,12 @@ export const buildFurnishPanelJsx = (o: FurnishPanelOpts): string => {
 /**
  * Insert a furnish panel as a child of Section{scene}, just before its
  * `<Chrome sceneIndex={scene}` mount (so it sits above content pieces and below
- * the chrome). Returns { injected:false } untouched when the section anchor is
- * absent — the caller then leaves the void flagged (never breaks the build).
+ * the chrome). Audit-1 High #3 edit (5): when the Chrome anchor is absent (a
+ * malformed section), fall back to injecting right after Section{scene}'s
+ * `<style …/>` line (its ROOT), so the panel still lands in the correct scene
+ * and a void can't ship for want of an anchor. Only returns { injected:false }
+ * when NEITHER anchor exists (a genuinely unrecognizable section) — the caller
+ * then leaves the void flagged (never breaks the build).
  */
 export const injectFurnishIntoSection = (
   code: string,
@@ -178,15 +186,28 @@ export const injectFurnishIntoSection = (
   panelJsx: string,
 ): { code: string; injected: boolean } => {
   if (!panelJsx) return { code, injected: false };
-  const marker = `<Chrome sceneIndex={${scene}}`;
-  const at = code.indexOf(marker);
-  if (at === -1) return { code, injected: false };
-  const lineStart = code.lastIndexOf("\n", at) + 1;
-  const indent = code.slice(lineStart, at); // leading whitespace of the Chrome line
-  return {
-    code: code.slice(0, lineStart) + indent + panelJsx + "\n" + code.slice(lineStart),
-    injected: true,
+  const injectAtLine = (at: number): { code: string; injected: boolean } => {
+    const lineStart = code.lastIndexOf("\n", at) + 1;
+    const indent = code.slice(lineStart, at); // leading whitespace of the anchor line
+    return {
+      code: code.slice(0, lineStart) + indent + panelJsx + "\n" + code.slice(lineStart),
+      injected: true,
+    };
   };
+  const chrome = code.indexOf(`<Chrome sceneIndex={${scene}}`);
+  if (chrome !== -1) return injectAtLine(chrome);
+  // Fallback: land inside Section{scene}'s root, just after its <style …/> line.
+  const decl = code.indexOf(`export const Section${scene}:`);
+  if (decl !== -1) {
+    const style = code.indexOf("<style dangerouslySetInnerHTML", decl);
+    if (style !== -1) {
+      const nl = code.indexOf("\n", style);
+      const injectAt = nl >= 0 ? nl + 1 : style;
+      // Anchor on the FIRST char of the following line so indent is captured.
+      return injectAtLine(injectAt + (code.slice(injectAt).match(/^[ \t]*/)?.[0].length ?? 0));
+    }
+  }
+  return { code, injected: false };
 };
 
 // ── the void → furnish rect mapping ──────────────────────────────────────────

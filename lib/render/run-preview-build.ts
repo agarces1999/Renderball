@@ -20,7 +20,7 @@ import { resolveCornerBrandMark } from "../agents/logo-inject";
 import { verifyScenesRender } from "./ssr-render";
 import { measureScenes } from "./measure-scene";
 import { findRenderTruthFailures, measureOutDir, type RenderTruthKind } from "./render-truth-gates";
-import { resolveCanvasPlan, signatureWithLogoFallback } from "../crawl/brand-identity";
+import { resolveCanvasPlan, signatureWithLogoFallback, brandShortName } from "../crawl/brand-identity";
 import { preflightBrandTruth } from "../crawl/brand-truth";
 import { repairRenderTruth } from "./render-truth-repair";
 import {
@@ -321,7 +321,9 @@ export async function runPreviewBuild(
     "overflow", "measure-error", "barbell", "cross-piece-overlap", "canvas-brightness", "stranded-hero",
     "canvas-coherence", "corner-mark-collision", "hollow-cta", "intra-piece-overlap", "ghost-fragment",
   ];
-  const brandNameForGates = (brief?.brand_extract as { title?: string } | undefined)?.title;
+  // Audit-1 P0 #1: the ONE brand-name source of truth (was raw be.title — leaked
+  // Faire's whole "Your one-stop shop for whole" tagline into gate feedback).
+  const brandNameForGates = brandShortName(brief?.brand_extract);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const registersOf = (s: any): (string | undefined)[] =>
     (s?.scenes ?? []).map((sc: { register?: string }) => sc?.register);
@@ -474,7 +476,7 @@ export async function runPreviewBuild(
     }
     const be = brief?.brand_extract;
     const brandTruth = {
-      name: be?.title,
+      name: brandShortName(be), // Audit-1 P0 #1 (SSOT — was raw be.title)
       // Derived, never-undefined canvas — the raw background_color left the
       // rubric's canvas check toothless whenever the crawl missed it.
       backgroundColor: resolveCanvasPlan(be).background,
@@ -733,7 +735,7 @@ async function runCastPreviewBuild(args: {
       be?.theme_color ??
       (be?.palette ?? [])[0] ??
       "#666666";
-    const brand = (be?.title as string | undefined)?.trim() || "Brand";
+    const brand = brandShortName(be); // Audit-1 P0 #1 (SSOT — was raw be.title)
     const derived = deriveCrawlTheme(be, canvasPlan.background, canvasPlan.mode, signature, be?.palette ?? []);
     const inkGuard = neutralizeInk(derived.theme);
     const theme = inkGuard.theme;
@@ -783,7 +785,7 @@ async function runCastPreviewBuild(args: {
       const composed = await generateComposition({
         script: script as unknown as Script,
         caller: headCaller,
-        validate: (scenes: Scene[]) => checkSceneComposition(scenes, { aspect }),
+        validate: (scenes: Scene[]) => checkSceneComposition(scenes, { aspect, canvasBackground: canvasPlan.background }),
         aspect,
         brandName: brand,
         paletteHint: `canvas ${canvasPlan.background} (${canvasPlan.mode}), signature accent ${signature}, brand palette: ${(be?.palette ?? []).join(", ")}`,

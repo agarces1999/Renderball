@@ -157,6 +157,12 @@ export interface OccupancyVoidFinding {
   /** Routing target — the scene's hero owns furnishing the frame. */
   pieceId: string;
   blocking: boolean;
+  /** A marooned-island void (≥ OCCUPANCY_SEVERE_VOID_FLOOR). Audit-1 High #3: a
+   *  severe void no longer FORCES a blocking regen (regen never converged it);
+   *  it routes to the deterministic post-loop FURNISH like every flagged void.
+   *  The register still decides `blocking` (quote/centered block; split/stat/list
+   *  advise) — the severe flag is telemetry + furnish emphasis, not a regen gate. */
+  severe: boolean;
   runFracW: number;
   band: { startFracW: number; endFracW: number };
   region: "left" | "center" | "right";
@@ -289,16 +295,21 @@ export const assessOccupancy = async (
             const mid = (run.startFracW + run.endFracW) / 2;
             const region: "left" | "center" | "right" = mid < 0.38 ? "left" : mid > 0.62 ? "right" : "center";
             const bandPx = Math.round(run.runFracW * m.width);
-            // P3-C1: a SEVERE void (≥ OCCUPANCY_SEVERE_VOID_FLOOR) is a marooned
-            // island — a small card in a large void — and BLOCKS on ANY register,
-            // not just quote/centered. A weighted list/stat/split column stays
-            // under the severe floor; this only fires the genuinely-abandoned frame.
+            // A SEVERE void (≥ OCCUPANCY_SEVERE_VOID_FLOOR) is a marooned island —
+            // a small card in a large void. Audit-1 High #3: it no longer overrides
+            // the register posture into a blocking REGEN (that regen never
+            // converged — the audit's central finding). The register decides
+            // `blocking` (quote/centered block; split/stat/list advise); the
+            // deterministic post-loop FURNISH fills EVERY flagged void, severe or
+            // not, regardless of register — so a severe split/list void converges
+            // via furnish instead of thrashing a regen it can't satisfy.
             const severe = run.runFracW >= OCCUPANCY_SEVERE_VOID_FLOOR;
             result.findings.push({
               kind: "occupancy-void",
               scene: m.scene,
               pieceId: `s${m.scene}.hero`,
-              blocking: judgedBlocking || severe,
+              blocking: judgedBlocking,
+              severe,
               runFracW: run.runFracW,
               band: { startFracW: run.startFracW, endFracW: run.endFracW },
               region,
@@ -308,7 +319,7 @@ export const assessOccupancy = async (
                 `${region} region, x≈${Math.round(run.startFracW * m.width)}–${Math.round(run.endFracW * m.width)}) ` +
                 `carries no visible ink on this ${register} scene (floor ${pct(OCCUPANCY_RUN_FLOOR)}) and no ` +
                 `anchoring motif. That side of the frame reads abandoned, not staged.` +
-                `${severe ? ` This void is SEVERE (≥${pct(OCCUPANCY_SEVERE_VOID_FLOOR)} of the frame) — the content reads as a small card marooned in a large void, which is BLOCKING on any register.` : ""}`,
+                `${severe ? ` This void is SEVERE (≥${pct(OCCUPANCY_SEVERE_VOID_FLOOR)} of the frame) — the content reads as a small card marooned in a large void; the deterministic furnish will fill it.` : ""}`,
               repairInstruction:
                 `FURNISH THE VOID — do not relayout and do not stretch existing items apart. Populate the ${region} ` +
                 `region with REGISTER-CONSISTENT interior items in the same diegetic world as your existing ` +

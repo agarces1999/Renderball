@@ -55,6 +55,14 @@ import { heroRegionsFromMeasurement, type HeroRegion } from "./hero-contrast";
 /** Largest accent-colored rectangle as a fraction of the hero region's area.
  *  Above this = the accent is a panel fill, not punctuation. */
 export const ACCENT_FILL_MAX_FRAC = 0.3;
+/** Audit-1 Medium #6: register-aware ceiling. On a FULL-BLEED scene the hero IS
+ *  the canvas, so a larger brand-colored field is a legitimate design (a
+ *  full-frame brand wash), not the unfinished-slab defect. Raise the ceiling
+ *  there so we don't false-fire on a deliberate full-bleed brand-color scene.
+ *  Non-full-bleed registers keep the strict 0.30 (never lowered → no new FPs). */
+export const ACCENT_FILL_MAX_FRAC_FULLBLEED = 0.5;
+export const accentFillCeilingFor = (register?: string): number =>
+  register === "full-bleed" ? ACCENT_FILL_MAX_FRAC_FULLBLEED : ACCENT_FILL_MAX_FRAC;
 /** Circular hue tolerance (degrees) for "this pixel is the accent". */
 export const HUE_TOL_DEG = 20;
 /** Rec.709 luminance tolerance (0-255) vs the accent token. */
@@ -266,7 +274,7 @@ const pageAccentSampler = async (args: {
 
 const pct = (f: number): string => `${Math.round(f * 1000) / 10}%`;
 
-const findingFor = (stats: AccentFillStats): AccentFillFinding => ({
+const findingFor = (stats: AccentFillStats, ceiling: number = ACCENT_FILL_MAX_FRAC): AccentFillFinding => ({
   kind: "accent-as-fill",
   scene: stats.scene,
   pieceId: stats.pieceId,
@@ -274,7 +282,7 @@ const findingFor = (stats: AccentFillStats): AccentFillFinding => ({
   detail:
     `scene ${stats.scene}: hero piece "${stats.pieceId}" uses the brand accent as a PANEL FILL — ` +
     `a single flat accent-colored rectangle of ${stats.rect.w}x${stats.rect.h}px covers ` +
-    `${pct(stats.largestRectFrac)} of the hero's region (ceiling ${pct(ACCENT_FILL_MAX_FRAC)}; ` +
+    `${pct(stats.largestRectFrac)} of the hero's region (ceiling ${pct(ceiling)}; ` +
     `accent ${stats.accents.join("/")}). Accent at slab scale reads as an unfinished color block, ` +
     `whatever the hue-lock and washout gates thought of it.`,
   repairInstruction:
@@ -295,7 +303,7 @@ const findingFor = (stats: AccentFillStats): AccentFillFinding => ({
 export const assessAccentFill = async (
   measurements: SceneMeasurement[],
   accents: string[],
-  opts?: { page?: Page },
+  opts?: { page?: Page; registers?: (string | undefined)[] },
 ): Promise<AccentFillResult> => {
   const result: AccentFillResult = { stats: [], findings: [], errors: [] };
   const specs = accentSpecs(accents);
@@ -378,8 +386,9 @@ export const assessAccentFill = async (
           accents: specs.map((a) => a.hex),
         };
         result.stats.push(stats);
-        if (stats.largestRectFrac > ACCENT_FILL_MAX_FRAC) {
-          result.findings.push(findingFor(stats));
+        const ceiling = accentFillCeilingFor(opts?.registers?.[m.scene]);
+        if (stats.largestRectFrac > ceiling) {
+          result.findings.push(findingFor(stats, ceiling));
         }
       }
     }

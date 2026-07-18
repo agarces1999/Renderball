@@ -12,6 +12,10 @@ import {
   signatureWithLogoFallback,
   resolveBrandIdentity,
   genericFor,
+  deriveBrandName,
+  brandShortName,
+  brandNameFromTitle,
+  looksLikeTagline,
 } from "./brand-identity";
 import { buildAgentInputFromBrief } from "../agents/pipeline";
 
@@ -294,6 +298,75 @@ check("the same URL with NO confidence is still re-litigated by the regexes", ()
   assert(
     input.brand_identity?.logo == null,
     `legacy pre-finder briefs must keep the regex filter, got ${JSON.stringify(input.brand_identity?.logo)}`,
+  );
+});
+
+// ── brand SHORT NAME — the single source of truth (Audit-1 P0 #1) ────────────
+check("brandShortName: the Faire leak — a 'Tagline - Brand' title → the brand", () => {
+  // The exact defect: title = the whole tagline + brand, spaced-hyphen separator.
+  assert(
+    brandShortName({ url: "https://faire.com", title: "Your one-stop shop for wholesale - Faire" }) === "Faire",
+    `expected Faire, got ${brandShortName({ url: "https://faire.com", title: "Your one-stop shop for wholesale - Faire" })}`,
+  );
+});
+
+check("brandShortName tagline guard: a title that is ONLY a tagline → hostname", () => {
+  // No brand segment at all; the hostname is the only real name (capitalized).
+  assert(
+    brandShortName({ url: "https://faire.com/wholesale", title: "Your one-stop shop for whole" }) === "Faire",
+    `tagline-only title must fall back to the hostname, got ${brandShortName({ url: "https://faire.com/wholesale", title: "Your one-stop shop for whole" })}`,
+  );
+});
+
+check("brandShortName: Brex colon title → 'Brex' (host-matched)", () => {
+  assert(
+    brandShortName({ url: "https://brex.com", title: "Brex: The Modern Finance Software" }) === "Brex",
+    `expected Brex, got ${brandShortName({ url: "https://brex.com", title: "Brex: The Modern Finance Software" })}`,
+  );
+});
+
+check("brandShortName: 'Tagline | Brand' (Fuse) → the host-matched brand", () => {
+  assert(
+    brandShortName({ url: "https://fusefinance.com", title: "AI-Powered Loan Origination Software | Fuse" }) === "Fuse",
+    `expected Fuse, got ${brandShortName({ url: "https://fusefinance.com", title: "AI-Powered Loan Origination Software | Fuse" })}`,
+  );
+});
+
+check("brandShortName: clean short titles pass through unchanged", () => {
+  assert(brandShortName({ url: "https://vanta.com", title: "Vanta" }) === "Vanta", "clean single-word");
+  assert(
+    brandShortName({ url: "https://liquiddeath.com", title: "Liquid Death" }) === "Liquid Death",
+    "clean two-word brand unchanged",
+  );
+  // No usable title → capitalized hostname.
+  assert(brandShortName({ url: "https://deel.com" }) === "Deel", "no title → hostname");
+  assert(brandShortName(undefined) === "Brand", "nothing → Brand");
+});
+
+check("brandShortName: never exceeds the wordmark cap (a leak can't fill a lockup)", () => {
+  const n = brandShortName({ title: "A very very long marketing sentence that is not a name at all" });
+  assert(n.length <= 20, `capped ≤20, got ${JSON.stringify(n)} (${n.length})`);
+});
+
+check("looksLikeTagline: brand words safe, connective sentences caught", () => {
+  assert(!looksLikeTagline("Faire"), "Faire is a name");
+  assert(!looksLikeTagline("Shopify"), "Shopify — no \\bshop\\b boundary");
+  assert(!looksLikeTagline("Liquid Death"), "two-word brand");
+  assert(looksLikeTagline("Your one-stop shop"), "connective + word count");
+  assert(looksLikeTagline("The Modern Finance Software"), "leading determiner");
+});
+
+check("brandNameFromTitle: matches the wordmark path without a hostname", () => {
+  assert(brandNameFromTitle("Your one-stop shop for wholesale - Faire") === "Faire", "brand segment");
+  assert(brandNameFromTitle("Ben & Jerry's") === "Ben & Jerry's", "ampersand brand kept");
+  assert(brandNameFromTitle("") === "", "empty → empty");
+});
+
+check("deriveBrandName is the same SSOT surface brandShortName wraps", () => {
+  assert(
+    deriveBrandName({ url: "https://brex.com", title: "Brex: tagline" }) ===
+      brandShortName({ url: "https://brex.com", title: "Brex: tagline" }),
+    "brandShortName delegates to deriveBrandName",
   );
 });
 

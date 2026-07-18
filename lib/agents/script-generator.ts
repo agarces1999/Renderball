@@ -10,7 +10,7 @@ import {
   findUngroundedStageLabels,
   findTypeOnlyScenes,
 } from "./schema-validator";
-import { signatureWithLogoFallback, resolveCanvasPlan } from "../crawl/brand-identity";
+import { signatureWithLogoFallback, resolveCanvasPlan, brandShortName } from "../crawl/brand-identity";
 import { formatDesignLanguage } from "../crawl/design-language";
 import { ulid } from "../ulid";
 import { type Usage, EMPTY_USAGE, usageOf, addUsage } from "../usage";
@@ -474,7 +474,7 @@ export const generateScript = async (
     // backfill any missing scene registers (GLM omits them sporadically, and
     // exemplar selection + the Design Agent's layout archetypes key on them).
     const normalized = backfillSceneRegisters(normalizeScriptContent(withAssets));
-    const validation = validateScript(normalized, { brandName: brief.brand_extract?.title });
+    const validation = validateScript(normalized, { brandName: brandShortName(brief.brand_extract) }); // Audit-1 P0 #1 (SSOT — was raw title)
     if (validation.ok) {
       // Duration guard: the requested duration is authoritative. If the
       // agent collapsed the video (sizing scenes like ~1s animation beats),

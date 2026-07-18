@@ -103,13 +103,70 @@ const isLoadableUrl = (u: string): boolean =>
 const hasUsableSrc = (src?: string): boolean =>
   typeof src === "string" && isLoadableUrl(src);
 
+// ── brand SHORT NAME — the single source of truth (Audit-1 P0 #1) ────────────
+//
+// Three subsystems used to derive the brand's display name three different ways
+// (corner wordmark, CTA template, crawl-saved title) and disagreed — Faire's
+// title "Your one-stop shop for wholesale - Faire" leaked as the brand name
+// "Your one-stop shop for whole" on every scene, and the CTA read "Get started
+// with Your". This module is now the ONLY place a display name is derived; all
+// consumers call brandShortName (or brandWordmarkText, which delegates here).
+//
+// The MAX brand name length (a wordmark, not a sentence). Names longer than this
+// are taglines that slipped the guard — capped so a leak can never fill a lockup.
+export const BRAND_NAME_MAX = 20;
+
+// A title separator: colon / pipe / bullet split WITHOUT surrounding whitespace
+// (brands often attach them: "Brex:tagline", "Notion|workspace"); dash variants
+// split ONLY when whitespace-surrounded, so a hyphenated brand ("Coca-Cola") and
+// an internal compound ("AI-Powered") stay one word. Faire's "Tagline - Brand"
+// (spaced hyphen) now splits — the miss that let the whole title through before.
+const TITLE_SEP_RX = /\s*[|:·•]\s*|\s+[-–—]\s+/;
+
+// Connective / determiner words that a brand NAME does not contain but a TAGLINE
+// does. Word-boundaried, so "Shopify" (no boundary after "shop") and "Theory"
+// (no boundary after "the") are safe; a standalone "shop"/"the"/"your" is not.
+const TAGLINE_WORD_RX = /\b(?:for|the|your|a|an|of|to|and|with|that|our|shop|way|make|manage|build)\b/i;
+
+/** A title segment that reads like a TAGLINE, not a brand name: too long, too
+ *  many words, or carrying a connective word. Brand names are short and dense. */
+export const looksLikeTagline = (seg: string): boolean => {
+  const s = (seg ?? "").trim();
+  if (!s) return true;
+  const words = s.split(/\s+/).filter(Boolean);
+  return s.length > BRAND_NAME_MAX || words.length >= 3 || TAGLINE_WORD_RX.test(s);
+};
+
+const stripTld = (s: string): string =>
+  s.replace(/\.(com|io|co|app|ai|net|org|dev|xyz|so|inc)$/i, "").trim();
+const capName = (s: string): string => {
+  const t = s.trim().slice(0, BRAND_NAME_MAX).trim();
+  return t;
+};
+const splitTitleSegments = (title: string): string[] =>
+  title.split(TITLE_SEP_RX).map((s) => s.trim()).filter(Boolean);
+
+/** Pick the brand-name segment from a split title WITHOUT a hostname to match
+ *  against (the brandWordmarkText path): prefer the shortest non-tagline
+ *  segment; if EVERY segment reads like a tagline, return the shortest segment
+ *  (least bad — an all-tagline title has no better answer). */
+const pickBrandSegment = (segs: string[]): string => {
+  if (segs.length === 0) return "";
+  const nonTagline = segs.filter((s) => !looksLikeTagline(s));
+  const pool = nonTagline.length > 0 ? nonTagline : segs;
+  return [...pool].sort((a, b) => a.length - b.length)[0] ?? "";
+};
+
 /**
- * Derive a clean brand name from the page title + hostname.
- * The brand can be EITHER side of the title separator ("Brand | Tagline" OR
- * "Tagline | Brand" — Fuse's title is "AI-Powered Loan Origination Software |
- * Fuse"), so we pick the title segment that matches the hostname rather than
- * blindly taking the first. Splits on title separators only — NOT hyphen, so
- * "AI-Powered" stays one word.
+ * Derive a clean brand name from the page title + hostname. The brand can be
+ * EITHER side of a separator ("Brand | Tagline" OR "Tagline | Brand" — Fuse is
+ * "AI-Powered Loan Origination Software | Fuse"), so we prefer the segment that
+ * MATCHES the hostname; a host match is trusted verbatim (it IS the brand). With
+ * no host match, we pick the shortest non-tagline segment. The TAGLINE GUARD
+ * then catches a title that is ONLY a tagline (Faire's "Your one-stop shop for
+ * wholesale") and falls back to the capitalized hostname ("Faire") instead of
+ * shipping the sentence. Capped to BRAND_NAME_MAX so a leak can never fill a
+ * lockup.
  */
 export const deriveBrandName = (extract: Partial<BrandExtract>): string => {
   const host = (extract.url || "")
@@ -119,25 +176,52 @@ export const deriveBrandName = (extract: Partial<BrandExtract>): string => {
   const hostLabel = host.split(".")[0] || ""; // "fusefinance"
   const title = extract.title?.trim();
   if (title) {
-    const segs = title
-      .split(/\s*[|–—:·•]\s*/)
-      .map((s) => s.trim())
-      .filter(Boolean);
+    const segs = splitTitleSegments(title);
     if (segs.length > 0) {
       const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
-      // Prefer the segment that matches the hostname (the brand usually does).
+      // A host match IS the brand — trust it verbatim (handles a 2-word brand
+      // like "Ben & Jerry's" that the tagline word-count would otherwise reject).
       const byHost = segs.find((s) => {
         const n = norm(s);
         return n && hostLabel && (hostLabel.includes(n) || n.includes(hostLabel));
       });
-      // Else the shortest segment — taglines are long, brand names are short.
-      const chosen = byHost || [...segs].sort((a, b) => a.length - b.length)[0];
-      const clean = chosen.replace(/\.(com|io|co|app|ai|net|org)$/i, "").trim();
-      if (clean) return clean;
+      if (byHost) {
+        const clean = stripTld(byHost);
+        if (clean) return capName(clean);
+      }
+      // No host match: shortest non-tagline segment, then the tagline guard.
+      const pick = stripTld(pickBrandSegment(segs));
+      if (pick && !looksLikeTagline(pick)) return capName(pick);
+      // The chosen segment reads like a tagline → the hostname is the brand.
+      if (hostLabel) return capName(hostLabel.charAt(0).toUpperCase() + hostLabel.slice(1));
+      if (pick) return capName(pick); // no hostname either → least-bad segment
     }
   }
-  if (hostLabel) return hostLabel.charAt(0).toUpperCase() + hostLabel.slice(1);
+  if (hostLabel) return capName(hostLabel.charAt(0).toUpperCase() + hostLabel.slice(1));
   return "Brand";
+};
+
+/**
+ * THE brand display-name source of truth. Every consumer (gates, brandTruth,
+ * cast brand, CTA template, corner wordmark) derives the name here so they can
+ * never disagree. Thin alias over deriveBrandName — one function, one answer.
+ */
+export const brandShortName = (extract: Partial<BrandExtract> | undefined): string =>
+  deriveBrandName(extract ?? {});
+
+/**
+ * Clean a brand name from a bare title STRING (no hostname to match against) —
+ * the corner-wordmark path, where the caller already holds a resolved name but
+ * a legacy/raw title can still slip through. Delegates to the same tagline-aware
+ * segment logic as brandShortName so the corner mark and the CTA agree. Returns
+ * "" for an empty input.
+ */
+export const brandNameFromTitle = (title: string | undefined): string => {
+  const raw = (title ?? "").trim();
+  if (!raw) return "";
+  const segs = splitTitleSegments(raw);
+  const pick = stripTld(pickBrandSegment(segs));
+  return capName(pick || raw);
 };
 
 /** Light/dark placement hints from the logo URL filename. */

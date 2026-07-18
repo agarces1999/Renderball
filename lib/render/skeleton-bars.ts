@@ -105,8 +105,14 @@ export const isSkeletonBarCandidate = (e: MeasuredElement): boolean => {
 
 /**
  * Skeleton-bar findings for one measured scene: one finding per piece that
- * carries at least one skeleton row (≥3 qualifying sibling bars); blocking
- * when the piece carries ≥2 rows.
+ * carries at least one skeleton row (≥3 qualifying sibling bars).
+ *
+ * Audit-1 Medium #5: DOWNGRADED to advisory (blocking always false). The gate
+ * never fired across dogfood cycles 1-9, and its mid-grey band [100,235] is
+ * blind to the real risk — a light-brand near-white skeleton (~#eee) — so it
+ * could only ever block a defect it cannot see. It rides along as a telemetry/
+ * repair advisory; a scene is never blocked on it. (SKELETON_BLOCKING_MIN_ROWS
+ * is kept only to describe the "whole panel of it" wording.)
  */
 export const findSkeletonBars = (m: SceneMeasurement): SkeletonBarFinding[] => {
   if (m.error) return [];
@@ -127,19 +133,19 @@ export const findSkeletonBars = (m: SceneMeasurement): SkeletonBarFinding[] => {
   }
   const out: SkeletonBarFinding[] = [];
   for (const [pieceId, acc] of byPiece) {
-    const blocking = acc.rows >= SKELETON_BLOCKING_MIN_ROWS;
+    const wholePanel = acc.rows >= SKELETON_BLOCKING_MIN_ROWS;
     out.push({
       kind: "skeleton-bars",
       scene: m.scene,
       pieceId,
-      blocking,
+      blocking: false, // advisory only (see header) — never blocks a scene
       rows: acc.rows,
       bars: acc.bars,
       detail:
         `scene ${m.scene}: ${pieceId || "(no piece)"} renders ${acc.rows} skeleton row(s) — ` +
         `${acc.bars} flat mid-grey rounded no-text bars >${SKELETON_BAR_MIN_W}px wide stacked as siblings. ` +
         `That is the loading-skeleton look: fake content where real content should be` +
-        `${blocking ? " (≥2 rows = a whole panel of it — blocking)" : ""}.`,
+        `${wholePanel ? " (≥2 rows = a whole panel of it)" : ""}.`,
       repairInstruction:
         `Replace every grey placeholder bar with REAL rendered content: concrete labels, values, and ` +
         `copy in the brand's palette and type (rows with names, prices, stats — never abstract grey ` +

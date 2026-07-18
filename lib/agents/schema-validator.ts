@@ -960,15 +960,22 @@ export const NEGATIVE_SPACE_MIN_WORDS = 4;
  * genuinely marooned Brex s4 (30%, centered — the real hollow void that shipped).
  * (Deel s0 39.7% sits just above the clean fixture and is left to the render-side
  * furnish — the default floor cannot separate 39.7% from a 38% clean frame.) */
-export const FILL_COVERAGE_FLOOR_FILLING = 0.45; // split / list / full-bleed
-export const FILL_COVERAGE_FLOOR_STAT = 0.35; // stat — a big number breathes
+export const FILL_COVERAGE_FLOOR_FILLING = 0.45; // split / list
+// Low #7: a stat scene breathes MOST around its giant number, so its floor must
+// be the gentlest — it was 0.35, ABOVE the default 0.34, contradicting the
+// "stat breathes most" comment. Now strictly below the default.
+export const FILL_COVERAGE_FLOOR_STAT = 0.32; // stat — a big number breathes most
 export const FILL_COVERAGE_FLOOR_DEFAULT = 0.34; // centered / quote / unknown
-/** On a FILLING register (split/list/full-bleed), no canvas half may be left
- *  near-empty — an authored empty half is the split-void the head must not
- *  compose. (Centered/quote/stat legitimately weight the middle, so the
- *  empty-half guard does not apply to them.) */
+/** On a FILLING register (split/list), no canvas half may be left near-empty —
+ *  an authored empty half is a split-void. (Centered/quote/stat legitimately
+ *  weight the middle, so the empty-half advisory does not apply to them.) */
 export const FILL_EMPTY_HALF_FLOOR = 0.12;
-const FILLING_REGISTERS = new Set(["split", "list", "full-bleed"]);
+// Audit-1 High #3 edit (1): FILLING registers MIRROR the render occupancy gate.
+// full-bleed is REMOVED — the render barbell/occupancy gate owns a full-bleed
+// scene's voids (occupancy exempts full-bleed entirely), so the head must not
+// ALSO police them (the contradiction where the head demanded a full-bleed fill
+// the render side deliberately left to barbell).
+const FILLING_REGISTERS = new Set(["split", "list"]);
 
 interface RawBounds { x: number; y: number; w: number; h: number }
 const readBounds = (el: RawElement): RawBounds | null => {
@@ -1062,8 +1069,14 @@ const frameCompositionErrors = (
     }
   }
 
-  // 2) FOCAL RANK — exactly one rank-1, and it sits near optical center.
-  const rank1 = placed.filter((p) => Number((p.el as { focalRank?: unknown }).focalRank) === 1);
+  // 2) FOCAL RANK — exactly one rank-1, and it sits near optical center. Low #9:
+  //    the uniqueness check inspects the SAME set the prompt permits to carry a
+  //    focalRank — EVERY non-atmosphere element (connector/throughline included),
+  //    not just hero/copy — so a second rank-1 on a throughline can't slip past.
+  const rankable = elements
+    .map((el, j) => ({ el, j, bounds: readBounds(el), role: typeof el?.role === "string" ? el.role : "" }))
+    .filter((e) => e.role !== "" && e.role !== "atmosphere");
+  const rank1 = rankable.filter((p) => Number((p.el as { focalRank?: unknown }).focalRank) === 1);
   if (rank1.length === 0) {
     out.push(
       `Scene ${i}: no element has focalRank 1 — one element must be the dominant focal object (focalRank 1), large and near the ${Math.round(W / 2)},${Math.round(H / 2)} optical center.`,
@@ -1164,35 +1177,64 @@ const frameCompositionErrors = (
     }
   }
 
-  // 6) FRAME FILL (P3-C3 void PREVENTION) — the authored primary content must
-  //    cover enough of the frame, and (on filling registers) leave no empty
-  //    half. This stops the head from composing a marooned-card-in-a-void frame
-  //    at authoring time (cheap thinking round) rather than leaving the
-  //    render-side furnish to rescue it. Only runs when a hero is placed.
-  const fillBoxes = placed.filter((p) => p.bounds).map((p) => p.bounds!);
-  // A full-bleed layer (a relationship connector / atmosphere-scale element)
-  // legitimately fills the canvas — count it toward coverage.
-  for (const el of elements) {
-    const b = readBounds(el);
-    const role = typeof el?.role === "string" ? el.role : "";
-    if (b && !PLACED_ROLES.has(role) && rectArea(b) >= FULL_CANVAS_FRAC * W * H) fillBoxes.push(b);
-  }
-  if (placed.some((p) => p.role === "hero" && p.bounds) && fillBoxes.length > 0) {
-    const reg = register ?? "";
-    const covFloor = FILLING_REGISTERS.has(reg)
+  // 6) FRAME FILL — Audit-1 High #3 edit (1): DEMOTED to ADVISORY. The rect-union
+  //    coverage metric is ANTI-monotone with pixel truth (occupancy.ts:12-19), so
+  //    blocking on it burned a head thinking round on an unreliable signal while
+  //    the render-side occupancy gate + deterministic furnish are the real void
+  //    authority. The coverage / empty-half checks now live in the non-blocking
+  //    frameFillAdvisories() below — surfaced, never blocking, never re-authored.
+
+  return out;
+};
+
+/**
+ * FRAME-FILL ADVISORIES (Audit-1 High #3 edit (1)) — the coverage + empty-half
+ * smell check, ADVISORY ONLY (rect-union is anti-monotone with pixel truth, so
+ * it must never block or burn a head thinking round). Registers MIRROR the render
+ * occupancy gate: full-bleed is exempt (barbell/occupancy owns its voids); split
+ * / list are the filling registers; stat breathes most (gentlest floor). Returned
+ * separately from checkSceneComposition so the head validate loop never re-authors
+ * on it — the render-side furnish is the terminal void arbiter.
+ */
+export const frameFillAdvisories = (
+  scenes: Scene[],
+  opts: { aspect?: CompAspect } = {},
+): string[] => {
+  const canvas = COMP_CANVAS[opts.aspect ?? "16:9"] ?? COMP_CANVAS["16:9"];
+  const { w: W, h: H } = canvas;
+  const out: string[] = [];
+  scenes.forEach((scene, i) => {
+    const comp = scene?.composition as { elements?: unknown } | undefined;
+    if (!comp || typeof comp !== "object" || !Array.isArray(comp.elements)) return;
+    const register = typeof scene?.register === "string" ? scene.register : "";
+    if (register === "full-bleed") return; // barbell/occupancy owns full-bleed voids
+    const elements = comp.elements as RawElement[];
+    const placed = elements
+      .map((el, j) => ({ el, j, bounds: readBounds(el), role: typeof el?.role === "string" ? el.role : "" }))
+      .filter((e) => PLACED_ROLES.has(e.role));
+    if (!placed.some((p) => p.role === "hero" && p.bounds)) return;
+    const fillBoxes = placed.filter((p) => p.bounds).map((p) => p.bounds!);
+    for (const el of elements) {
+      const b = readBounds(el);
+      const role = typeof el?.role === "string" ? el.role : "";
+      if (b && !PLACED_ROLES.has(role) && rectArea(b) >= FULL_CANVAS_FRAC * W * H) fillBoxes.push(b);
+    }
+    if (fillBoxes.length === 0) return;
+    const covFloor = FILLING_REGISTERS.has(register)
       ? FILL_COVERAGE_FLOOR_FILLING
-      : reg === "stat"
+      : register === "stat"
         ? FILL_COVERAGE_FLOOR_STAT
         : FILL_COVERAGE_FLOOR_DEFAULT;
     const cov = gridCoverage(fillBoxes, W, H);
     if (cov < covFloor) {
       out.push(
-        `Scene ${i}: authored content covers only ${Math.round(cov * 100)}% of the ${W}×${H} frame (floor ${Math.round(
-          covFloor * 100,
-        )}% for a ${reg || "centered"} scene) — the focal object is marooned in a void. ENLARGE the hero and/or place a substantive subordinate element (a secondary panel, a copy stack, a footer meta strip) so the composed mass FILLS the frame; do not shrink content into one region and leave the rest empty.`,
+        `ADVISORY — Scene ${i}: authored content covers only ${Math.round(cov * 100)}% of the ${W}×${H} frame ` +
+          `(gentle floor ${Math.round(covFloor * 100)}% for a ${register || "centered"} scene) — the focal object may read ` +
+          `as marooned in a void. Prefer enlarging the hero and/or placing a substantive subordinate element (a secondary ` +
+          `panel, a copy stack, a footer meta strip). Non-blocking: the render-side furnish will fill any residual void.`,
       );
     }
-    if (FILLING_REGISTERS.has(reg)) {
+    if (FILLING_REGISTERS.has(register)) {
       const halves: Array<["L" | "R" | "T" | "B", string]> = [
         ["L", "left"],
         ["R", "right"],
@@ -1202,12 +1244,13 @@ const frameCompositionErrors = (
       const empty = halves.find(([h]) => gridCoverage(fillBoxes, W, H, h) < FILL_EMPTY_HALF_FLOOR);
       if (empty) {
         out.push(
-          `Scene ${i}: the ${empty[1]} half of the frame is authored EMPTY (a ${reg} scene must carry both sides) — give that half a real element (the opposite column's mock/rows/tiles, a supporting panel), never a bare void the render must backfill.`,
+          `ADVISORY — Scene ${i}: the ${empty[1]} half of the frame is authored near-EMPTY (a ${register} scene wants both ` +
+            `sides carried) — consider giving that half a real element (the opposite column's mock/rows/tiles, a supporting ` +
+            `panel). Non-blocking: the render-side furnish backfills a residual void.`,
         );
       }
     }
-  }
-
+  });
   return out;
 };
 
@@ -1220,9 +1263,18 @@ const frameCompositionErrors = (
  */
 export const checkSceneComposition = (
   scenes: Scene[],
-  opts: { aspect?: CompAspect } = {},
+  opts: { aspect?: CompAspect; canvasBackground?: string } = {},
 ): string[] => {
   const canvas = COMP_CANVAS[opts.aspect ?? "16:9"] ?? COMP_CANVAS["16:9"];
+  // Medium #6: the hero surface-contrast mirror keys off the RESOLVED canvas
+  // luminance (the same brand canvas the render paints), NOT a dark/light KEYWORD
+  // regex on the atmosphere prose. The keyword regex fails OPEN on a warm/olive
+  // dark canvas whose atmosphere text doesn't say "dark" (Klarna-plum overfit).
+  // dark ⇒ L<0.35, light ⇒ L>0.7; a mid-tone canvas demands neither. Falls back
+  // to the prose keywords only when no canvas hex is supplied (legacy callers).
+  const canvasL = opts.canvasBackground ? hexLuminance(opts.canvasBackground) : null;
+  const canvasIsDark = canvasL !== null ? canvasL < 0.35 : null;
+  const canvasIsLight = canvasL !== null ? canvasL > 0.7 : null;
   const errors: string[] = [];
   // Normalized atmosphere per scene index (null = uncomposed/unusable) so
   // the variety check compares LITERAL neighbours only.
@@ -1304,9 +1356,16 @@ export const checkSceneComposition = (
     //     atmosphere demands ≥1 light/high-luminance surface item; a light
     //     atmosphere (Glossier pale pink) demands ≥1 dark/saturated one. The
     //     dark reading wins when both vocabularies match.
-    const atmosphereReadsDark = typeof atmosphere === "string" && DARK_CANVAS_RX.test(atmosphere);
+    // Prefer the resolved canvas luminance (Medium #6); fall back to the prose
+    // keywords only when no canvas hex was supplied.
+    const atmosphereReadsDark =
+      canvasIsDark !== null
+        ? canvasIsDark
+        : typeof atmosphere === "string" && DARK_CANVAS_RX.test(atmosphere);
     const atmosphereReadsLight =
-      !atmosphereReadsDark && typeof atmosphere === "string" && LIGHT_CANVAS_RX.test(atmosphere);
+      canvasIsLight !== null
+        ? canvasIsLight
+        : !atmosphereReadsDark && typeof atmosphere === "string" && LIGHT_CANVAS_RX.test(atmosphere);
     elements.forEach((el, j) => {
       const interior = stringInterior(el);
       if (el?.role === "hero") {

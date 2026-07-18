@@ -222,39 +222,51 @@ if (existsSync(framePath("cycle6-robinhood", 0))) {
   console.log("  … real-frame calibration skipped (.data/dogfood absent)");
 }
 
-// ── P3-C1: SEVERE void blocks on ANY register (small card marooned in a void) ─
-// A void band ≥ OCCUPANCY_SEVERE_VOID_FLOOR reads as a small card stranded in a
-// large void regardless of register — the Fuse s3 (list) defect that shipped
-// because list is only advisory. Below the severe floor, an advisory register
-// still only advises. Synthetic frame: a wide void band, no anchor.
+// ── Audit-1 High #3: SEVERE void is FLAGGED-severe (furnished), NOT a blocking
+// regen on an advisory register. A void band ≥ OCCUPANCY_SEVERE_VOID_FLOOR is a
+// small card marooned in a large void; before, the severe floor OVERRODE the
+// register into a blocking regen that never converged (the audit's central
+// finding). Now the register decides `blocking` (quote/centered block;
+// split/stat/list advise) and the `severe` flag routes the deterministic
+// post-loop FURNISH — a severe void on a `list` scene converges via furnish, not
+// a thrashing regen. Synthetic frame: a wide void band, no anchor.
 {
   // A frame that is empty except a small painted card near the left — the widest
   // empty run (the right ~65% of the frame) is a severe void.
   const cardW = Math.round(0.28 * W);
   const severePath = await writeFrame("severe-void", [{ x: 8, y: 150, w: cardW, h: 100 }]);
-  await check("SEVERE void (≥0.32) BLOCKS on a `list` register (was advisory)", async () => {
+  await check("SEVERE void (≥0.32) on a `list` register is FLAGGED-severe + advisory (furnish converges it, not regen)", async () => {
     const m = sceneAt(0, severePath, []); // registers[0] = "list"
     const r = await assessOccupancy([m], ["list"]);
     const voids = r.findings.filter((f) => f.kind === "occupancy-void");
     assert(voids.length === 1, `one void, got ${JSON.stringify(r.findings)}`);
     assert(voids[0].runFracW >= OCCUPANCY_SEVERE_VOID_FLOOR, `severe band ${(voids[0].runFracW * 100).toFixed(0)}% ≥ ${OCCUPANCY_SEVERE_VOID_FLOOR * 100}%`);
-    assert(voids[0].blocking === true, `list-register severe void must BLOCK, got blocking=${voids[0].blocking}`);
-    assert(/SEVERE/.test(voids[0].detail), `detail marks severity: ${voids[0].detail}`);
+    assert(voids[0].severe === true, "severe flag is set");
+    assert(voids[0].blocking === false, `list-register severe void must NOT force a blocking regen (furnish owns it), got blocking=${voids[0].blocking}`);
+    assert(/SEVERE/.test(voids[0].detail) && /furnish will fill it/.test(voids[0].detail), `detail marks severity + furnish: ${voids[0].detail}`);
+  });
+  await check("SEVERE void on a `quote` register STILL blocks (its register blocks) + severe flag set", async () => {
+    const m = sceneAt(0, severePath, []);
+    const r = await assessOccupancy([m], ["quote"]);
+    const voids = r.findings.filter((f) => f.kind === "occupancy-void");
+    assert(voids.length === 1 && voids[0].blocking === true && voids[0].severe === true, `quote severe void blocks + severe, got ${JSON.stringify(voids)}`);
   });
 }
 
-// Real-frame calibration: Fuse s3 (list) severe void BLOCKS; Fuse s2 (stat) PASSES.
+// Real-frame calibration: Fuse s3 (list) severe void is FLAGGED severe (furnished
+// downstream), NOT blocking on the list register; Fuse s2 (stat) stays clean.
 const fuseFrame = (s: number): string => path.join(DF, "fullpipe-fuse", "frames", `scene${s}.png`);
 if (existsSync(fuseFrame(3))) {
-  await check("CALIBRATION: Fuse s3 (list) severe void BLOCKS, s2 (stat) does NOT block", async () => {
+  await check("CALIBRATION: Fuse s3 (list) severe void is severe+advisory (furnished), s2 (stat) clean", async () => {
     // The real Fuse per-scene registers, indexed by scene number.
     const fuseRegisters = ["full-bleed", "list", "stat", "list", "centered"];
     const s3: SceneMeasurement = { scene: 3, width: 1920, height: 1080, elements: [], screenshotPath: fuseFrame(3) };
     const s2: SceneMeasurement = { scene: 2, width: 1920, height: 1080, elements: [], screenshotPath: fuseFrame(2) };
     const r3 = await assessOccupancy([s3], fuseRegisters);
     const r2 = await assessOccupancy([s2], fuseRegisters);
-    const v3 = r3.findings.filter((f) => f.blocking);
-    assert(v3.length === 1 && v3[0].scene === 3, `Fuse s3 must produce a BLOCKING void, got ${JSON.stringify(r3.findings)}`);
+    const v3 = r3.findings.filter((f) => f.kind === "occupancy-void" && f.severe);
+    assert(v3.length === 1 && v3[0].scene === 3, `Fuse s3 must produce a SEVERE void (furnished downstream), got ${JSON.stringify(r3.findings)}`);
+    assert(v3[0].blocking === false, `Fuse s3 (list) severe void must not block a regen, got ${v3[0].blocking}`);
     assert(!r2.findings.some((f) => f.blocking), `Fuse s2 must NOT block, got ${JSON.stringify(r2.findings)}`);
   });
 } else {
