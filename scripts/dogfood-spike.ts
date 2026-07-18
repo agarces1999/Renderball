@@ -107,7 +107,7 @@ import type { Theme } from "../lib/edit/piece-model";
 import type { Script, Scene } from "../src/schema";
 import { stripCodeFence, verifyCompilable } from "../lib/agents/code-extraction";
 import { type SceneMeasurement } from "../lib/render/measure-scene";
-import { type RenderTruthKind } from "../lib/render/render-truth-gates";
+import { BLOCKING_RENDER_TRUTH_KINDS } from "../lib/render/render-truth-gates";
 import {
   DIEGETIC_MIN_ELEMENTS,
   DIEGETIC_MIN_TEXT_NODES,
@@ -241,9 +241,10 @@ const MODEL_PRICES: Record<string, [number, number]> = {
   "gpt-oss-120b": [0.35, 0.75],
 };
 
-const BLOCKING_KINDS: RenderTruthKind[] = [
-  "overflow", "measure-error", "barbell", "cross-piece-overlap", "canvas-brightness", "stranded-hero",
-];
+// R2 (audit-3): the standalone spike now blocks on the SAME canonical set as prod
+// (was a 6-kind literal — so mock-occlusion et al. were inert here and every spike
+// eyeball measured a weaker product than ships).
+const BLOCKING_KINDS = BLOCKING_RENDER_TRUTH_KINDS;
 /** v10 edge-crop clamp: pieces shift up/left by the measured overflow PLUS
  *  this breath, so a clamped piece never sits flush against the frame edge. */
 const EDGE_CLAMP_MARGIN_PX = 12;

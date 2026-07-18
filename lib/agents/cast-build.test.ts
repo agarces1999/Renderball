@@ -60,6 +60,9 @@ import {
   heroPopulateReassert,
   extractQuotedValues,
   heroBlueprintPlaceholder,
+  placeholderBody,
+  injectAnimatedStatAria,
+  firstOwnedStatValue,
   placeholderTitleFromSubject,
   isDescriptorValueRow,
   placeholderSurfaceInk,
@@ -1107,6 +1110,54 @@ await check("heroBlueprintPlaceholder: too few blueprint values → falls back t
   const heroSlot = { id: "hero", kind: "diegetic", bounds: { x: 0, y: 0, w: 100, h: 100 }, paletteRoles: [], contentFields: [] } as never;
   const body = heroBlueprintPlaceholder(theme, heroSlot, spec);
   assert(body.includes("borderColor: HAIRLINE"), "with <2 usable values, the neutral shell ships");
+});
+
+// ── R6 (audit-3): placeholderBody gates the headline on RESOLVED ownership ──
+await check("placeholderBody (R6): a broken NON-owner slot degrades to an empty panel, NOT the restated headline", () => {
+  // The COPY slot's contentFields ambiguously carries "headline", but the scene's
+  // composition assigns headline ownership to the HERO. Pre-R6 the broken copy
+  // placeholder restated the hero's headline (Rappi s3's duplicate "40,000+").
+  const copySlot = { id: "copy", kind: "text", bounds: { x: 0, y: 0, w: 960, h: 1080 }, paletteRoles: [], contentFields: ["headline", "lede"] } as never;
+  const scene = {
+    composition: {
+      elements: [
+        { role: "hero", subject: "x", interior: [], ownsCopy: ["headline"], focalRank: 1 },
+        { role: "copy", subject: "y", interior: [], ownsCopy: ["lede"], focalRank: 2 },
+      ],
+    },
+  } as never;
+  const gated = placeholderBody(theme, copySlot, scene);
+  assert(!/c\.headline/.test(gated) && !/data-content-path="headline"/.test(gated), "the non-owner placeholder must NOT restate the headline");
+  assert(/PANEL_BG/.test(gated), "degrades to the neutral empty panel");
+  // No scene → legacy behavior (raw contentFields), so the change is backward-safe.
+  assert(/c\.headline/.test(placeholderBody(theme, copySlot, undefined)), "no scene → falls back to slot.contentFields (headline rendered)");
+});
+
+await check("placeholderBody (R6): the TRUE headline owner still renders the headline", () => {
+  const copySlot = { id: "copy", kind: "text", bounds: { x: 0, y: 0, w: 960, h: 1080 }, paletteRoles: [], contentFields: ["headline"] } as never;
+  const scene = { composition: { elements: [{ role: "copy", subject: "y", interior: [], ownsCopy: ["headline"], focalRank: 1 }] } } as never;
+  assert(/c\.headline/.test(placeholderBody(theme, copySlot, scene)), "the owner still renders the headline");
+});
+
+// ── R6b (audit-3): make an animated-counter hero visible to the stat-dup gate ──
+await check("firstOwnedStatValue (R6b): resolves the first ≥3-digit owned value (incl. nested)", () => {
+  assert(firstOwnedStatValue({ headline: "40,000+ restaurants", lede: "fast" } as never, ["headline"]) === "40,000+ restaurants", "top-level stat");
+  assert(firstOwnedStatValue({ meta: [{ value: "12,500 orders" }] } as never, ["meta"]) === "12,500 orders", "nested stat");
+  assert(firstOwnedStatValue({ headline: "Fast and simple" } as never, ["headline"]) === undefined, "no ≥3-digit value → undefined");
+  assert(firstOwnedStatValue(undefined, ["headline"]) === undefined, "no content → undefined");
+});
+
+await check("injectAnimatedStatAria (R6b): a frame-animated big number gets an accessible stat label", () => {
+  const body = `<div style={{ fontSize: 118, fontWeight: 800 }}>{Math.round(interpolate(frame, [0, 30], [0, 40000]))}</div>`;
+  const r = injectAnimatedStatAria(body, "40,000+");
+  assert(r.injected && /aria-label="40,000\+"/.test(r.code), `aria injected, got ${r.code}`);
+});
+
+await check("injectAnimatedStatAria (R6b): no-op with no owned stat, on static numbers, on small fonts, and when aria exists", () => {
+  assert(injectAnimatedStatAria(`<div style={{ fontSize: 118 }}>{interpolate(frame,[0,1],[0,9])}</div>`, undefined).injected === false, "no stat value → no-op");
+  assert(injectAnimatedStatAria(`<div style={{ fontSize: 118 }}>40,000+</div>`, "40,000+").injected === false, "a STATIC big number is already visible to the text arm → no aria");
+  assert(injectAnimatedStatAria(`<div style={{ fontSize: 20 }}>{interpolate(frame,[0,1],[0,40000])}</div>`, "40,000+").injected === false, "small font → not a hero stat");
+  assert(injectAnimatedStatAria(`<div aria-label="x" style={{ fontSize: 118 }}>{Math.round(interpolate(frame,[0,1],[0,40000]))}</div>`, "40,000+").injected === false, "already accessible → no double-inject");
 });
 
 // ── P3-C6 #5 → R2 (audit-2): dark-brand placeholder tone (Scale AI stark-white) ──

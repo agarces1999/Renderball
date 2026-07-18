@@ -159,6 +159,11 @@ export const extractBrand = async (
   );
   const headlines = extractHeadlines(bodySlice);
   const body_excerpts = extractBodyExcerpts(bodySlice);
+  // R4b (audit-3): the on-page copy language, bound to the FULL html (the <html
+  // lang> tag sits outside headSlice) with a dominant-language fallback over the
+  // crawled copy. Reinforces the script's copy-language directive so a Spanish
+  // brand ships Spanish mocks, not English headlines.
+  const site_lang = detectSiteLang(html, [...headlines, ...body_excerpts]);
   // Strip logo-grid containers from the body BEFORE extracting page_images
   // and discovering the brand logo. Marketing sites (Webflow especially)
   // pack customer/partner logos into "Trusted by" carousels — we don't
@@ -393,6 +398,7 @@ export const extractBrand = async (
     apple_touch_icon: apple_touch_final,
     headlines,
     body_excerpts,
+    site_lang,
     page_images: page_images_final,
     logo_hd: logo_hd_final,
     logo_confidence: logo_confidence_final,
@@ -409,6 +415,57 @@ export const extractBrand = async (
     fetched_at,
     ok: true,
   };
+};
+
+/**
+ * R4b (audit-3): detect the brand's on-page copy LANGUAGE deterministically.
+ *
+ * PRIMARY — the `<html lang>` attribute off the FULL html string (NOT headSlice,
+ * which begins at `<head>` and excludes the `<html>` tag). Captures a 2-letter
+ * primary subtag with an optional region ("es", "pt-BR", "en-US"); a longer tag
+ * like "es-419" degrades to its "es" primary subtag, which is what we want.
+ *
+ * FALLBACK — the dominant language of the crawled headlines/body-excerpts by
+ * stopword + diacritic scoring, used only when the tag is absent. Returns a
+ * non-English code ONLY when it clearly wins; English or an ambiguous/empty
+ * signal returns undefined (→ the script defaults to English, which is correct).
+ * This never mislabels an English site as Spanish and never overrides the tag.
+ */
+const LANG_STOPWORDS: Record<string, readonly string[]> = {
+  es: ["el", "la", "los", "las", "de", "del", "que", "con", "para", "por", "una", "tus", "sus", "más", "envío", "pedir", "ahora", "gratis", "todo", "hasta", "compra", "tu", "en"],
+  pt: ["de", "que", "com", "para", "você", "não", "uma", "seu", "mais", "grátis", "pedido", "agora", "tudo", "até", "fazer", "voce", "os", "as"],
+  fr: ["le", "la", "les", "des", "une", "pour", "avec", "vous", "votre", "plus", "tout", "sur", "nous", "est", "vos"],
+  de: ["der", "die", "das", "und", "für", "mit", "sie", "ihre", "auf", "ist", "ein", "eine", "nicht", "alle", "wir"],
+  it: ["il", "la", "le", "dei", "una", "per", "con", "tuo", "più", "tutto", "non", "gli", "che", "sul"],
+  en: ["the", "and", "for", "with", "your", "you", "our", "get", "all", "more", "free", "now", "of", "is", "to", "we"],
+};
+const DIACRITIC_LANGS: Array<[string, RegExp]> = [
+  ["es", /[ñ¿¡áéíóúü]/i],
+  ["pt", /[ãõçáâêó]/i],
+  ["fr", /[çàèùâêîôûëï]/i],
+  ["de", /[äöüß]/i],
+  ["it", /[àèìòù]/i],
+];
+export const detectSiteLang = (html: string, copy: string[]): string | undefined => {
+  const tag = /<html[^>]*\blang=["']([a-z]{2}(?:-[A-Z]{2})?)/i.exec(html)?.[1];
+  if (tag) return tag;
+  const text = copy.join(" ").toLowerCase();
+  if (text.trim().length < 12) return undefined; // empty SPA → English default
+  const words = text.split(/[^\p{L}]+/u).filter((w) => w.length > 1);
+  if (words.length < 6) return undefined;
+  const wordSet = words; // multiset — count repeats
+  const scores: Record<string, number> = {};
+  for (const [lang, stop] of Object.entries(LANG_STOPWORDS)) {
+    const set = new Set(stop);
+    scores[lang] = wordSet.reduce((n, w) => n + (set.has(w) ? 1 : 0), 0);
+  }
+  for (const [lang, rx] of DIACRITIC_LANGS) if (rx.test(text)) scores[lang] += 4;
+  let best = "en";
+  for (const lang of Object.keys(scores)) if (scores[lang] > scores[best]) best = lang;
+  // Only override the English default when a non-English language clearly wins:
+  // a real signal (≥3) AND a margin over English (guards Spanglish marketing copy).
+  if (best === "en" || scores[best] < 3 || scores[best] - scores.en < 2) return undefined;
+  return best;
 };
 
 // ─── HTML parsing ─────────────────────────────────────────────────────

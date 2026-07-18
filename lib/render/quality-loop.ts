@@ -1628,7 +1628,7 @@ export async function runQualityLoop(
         `underscale ${underscale.length} · skeleton ${skeletonBars.length} · accent-fill ${accentFill.findings.length} · ` +
         `occupancy ${occupancyBlocking.length} block/${occupancy.findings.filter((f) => !f.blocking).length} adv/${occupancy.cardAdvisories.length} card · ` +
         `text-contrast ${textContrast.findings.length} block/${textContrast.advisories.length} adv · stray ${strayThisRound.length} · ` +
-        `edge-crop ${edgeCropInitial.length}→${edgeCropResidual.length} residual · structural ${structural.length} · render-truth ${rt.findings.length} (${rt.blocking.length} blocking) · ` +
+        `edge-crop ${edgeCropInitial.length}→${edgeCropResidual.length} residual · structural ${structural.length} · render-truth ${rt.findings.length} (${rt.blocking.length} blocking${rt.blocking.length ? ` [${rt.blocking.map((f) => `s${f.scene}:${f.kind}`).join(", ")}]` : ""}) · ` +
         `vision actionable ${vision.reduce((n, v) => n + v.actionable.length, 0)} (severe on [${vision.filter((v) => v.severe.length).map((v) => v.scene).join(", ")}]) · ` +
         `retry targets [${[...targets.keys()].join(", ") || "none"}]`,
     );
@@ -1828,14 +1828,15 @@ export async function runQualityLoop(
       finalMeasurements = await measureScenes(genDir, script, genDir);
     }
 
-    // DETERMINISTIC VOID CONVERGENCE (the guarantee). Audit-1 High #3: furnish
-    // fills EVERY flagged void — blocking, severe, OR advisory — regardless of
-    // register, because void-furnish is the ONE terminal arbiter (occupancy
-    // detects, furnish converges). Widening from blocking-only closes the hole
-    // where a severe split/list void (now advisory, per the register-posture fix)
-    // detected but shipped: the model never converged it, so furnish must. A void
-    // can no longer ship, whatever its register. (Fuse s3 / Deel s1: detected for
-    // four brands, never regen-converged; this closes the loop without a regen.)
+    // DETERMINISTIC VOID FURNISH — a best-effort NET, not a guarantee (audit-3:
+    // the "furnish converges / a void can no longer ship" claim was false; the
+    // honest terminal on a content-starved void is the accepted-and-flagged
+    // residual below). Furnish attempts EVERY flagged void — blocking, severe, OR
+    // advisory, regardless of register — filling the band with a brand-consistent
+    // panel from the scene's own values when real content is available, and
+    // declining when the only content is a redundant restatement. It does NOT own
+    // composition-class voids (empty half, occlusion, marooned hero): those need a
+    // bound moved, which only a scene-scoped HEAD re-author can do.
     const postOcc = await assessOccupancy(finalMeasurements, sceneRegisters);
     // R4 (audit-2): ONE furnish panel per scene — dedup the surviving voids by
     // scene, keeping the widest run (the void most worth filling). The 5-arm mesh

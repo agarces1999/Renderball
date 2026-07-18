@@ -211,6 +211,9 @@ export const buildAgentInputFromBrief = (
         logo_color: brief.brand_extract.logo_color,
         headlines: brief.brand_extract.headlines,
         body_excerpts: brief.brand_extract.body_excerpts,
+        // R4b (audit-3): carry the on-page copy language through so the script's
+        // copy-language directive can reinforce it.
+        site_lang: brief.brand_extract.site_lang,
         page_images: brief.brand_extract.page_images,
         fonts: effectiveFonts,
         font_roles: effectiveFontRoles,

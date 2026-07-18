@@ -208,6 +208,11 @@ export interface BrandExtract {
   headlines?: string[]; // h1/h2/h3 text, deduped
   /** Body-copy excerpts (<p> + <li>) so Agent 1 can stick to the brand's actual claims. */
   body_excerpts?: string[];
+  /** R4b (audit-3): the brand's on-page copy language — the `<html lang>` tag, or
+   *  the dominant language of the crawled copy. Reinforces the script's hard
+   *  copy-language directive so a Spanish brand ships Spanish (not English) mocks.
+   *  Undefined when nothing is confidently detected (→ English default). */
+  site_lang?: string;
   /** Page <img> URLs (excluding favicon/og) so the agents can mount real product imagery. */
   page_images?: { src: string; alt?: string }[];
   /** @font-face declarations found in inline + linked CSS. May include multiple weights/styles per family. */

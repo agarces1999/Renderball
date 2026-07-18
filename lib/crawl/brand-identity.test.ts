@@ -17,6 +17,7 @@ import {
   brandNameFromTitle,
   looksLikeTagline,
   resolveCanvasPlan,
+  canvasBrandFidelityAdvisory,
 } from "./brand-identity";
 import { buildAgentInputFromBrief } from "../agents/pipeline";
 
@@ -398,6 +399,46 @@ check("resolveCanvasPlan: a genuinely DARK-only palette still resolves dark", ()
 check("resolveCanvasPlan: no usable palette → white default", () => {
   const p = resolveCanvasPlan({ palette: ["#7f7f7f"] }); // mid-tone only, no extreme
   assert(p.background === "#ffffff" && p.source === "default", `default white, got ${JSON.stringify(p)}`);
+});
+
+// ── R3 (audit-3): canvas white-default when the palette is not dark-dominant ──
+check("resolveCanvasPlan: Rappi (bright brand, lone dark neutral) → WHITE, not the navy token", () => {
+  // Real Rappi palette: orange (mid), one dark neutral (#16242b — the only token
+  // clearing the extremity gate), a steel-blue (#88a8c5, lum 0.64). Pre-R3 the
+  // dark neutral was promoted to full-canvas; R3 sees the light steel member and
+  // defaults to white rather than paint the orange brand on navy.
+  const p = resolveCanvasPlan({ palette: ["#ff5b23", "#16242b", "#88a8c5"] });
+  assert(p.background === "#ffffff" && p.source === "default" && p.mode === "light", `Rappi → white, got ${JSON.stringify(p)}`);
+});
+
+check("resolveCanvasPlan: a genuinely DARK-rooted brand (CSS bg) STAYS dark (Scale/Vanta class)", () => {
+  // Scale AI #000 / Vanta plum set a rooted CSS background → the crawl path wins
+  // before the palette fallback, so R3 never lightens them.
+  const scale = resolveCanvasPlan({ background_color: "#000000", palette: ["#ffffff", "#000000"] });
+  assert(scale.mode === "dark" && scale.source === "crawl", `Scale #000 stays dark, got ${JSON.stringify(scale)}`);
+  const vanta = resolveCanvasPlan({ background_color: "#1a0d24", palette: ["#c8ff00", "#1a0d24"] });
+  assert(vanta.mode === "dark" && vanta.source === "crawl", `Vanta plum stays dark, got ${JSON.stringify(vanta)}`);
+});
+
+check("resolveCanvasPlan: dark token + a SUB-extremity mid-light member → white (not the dark extreme)", () => {
+  // The mid token (#8f9fb0, lum ~0.6) sits below the extremity gate so it never
+  // QUALIFIES as the canvas — but its presence proves the brand isn't dark, so R3
+  // defaults to white rather than promote the lone dark neutral. (A QUALIFYING
+  // light token instead wins outright via the light-bias prior — covered above.)
+  const p = resolveCanvasPlan({ palette: ["#16242b", "#8f9fb0"] });
+  assert(p.background === "#ffffff" && p.source === "default", `sub-extremity light member → white, got ${JSON.stringify(p)}`);
+});
+
+// ── R3 (audit-3): the brand-fidelity advisory (dark canvas vs bright accent) ──
+check("canvasBrandFidelityAdvisory: dark canvas + bright saturated accent → advisory", () => {
+  const adv = canvasBrandFidelityAdvisory({ background: "#16242b", source: "palette", mode: "dark" }, "#ff5b23");
+  assert(!!adv && /DARK/.test(adv), `expected an advisory string, got ${JSON.stringify(adv)}`);
+});
+check("canvasBrandFidelityAdvisory: a LIGHT canvas never advises", () => {
+  assert(canvasBrandFidelityAdvisory({ background: "#ffffff", source: "default", mode: "light" }, "#ff5b23") === undefined, "light canvas → no advisory");
+});
+check("canvasBrandFidelityAdvisory: dark canvas + a MUTED dark accent → no advisory", () => {
+  assert(canvasBrandFidelityAdvisory({ background: "#111318", source: "crawl", mode: "dark" }, "#2a2f38") === undefined, "muted accent → no advisory");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

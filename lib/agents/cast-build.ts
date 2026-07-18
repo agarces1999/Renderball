@@ -2012,8 +2012,16 @@ const verifyFragment = (body: string): Promise<string | null> =>
  *  fallback. */
 const MOTIF_DECO_SLOT_IDS: ReadonlySet<string> = new Set(["throughline", "connector"]);
 
-const placeholderBody = (theme: Theme, slot: ElementSlot): string =>
-  slot.contentFields.includes("headline")
+export const placeholderBody = (theme: Theme, slot: ElementSlot, scene: CastScene | undefined): string =>
+  // R6 (audit-3): gate the headline fallback on RESOLVED ownership, not raw
+  // slot.contentFields. When a non-copy element (e.g. a hero) carries a headline
+  // field the COPY element structurally owns, keying off contentFields made the
+  // broken placeholder RESTATE the hero's headline — manufacturing a duplicate
+  // stat and fragmenting the void beside it (Rappi s3's floating "40,000+").
+  // ownedCopyFields resolves the composition's explicit ownsCopy, so only the
+  // element that truly owns the headline renders it; everything else degrades to
+  // the neutral empty panel. Falls back to slot.contentFields when scene is absent.
+  ownedCopyFields(scene, slot).includes("headline")
     ? `<div data-content-path="headline" style={{ fontFamily: FONT_DISPLAY, fontSize: 56, fontWeight: 600, lineHeight: 1.1, color: ${tokenForRole(theme, "ink")} }}>{c.headline}</div>`
     : `<div style={{ width: "100%", height: "100%", borderRadius: 12, background: ${theme.grammar.panelBg}, border: "1px solid", borderColor: ${theme.grammar.hairline} }} />`;
 
@@ -2041,6 +2049,68 @@ export const extractQuotedValues = (interior: string[]): string[] => {
     }
   }
   return out;
+};
+
+/** R6b (audit-3): the first stat-bearing value (≥3 digits) among the copy fields an
+ *  element OWNS — the hero's headline/eyebrow/stat/meta figure. Used to give an
+ *  animated-counter hero an accessible stat value (see injectAnimatedStatAria). */
+export const firstOwnedStatValue = (
+  content: SceneContent | undefined,
+  owned: string[],
+): string | undefined => {
+  if (!content) return undefined;
+  const hasStat = (s: string): boolean => (s.match(/\d/g)?.length ?? 0) >= 3;
+  const visit = (v: unknown): string | undefined => {
+    if (typeof v === "string") return hasStat(v) ? v.trim() : undefined;
+    if (Array.isArray(v)) { for (const it of v) { const r = visit(it); if (r) return r; } return undefined; }
+    if (v && typeof v === "object") { for (const it of Object.values(v)) { const r = visit(it); if (r) return r; } return undefined; }
+    return undefined;
+  };
+  for (const field of owned) {
+    const r = visit((content as Record<string, unknown>)[field]);
+    if (r) return r;
+  }
+  return undefined;
+};
+
+/**
+ * R6b (audit-3): make an animated-counter hero VISIBLE to the cross-piece stat-dup
+ * gate. A hero that renders its headline figure as a frame-interpolated count-up
+ * (`{Math.round(interpolate(frame, …))}`) paints NO static digits — so
+ * findCrossPieceStatDup's text/counter arms extract nothing and a duplicated stat
+ * elsewhere goes uncaught. The gate already has an `aria-label` arm for exactly this
+ * (text-integrity.ts:291); cast just never emitted the label. When the hero owns a
+ * stat and emits a large frame-animated number carrying no aria-label, inject
+ * `aria-label="<stat>"` on that element. The value comes from the scene CONTENT the
+ * hero owns (reliable) — never parsed out of the interpolate call. No-op when there
+ * is no owned stat or no animated big number (zero false-positive surface; a lone
+ * hero counter can't self-trigger the dup gate, which needs ≥2 pieces).
+ */
+export const injectAnimatedStatAria = (
+  body: string,
+  statValue: string | undefined,
+): { code: string; injected: boolean } => {
+  if (!statValue) return { code: body, injected: false };
+  // Scan opening tags carrying a large fontSize; inject on the FIRST one that is
+  // frame-animated and has no aria-label yet.
+  for (const m of body.matchAll(/<[a-zA-Z][^>]*fontSize:\s*["'`]?(\d+)(?:\.\d+)?(?:px)?[^>]*>/g)) {
+    const tag = m[0];
+    if (Number(m[1]) < 48) continue; // a hero stat, not body copy
+    if (/\baria-label=/.test(tag)) continue; // already accessible
+    const tagStart = m.index ?? 0;
+    const tagEnd = tagStart + tag.length;
+    // Frame-animated number: the element or its immediate subtree drives the digit
+    // off the render frame (Remotion count-up), so no static glyph is painted.
+    const window = body.slice(tagStart, tagEnd + 400);
+    if (!/interpolate\s*\(|useCurrentFrame\s*\(|Math\.round\s*\(/.test(window)) continue;
+    const insertAt = tagEnd - 1; // before the closing '>'
+    const selfClose = tag.endsWith("/>");
+    const injected = selfClose
+      ? `${body.slice(0, tagEnd - 2)} aria-label="${statValue}" />${body.slice(tagEnd)}`
+      : `${body.slice(0, insertAt)} aria-label="${statValue}">${body.slice(insertAt + 1)}`;
+    return { code: injected, injected: true };
+  }
+  return { code: body, injected: false };
 };
 
 /** A DESCRIPTOR subject reads as a debug/placeholder string when rendered as a
@@ -2177,6 +2247,7 @@ export const heroBlueprintPlaceholder = (
   slot: ElementSlot,
   spec: ElementSpec,
   aspect: Aspect = "16:9",
+  scene?: CastScene,
 ): string => {
   // P3-C6 #5: surface + text by luminance (mid-elevated on a monochrome dark
   // brand, so a compile-broken bookend never force-lifts to a stark full-white
@@ -2188,7 +2259,7 @@ export const heroBlueprintPlaceholder = (
   if (heroFillsCanvas(slot.bounds, aspect)) {
     // FILL the dominant hero's bounds — a composed panel that occupies the frame.
     const values = extractQuotedValues(spec.interior).slice(0, 9);
-    if (values.length < 2) return placeholderBody(theme, slot);
+    if (values.length < 2) return placeholderBody(theme, slot, scene);
     const title = placeholderTitleFromSubject(spec.subject);
     const cards = values
       .map(
@@ -2216,7 +2287,7 @@ export const heroBlueprintPlaceholder = (
   // A genuinely BOUNDED hero (a modest checkout-sized card): keep the centered
   // card — filling its small bounds would be wrong.
   const values = extractQuotedValues(spec.interior).slice(0, 7);
-  if (values.length < 2) return placeholderBody(theme, slot);
+  if (values.length < 2) return placeholderBody(theme, slot, scene);
   const rows = values
     .map(
       (v, i) =>
@@ -2624,6 +2695,14 @@ export const castBuild = async (
       let finalBody = bindGuard.code;
       let heroSurface = false;
       if (job.slot.id === "hero") {
+        // R6b (audit-3): give an animated-counter hero an accessible stat value so
+        // the cross-piece stat-dup gate can see it (a frame count-up paints no
+        // static digit). Value comes from the scene content the hero owns.
+        const ariaInj = injectAnimatedStatAria(finalBody, firstOwnedStatValue(jobContent, jobOwned));
+        if (ariaInj.injected) {
+          finalBody = ariaInj.code;
+          console.warn(`[cast-build] ${job.pieceId}: injected aria stat label on animated counter (cross-piece stat-dup visibility)`);
+        }
         const density = staticJsxDensity(bindGuard.code);
         // R5: once the hero has truncated, hold it to the LEAN floor so a leaner
         // COMPLETE emission ships ok:true rather than being salvaged as a failure.
@@ -2798,7 +2877,8 @@ export const castBuild = async (
     // contrasting surface). The invariant holds: a composed hero never ships
     // empty. Non-heroes (and heroes with no usable blueprint) take the neutral
     // shell as before.
-    const fallback = isHero && heroSpec ? heroBlueprintPlaceholder(theme, job.slot, heroSpec, aspect) : placeholderBody(theme, job.slot);
+    const jobScene = script.scenes[job.sceneIndex];
+    const fallback = isHero && heroSpec ? heroBlueprintPlaceholder(theme, job.slot, heroSpec, aspect, jobScene) : placeholderBody(theme, job.slot, jobScene);
     console.warn(`[cast-build] ${job.pieceId}: broken through repair — shipping ${isHero && heroSpec ? "BLUEPRINT-populated" : "neutral"} placeholder (${prev.error.slice(0, 120)})`);
     return { pieceId: job.pieceId, body: fallback, outputTokens: tokens, repaired: false, failed: true, colorRewrites: 0, fontRewrites: 0, heroSurfaceCorrected: false, metaTextStrips: 0, shippedBlueprintPlaceholder: shipsFillPanel };
   };

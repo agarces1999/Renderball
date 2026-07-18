@@ -8,15 +8,19 @@
  * (quality-loop.ts's own post-loop comment: "we cannot regen post-loop … ships
  * FLAGGED"). Detecting harder never made a void converge.
  *
- * This module is the CONVERGENCE GUARANTEE and the ONE terminal void arbiter
- * (occupancy detects, furnish converges). Audit-1 High #3: it fills EVERY flagged
- * void — blocking, severe, OR advisory, on ANY register (not only blocking ones)
- * — when the void survives the loop or a motif-blank empties a region. We
- * DETERMINISTICALLY fill the band with a brand-consistent panel — a real
- * secondary surface built from the scene's own blueprint values (padded with the
- * brand name if the scene is value-thin, so a void can't ship for want of
- * content) — injected straight into the assembled composition, at the Chrome
- * anchor or the section root. No model, no retry: a void can no longer ship.
+ * This module is a best-effort NET, not a guarantee (audit-3: the "convergence
+ * guarantee / a void can no longer ship" claim was false — the pipeline
+ * deliberately, honestly ships a content-starved void ACCEPTED-AND-FLAGGED as its
+ * terminal, and furnish cannot manufacture content that isn't there). It fills a
+ * flagged void when it can — blocking, severe, OR advisory, on ANY register — with
+ * a brand-consistent panel built from the scene's own blueprint values, injected
+ * straight into the assembled composition at the Chrome anchor or the section
+ * root (no model, no retry). When a void's only available content is a redundant
+ * restatement (a duplicate hero stat) furnish declines rather than paint noise;
+ * the honest terminal is the accepted-and-flagged residual. Composition-class
+ * voids (empty half, occlusion, marooned hero) are NOT furnish's to converge —
+ * they route to a scene-scoped HEAD re-author (the head owns bounds; furnish
+ * cannot move one).
  *
  * The panel is SELF-CONTAINED by construction — literal hex colors, literal font
  * families, inline styles, literal text — so it compiles wherever it is injected

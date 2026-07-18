@@ -596,10 +596,50 @@ export const resolveCanvasPlan = (
     // does not. (The deterministic CSS canvas reader (R1) upstream already covers
     // the genuinely-dark brands, so this last-resort fallback rarely fires.)
     const light = qualifying.filter((s) => s.lum >= 0.5).sort((a, b) => b.lum - a.lum)[0];
-    const pick = light ?? qualifying[0];
-    return { background: pick.h, source: "palette", mode: modeOf(pick.h) };
+    if (light) return { background: light.h, source: "palette", mode: modeOf(light.h) };
+    // R3 (audit-3): no QUALIFYING light token. Before promoting the lone dark
+    // extreme to full-canvas, distinguish a genuinely dark-DOMINANT palette from a
+    // light brand that merely carries a dark accent/nav token. Rappi's palette has
+    // one dark neutral (#16242b — the only token clearing the extremity gate) but
+    // ALSO a steel-blue #88a8c5 (lum 0.64) below it: the brand is NOT dark, so
+    // painting it on #16242b shipped an off-brand navy canvas. When ANY palette
+    // member is lighter (lum ≥ 0.5, even below the extremity gate), default to
+    // WHITE rather than the dark extreme. Do NOT pick that lighter token as the
+    // canvas — that would ship a steel-blue canvas, a different off-brand result;
+    // white is the safe default. A palette with NO light member at all is
+    // genuinely dark-dominant (a dark brand whose page isn't rooted in CSS) and
+    // keeps the dark extreme — preserving the audit-2 light-bias prior. Genuinely
+    // dark brands (Scale AI #000, Vanta plum) resolve dark earlier via the rooted
+    // CSS `background_color` crawl path above, so this never darkens them wrongly.
+    if (scored.some((s) => s.lum >= 0.5)) return { background: "#ffffff", source: "default", mode: "light" };
+    return { background: qualifying[0].h, source: "palette", mode: modeOf(qualifying[0].h) };
   }
   return { background: "#ffffff", source: "default", mode: "light" };
+};
+
+/**
+ * R3 (audit-3) brand-fidelity ADVISORY — a signal the render-truth canvas-coherence
+ * gate structurally CANNOT raise (it compares scene-to-scene, never scene-to-BRAND).
+ * When the resolved canvas is DARK yet the brand's signature accent is bright AND
+ * saturated (a signal hue, e.g. Rappi's orange over a navy), the dark canvas may be
+ * off-brand — a lone dark token promoted over a light page. ADVISORY ONLY: never
+ * blocks. A genuinely-dark brand with a bright accent (Vanta plum + a lime accent)
+ * is legitimately dark, so this is a flag for telemetry / a human, not a gate.
+ * Returns the advisory string, or undefined when there is nothing to flag.
+ */
+export const canvasBrandFidelityAdvisory = (
+  plan: CanvasPlan,
+  signatureAccent: string | undefined,
+): string | undefined => {
+  if (plan.mode !== "dark") return undefined;
+  if (!isHex6(signatureAccent)) return undefined;
+  const lum = luminanceOf(signatureAccent);
+  const sat = saturationOf(signatureAccent);
+  if (lum == null || sat == null) return undefined;
+  if (lum >= 0.4 && sat >= 0.5) {
+    return `canvas ${plan.background} is DARK but the signature accent ${normHex(signatureAccent)} is bright/saturated (lum ${lum.toFixed(2)}, sat ${sat.toFixed(2)}) — verify the dark canvas is on-brand, not a lone dark token promoted over a light page.`;
+  }
+  return undefined;
 };
 
 export const resolveBrandIdentity = (

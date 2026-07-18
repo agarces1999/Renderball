@@ -8,7 +8,7 @@
  * layout selectors, resolving var(--x), first opaque color wins. No network.
  * Run: `npm test`.
  */
-import { extractCssCanvasBackground } from "./extract-brand";
+import { extractCssCanvasBackground, detectSiteLang } from "./extract-brand";
 
 let passed = 0;
 let failed = 0;
@@ -64,6 +64,31 @@ check("a compound selector like `body .nav` does NOT count as the canvas", () =>
 check("no rooted background declared → undefined (resolveCanvasPlan falls back)", () => {
   assert(extractCssCanvasBackground(".card{background:#fff}.btn{background:#000}") === undefined, "no root bg → undefined");
   assert(extractCssCanvasBackground("") === undefined, "empty css → undefined");
+});
+
+// ── R4b (audit-3): detectSiteLang — the on-page copy language ──
+check("detectSiteLang: <html lang> off the FULL html wins (Rappi → es)", () => {
+  // The <html> tag sits OUTSIDE headSlice, so the regex must read the full html.
+  assert(detectSiteLang(`<!doctype html><html lang="es"><head><title>Rappi</title></head><body></body></html>`, []) === "es", "html lang es");
+});
+check("detectSiteLang: regional tag preserved / long tag degrades to primary subtag", () => {
+  assert(detectSiteLang(`<html lang="pt-BR">`, []) === "pt-BR", "pt-BR preserved");
+  assert(detectSiteLang(`<html lang="es-419">`, []) === "es", "es-419 → es primary subtag");
+});
+check("detectSiteLang: no tag → dominant-language fallback over the crawled copy (Spanish)", () => {
+  const copy = [
+    "Pedí lo que quieras y recibilo en minutos",
+    "Envío gratis en tu primer pedido con la app de Rappi",
+    "Todo lo que necesitás, ahora y sin salir de casa",
+  ];
+  assert(detectSiteLang("<html><body></body></html>", copy) === "es", `Spanish copy → es, got ${detectSiteLang("<html>", copy)}`);
+});
+check("detectSiteLang: an English brand with no tag → undefined (no-op, defaults to English)", () => {
+  const copy = ["The all-in-one platform for your team", "Get started for free and ship faster with our tools"];
+  assert(detectSiteLang("<html><body></body></html>", copy) === undefined, `English → undefined, got ${detectSiteLang("<html>", copy)}`);
+});
+check("detectSiteLang: empty SPA excerpts → undefined (→ English default)", () => {
+  assert(detectSiteLang("<html><body></body></html>", []) === undefined, "empty → undefined");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

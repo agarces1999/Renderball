@@ -41,6 +41,21 @@ export interface RenderTruthFinding {
   detail: string;
 }
 
+/**
+ * R2 (audit-3): the ONE canonical set of measured render-truth kinds that BLOCK a
+ * build. Previously four hand-copied literals drifted — the standalone dogfood
+ * spike blocked on only 6 kinds while prod (run-preview-build + fullpipe) blocked
+ * on 13, so the spike measured a weaker product than it ships. Every harness now
+ * imports THIS list: no caller can silently under-block. The set is deliberately
+ * FROZEN at its current kinds (the audit-3 meta-recommendation: the render battery
+ * is a ship/no-ship REPORT, not a repair mechanism) — add a kind only with evidence.
+ */
+export const BLOCKING_RENDER_TRUTH_KINDS: RenderTruthKind[] = [
+  "overflow", "measure-error", "barbell", "cross-piece-overlap", "canvas-brightness", "stranded-hero",
+  "canvas-coherence", "corner-mark-collision", "hollow-cta", "intra-piece-overlap", "ghost-fragment", "stray-card",
+  "mock-occlusion",
+];
+
 // px tolerance so sub-pixel rounding / intentional full-bleed don't false-fire.
 const EDGE_TOL = 3;
 // Only content elements can be "clipped"; a full-bleed background/atmosphere

@@ -67,6 +67,9 @@ export interface AgentBrandExtract {
   logo_confidence?: number;
   headlines?: string[];
   body_excerpts?: string[];
+  /** R4b (audit-3): the brand's on-page copy language — reinforces the hard
+   *  copy-language directive so a non-English brand ships non-English copy. */
+  site_lang?: string;
   page_images?: { src: string; alt?: string }[];
   fonts?: AgentBrandFont[];
   font_roles?: {
@@ -917,6 +920,16 @@ export const buildUserMessage = (brief: AgentBrief): string => {
           `      → These are real product screenshots/illustrations. Reference them by asset_id (\`site_img_0\`, \`site_img_1\`, etc.) in scene.content.asset_ids when visual_concept calls for a screenshot, product mockup, or brand illustration.`,
         );
       }
+      // R4 (audit-3): bind the on-screen copy language to the brand's market. The
+      // crawled copy above is echoed as "voice/tone" flavor, but nothing told the
+      // model which LANGUAGE to write — so it followed the English worked examples
+      // and shipped English headlines over a Spanish brand's mocks (Rappi). One
+      // unconditional HARD directive, anchored to the copy already quoted above.
+      lines.push(
+        `    LANGUAGE (HARD): write ALL viewer-facing copy — headline, eyebrow, lede, bullets, caption, meta, cta, AND every diegetic mock label — in the SAME language as the site copy quoted above${
+          b.site_lang ? ` (the brand's site language is "${b.site_lang}")` : ""
+        }; a mixed-language video is broken; the English worked examples elsewhere in this prompt illustrate STRUCTURE, not language.`,
+      );
     }
     if (hasFiles) {
       lines.push("  Uploaded files:");

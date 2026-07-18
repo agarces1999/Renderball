@@ -19,8 +19,8 @@ import { decomposeGenDir } from "../agents/lego-store";
 import { resolveCornerBrandMark } from "../agents/logo-inject";
 import { verifyScenesRender } from "./ssr-render";
 import { measureScenes } from "./measure-scene";
-import { findRenderTruthFailures, measureOutDir, type RenderTruthKind } from "./render-truth-gates";
-import { resolveCanvasPlan, signatureWithLogoFallback, brandShortName } from "../crawl/brand-identity";
+import { findRenderTruthFailures, measureOutDir, BLOCKING_RENDER_TRUTH_KINDS } from "./render-truth-gates";
+import { resolveCanvasPlan, canvasBrandFidelityAdvisory, signatureWithLogoFallback, brandShortName } from "../crawl/brand-identity";
 import { preflightBrandTruth } from "../crawl/brand-truth";
 import { repairRenderTruth } from "./render-truth-repair";
 import {
@@ -47,13 +47,6 @@ import { generateComposition, type CompositionCaller } from "../agents/compositi
 import { checkSceneComposition } from "../agents/schema-validator";
 import type { Script, Scene } from "../../src/schema";
 
-/** The measured render-truth failures that BLOCK a build (shared by the
- *  monolithic repair gate, the vision-loop re-gate, and the cast quality loop). */
-const BLOCKING_RENDER_TRUTH_KINDS: RenderTruthKind[] = [
-  "overflow", "measure-error", "barbell", "cross-piece-overlap", "canvas-brightness", "stranded-hero",
-  "canvas-coherence", "corner-mark-collision", "hollow-cta", "intra-piece-overlap", "ghost-fragment", "stray-card",
-  "mock-occlusion",
-];
 /** v10 edge-crop clamp breath — a clamped piece never sits flush to the edge. */
 const EDGE_CLAMP_MARGIN_PX = 12;
 const CAST_MAX_RETRY_ROUNDS = 2;
@@ -317,12 +310,10 @@ export async function runPreviewBuild(
   // split scenes must honor the numeric column contract) are measured,
   // high-precision failures — block on the build path so the repair ladder
   // regenerates the scene with the concrete reason. Shared by the repair gate
-  // AND the vision-loop verify below so the two can't drift.
-  const BLOCKING_KINDS: import("./render-truth-gates").RenderTruthKind[] = [
-    "overflow", "measure-error", "barbell", "cross-piece-overlap", "canvas-brightness", "stranded-hero",
-    "canvas-coherence", "corner-mark-collision", "hollow-cta", "intra-piece-overlap", "ghost-fragment", "stray-card",
-    "mock-occlusion",
-  ];
+  // AND the vision-loop verify below so the two can't drift. R2 (audit-3): this
+  // is the ONE canonical set imported from render-truth-gates (was a hand-copied
+  // literal that drifted from the standalone dogfood spike).
+  const BLOCKING_KINDS = BLOCKING_RENDER_TRUTH_KINDS;
   // Audit-1 P0 #1: the ONE brand-name source of truth (was raw be.title — leaked
   // Faire's whole "Your one-stop shop for whole" tagline into gate feedback).
   const brandNameForGates = brandShortName(brief?.brand_extract);
@@ -738,6 +729,8 @@ async function runCastPreviewBuild(args: {
       (be?.palette ?? [])[0] ??
       "#666666";
     const brand = brandShortName(be); // Audit-1 P0 #1 (SSOT — was raw be.title)
+    const canvasAdvisory = canvasBrandFidelityAdvisory(canvasPlan, signature);
+    if (canvasAdvisory) console.warn(`[run-preview-build] canvas brand-fidelity advisory (non-blocking): ${canvasAdvisory}`);
     const derived = deriveCrawlTheme(be, canvasPlan.background, canvasPlan.mode, signature, be?.palette ?? []);
     const inkGuard = neutralizeInk(derived.theme);
     const theme = inkGuard.theme;

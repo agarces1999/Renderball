@@ -13,7 +13,7 @@ import { promises as fs } from "fs";
 import path from "path";
 import { loadBrief, DEV_OWNER_ID } from "../lib/store";
 import { withDbRetry } from "../lib/db";
-import { resolveCanvasPlan, signatureWithLogoFallback, brandShortName } from "../lib/crawl/brand-identity";
+import { resolveCanvasPlan, canvasBrandFidelityAdvisory, signatureWithLogoFallback, brandShortName } from "../lib/crawl/brand-identity";
 import { deriveCrawlTheme } from "../lib/render/crawl-theme";
 import { neutralizeInk } from "../lib/agents/cast-build";
 import { generateComposition, type CompositionCaller } from "../lib/agents/composition-head";
@@ -31,6 +31,7 @@ import {
   BRAND_CHROME_SOURCE,
 } from "../lib/render/build-wrapper";
 import { runQualityLoop, type LoopScript, type BrandTruthLite } from "../lib/render/quality-loop";
+import { BLOCKING_RENDER_TRUTH_KINDS } from "../lib/render/render-truth-gates";
 import type { Script, Scene } from "../src/schema";
 
 const BRIEF_ID = process.env.RB_FA_BRIEF ?? "01KWTTE1XSW6BXXKSXPTBX9HDH";
@@ -98,6 +99,8 @@ const log = (m: string) => console.log(`[${((Date.now() - t0) / 1000).toFixed(1)
   const signature =
     signatureWithLogoFallback(be?.palette ?? [], be?.theme_color, be?.logo_color) ??
     be?.theme_color ?? (be?.palette ?? [])[0] ?? "#666666";
+  const canvasAdvisory = canvasBrandFidelityAdvisory(canvasPlan, signature);
+  if (canvasAdvisory) log(`  canvas brand-fidelity ADVISORY (non-blocking): ${canvasAdvisory}`);
   const derived = deriveCrawlTheme(be, canvasPlan.background, canvasPlan.mode, signature, be?.palette ?? []);
   const theme = neutralizeInk(derived.theme).theme;
   const userLogo = b?.brand_files?.find((f: { is_logo?: boolean }) => f.is_logo);
@@ -158,7 +161,7 @@ const log = (m: string) => console.log(`[${((Date.now() - t0) / 1000).toFixed(1)
       brandTruth,
       registers: composedScript.scenes.map((s: { register?: string }) => s.register),
       maxRetryRounds: 2,
-      blockingKinds: ["overflow", "measure-error", "barbell", "cross-piece-overlap", "canvas-brightness", "stranded-hero", "canvas-coherence", "corner-mark-collision", "hollow-cta", "intra-piece-overlap", "ghost-fragment", "stray-card", "mock-occlusion"],
+      blockingKinds: BLOCKING_RENDER_TRUTH_KINDS, // R2 (audit-3): the ONE canonical prod set (was a hand-copied literal)
       edgeClampMarginPx: 12,
       defaultCastModel: CAST_MODEL,
     },

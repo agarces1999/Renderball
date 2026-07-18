@@ -18,6 +18,7 @@ import {
   flattenHistoryToUser,
   fireworksScriptTransport,
   generateScript,
+  buildUserMessage,
   type ScriptMsg,
   type ScriptTransport,
   type AgentBrief,
@@ -200,6 +201,46 @@ await check("injected transport repair loop: bad JSON every attempt → MAX_ATTE
   if (!r.ok) assert(/Schema validation failed after 3 attempts/.test(r.error), `final error names the attempt exhaustion, got: ${r.error}`);
   assert(historyLens.length === 3, `the loop runs MAX_ATTEMPTS (3) times regardless of provider, got ${historyLens.length}`);
   assert(historyLens[0] === 1 && historyLens[1] === 3 && historyLens[2] === 5, `each retry feeds the correction back (history grows 1→3→5), got ${JSON.stringify(historyLens)}`);
+});
+
+// ── R4 (audit-3): the copy-language directive binds on-screen copy to the market ──
+await check("buildUserMessage: emits the HARD copy-language directive when a brand extract is present", () => {
+  const brief: AgentBrief = {
+    duration_seconds: 12,
+    moment_count: 3,
+    freeform_prompt: "Pedí lo que quieras.",
+    brand_extract: {
+      url: "https://www.rappi.com",
+      title: "Rappi",
+      headlines: ["Pedí lo que quieras"],
+      body_excerpts: ["Envío gratis en tu primer pedido"],
+      site_lang: "es",
+      ok: true,
+    },
+  };
+  const msg = buildUserMessage(brief);
+  assert(/LANGUAGE \(HARD\)/.test(msg), "the hard language directive must be present");
+  assert(/SAME language as the site copy quoted above/.test(msg), "directive anchors to the quoted site copy");
+  assert(/diegetic mock label/.test(msg), "directive covers diegetic mock labels");
+  assert(/site language is "es"/.test(msg), "threads site_lang when present");
+  assert(/illustrate STRUCTURE, not language/.test(msg), "clarifies the English examples are structural");
+});
+
+await check("buildUserMessage: the directive fires even without a site_lang (anchored to quoted copy)", () => {
+  const brief: AgentBrief = {
+    duration_seconds: 12,
+    moment_count: 3,
+    freeform_prompt: "x",
+    brand_extract: { url: "https://ex.com", title: "Ex", headlines: ["Hello"], body_excerpts: ["World"], ok: true },
+  };
+  const msg = buildUserMessage(brief);
+  assert(/LANGUAGE \(HARD\)/.test(msg), "directive present without site_lang");
+  assert(!/site language is/.test(msg), "no site_lang clause when absent");
+});
+
+await check("buildUserMessage: no brand extract → no copy-language directive (nothing to bind to)", () => {
+  const msg = buildUserMessage({ duration_seconds: 12, moment_count: 3, freeform_prompt: "x" });
+  assert(!/LANGUAGE \(HARD\)/.test(msg), "no directive when there is no brand copy to match");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

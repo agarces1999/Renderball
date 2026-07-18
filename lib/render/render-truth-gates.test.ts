@@ -37,6 +37,7 @@ import {
   STRAY_ISOLATION_MIN_PX,
   EDGE_CROP_FRAC,
   EDGE_CLAMP_OVERSIZE_FRAC,
+  BLOCKING_RENDER_TRUTH_KINDS,
   type EdgeCropFinding,
   type SlotTerritory,
 } from "./render-truth-gates";
@@ -1096,6 +1097,25 @@ if (existsSync(path.join(FUSE_FRAMES, "scene3.png"))) {
     assert(findCenteredMockOcclusion(m, undefined).length === 0, "undefined register is out of scope");
   });
 }
+
+// ── R2 (audit-3): the ONE canonical blocking set every harness imports ──
+await check("BLOCKING_RENDER_TRUTH_KINDS (R2): the canonical 13-kind prod set, incl. mock-occlusion", () => {
+  assert(BLOCKING_RENDER_TRUTH_KINDS.length === 13, `expected 13 blocking kinds, got ${BLOCKING_RENDER_TRUTH_KINDS.length}`);
+  for (const k of ["overflow", "measure-error", "barbell", "cross-piece-overlap", "canvas-brightness", "stranded-hero", "canvas-coherence", "corner-mark-collision", "hollow-cta", "intra-piece-overlap", "ghost-fragment", "stray-card", "mock-occlusion"] as const) {
+    assert(BLOCKING_RENDER_TRUTH_KINDS.includes(k), `canonical set must include ${k}`);
+  }
+  assert(new Set(BLOCKING_RENDER_TRUTH_KINDS).size === BLOCKING_RENDER_TRUTH_KINDS.length, "no duplicate kinds");
+});
+
+await check("BLOCKING_RENDER_TRUTH_KINDS (R2): a real overflow defect lands in `blocking` under the canonical set", async () => {
+  // Proves the canonical set actually gates: a right-edge overflow (a member kind)
+  // must appear in `blocking` when the set is passed — the spike (was 6-kind) now
+  // blocks like prod, and every blocking finding's kind is a canonical member.
+  const m = scene(0, [el({ tag: "p", text: "Without becoming one of them", x: 960, y: 293, w: 1112, h: 81 })]);
+  const gate = await findRenderTruthFailures([m], { blockingKinds: BLOCKING_RENDER_TRUTH_KINDS });
+  assert(gate.blocking.some((f) => f.kind === "overflow"), "the overflow defect must block under the canonical set");
+  for (const f of gate.blocking) assert(BLOCKING_RENDER_TRUTH_KINDS.includes(f.kind), `blocking kind ${f.kind} must be in the canonical set`);
+});
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exitCode = 1;
