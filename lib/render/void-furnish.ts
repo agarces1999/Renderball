@@ -127,28 +127,110 @@ export const pickFurnishSurface = (paletteValues: string[], canvasBg: string): s
  * and SKIP; s0 (centered) + s2 (full-bleed) skip by register. */
 export const FURNISH_ABANDONMENT_FRAC = 0.4;
 
+/**
+ * P3-C9 #2 — a decisively LEFT/RIGHT-sided column void this fraction of the frame
+ * WIDTH, on ANY register, is a SIDE-ABANDONMENT even beside a healthy hero: the
+ * content is clustered to one side and the other half reads MAROONED, not
+ * breathing (Razorpay s3: giant "100+" + mock + copy all LEFT, ~61% empty RIGHT
+ * on a STAT register the split/list-only rule skipped). Higher than
+ * FURNISH_ABANDONMENT_FRAC because centered/stat air is more often deliberate — a
+ * void must be decisively one-sided AND large before it overrides the register's
+ * default breathing. A CENTER/symmetric void (region "center") is never a
+ * side-abandonment (Razorpay s0 / Mailchimp s0 — a centered focal with air on
+ * both sides stays intentional). */
+export const FURNISH_SIDE_ABANDONMENT_FRAC = 0.45;
+
 export type FurnishDecision = "furnish-hollow" | "furnish-abandoned" | "skip-healthy";
 
 /**
- * R4 (audit-2) + C8 #1 — the register-aware furnish gate. A genuinely HOLLOW hero
- * (painted below the health floor — the caller passes the boolean) always
- * furnishes its OWN hole. A HEALTHY hero owns its frame — the surrounding air is
- * intentional negative space, furnish suppressed — EXCEPT on a split/list whose
- * void clears FURNISH_ABANDONMENT_FRAC: those registers promise a filled second
- * region, so an abandoned column/band there furnishes (the void band, not the
- * hero's bounds). Centered/quote/full-bleed keep the skip (a centered focal, a
- * quote, or a full-bleed mock legitimately breathes — the Mailchimp-s0 defect the
- * hero-health gate was built to stop).
+ * R4 (audit-2) + C8 #1 + C9 #2 — the register+region-aware furnish gate. A
+ * genuinely HOLLOW hero (painted below the health floor — the caller passes the
+ * boolean) always furnishes its OWN hole. A HEALTHY hero owns its frame — the
+ * surrounding air is intentional negative space, furnish suppressed — EXCEPT:
+ *   • split/list whose void clears FURNISH_ABANDONMENT_FRAC (those registers
+ *     promise a filled second region → an abandoned column/band furnishes); or
+ *   • ANY register with a decisively LEFT/RIGHT-sided void ≥
+ *     FURNISH_SIDE_ABANDONMENT_FRAC (C9 #2 — the one-sided-void SIDE-abandonment;
+ *     the Razorpay-s3 left-clustered stat the register-only rule missed).
+ * A CENTER/symmetric void, or a void below the floors, keeps the skip (a centered
+ * focal, a quote, or a full-bleed mock legitimately breathes — the Mailchimp-s0
+ * defect the hero-health gate was built to stop). In every furnish-abandoned case
+ * the caller fills the VOID BAND, never the healthy hero's own bounds.
  */
 export const furnishDecision = (
   heroHollow: boolean,
   register: string | undefined,
   runFracW: number,
+  region?: string,
 ): FurnishDecision => {
   if (heroHollow) return "furnish-hollow";
   const promisesBothRegions = register === "split" || register === "list";
   if (promisesBothRegions && runFracW >= FURNISH_ABANDONMENT_FRAC) return "furnish-abandoned";
+  const sided = region === "left" || region === "right";
+  if (sided && runFracW >= FURNISH_SIDE_ABANDONMENT_FRAC) return "furnish-abandoned";
   return "skip-healthy";
+};
+
+// ── furnish content dedup + content-sizing (P3-C9 #1) ────────────────────────
+
+/** Canonical form for furnish dedup: lowercase, every non-alphanumeric run → one
+ *  space, trimmed. Strips trailing ellipsis/punctuation implicitly, so a
+ *  60-char-TRUNCATED lede compares cleanly against the full painted string. */
+export const normalizeForDedup = (s: string): string =>
+  (s ?? "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+
+/**
+ * P3-C9 #1a: PREFIX/SUBSTRING-aware redundancy. The prior furnish dedup was
+ * exact-match (a normalized Set), so a lede TRUNCATED at 60 chars ("Different
+ * SDKs. Different docs. Different approval queues. And c") slipped past the full
+ * painted lede — truncated ≠ full. A candidate is redundant when, normalized, it
+ * is a substring of any already-painted string (the truncation case, ≥8 chars so
+ * a short token can't match inside everything), OR it fully contains a
+ * substantial painted phrase (≥12 chars — restating a rendered line). Exact
+ * equality always counts.
+ */
+export const isRedundantWithPainted = (candidate: string, painted: Iterable<string>): boolean => {
+  const c = normalizeForDedup(candidate);
+  if (!c) return false;
+  for (const p0 of painted) {
+    const p = normalizeForDedup(p0);
+    if (!p) continue;
+    if (c === p) return true;
+    if (c.length < p.length && c.length >= 8 && p.includes(c)) return true; // candidate is a (truncated) prefix/substring of a painted line
+    if (p.length < c.length && p.length >= 12 && c.includes(p)) return true; // candidate restates a substantial painted phrase
+  }
+  return false;
+};
+
+/** Approx rendered height (px) of a furnish panel carrying `rowCount` value rows
+ *  (+ optional header): 26px top + 26px bottom padding, ~42px header, ~52px per
+ *  row. Used to size a SPARSE panel to its content rather than a full-height box
+ *  (P3-C9 #1c: the Razorpay-s1 3-lines-in-a-tall-box defect). */
+export const furnishContentHeightPx = (rowCount: number, hasTitle: boolean): number =>
+  52 + (hasTitle ? 42 : 0) + Math.max(1, rowCount) * 52;
+
+/**
+ * P3-C9 #1c: cap a furnish BAND rect's height to its actual content, re-centering
+ * vertically within the band, so a panel with only a couple of substantive rows
+ * ships SHORT (sized to content) instead of a tall mostly-empty dark box. Never
+ * grows the rect — only shrinks + recenters; a well-populated panel keeps the
+ * full band height. (Applied to abandoned/side void-band furnishes; a hollow-hero
+ * FILL keeps the hero's authored bounds.)
+ */
+export const fitRectToContent = (
+  rect: FurnishRect,
+  rowCount: number,
+  hasTitle: boolean,
+  canvasH: number,
+): FurnishRect => {
+  const contentH = Math.min(furnishContentHeightPx(rowCount, hasTitle), rect.h);
+  if (contentH >= rect.h - 8) return rect; // already snug
+  const cy = rect.y + rect.h / 2;
+  const y = Math.max(
+    FURNISH_INSET_PX,
+    Math.min(cy - contentH / 2, canvasH - FURNISH_INSET_PX - contentH),
+  );
+  return { ...rect, y, h: contentH };
 };
 
 // ── the furnish panel ────────────────────────────────────────────────────────

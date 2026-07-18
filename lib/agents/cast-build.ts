@@ -538,8 +538,10 @@ export const META_TEXT_VOCAB_RX =
  *  the CHROME SEPARATOR (middot/pipe/colon/dash) right after the scene index so
  *  the beat-label format fires but a legitimate DIEGETIC render-progress value
  *  ("Rendering — scene 5 of 8", which a video product genuinely shows) does NOT.
- *  Case-insensitive (the leak ships all-caps). */
-export const SCENE_META_LABEL_RX = /\bscene\s+\d{1,2}\s*[·|:–—]/i;
+ *  Case-insensitive (the leak ships all-caps). P3-C9 #4b: the "/" separator arm
+ *  catches the slash-paginated chrome format ("SCENE 01 / 06", Razorpay s0) —
+ *  the SCENE-prefix requirement keeps a legit carousel "1 / 5" pagination out. */
+export const SCENE_META_LABEL_RX = /\bscene\s+\d{1,2}\s*[·|:/–—]/i;
 
 const META_TEXT_STRUCT_MIN_CHARS = 120;
 const META_PX_COORD_RX = /\b\d+(?:\.\d+)?px\b|\b[xy]\s*=\s*-?\d+/;
@@ -2071,6 +2073,35 @@ export const placeholderTitleFromSubject = (subject: string | undefined): string
   if (isDescriptorSubject(head)) return ""; // debug-string subject → no title
   const words = head.split(/\s+/).filter(Boolean).slice(0, 6).join(" ");
   return words.length > 52 ? words.slice(0, 52).trim() : words;
+};
+
+/** The DESCRIPTOR / widget-name NOUNS that DESCRIPTOR_SUBJECT_RX is built from,
+ *  as a token SET — so a furnish VALUE row that is a bare blueprint widget id can
+ *  be rejected the same way placeholderTitleFromSubject rejects a descriptor
+ *  TITLE (P3-C9 #1b). */
+const WIDGET_DESCRIPTOR_WORDS: ReadonlySet<string> = new Set([
+  "mock", "mockup", "dashboard", "window", "browser", "chrome", "panel", "chart",
+  "screen", "view", "interface", "ui", "screenshot", "wireframe", "modal", "dialog",
+  "widget", "console", "graph", "diagram", "layout", "frame", "canvas", "backdrop",
+  "slide", "scene", "composition", "bookend", "tableau", "sidebar", "navbar", "toolbar",
+]);
+
+/** P3-C9 #1b: a furnish VALUE row that is a raw blueprint widget descriptor
+ *  ("code-window", "chart-panel", "screen") rather than real diegetic content.
+ *  The descriptor filtering that already guards fallback TITLES
+ *  (placeholderTitleFromSubject → isDescriptorSubject) never touched VALUE rows,
+ *  so "code-window" leaked as a bullet on Razorpay s1. Signal: a SHORT value
+ *  (≤3 hyphen/space tokens) carrying NO digit, where at least one token IS a
+ *  widget-descriptor noun and every non-descriptor token is a tiny modifier
+ *  (≤4 chars) — i.e. no substantive content word survives. "No single view of
+ *  payments" (5 tokens) and any digit-bearing metric pass through. */
+export const isDescriptorValueRow = (value: string): boolean => {
+  const v = (value ?? "").trim();
+  if (!v || /\d/.test(v)) return false;
+  const tokens = v.toLowerCase().split(/[\s\-_/]+/).filter(Boolean);
+  if (tokens.length === 0 || tokens.length > 3) return false;
+  if (!tokens.some((t) => WIDGET_DESCRIPTOR_WORDS.has(t))) return false;
+  return tokens.filter((t) => !WIDGET_DESCRIPTOR_WORDS.has(t)).every((t) => t.length <= 4);
 };
 
 /** P3-C3 void-convergence: a hero whose settled bounds cover a DOMINANT share of

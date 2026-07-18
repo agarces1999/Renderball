@@ -158,7 +158,7 @@ const log = (m: string) => console.log(`[${((Date.now() - t0) / 1000).toFixed(1)
       brandTruth,
       registers: composedScript.scenes.map((s: { register?: string }) => s.register),
       maxRetryRounds: 2,
-      blockingKinds: ["overflow", "measure-error", "barbell", "cross-piece-overlap", "canvas-brightness", "stranded-hero", "canvas-coherence", "corner-mark-collision", "hollow-cta", "intra-piece-overlap", "ghost-fragment", "stray-card"],
+      blockingKinds: ["overflow", "measure-error", "barbell", "cross-piece-overlap", "canvas-brightness", "stranded-hero", "canvas-coherence", "corner-mark-collision", "hollow-cta", "intra-piece-overlap", "ghost-fragment", "stray-card", "mock-occlusion"],
       edgeClampMarginPx: 12,
       defaultCastModel: CAST_MODEL,
     },

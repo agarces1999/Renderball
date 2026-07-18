@@ -22,6 +22,7 @@ import {
   findCornerMarkCollision,
   findHollowCta,
   findStrayFullBleedCard,
+  findCenteredMockOcclusion,
   findIntraPieceOverlap,
   findGhostFragment,
   CANVAS_COHERENCE_RGB_DELTA,
@@ -1047,6 +1048,52 @@ if (existsSync(path.join(FUSE_FRAMES, "scene3.png"))) {
     const label = el({ tag: "div", text: "hi", piece: "s2.copy", pieceKind: "text", x: 100, y: 100, w: 300, h: 80, hasTextDesc: true });
     const m = scene(2, [bigMock, label]);
     assert(findStrayFullBleedCard(m, "full-bleed").length === 0, "the mock surface itself exceeds the max card fraction");
+  });
+}
+
+// ── findCenteredMockOcclusion (P3-C9 #3 — Razorpay s4) ────────────────────────
+{
+  const mockButton = (over: Partial<MeasuredElement> = {}) =>
+    el({ tag: "button", text: "Get started", piece: "s4.hero", pieceKind: "diegetic",
+      x: 1000, y: 460, w: 200, h: 52, bg: "rgb(80,120,250)", opacity: 1, coveredAtCenter: true, ...over });
+  const overCard = el({ tag: "div", text: "NEXT STEPS", piece: "s4.next", pieceKind: "diegetic",
+    x: 1100, y: 380, w: 340, h: 220, bg: "rgb(255,255,255)", opacity: 1, hasTextDesc: true });
+
+  await check("C9#3(a): a card covering a centered mock's COVERED button flags mock-occlusion (names the mock piece)", () => {
+    const r = findCenteredMockOcclusion(scene(4, [mockButton(), overCard]), "centered");
+    assert(r.length === 1 && r[0].kind === "mock-occlusion" && /s4\.hero/.test(r[0].detail) && /Get started/.test(r[0].detail), `got ${JSON.stringify(r)}`);
+  });
+
+  await check("C9#3(a): fires on a STAT mock too, but is TIGHT — a button NOT covered (coveredAtCenter false) passes", () => {
+    assert(findCenteredMockOcclusion(scene(3, [mockButton(), overCard]), "stat").length === 1, "stat register is in scope");
+    assert(findCenteredMockOcclusion(scene(4, [mockButton({ coveredAtCenter: false }), overCard]), "centered").length === 0, "a legitimately layered mock (button not covered) passes");
+  });
+
+  await check("C9#3(a): same-piece layering is by design (no cross-piece card) → passes", () => {
+    const sameCard = el({ ...overCard, piece: "s4.hero" });
+    assert(findCenteredMockOcclusion(scene(4, [mockButton(), sameCard]), "centered").length === 0, "a card in the SAME piece as the button is by design");
+  });
+
+  await check("C9#3(b): a centered mock SURFACE clipped by the right frame edge flags mock-occlusion", () => {
+    const clipped = el({ tag: "div", text: "", piece: "s4.hero", pieceKind: "diegetic", x: 1180, y: 300, w: 800, h: 460, bg: "rgb(255,255,255)", opacity: 1, hasTextDesc: true });
+    const r = findCenteredMockOcclusion(scene(4, [clipped]), "centered");
+    assert(r.length === 1 && r[0].kind === "mock-occlusion" && /CLIPPED/.test(r[0].detail), `layout past-edge clip, got ${JSON.stringify(r)}`);
+    const visClip = el({ tag: "div", text: "", piece: "s4.hero", pieceKind: "diegetic", x: 1120, y: 300, w: 800, h: 460, bg: "rgb(255,255,255)", opacity: 1, vx: 1120, vy: 300, vw: 760, vh: 460 });
+    assert(findCenteredMockOcclusion(scene(4, [visClip]), "centered").length === 1, "a visible-rect clip at the right edge fires");
+  });
+
+  await check("C9#3(b): a mock fully inside the frame, and a ≥92% full-bleed surface, do NOT flag as clipped", () => {
+    const inside = el({ tag: "div", text: "", piece: "s4.hero", pieceKind: "diegetic", x: 560, y: 300, w: 800, h: 460, bg: "rgb(255,255,255)", opacity: 1, hasTextDesc: true });
+    assert(findCenteredMockOcclusion(scene(4, [inside]), "centered").length === 0, "an on-canvas mock is not clipped");
+    const fullBleed = el({ tag: "div", text: "", piece: "s4.hero", pieceKind: "diegetic", x: 30, y: 0, w: 1900, h: 1080, bg: "rgb(10,10,10)", opacity: 1 });
+    assert(findCenteredMockOcclusion(scene(4, [fullBleed]), "centered").length === 0, "a ≥92% full-bleed surface is exempt (a canvas treatment, not a clipped mock)");
+  });
+
+  await check("C9#3: scoped to centered/stat — split, full-bleed, and undefined registers are out of scope", () => {
+    const m = scene(4, [mockButton(), overCard]);
+    assert(findCenteredMockOcclusion(m, "split").length === 0, "split has its own contracts");
+    assert(findCenteredMockOcclusion(m, "full-bleed").length === 0, "full-bleed → findStrayFullBleedCard");
+    assert(findCenteredMockOcclusion(m, undefined).length === 0, "undefined register is out of scope");
   });
 }
 

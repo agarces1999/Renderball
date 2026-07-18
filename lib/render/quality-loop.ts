@@ -62,9 +62,17 @@ import {
   furnishRectForRowBand,
   pickFurnishSurface,
   furnishDecision,
+  isRedundantWithPainted,
+  fitRectToContent,
   FURNISH_INSET_PX,
 } from "./void-furnish";
-import { extractQuotedValues, placeholderTitleFromSubject } from "../agents/cast-build";
+import {
+  extractQuotedValues,
+  placeholderTitleFromSubject,
+  isDescriptorValueRow,
+  themeFontFamilyNames,
+  SCENE_META_LABEL_RX,
+} from "../agents/cast-build";
 import { CANVAS } from "../agents/layout-composer";
 import {
   assessTextNodeContrast,
@@ -1080,7 +1088,7 @@ export async function runQualityLoop(
     // cycle-10 P1 (arm 3b): GARBLED / DUPLICATE BRAND MARK. >1 brand lockup across
     // a scene's non-chrome pieces (the s4 "IY INELLIN" garble + a correct lockup),
     // or a text-node wordmark scrambled vs the known brand name.
-    const brandMarkDefects = findBrandMarkDefects(finalCode, BRAND);
+    const brandMarkDefects = findBrandMarkDefects(finalCode, BRAND, themeFontFamilyNames(theme));
     if (brandMarkDefects.length > 0) {
       log(
         `  brand-mark: ${brandMarkDefects.length} [${brandMarkDefects.map((f) => `s${f.scene}:${f.kind}${f.garbledText ? ` "${f.garbledText}"` : ` ×${f.pieces.length}`}`).join(", ")}]`,
@@ -1249,7 +1257,11 @@ export async function runQualityLoop(
       structural.push({ scene: f.scene, key: f.duplicated ? "cross_piece_stat_dup" : "stat_format_drift", detail: f.detail });
     }
     for (const f of brandMarkDefects) {
-      structural.push({ scene: f.scene, key: f.kind === "garbled-brand-mark" ? "garbled_brand_mark" : "duplicate_brand_mark", detail: f.detail });
+      const key =
+        f.kind === "garbled-brand-mark" ? "garbled_brand_mark"
+        : f.kind === "fake-brand-mark" ? "fake_brand_mark"
+        : "duplicate_brand_mark";
+      structural.push({ scene: f.scene, key, detail: f.detail });
     }
     // v11 (#5) logo-glyph count.
     for (const [pieceId, body] of pieceCache) {
@@ -1868,7 +1880,7 @@ export async function runQualityLoop(
         const heroFrac = measurement ? heroPaintedFraction(measurement) : 1;
         const heroHollow = heroFrac < HERO_HEALTHY_FRAC;
         const register = sceneRegisters?.[scene];
-        const decision = furnishDecision(heroHollow, register, f.runFracW);
+        const decision = furnishDecision(heroHollow, register, f.runFracW, f.region);
         if (decision === "skip-healthy") {
           voidFurnishEvents.push({ scene, pieceId: f.pieceId, runFracW: f.runFracW, region: f.region, action: "skipped-healthy-hero", detail: `${(f.runFracW * 100).toFixed(0)}% ${f.region} void beside a HEALTHY ${register ?? "?"} hero (painted ${(heroFrac * 100).toFixed(0)}% ≥ ${(HERO_HEALTHY_FRAC * 100).toFixed(0)}%) — intentional negative space, furnish suppressed (R4/C8)` });
           log(`  [void-furnish] scene ${scene}: hero healthy (${(heroFrac * 100).toFixed(0)}% painted, ${register ?? "?"}) — ${(f.runFracW * 100).toFixed(0)}% void left as intentional negative space (no furnish)`);
@@ -1884,11 +1896,10 @@ export async function runQualityLoop(
         // Mailchimp redundant-label box). Prefer NON-hero interior + eyebrow/caption/
         // meta; the hero's own inventory is admissible ONLY because the hero is
         // hollow (nothing of it is on screen to duplicate).
-        const paintedOnScreen = new Set(
-          (measurement?.elements ?? [])
-            .map((e) => norm(e.text ?? ""))
-            .filter((t) => t.length >= 3),
-        );
+        const paintedRaw = (measurement?.elements ?? [])
+          .map((e) => (e.text ?? "").trim())
+          .filter((t) => t.length >= 3);
+        const paintedOnScreen = new Set(paintedRaw.map((t) => norm(t)).filter((t) => t.length >= 3));
         const content = (script.scenes?.[scene]?.content ?? {}) as Record<string, unknown>;
         const preferred = [content.eyebrow, content.caption, content.meta]
           .filter((v): v is string => typeof v === "string" && v.trim().length >= 2)
@@ -1897,12 +1908,19 @@ export async function runQualityLoop(
           els.filter((e) => e.role !== "hero").flatMap((e) => (Array.isArray(e.interior) ? e.interior : [])),
         );
         const heroInterior = extractQuotedValues(Array.isArray(heroEl?.interior) ? heroEl!.interior! : []);
+        // C9 #1: filter furnish candidates to non-redundant, non-junk rows.
+        //  (a) PREFIX/SUBSTRING-aware dedup vs painted strings (a truncated lede
+        //      "…And c" is caught even though it ≠ the full painted lede);
+        //  (b) reject raw blueprint widget descriptors on VALUE rows ("code-window");
+        //  (c) drop scene-meta chrome captions ("SCENE 01 / 06", "payments.js · …").
         const dedup = (arr: string[]): string[] => {
           const seen = new Set<string>();
           const out: string[] = [];
           for (const v of arr) {
             const k = norm(v);
-            if (k.length < 2 || seen.has(k) || paintedOnScreen.has(k)) continue;
+            if (k.length < 2 || seen.has(k)) continue;
+            if (SCENE_META_LABEL_RX.test(v) || isDescriptorValueRow(v)) continue;
+            if (paintedOnScreen.has(k) || isRedundantWithPainted(v, paintedRaw)) continue;
             seen.add(k);
             out.push(v);
           }
@@ -1941,11 +1959,16 @@ export async function runQualityLoop(
                 h: Math.min(heroBounds.h, canvas.h - 2 * FURNISH_INSET_PX),
               }
             : null;
+        const bandRect =
+          f.axis === "row" && f.rowBand
+            ? furnishRectForRowBand(f.rowBand, canvas)
+            : furnishRectForBand(f.band, canvas);
+        // C9 #1c: size an abandoned/side void-band panel to its actual content (a
+        // SHORT panel, not a tall mostly-empty dark box — the Razorpay-s1 defect).
+        // A hollow-hero FILL keeps the hero's authored bounds.
         const rect =
           heroRect ??
-          (f.axis === "row" && f.rowBand
-            ? furnishRectForRowBand(f.rowBand, canvas)
-            : furnishRectForBand(f.band, canvas));
+          (bandRect ? fitRectToContent(bandRect, Math.min(values.length, 8), false, canvas.h) : null);
         if (!rect || values.length < 1) {
           voidFurnishEvents.push({ scene, pieceId: f.pieceId, runFracW: f.runFracW, region: f.region, action: "skipped", detail: `${f.detail} (no furnishable rect/values → residual flagged)` });
           warn(`  [void-furnish] scene ${scene}: ${(f.runFracW * 100).toFixed(0)}% void unfurnishable (rect=${!!rect}, values=${values.length}) — residual ships FLAGGED (honest)`);

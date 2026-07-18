@@ -31,6 +31,7 @@ export type RenderTruthKind =
   | "intra-piece-overlap"
   | "ghost-fragment"
   | "stray-card"
+  | "mock-occlusion"
   | "stranded-hero"
   | "measure-error";
 
@@ -1899,6 +1900,121 @@ export const findStrayFullBleedCard = (
   return out;
 };
 
+// ── centered-mock occlusion + right-edge clip (P3-C9 #3) ─────────────────────
+// Razorpay s4 (CENTERED): a "NEXT STEPS" / "Ready to activate" card STACKED over
+// the onboarding mock's action buttons occluded "Get started"/"Go live" (cut to
+// "Get…"/"Go"), AND the mock CLIPPED past the right frame edge. The C5 stray-card
+// guard (findStrayFullBleedCard) is FULL-BLEED-only, and the piece-edge-crop clamp
+// missed a mock whose buttons are covered. This gate extends both to a CENTERED /
+// stat mock:
+//   (a) a solid content card of piece B covering ≥ MOCK_OCCL_MIN_FRAC of a mock
+//       BUTTON of piece A, with the button measured coveredAtCenter (stacking
+//       truth: something is genuinely painted on top) → occlusion;
+//   (b) a mock PANEL/image element clipped by the RIGHT frame edge (its layout
+//       crosses the edge, or its visible rect is cut short at the edge) → clip.
+// Scoped to centered/stat (full-bleed → findStrayFullBleedCard; split/list carry
+// their own contracts) and kept tight — coveredAtCenter for (a), a real clip on a
+// mock surface for (b) — to spare legitimately layered mocks.
+const MOCK_OCCL_REGISTERS: ReadonlySet<string> = new Set(["centered", "stat"]);
+const MOCK_BUTTON_MIN_W = 56;
+const MOCK_BUTTON_MIN_H = 20;
+const MOCK_BUTTON_MAX_H = 96;
+const MOCK_BUTTON_MIN_ASPECT = 1.6; // wider than tall — a label-bearing control
+const MOCK_BUTTON_MAX_LABEL = 28; // a short action label, not a paragraph
+const MOCK_OCCL_MIN_FRAC = 0.35; // this share of the button covered by the card
+const MOCK_CLIP_TOL = 6; // px slack at the right edge
+
+/** A button-shaped, short-label, solid-surface control (a mock CTA / action). */
+const isMockButton = (e: MeasuredElement): boolean => {
+  if (e.isImg || e.opacity <= 0.4) return false;
+  if (e.pieceKind === "atmosphere" || e.pieceKind === "chrome") return false;
+  const label = e.text.trim();
+  if (label.length < 2 || label.length > MOCK_BUTTON_MAX_LABEL) return false;
+  if (e.w < MOCK_BUTTON_MIN_W || e.h < MOCK_BUTTON_MIN_H || e.h > MOCK_BUTTON_MAX_H) return false;
+  const aspect = e.h > 0 ? e.w / e.h : 0;
+  if (aspect < MOCK_BUTTON_MIN_ASPECT) return false;
+  return cssAlpha(e.bg) >= 0.5; // a solid pill/button, not a bare inline link
+};
+
+/** Occlusion of a centered/stat mock's button row + a mock clipped by the right
+ *  frame edge. Blocking; names the mock piece so the regen route can act. */
+export const findCenteredMockOcclusion = (
+  m: SceneMeasurement,
+  register?: string,
+): RenderTruthFinding[] => {
+  if (m.error || !register || !MOCK_OCCL_REGISTERS.has(register)) return [];
+  if (m.width <= 0 || m.height <= 0) return [];
+  const out: RenderTruthFinding[] = [];
+  const seen = new Set<string>();
+  // (a) OCCLUSION — a mock button covered by a solid content card of another piece.
+  const cards = m.elements.filter(
+    (e) =>
+      !!e.piece &&
+      e.pieceKind !== "atmosphere" &&
+      e.pieceKind !== "chrome" &&
+      e.opacity > 0.4 &&
+      cssAlpha(e.bg) >= 0.6 &&
+      e.w >= 80 &&
+      e.h >= 60,
+  );
+  for (const b of m.elements) {
+    if (!b.piece || !isMockButton(b) || b.coveredAtCenter !== true) continue;
+    const bArea = b.w * b.h;
+    if (bArea <= 0) continue;
+    const occ = cards.find((c) => {
+      if (c.piece === b.piece) return false; // same-piece layering is by design
+      const ix = Math.min(b.x + b.w, c.x + c.w) - Math.max(b.x, c.x);
+      const iy = Math.min(b.y + b.h, c.y + c.h) - Math.max(b.y, c.y);
+      if (ix <= 0 || iy <= 0) return false;
+      return (ix * iy) / bArea >= MOCK_OCCL_MIN_FRAC;
+    });
+    if (!occ) continue;
+    const key = `occ|${b.piece}|${b.text.slice(0, 16)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      scene: m.scene,
+      kind: "mock-occlusion",
+      detail:
+        `scene ${m.scene}: the ${register} mock's action button "${b.text.slice(0, 24)}" (piece ${b.piece} ` +
+        `@${Math.round(b.x)},${Math.round(b.y)} ${Math.round(b.w)}×${Math.round(b.h)}) is COVERED by the card of ` +
+        `piece ${occ.piece} stacked on top — the CTA label is occluded/cut. Keep the mock's interactive/button row ` +
+        `CLEAR: move the overlaying card off the buttons (or into the mock's own empty region), or restack so the ` +
+        `buttons sit on top. A centered mock must never bury its own CTA under another card.`,
+    });
+  }
+  // (b) RIGHT-EDGE CLIP — a mock SURFACE (panel/image) cut by the right frame edge.
+  for (const e of m.elements) {
+    if (!e.piece || e.pieceKind === "atmosphere" || e.pieceKind === "chrome") continue;
+    if (e.opacity <= 0.3) continue;
+    const isSurface = e.isImg || e.hasBgImage === true || cssAlpha(e.bg) >= 0.6;
+    if (!isSurface) continue; // bare text overflow is findOverflow's job
+    if (e.w >= m.width * 0.92) continue; // a full-bleed treatment, not a clipped mock
+    const layoutRight = e.x + e.w;
+    const crossesEdge = layoutRight > m.width + MOCK_CLIP_TOL;
+    const visClipped =
+      e.vx !== undefined &&
+      e.vw !== undefined &&
+      layoutRight >= m.width - MOCK_CLIP_TOL &&
+      e.vx + e.vw < layoutRight - MOCK_CLIP_TOL;
+    if (!crossesEdge && !visClipped) continue;
+    const key = `clip|${e.piece}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const overflowPx = Math.round(crossesEdge ? layoutRight - m.width : layoutRight - (e.vx! + e.vw!));
+    out.push({
+      scene: m.scene,
+      kind: "mock-occlusion",
+      detail:
+        `scene ${m.scene}: the ${register} mock surface of piece ${e.piece} (@${Math.round(e.x)},${Math.round(e.y)} ` +
+        `${Math.round(e.w)}×${Math.round(e.h)}) is CLIPPED by the right frame edge (~${overflowPx}px past ${m.width}). ` +
+        `Pull the centered mock fully inside the frame with a visible right margin — never let it run off the right ` +
+        `edge; shrink or shift the mock so every panel and label is on-canvas.`,
+    });
+  }
+  return out;
+};
+
 // ── intra-piece overlap (P3-C2 #4b: a control colliding with copy) ───────────
 // Brex s0 shipped, inside ONE hero, a "Submit for Approval" pill overlapping the
 // "1 required field missing…" helper line AND the receipt footer. findTextOverlap
@@ -2271,6 +2387,7 @@ export const findRenderTruthFailures = async (
     findings.push(...findCornerMarkCollision(m, { brandName: opts.brandName }));
     findings.push(...findHollowCta(m, { brandBackground: opts.brandBackground }));
     findings.push(...findStrayFullBleedCard(m, opts.registers?.[m.scene]));
+    findings.push(...findCenteredMockOcclusion(m, opts.registers?.[m.scene]));
     findings.push(...findIntraPieceOverlap(m));
     findings.push(...findGhostFragment(m));
     findings.push(...(await findEmptyBand(m)));

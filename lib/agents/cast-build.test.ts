@@ -61,6 +61,7 @@ import {
   extractQuotedValues,
   heroBlueprintPlaceholder,
   placeholderTitleFromSubject,
+  isDescriptorValueRow,
   placeholderSurfaceInk,
   copyLines,
   SCENE_META_LABEL_RX,
@@ -1839,6 +1840,29 @@ await check("findMaskedValueGlyphs: masked/skeleton value glyphs are caught; con
   assert(findMaskedValueGlyphs(`<div><span>$18.50</span><span>62%</span><span>1,204 contacts</span><span>Ships Thu, Feb 12</span></div>`).length === 0, "concrete values never false-fire");
   // An em-dash used as prose punctuation is not a masked value.
   assert(findMaskedValueGlyphs(`<p>340 beans — 160 to a free bag</p>`).length === 0, "a lone prose em-dash is not a placeholder");
+});
+
+// ── C9 #1b: descriptor / widget-name filter on furnish VALUE rows ─────────────
+await check("isDescriptorValueRow: a raw blueprint widget descriptor is rejected; real content passes", () => {
+  assert(isDescriptorValueRow("code-window"), "the Razorpay-s1 'code-window' leak is rejected");
+  assert(isDescriptorValueRow("chart"), "a bare widget noun is rejected");
+  assert(isDescriptorValueRow("nav-panel"), "a hyphenated widget descriptor is rejected");
+  assert(isDescriptorValueRow("browser chrome"), "a two-word widget descriptor is rejected");
+  // Real diegetic content — never a descriptor.
+  assert(!isDescriptorValueRow("No single view of payments"), "a real 5-word bullet (with 'view') passes");
+  assert(!isDescriptorValueRow("Multiple SDKs to maintain"), "a real bullet passes");
+  assert(!isDescriptorValueRow("Payment window closed"), "'window' inside a real 3-word content clause passes");
+  assert(!isDescriptorValueRow("Revenue $4,820"), "a digit-bearing metric passes");
+  assert(!isDescriptorValueRow(""), "empty passes (nothing to reject)");
+});
+
+// ── C9 #4b: SCENE_META_LABEL_RX catches the slash-paginated chrome format ──────
+await check("SCENE_META_LABEL_RX C9#4b: 'SCENE 01 / 06' (slash) is caught; a legit '1 / 5' pagination is not", () => {
+  assert(SCENE_META_LABEL_RX.test("SCENE 01 / 06"), "the Razorpay-s0 slash-paginated beat label matches");
+  assert(SCENE_META_LABEL_RX.test("Scene 3 / 12"), "lower-case slash beat label matches");
+  assert(SCENE_META_LABEL_RX.test("SCENE 04 · INVITATION"), "the middot format still matches (no regression)");
+  assert(!SCENE_META_LABEL_RX.test("1 / 5"), "a bare carousel pagination (no SCENE prefix) is NOT over-caught");
+  assert(!SCENE_META_LABEL_RX.test("showing 2 / 8 results"), "generic '/'-separated copy without a scene prefix passes");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

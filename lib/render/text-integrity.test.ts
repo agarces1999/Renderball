@@ -339,5 +339,37 @@ const FONT_MONO = "ui-monospace, Menlo, monospace";`;
   assert(ensureLatin1Fallback(code).appended.length === 0, "safe stacks unchanged");
 });
 
+// ── C9 #4a: fabricated diegetic brand-mark leaked from a crawl FONT name ───────
+
+check("arm3b C9#4a: 'Tasa Pay' (a 'TASA Orbiter' font-name + product suffix) is flagged as a fake brand-mark", () => {
+  const code = `
+<Piece id="s3.hero" kind="diegetic">
+  <div data-piece="s3.hero" data-kind="diegetic">
+    <span style={{ fontWeight: 700 }}>Tasa Pay</span>
+    <span>CONSOLE</span><span>Transactions</span>
+  </div>
+</Piece>`;
+  const f = findBrandMarkDefects(code, "Razorpay", ["TASA Orbiter", "Inter Tight"]).filter((d) => d.kind === "fake-brand-mark");
+  assert(f.length === 1 && f[0].garbledText === "Tasa Pay", `fake 'Tasa Pay' fires, got ${JSON.stringify(findBrandMarkDefects(code, "Razorpay", ["TASA Orbiter", "Inter Tight"]).map((x) => ({ k: x.kind, t: x.garbledText })))}`);
+});
+
+check("arm3b C9#4a: the REAL brand and a plausible CUSTOMER name never read as a fake brand-mark", () => {
+  const real = `
+<Piece id="s3.hero" kind="diegetic"><div data-piece="s3.hero" data-kind="diegetic"><span>Razorpay</span></div></Piece>`;
+  assert(findBrandMarkDefects(real, "Razorpay", ["TASA Orbiter", "Inter Tight"]).filter((d) => d.kind === "fake-brand-mark").length === 0, "the real brand passes");
+  const customer = `
+<Piece id="s3.hero" kind="diegetic"><div data-piece="s3.hero" data-kind="diegetic"><span>Acme Retail</span></div></Piece>`;
+  assert(findBrandMarkDefects(customer, "Razorpay", ["TASA Orbiter", "Inter Tight"]).filter((d) => d.kind === "fake-brand-mark").length === 0, "a neutral customer name passes");
+});
+
+check("arm3b C9#4a: a font-name STEM without a product suffix, and the arm with no fontNames, do NOT fire", () => {
+  const notSuffix = `
+<Piece id="s3.hero" kind="diegetic"><div data-piece="s3.hero" data-kind="diegetic"><span>Inter Milan</span></div></Piece>`;
+  assert(findBrandMarkDefects(notSuffix, "Razorpay", ["Inter Tight"]).filter((d) => d.kind === "fake-brand-mark").length === 0, "'Inter Milan' (no product suffix) is not a fabricated brand");
+  const noFonts = `
+<Piece id="s3.hero" kind="diegetic"><div data-piece="s3.hero" data-kind="diegetic"><span>Tasa Pay</span></div></Piece>`;
+  assert(findBrandMarkDefects(noFonts, "Razorpay").filter((d) => d.kind === "fake-brand-mark").length === 0, "no fontNames → the font-leak arm is inert (backward-compatible)");
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exitCode = 1;

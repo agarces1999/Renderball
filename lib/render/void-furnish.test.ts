@@ -15,6 +15,10 @@ import {
   pairValueRows,
   furnishDecision,
   FURNISH_ABANDONMENT_FRAC,
+  FURNISH_SIDE_ABANDONMENT_FRAC,
+  isRedundantWithPainted,
+  furnishContentHeightPx,
+  fitRectToContent,
   parseHex,
   relLuminance,
   textOnSurface,
@@ -268,6 +272,69 @@ check("furnishDecision: the abandonment floor is register-gated to split/list on
   assert(furnishDecision(false, "split", FURNISH_ABANDONMENT_FRAC) === "furnish-abandoned", "at-floor furnishes");
   assert(furnishDecision(false, "split", FURNISH_ABANDONMENT_FRAC - 0.001) === "skip-healthy", "just under skips");
   assert(furnishDecision(false, undefined, 0.9) === "skip-healthy", "no register → treat air as intentional (never furnish blind)");
+});
+
+// ── C9 #2: one-sided void furnishes on ANY register; symmetric air skips ──────
+
+check("furnishDecision C9#2: Razorpay s3 — a 61% RIGHT-sided void on a STAT hero FURNISHES (side-abandonment, register-agnostic)", () => {
+  assert(FURNISH_SIDE_ABANDONMENT_FRAC === 0.45, "side floor is 0.45 (the task's ≥~45% one-sided threshold)");
+  assert(furnishDecision(false, "stat", 0.61, "right") === "furnish-abandoned", "s3 61% right stat void furnishes");
+  assert(furnishDecision(false, "centered", 0.61, "left") === "furnish-abandoned", "a left-clustered centered void furnishes too (region, not register)");
+  assert(furnishDecision(false, "quote", 0.5, "right") === "furnish-abandoned", "even a quote with a decisive one-sided void furnishes");
+});
+
+check("furnishDecision C9#2: a CENTER/symmetric void stays intentional (skip) on any register", () => {
+  assert(furnishDecision(false, "stat", 0.61, "center") === "skip-healthy", "a big CENTER void is symmetric air, not abandonment");
+  assert(furnishDecision(false, "centered", 0.9, "center") === "skip-healthy", "Mailchimp-s0 centered focal with symmetric air skips");
+});
+
+check("furnishDecision C9#2: Razorpay s0/s4 — sided but BELOW the 0.45 floor still skip", () => {
+  assert(furnishDecision(false, "centered", 0.29, "right") === "skip-healthy", "s0 29% right — below floor, intentional air");
+  assert(furnishDecision(false, "centered", 0.34, "right") === "skip-healthy", "s4 34% right — below floor, intentional air");
+  assert(furnishDecision(false, "stat", FURNISH_SIDE_ABANDONMENT_FRAC - 0.001, "right") === "skip-healthy", "just under the side floor skips");
+  assert(furnishDecision(false, "stat", FURNISH_SIDE_ABANDONMENT_FRAC, "right") === "furnish-abandoned", "at the side floor furnishes");
+});
+
+check("furnishDecision C9#2: row-band (top/middle/bottom) regions are NOT side-abandonment (width axis only)", () => {
+  assert(furnishDecision(false, "stat", 0.6, "bottom") === "skip-healthy", "a bottom row-band is not a left/right side void");
+  assert(furnishDecision(false, "centered", 0.6, "top") === "skip-healthy", "a top row-band is not a side void");
+  // backward-compat: the split/list abandonment path is unchanged when region is omitted
+  assert(furnishDecision(false, "split", 0.52) === "furnish-abandoned", "split 52% (no region arg) still furnishes");
+});
+
+// ── C9 #1a: prefix/substring-aware furnish dedup ──────────────────────────────
+
+check("isRedundantWithPainted C9#1a: a 60-char TRUNCATED lede is caught vs the full painted lede", () => {
+  const painted = ["Different SDKs. Different docs. Different approval queues. And customers who won't wait while you stitch it all together."];
+  const truncated = "Different SDKs. Different docs. Different approval queues. And c"; // 60-char cut
+  assert(isRedundantWithPainted(truncated, painted), "truncated prefix of a painted line is redundant");
+  assert(isRedundantWithPainted(painted[0], painted), "exact match is redundant");
+});
+
+check("isRedundantWithPainted C9#1a: a short token or a distinct clause is NOT over-deduped", () => {
+  const painted = ["UPI, Rupay, Netbanking, Cards & more", "Multiple SDKs to maintain"];
+  assert(!isRedundantWithPainted("UPI", painted), "a 3-char token is too short to dedup by containment (kept)");
+  assert(!isRedundantWithPainted("Weeks of integration time", painted), "a genuinely different clause is kept");
+});
+
+// ── C9 #1c: content-sized furnish panel (no tall empty box) ───────────────────
+
+check("furnishContentHeightPx: grows with row count, header adds a band", () => {
+  assert(furnishContentHeightPx(2, false) === 156, `2 rows no header = 156, got ${furnishContentHeightPx(2, false)}`);
+  assert(furnishContentHeightPx(8, false) === 468, `8 rows = 468, got ${furnishContentHeightPx(8, false)}`);
+  assert(furnishContentHeightPx(2, true) === 198, `2 rows + header = 198, got ${furnishContentHeightPx(2, true)}`);
+});
+
+check("fitRectToContent C9#1c: a SPARSE panel shrinks to its content and re-centers; a full one is untouched; never grows", () => {
+  const tall = { x: 100, y: 140, w: 400, h: 800 };
+  const sparse = fitRectToContent(tall, 2, false, 1080);
+  assert(sparse.h === 156 && sparse.h < tall.h, `2-row panel sized to content, got h=${sparse.h}`);
+  const cy = tall.y + tall.h / 2;
+  assert(Math.abs((sparse.y + sparse.h / 2) - cy) < 1, "panel stays vertically centered in the band");
+  const full = fitRectToContent({ x: 100, y: 140, w: 400, h: 468 }, 8, false, 1080);
+  assert(full.h === 468, `an already-snug 8-row band is unchanged, got h=${full.h}`);
+  const small = fitRectToContent({ x: 100, y: 140, w: 400, h: 100 }, 8, false, 1080);
+  assert(small.h === 100, `never grows a rect: h stays 100, got ${small.h}`);
 });
 
 if (failed > 0) {

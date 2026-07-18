@@ -386,13 +386,22 @@ export const findCrossPieceStatDup = (
 
 export interface BrandMarkFinding {
   scene: number;
-  kind: "duplicate-brand-mark" | "garbled-brand-mark";
+  kind: "duplicate-brand-mark" | "garbled-brand-mark" | "fake-brand-mark";
   pieces: string[];
   pieceId: string;
   garbledText?: string;
   detail: string;
   repairInstruction: string;
 }
+
+/** Generic product/company suffixes a FABRICATED brand tacks onto a stem
+ *  ("Tasa Pay", "Acme Labs"). Paired with a font-name stem they betray an
+ *  invented diegetic brand (P3-C9 #4a). */
+const BRAND_SUFFIX_WORDS: ReadonlySet<string> = new Set([
+  "pay", "app", "labs", "inc", "co", "tech", "hq", "cloud", "ai", "io", "pro",
+  "plus", "one", "go", "hub", "works", "soft", "systems", "group", "bank",
+  "card", "wallet", "money", "fin", "corp", "commerce", "market",
+]);
 
 const LOGO_MARK_RX = /data-content-path="[^"]*\blogo\b[^"]*"/gi;
 const normWord = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]/g, "");
@@ -420,8 +429,21 @@ const editDistance = (a: string, b: string): number => {
 /** Brand-mark defects off the assembled source: >1 mark across a scene's
  *  non-chrome pieces (duplicate) and text-node wordmarks scrambled vs the known
  *  brand name (garbled). */
-export const findBrandMarkDefects = (code: string, brandName: string): BrandMarkFinding[] => {
+export const findBrandMarkDefects = (
+  code: string,
+  brandName: string,
+  fontNames: string[] = [],
+): BrandMarkFinding[] => {
   const out: BrandMarkFinding[] = [];
+  // P3-C9 #4a: font-name-leak vocabulary. A diegetic mock's brand-mark that reuses
+  // a crawl FONT family ("TASA Orbiter" → "Tasa Pay", Razorpay s3) is a fabricated
+  // brand. LEADING token of each distinctive family (generic keywords already
+  // filtered by themeFontFamilyNames) + the whole-family form; ≥4 chars so a
+  // 1-3-char scrap can't over-match.
+  const fontLeadWords = new Set(
+    fontNames.map((f) => normWord((f ?? "").trim().split(/\s+/)[0] ?? "")).filter((w) => w.length >= 4),
+  );
+  const fontFullWords = new Set(fontNames.map((f) => normWord(f ?? "")).filter((w) => w.length >= 4));
   // The crawl title can be messy ("falabella.com⚡El Cyber de las Mejores Marcas"):
   // take the LEADING ALPHABETIC RUN of the first token so a domain suffix (.com),
   // emoji, or tagline never pollutes the brand word — otherwise the CORRECT
@@ -465,6 +487,41 @@ export const findBrandMarkDefects = (code: string, brandName: string): BrandMark
             repairInstruction: `Spell the brand name EXACTLY ("${brandName}") or drop the mark — the chrome already carries the sanctioned wordmark. Never emit a mis-spelled/scrambled wordmark.`,
           });
         }
+      }
+    }
+    // P3-C9 #4a: a FONT-NAME leaked as a FABRICATED diegetic brand. Razorpay s3's
+    // mock invented "Tasa Pay" — the "TASA Orbiter" DISPLAY FONT surfaced as the
+    // app's brand-mark. A diegetic mock must carry the REAL brand or a plausible
+    // neutral CUSTOMER name — never a font family. Signal: a brand-mark-shaped
+    // text node (1-3 Title/UPPER-case words, ≤24 chars) whose LEADING word matches
+    // a distinctive font family's leading token AND whose trailing word is a
+    // generic product suffix (a "<Font> Pay/App/Labs" fabrication), or which
+    // equals a whole font-family name. Not the real brand, not a plausible
+    // customer (a customer name shares no stem with a crawl font).
+    if (fontLeadWords.size > 0 || fontFullWords.size > 0) {
+      for (const mm of span.body.matchAll(/>\s*([A-Z][^<>{}\n]{1,30})\s*</g)) {
+        const raw = mm[1].trim();
+        const words = raw.split(/\s+/).filter(Boolean);
+        if (words.length < 1 || words.length > 3 || raw.length > 24) continue;
+        const lead = normWord(words[0]);
+        const full = normWord(raw);
+        if (lead.length < 4 || full === brandWord || lead === brandWord) continue;
+        const fabricated =
+          (words.length >= 2 &&
+            fontLeadWords.has(lead) &&
+            BRAND_SUFFIX_WORDS.has(normWord(words[words.length - 1]))) ||
+          fontFullWords.has(full);
+        if (!fabricated) continue;
+        out.push({
+          scene: span.scene,
+          kind: "fake-brand-mark",
+          pieces: [span.id],
+          pieceId: span.id,
+          garbledText: raw,
+          detail: `scene ${span.scene}: piece ${span.id} paints a FABRICATED brand mark "${raw}" — a diegetic mock invented a brand from the crawl FONT name (a "${brandName}" build must never mint a fake brand). The mock's own brand-mark leaked a font family.`,
+          repairInstruction: `Use the REAL brand "${brandName}" as the mock's brand-mark, or a plausible neutral CUSTOMER name (a generic company the product serves) — NEVER a fabricated brand, and never a font-family name.`,
+        });
+        break; // one fake-brand finding per piece
       }
     }
   }
