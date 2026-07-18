@@ -39,6 +39,18 @@ const BRIEF_ID = process.env.RB_FA_BRIEF ?? "01KWTTE1XSW6BXXKSXPTBX9HDH";
 const OUT = process.env.RB_FP_OUT ?? path.join(process.cwd(), ".data", "dogfood", "fullpipe-klarna");
 const GEN_DIR = path.join(process.cwd(), "src", "generated", "FULLPIPE_KLARNA");
 const CAST_MODEL = process.env.RB_CAST_MODEL ?? "accounts/fireworks/routers/glm-5p2-fast";
+/**
+ * A/B HARNESS ONLY (P5a). Path to a previously-emitted `script.generated.json`.
+ * When set, the script stage is SKIPPED and that script is replayed verbatim.
+ *
+ * Why this exists: script generation is deliberately not held constant on this
+ * runner, so two back-to-back runs of the same brief produce two different
+ * videos — which makes any A/B of a downstream layout change uninterpretable
+ * (you cannot tell a layout win from a different script). Holding the script
+ * fixed is the only way an arm-to-arm diff is attributable to the flag under
+ * test. Unset in every normal run, so the product path is unchanged.
+ */
+const SCRIPT_REPLAY = process.env.RB_FP_SCRIPT?.trim();
 
 const t0 = Date.now();
 const log = (m: string) => console.log(`[${((Date.now() - t0) / 1000).toFixed(1)}s] ${m}`);
@@ -70,8 +82,15 @@ const log = (m: string) => console.log(`[${((Date.now() - t0) / 1000).toFixed(1)
     moments: b.moments,
     cta: b.cta,
   };
-  log("generateScript starting (real product path)…");
-  const gen = await generateScript(agentBrief, BRIEF_ID);
+  let gen: Awaited<ReturnType<typeof generateScript>>;
+  if (SCRIPT_REPLAY) {
+    log(`SCRIPT REPLAY — reusing ${SCRIPT_REPLAY} verbatim (script stage SKIPPED; A/B arms share one script)`);
+    const replayed = JSON.parse(await fs.readFile(SCRIPT_REPLAY, "utf8")) as Script;
+    gen = { ok: true, script: replayed, usage: { input_tokens: 0, output_tokens: 0 } } as typeof gen;
+  } else {
+    log("generateScript starting (real product path)…");
+    gen = await generateScript(agentBrief, BRIEF_ID);
+  }
   if (!gen.ok) {
     log(`SCRIPT-GEN FAILED: ${gen.error}`);
     process.exit(2);
