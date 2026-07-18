@@ -1074,6 +1074,9 @@ await check("placeholderTitleFromSubject: a DESCRIPTOR subject is DROPPED (Audit
   );
   assert(placeholderTitleFromSubject("the Deel payroll dashboard") === "", "the + dashboard → dropped");
   assert(placeholderTitleFromSubject("a full-bleed checkout window") === "", "a + window → dropped");
+  // The Vanta s4 leak: a META-composition subject ("the full-bleed closing canvas").
+  assert(placeholderTitleFromSubject("the full-bleed closing canvas") === "", "meta-composition subject → dropped");
+  assert(placeholderTitleFromSubject("an opening scene backdrop") === "", "opening/scene/backdrop → dropped");
   // A name that merely CONTAINS a UI word but isn't article-led is kept.
   assert(
     placeholderTitleFromSubject("Global onboarding tracker") === "Global onboarding tracker",

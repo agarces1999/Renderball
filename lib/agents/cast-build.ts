@@ -2000,9 +2000,14 @@ export const extractQuotedValues = (interior: string[]): string[] => {
  *  content; the header is omitted). A real product-surface name ("Expenses",
  *  "Global onboarding") does not lead with an article + UI noun and is kept. */
 const DESCRIPTOR_SUBJECT_RX =
-  /\b(mock(?:up)?|dashboard|window|browser[- ]?chrome|panel|chart|screen|view|interface|ui|screenshot|wireframe|modal|dialog|widget|console|graph|diagram|layout|frame)\b/i;
+  /\b(mock(?:up)?|dashboard|window|browser[- ]?chrome|panel|chart|screen|view|interface|ui|screenshot|wireframe|modal|dialog|widget|console|graph|diagram|layout|frame|canvas|backdrop|slide|scene|composition|bookend|tableau)\b/i;
+// Compositional / meta descriptors — a subject that names the FRAME's ROLE rather
+// than a concrete artifact ("the full-bleed closing canvas", the Vanta s4 leak)
+// also reads as a debug string on screen. Caught alongside the UI-noun list.
+const META_COMPOSITION_RX =
+  /\b(full[- ]?bleed|closing|opening|centered|split[- ]?screen|cold[- ]?open|hero shot|title card|end card)\b/i;
 const isDescriptorSubject = (head: string): boolean =>
-  /^(?:a|an|the)\b/i.test(head.trim()) && DESCRIPTOR_SUBJECT_RX.test(head);
+  /^(?:a|an|the)\b/i.test(head.trim()) && (DESCRIPTOR_SUBJECT_RX.test(head) || META_COMPOSITION_RX.test(head));
 
 /** A short, clean title lifted from a hero's blueprint subject: the clause
  *  before the first em/en-dash/comma, capped to ~6 words / 52 chars, so a
