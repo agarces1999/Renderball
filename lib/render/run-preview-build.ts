@@ -45,6 +45,7 @@ import { castCall, castConfigured } from "../llm/cast-provider";
 import { neutralizeInk } from "../agents/cast-build";
 import { generateComposition, type CompositionCaller } from "../agents/composition-head";
 import { checkSceneComposition } from "../agents/schema-validator";
+import { planValidationErrors, enforcePlanFallback } from "../agents/plan-validate";
 import type { Script, Scene } from "../../src/schema";
 
 /** v10 edge-crop clamp breath — a clamped piece never sits flush to the edge. */
@@ -777,15 +778,27 @@ async function runCastPreviewBuild(args: {
         track(r);
         return { text: r.text };
       };
+      // P1 (spatial): the CONSUMED ScenePlan is validated (and deterministically
+      // repaired) at AUTHOR time, inside the head's existing retry loop — so a
+      // containment / undeclared-overlap / stranded-hero / budget violation is
+      // caught and fixed BEFORE any leaf element is emitted, not measured after.
+      const hasThroughline = !!(script as unknown as Script).narrative?.throughline?.trim();
       const composed = await generateComposition({
         script: script as unknown as Script,
         caller: headCaller,
-        validate: (scenes: Scene[]) => checkSceneComposition(scenes, { aspect, canvasBackground: canvasPlan.background }),
+        validate: (scenes: Scene[]) => [
+          ...checkSceneComposition(scenes, { aspect, canvasBackground: canvasPlan.background }),
+          ...planValidationErrors(scenes, { aspect, hasThroughline, label: "preview/build:cast" }),
+        ],
         aspect,
         brandName: brand,
         paletteHint: `canvas ${canvasPlan.background} (${canvasPlan.mode}), signature accent ${signature}, brand palette: ${(be?.palette ?? []).join(", ")}`,
         designNotes: `Design system consts available downstream: PALETTE (CANVAS/INK/ACCENT/MUTED/SOFT_NEUTRAL/CARD_FILL/WHITE), shared keyframes (glowBreathe, drift1-3, drawWidth, fadeRise, scaleIn). Fonts: display ${theme.fonts.display}, body ${theme.fonts.body}.`,
       });
+      // Terminal: anything the head still ships violating loses its head bounds
+      // and falls back to the composer's guaranteed-valid geometry tables — a
+      // plainer frame beats a broken one.
+      enforcePlanFallback(composed.scenes, { aspect, hasThroughline, label: "preview/build:cast" });
       composedScript = { ...script, scenes: composed.scenes };
       console.log(`[preview/build:cast] composition head: ${composed.attempts} attempt(s)`);
     } catch (err) {

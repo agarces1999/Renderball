@@ -16,6 +16,7 @@ import { deriveCrawlTheme } from "../lib/render/crawl-theme";
 import { neutralizeInk } from "../lib/agents/cast-build";
 import { generateComposition, type CompositionCaller } from "../lib/agents/composition-head";
 import { checkSceneComposition } from "../lib/agents/schema-validator";
+import { planValidationErrors, enforcePlanFallback } from "../lib/agents/plan-validate";
 import { castCall } from "../lib/llm/cast-provider";
 import { resolveCornerBrandMark } from "../lib/agents/logo-inject";
 import { measureScenes } from "../lib/render/measure-scene";
@@ -83,6 +84,7 @@ const log = (m: string) => console.log(`[${((Date.now() - t0) / 1000).toFixed(1)
 
   // ── HEAD (frame-authoring) ──
   log("composition head (frame-authoring) starting…");
+  const hasThroughline = !!script.narrative?.throughline?.trim();
   const headCaller: CompositionCaller = async (call) => {
     const r = await castCall({ system: call.system, user: call.user, maxTokens: call.maxTokens, model: CAST_MODEL, effort: call.effort === "none" ? "low" : call.effort });
     track(r);
@@ -93,15 +95,21 @@ const log = (m: string) => console.log(`[${((Date.now() - t0) / 1000).toFixed(1)
     caller: headCaller,
     // R7 (audit-2): pass the RESOLVED canvas so the surface-contrast arm keys off
     // real luminance (the keyword fallback is deleted).
-    validate: (scenes: Scene[]) => checkSceneComposition(scenes, { aspect, canvasBackground: canvasPlan.background }),
+    // P1 (spatial): plan validation + deterministic repair at AUTHOR time.
+    validate: (scenes: Scene[]) => [
+      ...checkSceneComposition(scenes, { aspect, canvasBackground: canvasPlan.background }),
+      ...planValidationErrors(scenes, { aspect, hasThroughline }),
+    ],
     aspect,
     brandName: brand,
     paletteHint: `canvas ${canvasPlan.background} (${canvasPlan.mode}), signature accent ${signature}, brand palette: ${(be?.palette ?? []).join(", ")}`,
     designNotes: `Design system consts downstream: PALETTE (CANVAS/INK/ACCENT/MUTED/SOFT_NEUTRAL/CARD_FILL/WHITE), shared keyframes (glowBreathe, drift1-3, drawWidth, fadeRise, scaleIn). Fonts: display ${theme.fonts.display}, body ${theme.fonts.body}.`,
   });
+  const planFinal = enforcePlanFallback(composed.scenes, { aspect, hasThroughline });
   const composedScript = { ...script, scenes: composed.scenes };
   const residual = checkSceneComposition(composed.scenes, { aspect, canvasBackground: canvasPlan.background });
   log(`head: ${composed.attempts} attempt(s), ${residual.length} residual validation error(s)`);
+  log(`  ${planFinal.summary}`);
   await fs.writeFile(
     path.join(OUT, "composition.json"),
     JSON.stringify(composed.scenes.map((s, i) => ({ scene: i, composition: s.composition ?? null })), null, 2),

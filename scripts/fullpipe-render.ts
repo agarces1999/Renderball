@@ -18,6 +18,7 @@ import { deriveCrawlTheme } from "../lib/render/crawl-theme";
 import { neutralizeInk } from "../lib/agents/cast-build";
 import { generateComposition, type CompositionCaller } from "../lib/agents/composition-head";
 import { checkSceneComposition, frameFillAdvisories } from "../lib/agents/schema-validator";
+import { planValidationErrors, enforcePlanFallback } from "../lib/agents/plan-validate";
 import { generateScript, claimGroundingSources, sceneClaimCopyByStrictness } from "../lib/agents/script-generator";
 import { findUngroundedClaims } from "../lib/agents/schema-validator";
 import { resolveCornerBrandMark } from "../lib/agents/logo-inject";
@@ -118,6 +119,7 @@ const log = (m: string) => console.log(`[${((Date.now() - t0) / 1000).toFixed(1)
 
   // ── HEAD (frame-authoring) ──
   log("composition head starting…");
+  const hasThroughline = !!script.narrative?.throughline?.trim();
   const headCaller: CompositionCaller = async (call) => {
     const r = await castCall({ system: call.system, user: call.user, maxTokens: call.maxTokens, model: CAST_MODEL, effort: call.effort === "none" ? "low" : call.effort });
     track(r);
@@ -129,19 +131,28 @@ const log = (m: string) => console.log(`[${((Date.now() - t0) / 1000).toFixed(1)
     // R7 (audit-2): pass the RESOLVED canvas so the surface-contrast arm keys off
     // real luminance, not the deleted DARK/LIGHT keyword regex. R6: also surface
     // the (advisory, non-blocking) frame-fill smell at author time.
+    // P1 (spatial): plan validation + deterministic repair at AUTHOR time, inside
+    // the head's existing retry loop (see lib/agents/plan-validate.ts).
     validate: (scenes: Scene[]) => {
       const adv = frameFillAdvisories(scenes, { aspect });
       if (adv.length) log(`  head frame-fill advisories (non-blocking):\n    ${adv.join("\n    ")}`);
-      return checkSceneComposition(scenes, { aspect, canvasBackground: canvasPlan.background });
+      return [
+        ...checkSceneComposition(scenes, { aspect, canvasBackground: canvasPlan.background }),
+        ...planValidationErrors(scenes, { aspect, hasThroughline }),
+      ];
     },
     aspect,
     brandName: brand,
     paletteHint: `canvas ${canvasPlan.background} (${canvasPlan.mode}), signature accent ${signature}, brand palette: ${(be?.palette ?? []).join(", ")}`,
     designNotes: `Design system consts downstream: PALETTE (CANVAS/INK/ACCENT/MUTED/SOFT_NEUTRAL/CARD_FILL/WHITE), shared keyframes (glowBreathe, drift1-3, drawWidth, fadeRise, scaleIn). Fonts: display ${theme.fonts.display}, body ${theme.fonts.body}.`,
   });
+  // P1 terminal: a scene the head still ships violating loses its head bounds and
+  // falls back to the composer's guaranteed-valid per-register geometry tables.
+  const planFinal = enforcePlanFallback(composed.scenes, { aspect, hasThroughline });
   const composedScript = { ...script, scenes: composed.scenes };
   const residual = checkSceneComposition(composed.scenes, { aspect, canvasBackground: canvasPlan.background });
   log(`head: ${composed.attempts} attempt(s), ${residual.length} residual validation error(s)`);
+  log(`  ${planFinal.summary}`);
   await fs.writeFile(path.join(OUT, "composition.json"), JSON.stringify(composed.scenes.map((s, i) => ({ scene: i, composition: s.composition ?? null })), null, 2), "utf8");
 
   const accentHexes = [...new Set([derived.signatureAccent, theme.palette.ACCENT].filter((h): h is string => typeof h === "string" && /^#[0-9a-fA-F]{3,8}$/.test(h)))];

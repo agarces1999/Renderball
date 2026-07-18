@@ -345,6 +345,23 @@ const headBoundsFor = (
   return { ...clampBounds(b, W, H), z };
 };
 
+/**
+ * The head-authored bounds for one role, CLAMPED exactly the way
+ * composeSceneLayout clamps them — or null when the head didn't place that
+ * role. Exported for the author-time repair ladder (plan-validate.ts), which
+ * must reason about the SAME rect the composer will consume; re-deriving the
+ * clamp there would let the two drift.
+ */
+export const readHeadBounds = (
+  composition: SceneComposition | undefined,
+  role: string,
+  aspect: Aspect,
+): { x: number; y: number; w: number; h: number } | null => {
+  const { w: W, h: H } = CANVAS[aspect];
+  const b = headBoundsFor(composition, role, 0, W, H);
+  return b ? { x: b.x, y: b.y, w: b.w, h: b.h } : null;
+};
+
 // ─── The validator (frame-authoring) ─────────────────────────────────────────
 
 export interface PlanViolation {
