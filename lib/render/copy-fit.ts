@@ -317,3 +317,101 @@ export const overflowRepairMessage = (
     .filter(Boolean)
     .join(" ");
 };
+
+// ─── Shrink-to-fit (Bug 2, the TEXT arm) ────────────────────────────────────
+//
+// A text piece is emitted with `maxWidth` and NO height, so a headline that
+// wraps to more lines than its box planned simply grows downward into whatever
+// sits beneath it. Clipping is not the answer — cutting words in half is worse
+// than the defect. Scaling is: the copy gets SMALLER and stays whole.
+//
+// WHY THIS IS PRECOMPUTED AND NOT `fitText`.
+// `@remotion/layout-utils`' `fitText` was the recommended tool and does not fit
+// this path, for three independent reasons:
+//   1. It is not a dependency of this project, and adding one is not the
+//      cheapest correct move when the measurement engine is already here.
+//   2. It measures in a browser (DOM/canvas). This composition is rendered with
+//      `renderToStaticMarkup` in two load-bearing places — the SSR gate and
+//      measure-scene — where there is no DOM. A runtime fit would silently
+//      no-op there, so the MEASURED frame would disagree with the MP4. Since
+//      measure-scene IS the render-truth gate, that disagreement is not a
+//      cosmetic risk, it is the gate going blind.
+//   3. It solves single-line-text-to-WIDTH. The defect here is a wrapped block
+//      growing in HEIGHT, which is a different question.
+// P4a/P4b already predict wrapped line counts exactly, in pure Node, from
+// Chromium-calibrated metrics (max drift in the dangerous direction: 0.004%).
+// So the factor is derived here and baked into the emitted CSS — deterministic,
+// zero runtime cost, and identical in SSR, preview and render.
+
+/** Descending ladder of scale factors. Coarse on purpose: a 5% step is below
+ *  the threshold of noticing, and a finer search buys precision nobody sees. */
+const FIT_LADDER = [1, 0.95, 0.9, 0.85, 0.8, 0.75, 0.7] as const;
+
+/**
+ * The smallest downscale is the best one, so the ladder is walked from 1.0 down
+ * and the FIRST factor that fits wins. `FIT_SCALE_FLOOR` is where scaling stops
+ * being a fix: below it the copy is small enough to read as a mistake, and the
+ * right response is P4b's overflow rejection (re-emit with tighter type), not a
+ * smaller render. A block that does not fit even at the floor returns the floor
+ * — the assembler still emits `maxHeight`, and the residue is the repair
+ * ladder's problem, not something to hide by shrinking to nothing.
+ */
+export const FIT_SCALE_FLOOR = 0.7;
+
+/** Which of the two type sizes a field renders at. Mirrors the emitter's own
+ *  convention: the headline is display type, everything else is body/label. */
+const sizeForPath = (path: string, scale: ResolvedTypeScale): { px: number; lh: number } =>
+  path === "headline"
+    ? { px: scale.headlinePx, lh: scale.headlineLineHeight }
+    : { px: scale.bodyPx, lh: scale.bodyLineHeight };
+
+export interface FitScaleArgs {
+  /** The copy this piece owns, verbatim (see cast-build's ownedCopyEntries). */
+  entries: CopyEntry[];
+  /** The piece's declared box in canvas px. */
+  box: Box;
+  scale: ResolvedTypeScale;
+  metrics: FontMetrics;
+  /** Fields the emitter sets in caps — measured uppercased (P4a finding #2). */
+  uppercasePaths?: Set<string>;
+}
+
+/**
+ * Predicted STACKED height (px) of the owned copy at a given scale factor.
+ *
+ * The assembler emits `width: box.w / s` with `transform: scale(s)`, which lays
+ * the text out at width `box.w / s` at unscaled sizes and then scales the whole
+ * box by `s`. That is arithmetically identical to laying out at width `box.w`
+ * with every size multiplied by `s` — which is what this measures, because
+ * `linesNeeded` already applies the capacity safety margin to the width it is
+ * handed and we want that margin applied to the REAL box.
+ */
+export const predictedCopyHeight = (args: FitScaleArgs, s: number): number => {
+  const { entries, box, scale, metrics, uppercasePaths } = args;
+  let total = 0;
+  for (const e of entries) {
+    const { px, lh } = sizeForPath(e.path, scale);
+    const sized = px * s;
+    if (!(sized > 0)) continue;
+    const text = uppercasePaths?.has(e.path) ? e.text.toUpperCase() : e.text;
+    const rows = linesNeeded(text, { w: box.w, h: box.h }, sized, metrics);
+    if (!Number.isFinite(rows)) continue;
+    total += rows * (lh || DEFAULT_NORMAL_LINE_HEIGHT) * sized;
+  }
+  return total;
+};
+
+/**
+ * The shrink-to-fit factor for one text piece: 1 when the copy already fits,
+ * otherwise the largest ladder step whose predicted stacked height clears the
+ * box's usable height, floored at `FIT_SCALE_FLOOR`.
+ */
+export const deriveFitScale = (args: FitScaleArgs): number => {
+  if (args.entries.length === 0) return 1;
+  const usable = usableBox(args.box, args.metrics);
+  if (!(usable.h > 0)) return 1;
+  for (const s of FIT_LADDER) {
+    if (predictedCopyHeight(args, s) <= usable.h) return s;
+  }
+  return FIT_SCALE_FLOOR;
+};

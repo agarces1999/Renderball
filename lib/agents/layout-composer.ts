@@ -93,8 +93,10 @@ export const SPLIT_HERO_VCENTER_FRAC = 0.25; // |heroCenterY − H/2| ≤ 25% of
 
 /** Side of the throughline motif box (square), matching the small, consistent
  *  cross-scene anchor contract (SEVERE_DRIFT_PX tolerance is 280px — a 200px
- *  box pinned to the exact anchor sits far inside it). */
-const THROUGHLINE_SIZE = 200;
+ *  box pinned to the exact anchor sits far inside it). Exported for
+ *  throughline-anchor.ts, which reasons about the SAME box when it scores
+ *  candidate anchors — re-declaring the size there would let the two drift. */
+export const THROUGHLINE_SIZE = 200;
 
 /**
  * Bottom reserve (v10 — the piece-edge-crop class). Dogfood cycle 1 shipped
@@ -459,15 +461,19 @@ export const validateScenePlan = (
  * @param scene  register + content (field PRESENCE, never text) + the optional
  *        head composition (its elements' bounds are consumed).
  * @param aspect target canvas.
- * @param opts.hasThroughline add the cross-scene motif slot, pinned to
- *        throughlineAnchorFor(aspect) (lib/agents/choreograph.ts) so the
- *        cross-scene drift gate passes and the film wrapper's match-cut camera
- *        push has its target.
+ * @param opts.hasThroughline add the cross-scene motif slot.
+ * @param opts.throughlineAt where to pin the motif's top-left. The caller
+ *        (which sees ALL the video's scenes) picks this ONCE per video via
+ *        `selectThroughlineAnchor` — the same point in every scene, chosen to
+ *        be least occupied across the most frames. Omitted → the historical
+ *        global constant `throughlineAnchorFor(aspect)`, which is still the
+ *        right answer for a single-scene caller and for the film wrapper's
+ *        match-cut camera push origin.
  */
 export const composeSceneLayout = (
   scene: { register?: string; content?: Record<string, unknown>; composition?: SceneComposition },
   aspect: Aspect,
-  opts?: { hasThroughline?: boolean },
+  opts?: { hasThroughline?: boolean; throughlineAt?: { left: number; top: number } },
 ): ScenePlan => {
   const register = normalizeRegister(scene.register);
   const { w: W, h: H } = CANVAS[aspect];
@@ -553,12 +559,25 @@ export const composeSceneLayout = (
   });
 
   if (opts?.hasThroughline) {
-    const anchor = throughlineAnchorFor(aspect);
+    // Pinned to the video's ONE anchor (see throughline-anchor.ts) so the
+    // cross-scene drift gate passes by construction — the same point in every
+    // scene, chosen against the head's own authored frames rather than fixed
+    // for every brand. Falls back to the historical global constant when the
+    // caller has no cross-scene view.
+    let anchor = opts?.throughlineAt ?? throughlineAnchorFor(aspect);
+    // SAFETY NET for the TABLE path. The geometry tables were hand-checked
+    // against the historical constant, and assertPlanInvariants below THROWS on
+    // an undeclared copy↔motif overlap — so a freely-chosen anchor could crash a
+    // build. selectThroughlineAnchor already excludes such candidates by hard
+    // constraint, so this should never fire; it exists so that if it ever does,
+    // the cost is a plainer motif position, not a dead build.
+    if (opts?.throughlineAt && !usedHeadBounds) {
+      const box = { x: anchor.left, y: anchor.top, w: THROUGHLINE_SIZE, h: THROUGHLINE_SIZE, z: 0 };
+      if (rectsOverlap(box, { ...geo.copy, z: 0 })) anchor = throughlineAnchorFor(aspect);
+    }
     elements.push({
       id: "throughline",
       kind: "diegetic",
-      // Pinned EXACTLY to the choreographer's anchor (16:9 → 1360,540) so the
-      // cross-scene drift gate (SEVERE_DRIFT_PX) passes by construction.
       bounds: { x: anchor.left, y: anchor.top, w: THROUGHLINE_SIZE, h: THROUGHLINE_SIZE, z: 2 },
       contentFields: [],
       // The motif IS the accent thread — its one palette role.

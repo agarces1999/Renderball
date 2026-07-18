@@ -23,9 +23,12 @@
 import { type FontMetrics, CALIBRATION_GLYPHS, fallbackMetrics } from "./font-metrics";
 import {
   checkCopyOverflow,
+  deriveFitScale,
   maxDeclaredFontSize,
   overflowRepairMessage,
   parseTaggedCopyStyles,
+  predictedCopyHeight,
+  FIT_SCALE_FLOOR,
 } from "./copy-fit";
 import { deriveTypeScale } from "./type-scale";
 
@@ -257,6 +260,73 @@ await check("the repair message forbids rewriting the copy and prescribes SMALLE
   // The prescribed size must be strictly tighter than what was declared.
   const prescribed = Number(/headline at (\d+)px or less/.exec(msg)?.[1]);
   assert(prescribed > 0 && prescribed < SCALE.headlinePx, `prescribed ${prescribed} must be under ${SCALE.headlinePx}`);
+});
+
+
+// ── shrink-to-fit (Bug 2, the text arm) ─────────────────────────────────────
+//
+// The contract: text is NEVER clipped. Copy that already fits is left alone;
+// copy that does not gets SMALLER, monotonically with how badly it overruns,
+// and never smaller than the legibility floor.
+
+const fitArgs = (text: string, box: { w: number; h: number }) => ({
+  entries: [{ path: "headline", text }],
+  box,
+  scale: SCALE,
+  metrics: MONO_CAPS,
+});
+
+await check("copy that already fits is NOT scaled", () => {
+  const s = deriveFitScale(fitArgs("Short", { w: 800, h: 500 }));
+  assert(s === 1, `expected no downscale, got ${s}`);
+});
+
+await check("copy that overruns its box scales DOWN rather than growing past it", () => {
+  const long = "Ship the whole story in one frame ".repeat(6);
+  const box = { w: 600, h: 200 };
+  assert(predictedCopyHeight(fitArgs(long, box), 1) > box.h, "premise: it overruns at full size");
+  const s = deriveFitScale(fitArgs(long, box));
+  assert(s < 1, `expected a downscale, got ${s}`);
+  assert(s >= FIT_SCALE_FLOOR, `must not go below the legibility floor: ${s}`);
+});
+
+await check("the chosen factor actually fits — and is the LARGEST one that does", () => {
+  const long = "Ship the whole story in one frame ".repeat(4);
+  const box = { w: 600, h: 260 };
+  const args = fitArgs(long, box);
+  const s = deriveFitScale(args);
+  if (s < 1) {
+    // Anything larger than the chosen step must fail to fit.
+    assert(predictedCopyHeight(args, s + 0.05) > box.h * (1 - 0.04), `${s + 0.05} would also have fit — not the largest`);
+  }
+});
+
+await check("monotone: worse overrun never yields a LARGER scale", () => {
+  const box = { w: 600, h: 220 };
+  let prev = 1.01;
+  for (const n of [1, 3, 6, 12, 30]) {
+    const s = deriveFitScale(fitArgs("Ship the whole story ".repeat(n), box));
+    assert(s <= prev, `n=${n}: scale ${s} rose above ${prev}`);
+    prev = s;
+  }
+});
+
+await check("hopeless copy floors at FIT_SCALE_FLOOR — it never shrinks to nothing", () => {
+  const s = deriveFitScale(fitArgs("word ".repeat(500), { w: 300, h: 80 }));
+  assert(s === FIT_SCALE_FLOOR, `expected the floor ${FIT_SCALE_FLOOR}, got ${s}`);
+});
+
+await check("uppercase fields are measured UPPERCASED (P4a's caps penalty applies here too)", () => {
+  const text = "ship the whole story in one single frame today";
+  const box = { w: 500, h: 120 };
+  const mixed = deriveFitScale({ ...fitArgs(text, box) });
+  const caps = deriveFitScale({ ...fitArgs(text, box), uppercasePaths: new Set(["headline"]) });
+  assert(caps <= mixed, `caps (${caps}) must never need a LARGER box than mixed case (${mixed})`);
+});
+
+await check("no owned copy ⇒ no scaling (nothing to fit)", () => {
+  assert(deriveFitScale({ entries: [], box: { w: 100, h: 100 }, scale: SCALE, metrics: MONO_CAPS }) === 1, "empty");
+  assert(deriveFitScale(fitArgs("x", { w: 100, h: 0 })) === 1, "degenerate box degrades to no-op");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

@@ -33,7 +33,7 @@ import type { Script } from "../../src/schema";
 import { stripCodeFence, verifyCompilable } from "../agents/code-extraction";
 import { injectLogoSrc, brandWordmarkText } from "../agents/logo-inject";
 import { finalizeUndefinedRefs, assessInvalidLucideImports } from "../agents/finalize-refs";
-import { measureScenes, type SceneMeasurement } from "./measure-scene";
+import { measureScenes, summarizeBoxOverflow, type SceneMeasurement } from "./measure-scene";
 import {
   findRenderTruthFailures,
   findEdgeCroppedPieces,
@@ -1115,6 +1115,13 @@ export async function runQualityLoop(
 
     // (b) measure, then the v10 piece-edge-crop arm.
     let measurements = await phase(`measure-r${round}`, () => measureScenes(genDir, script, genDir));
+
+    // Declared-box telemetry (Bug 2). Sizes the "a declared height does not
+    // clip" problem with real numbers instead of inference: how many pieces
+    // painted past their own box this round, and by how much. Reported whether
+    // or not RB_ENFORCE_BOX is on — measuring must not require enabling the fix.
+    // The per-piece detail lives in genDir/rects-scene-N.json.
+    log(`  ${summarizeBoxOverflow(measurements).line}`);
 
     // v12 (#4): BROKEN-IMAGE swap — measured naturalWidth === 0.
     const brokenImgs = findBrokenRenderedImages(measurements);

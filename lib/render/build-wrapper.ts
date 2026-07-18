@@ -26,6 +26,8 @@ import { promises as fs } from "fs";
 import path from "path";
 import type { Script } from "../../src/schema";
 import { throughlineAnchorFor } from "../agents/choreograph";
+import { selectThroughlineAnchor } from "../agents/throughline-anchor";
+import type { Aspect } from "../agents/layout-composer";
 
 /** Frames-per-second for capture. Fixed at the rendering boundary. */
 export const RENDER_FPS = 30 as const;
@@ -126,7 +128,22 @@ export const buildIndexTsx = (script: Script): string => {
   const dims = dimensionsForScript(script);
   const totalFrames = totalFramesForScript(script);
   const lastScene = script.scenes.length - 1;
-  const anchor = throughlineAnchorFor(script.config?.aspect_ratio ?? "16:9");
+  // The match-cut camera push is centered ON THE MOTIF, so its origin must
+  // follow the motif's actual anchor — which cast-build now chooses per VIDEO
+  // (throughline-anchor.ts), not per aspect. Recomputed here from the same pure
+  // function over the same scenes rather than threaded through every caller;
+  // a script with no throughline keeps the historical per-aspect constant.
+  const aspect = (script.config?.aspect_ratio ?? "16:9") as Aspect;
+  const anchor = (script.narrative?.throughline?.trim() ?? "").length > 0
+    ? selectThroughlineAnchor(
+        script.scenes.map((s) => ({
+          register: (s as { register?: string }).register,
+          content: s.content as Record<string, unknown> | undefined,
+          composition: (s as { composition?: never }).composition,
+        })),
+        aspect,
+      ).anchor
+    : throughlineAnchorFor(aspect);
   const pushOrigin = `${anchor.left}px ${anchor.top}px`;
 
   const sceneSequences = script.scenes

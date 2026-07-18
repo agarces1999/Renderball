@@ -65,6 +65,42 @@ export interface Piece {
    *  assembler co-locates this attribute AND literal px bounds on the same wrapper
    *  so the presence + drift gates still see it. */
   throughlineSlug?: string;
+  /**
+   * INTENTIONAL BLEED / OVERHANG — this piece is DESIGNED to paint outside its
+   * declared box (a toast overhanging a modal edge, a card breaking its column,
+   * a shape running off-frame). The box-enforcement pass (assemble.ts, gated on
+   * `RB_ENFORCE_BOX`) never clips a piece that declares this.
+   *
+   * Deliberate layering is a feature and shows up in our best frames, so
+   * clipping has to be opt-OUT-able. Note what this does and does not cover:
+   * an overhang BETWEEN two elements INSIDE one piece (the Razorpay s2
+   * "Payment Successful" toast over its modal) needs no flag at all — clipping
+   * is applied at the PIECE wrapper, and both the modal and the toast are
+   * descendants of the same hero piece, so their mutual overlap is untouched.
+   * This flag is only for a piece whose painted content leaves ITS OWN box.
+   *
+   * Nothing authors it yet — the composition head is not prompted for it — so
+   * it is the mechanism, not the policy. Ship the policy with the head change
+   * that populates it.
+   */
+  bleed?: boolean;
+  /**
+   * TEXT pieces only. A precomputed shrink-to-fit factor in (0,1]: the assembler
+   * emits `transform: scale(fitScale)` with a compensating width so an over-long
+   * headline renders SMALLER instead of growing past its box. 1 / undefined ⇒
+   * no downscale.
+   *
+   * Precomputed rather than measured at runtime on purpose. `@remotion/
+   * layout-utils`' `fitText` was the suggested tool and cannot be used in this
+   * path (see cast-build's fit computation): the composition is rendered with
+   * `renderToStaticMarkup` in two load-bearing places — the SSR gate and
+   * measure-scene — where there is no DOM to measure in, so a runtime fit would
+   * make the measured frame disagree with the MP4, and measure-scene IS the
+   * render-truth gate. The capacity engine (lib/render/capacity.ts) already
+   * predicts wrapped line counts in pure Node from calibrated font metrics, so
+   * the factor is derived there and baked into the CSS.
+   */
+  fitScale?: number;
   /** Composite pieces only: nested, independently-editable sub-pieces. Absent ⇒ a leaf. */
   children?: Piece[];
 }

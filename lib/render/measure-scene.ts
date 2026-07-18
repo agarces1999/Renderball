@@ -121,13 +121,103 @@ export interface MeasuredElement {
   vh?: number;
 }
 
+/** A rect in canvas px. */
+export interface Rect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/**
+ * Per-EDGE spill of a piece's painted content past its DECLARED box, in px.
+ * Positive = content painted outside that edge. All four are ≥0; `maxPx` is the
+ * worst single edge, which is the number worth alerting on.
+ */
+export interface BoxOverflow {
+  top: number;
+  right: number;
+  bottom: number;
+  left: number;
+  maxPx: number;
+}
+
+/**
+ * ONE LEGO piece's authored-vs-painted truth, the unit the persisted rect file
+ * exists to make queryable offline.
+ *
+ * `declared` is read from the wrapper's OWN inline style — assemble.ts emits
+ * `left/top/width/height` literally on every non-atmosphere `[data-piece]`
+ * wrapper, so the declared box is present in the DOM and needs no plumbing from
+ * the composer. That is what makes this record self-contained: any caller of
+ * measureScenes gets it, with no threading of plan bounds through the stack.
+ */
+export interface PieceRect {
+  /** data-piece — the LEGO piece id ("s2.hero"). */
+  id: string;
+  /** data-kind — text | diegetic | image | atmosphere | chrome. */
+  kind: string;
+  /** data-throughline slug, when this piece carries the recurring motif. */
+  throughline?: string;
+  /**
+   * The box the piece DECLARED, in STAGE coordinates. Size comes from the
+   * wrapper's inline `width`/`height` (or `data-box-h` for text pieces, which
+   * emit no CSS height); ORIGIN comes from the wrapper's measured rect, not
+   * from the inline `left`/`top`. That distinction is load-bearing: a NESTED
+   * child piece declares left/top relative to its parent, so comparing raw
+   * inline coordinates against a stage-absolute painted rect manufactured a
+   * false 1160px "overflow" on a real build (cycle10-falabella s0). The browser
+   * has already resolved the origin correctly — use its answer.
+   *
+   * null for a full-bleed atmosphere wrapper (inset:0 — nothing to exceed).
+   */
+  declared: Rect | null;
+  /**
+   * False when the piece declares no height of its own — today every TEXT piece
+   * without `data-box-h`, and the whole point of Bug 2's text arm. A reader can
+   * tell "inside its box" from "had no bottom edge to be outside of".
+   */
+  heightDeclared: boolean;
+  /** The wrapper element's own measured getBoundingClientRect. */
+  wrapper: Rect;
+  /** Union of every descendant's VISIBLE rect (layout rect ∩ clipping
+   *  ancestors) — what the piece actually PAINTS, which is the thing a declared
+   *  height was supposed to bound and today does not. */
+  painted: Rect;
+  /** painted vs declared, per edge. null when `declared` is null. */
+  overflow: BoxOverflow | null;
+  /** Descendant elements measured into `painted` (0 ⇒ an empty piece). */
+  nodes: number;
+}
+
+/**
+ * The on-disk record written next to the frames as `rects-scene-{N}.json`.
+ * Versioned so a future reader can tell which fields to expect.
+ */
+export interface SceneRects {
+  version: 1;
+  scene: number;
+  width: number;
+  height: number;
+  aspect: string;
+  measuredAt: string;
+  pieces: PieceRect[];
+  /** The full element walk, verbatim — the raw material for any future
+   *  offline query we have not thought of yet. */
+  elements: MeasuredElement[];
+}
+
 export interface SceneMeasurement {
   scene: number;
   width: number;
   height: number;
   elements: MeasuredElement[];
+  /** Per-piece authored-vs-painted rects (also persisted to disk). */
+  pieces?: PieceRect[];
   /** Absolute path to the rendered PNG, or undefined if screenshot failed. */
   screenshotPath?: string;
+  /** Absolute path to the persisted `rects-scene-{N}.json`, when written. */
+  rectsPath?: string;
   /** Set when the scene could not be measured at all (treat as a gate failure). */
   error?: string;
 }
@@ -231,6 +321,137 @@ const PAGE_WALK = `(() => {
   }
   return out;
 })()`;
+
+/**
+ * Per-PIECE walk — authored box vs painted extent, for every `[data-piece]`
+ * wrapper. Runs in the page alongside PAGE_WALK (kept separate so the element
+ * walk's shape, which several gates parse, is untouched).
+ *
+ * `declared` comes from the wrapper's own INLINE style rather than a computed
+ * one: assemble.ts writes literal px there, and reading the inline value keeps
+ * "what the composer declared" distinct from "what the browser resolved" —
+ * which is the exact comparison this record exists to make.
+ */
+const PIECE_WALK = `(() => {
+  const px = (v) => {
+    if (!v) return null;
+    const m = /^(-?[\\d.]+)px$/.exec(String(v).trim());
+    return m ? Math.round(parseFloat(m[1])) : null;
+  };
+  const stage = document.getElementById("rb-stage");
+  const origin = stage ? stage.getBoundingClientRect() : { x: 0, y: 0 };
+  const out = [];
+  for (const el of document.querySelectorAll("[data-piece]")) {
+    // EVERY piece appears TWICE in the DOM: the <Piece> shim marker (which the
+    // LEGO decomposer keys on) renders its own data-piece div at
+    // display:contents, wrapping the real positioned one. A contents box
+    // generates no layout at all, so its rect is meaningless and it declares
+    // nothing — recording it would double every piece in the file and pair a
+    // null declared box with a real painted one. Skip it; the positioned
+    // wrapper inside is the piece.
+    if (getComputedStyle(el).display === "contents") continue;
+    const s = el.style || {};
+    const wr = el.getBoundingClientRect();
+    const wrapper = {
+      x: Math.round(wr.x - origin.x), y: Math.round(wr.y - origin.y),
+      w: Math.round(wr.width), h: Math.round(wr.height),
+    };
+    // Size from the inline declaration; ORIGIN from the resolved rect (a nested
+    // child's inline left/top are parent-relative — see PieceRect.declared).
+    const W = px(s.width);
+    const boxH = el.getAttribute("data-box-h");
+    const H = px(s.height) ?? px(s.maxHeight) ?? (boxH !== null && boxH !== "" && isFinite(Number(boxH)) ? Math.round(Number(boxH)) : null);
+    const heightDeclared = H !== null;
+    const declared = W !== null ? { x: wrapper.x, y: wrapper.y, w: W, h: H !== null ? H : wrapper.h } : null;
+    // Painted extent = union of every descendant's VISIBLE rect (layout rect
+    // intersected with each clipping ancestor), same clipping model PAGE_WALK
+    // uses so the two records agree.
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity, nodes = 0;
+    for (const d of el.querySelectorAll("*")) {
+      const r = d.getBoundingClientRect();
+      if (r.width === 0 && r.height === 0) continue;
+      const cs = getComputedStyle(d);
+      if (cs.display === "none" || cs.visibility === "hidden" || parseFloat(cs.opacity) === 0) continue;
+      let vx0 = r.x, vy0 = r.y, vx1 = r.x + r.width, vy1 = r.y + r.height;
+      for (let a = d.parentElement; a; a = a.parentElement) {
+        const acs = getComputedStyle(a);
+        if (/(hidden|clip|auto|scroll)/.test(acs.overflow + " " + acs.overflowX + " " + acs.overflowY)) {
+          const ar = a.getBoundingClientRect();
+          vx0 = Math.max(vx0, ar.x); vy0 = Math.max(vy0, ar.y);
+          vx1 = Math.min(vx1, ar.x + ar.width); vy1 = Math.min(vy1, ar.y + ar.height);
+        }
+      }
+      if (vx1 <= vx0 || vy1 <= vy0) continue; // fully clipped away
+      x0 = Math.min(x0, vx0); y0 = Math.min(y0, vy0);
+      x1 = Math.max(x1, vx1); y1 = Math.max(y1, vy1);
+      nodes++;
+    }
+    const painted = nodes > 0
+      ? { x: Math.round(x0 - origin.x), y: Math.round(y0 - origin.y), w: Math.round(x1 - x0), h: Math.round(y1 - y0) }
+      : wrapper;
+    let overflow = null;
+    if (declared) {
+      const top = Math.max(0, declared.y - painted.y);
+      const left = Math.max(0, declared.x - painted.x);
+      const right = Math.max(0, (painted.x + painted.w) - (declared.x + declared.w));
+      const bottom = Math.max(0, (painted.y + painted.h) - (declared.y + declared.h));
+      overflow = { top, right, bottom, left, maxPx: Math.max(top, right, bottom, left) };
+    }
+    const through = el.getAttribute("data-throughline");
+    out.push({
+      id: el.getAttribute("data-piece") || "",
+      kind: el.getAttribute("data-kind") || "",
+      ...(through ? { throughline: through } : {}),
+      declared, heightDeclared, wrapper, painted, overflow, nodes,
+    });
+  }
+  return out;
+})()`;
+
+/**
+ * Roll the per-piece overflow up into one greppable telemetry line: how many
+ * pieces painted beyond their declared box, and by how much. Pure — the caller
+ * decides where to log it.
+ */
+export const summarizeBoxOverflow = (
+  measurements: Pick<SceneMeasurement, "scene" | "pieces">[],
+): {
+  pieces: number;
+  overflowing: number;
+  totalPx: number;
+  noHeight: number;
+  worst: { pieceId: string; scene: number; maxPx: number } | null;
+  line: string;
+} => {
+  let pieces = 0;
+  let overflowing = 0;
+  let totalPx = 0;
+  let noHeight = 0;
+  let worst: { pieceId: string; scene: number; maxPx: number } | null = null;
+  const byKind = new Map<string, number>();
+  for (const m of measurements) {
+    for (const p of m.pieces ?? []) {
+      if (!p.overflow) continue;
+      pieces++;
+      if (!p.heightDeclared) noHeight++;
+      if (p.overflow.maxPx <= 0) continue;
+      overflowing++;
+      totalPx += p.overflow.maxPx;
+      byKind.set(p.kind, (byKind.get(p.kind) ?? 0) + 1);
+      if (!worst || p.overflow.maxPx > worst.maxPx) {
+        worst = { pieceId: p.id, scene: m.scene, maxPx: p.overflow.maxPx };
+      }
+    }
+  }
+  const kinds = [...byKind.entries()].map(([k, n]) => `${k}:${n}`).join(", ");
+  const line =
+    `box-overflow: ${overflowing}/${pieces} piece(s) painted beyond their declared box` +
+    (kinds ? ` [${kinds}]` : "") +
+    (overflowing ? ` · ${totalPx}px total spill` : "") +
+    (worst ? ` · worst ${worst.pieceId} (s${worst.scene}) +${worst.maxPx}px` : "") +
+    (noHeight ? ` · ${noHeight} piece(s) declare no height (bottom edge unenforceable)` : "");
+  return { pieces, overflowing, totalPx, noHeight, worst, line };
+};
 
 const buildSceneHtml = (
   bodyHtml: string,
@@ -417,9 +638,38 @@ export const measureScenes = async (
           .catch(() => {});
         await page.waitForTimeout(250).catch(() => {});
         const elements = (await page.evaluate(PAGE_WALK)) as MeasuredElement[];
+        // Per-piece authored-vs-painted rects. Best-effort: a failure here must
+        // never fail a measurement the BLOCKING gates depend on.
+        let pieces: PieceRect[] = [];
+        try {
+          pieces = (await page.evaluate(PIECE_WALK)) as PieceRect[];
+        } catch {
+          pieces = [];
+        }
         const screenshotPath = path.join(outDir, `measure-scene-${i}.png`);
         await page.screenshot({ path: screenshotPath, clip: { x: 0, y: 0, width: dims.w, height: dims.h } });
-        results.push({ scene: i, width: dims.w, height: dims.h, elements, screenshotPath });
+        // PERSIST the rects. getBoundingClientRect was computed on every build
+        // and then thrown away, so "what did this build actually paint, versus
+        // what did it declare?" was unanswerable after the fact. Writing it
+        // next to the frames turns that into a $0 offline query, forever.
+        let rectsPath: string | undefined;
+        try {
+          rectsPath = path.join(outDir, `rects-scene-${i}.json`);
+          const record: SceneRects = {
+            version: 1,
+            scene: i,
+            width: dims.w,
+            height: dims.h,
+            aspect,
+            measuredAt: new Date().toISOString(),
+            pieces,
+            elements,
+          };
+          await fs.writeFile(rectsPath, JSON.stringify(record));
+        } catch {
+          rectsPath = undefined; // disk trouble must not fail the gate
+        }
+        results.push({ scene: i, width: dims.w, height: dims.h, elements, pieces, screenshotPath, rectsPath });
       } catch (err) {
         results.push({
           scene: i, width: dims.w, height: dims.h, elements: [],

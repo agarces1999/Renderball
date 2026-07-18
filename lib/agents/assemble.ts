@@ -141,6 +141,30 @@ const namespaceLocalKeyframes = (body: string, pieceId: string): string => {
     );
 };
 
+// ── Declared-box enforcement (flag-gated) ───────────────────────────────────
+//
+// A declared `height` on a piece wrapper did not CLIP: nothing here ever set
+// `overflow`, so a 300px-tall box whose interior painted 440px simply spilled
+// over its neighbours. Text pieces got no height at all (deliberately — "never
+// clip a wrapped headline"), so a long headline grew downward without limit.
+//
+// Enforcement is OFF by default (`RB_ENFORCE_BOX=on` to enable) because the
+// blast radius is visual and the sizing data to justify it only starts existing
+// with the rect persistence landing alongside this (measure-scene.ts writes
+// `rects-scene-N.json`; `summarizeBoxOverflow` counts the offenders). Turn it
+// on once those numbers say what it would actually change.
+//
+// The two arms differ ON PURPOSE:
+//   - NON-TEXT gets `overflow: hidden`. It clips at the PIECE boundary only, so
+//     deliberate layering INSIDE a piece (the Razorpay s2 toast overhanging its
+//     modal — both descendants of the same hero) is untouched by construction.
+//     A piece that genuinely means to leave its own box sets `bleed`.
+//   - TEXT is NEVER clipped — cutting words in half is a worse defect than the
+//     one being fixed. It gets `maxHeight` plus a precomputed `fitScale`
+//     downscale (see Piece.fitScale), so an over-long headline gets SMALLER
+//     rather than growing into its neighbour.
+const enforceBoxEnabled = (): boolean => (process.env.RB_ENFORCE_BOX ?? "").toLowerCase() === "on";
+
 /** Inline one piece (and its nested children) into a positioned wrapper. Text
  *  pieces flow-size (maxWidth, height auto) so a wrapped headline is never clipped;
  *  others use a fixed rect. Atmosphere is full-bleed. Chrome is emitted by the
@@ -178,16 +202,52 @@ const emitPiece = (piece: Piece, sceneIndex: number, resolve: PieceBodyResolver,
     return wrap(`${pad}<div${pieceAttrs} style={{ position: "absolute", inset: 0, zIndex: ${b.z}, pointerEvents: "none" }}>\n${pad}${INDENT}${body}\n${childMarkup ? childMarkup + "\n" : ""}${pad}</div>`);
   }
 
-  const sizing =
-    piece.kind === "text"
-      ? `width: ${b.w}, maxWidth: ${b.w}` // flow height — never clip a wrapped headline
-      : `width: ${b.w}, height: ${b.h}`;
+  const isText = piece.kind === "text";
+  const enforce = enforceBoxEnabled();
+  // A piece may never be clipped out of existence: `bleed` is the explicit
+  // opt-out, and a full-canvas treatment has no meaningful box to clip against.
+  const exemptFromClip = piece.bleed === true;
+
+  let sizing: string;
+  if (isText) {
+    // maxHeight (not height) even when enforcing: the box is a CEILING the copy
+    // may come in under, and a fixed height would stretch a short headline's
+    // background/box. `fitScale` is what actually keeps it inside — computed
+    // upstream from the same font metrics the capacity budget uses, so it is
+    // deterministic and identical in SSR, the preview and the MP4.
+    const fit = typeof piece.fitScale === "number" && piece.fitScale > 0 && piece.fitScale < 1 ? piece.fitScale : null;
+    const parts = [`width: ${b.w}`, `maxWidth: ${b.w}`];
+    if (enforce) {
+      parts.push(`maxHeight: ${b.h}`);
+      if (fit) {
+        // Scale the box down and widen it by the inverse so the SCALED result
+        // still occupies exactly b.w — a pure-CSS shrink-to-fit with no runtime
+        // measurement, so SSR, the measure pass and the render all agree.
+        parts[0] = `width: ${Math.round(b.w / fit)}`;
+        parts[1] = `maxWidth: ${Math.round(b.w / fit)}`;
+        parts.push(`transform: "scale(${fit})"`, `transformOrigin: "top left"`);
+      }
+    }
+    sizing = parts.join(", ");
+  } else {
+    sizing = `width: ${b.w}, height: ${b.h}`;
+    if (enforce && !exemptFromClip) sizing += `, overflow: "hidden"`;
+  }
+
   const throughAttr = piece.throughlineSlug
     ? ` data-throughline=${JSON.stringify(piece.throughlineSlug)}`
     : "";
+  // The PLAN's declared height, recorded as data (never style) on text wrappers.
+  // Text emits no CSS height by design, so before this the declared height was
+  // absent from the DOM entirely and "did this headline outgrow its box?" was
+  // unanswerable from a measured frame. measure-scene's PIECE_WALK reads it.
+  // Costs nothing visually and is emitted whether or not enforcement is on —
+  // measuring the problem must not require turning on the fix.
+  const boxAttr = isText ? ` data-box-h={${b.h}}` : "";
+  const bleedAttr = piece.bleed ? ` data-bleed="1"` : "";
   // Co-locate data-throughline AND literal px left/top on this same wrapper so
   // assessContinuity's pxAnchor + assessThroughlinePresence still read them.
-  return wrap(`${pad}<div${pieceAttrs}${throughAttr} style={{ position: "absolute", left: ${b.x}, top: ${b.y}, ${sizing}, zIndex: ${b.z} }}>\n${pad}${INDENT}${body}\n${childMarkup ? childMarkup + "\n" : ""}${pad}</div>`);
+  return wrap(`${pad}<div${pieceAttrs}${throughAttr}${boxAttr}${bleedAttr} style={{ position: "absolute", left: ${b.x}, top: ${b.y}, ${sizing}, zIndex: ${b.z} }}>\n${pad}${INDENT}${body}\n${childMarkup ? childMarkup + "\n" : ""}${pad}</div>`);
 };
 
 const emitSection = (scene: SceneManifest, resolve: PieceBodyResolver): string => {

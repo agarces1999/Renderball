@@ -54,6 +54,7 @@ import {
   type PlanViolation,
   type ScenePlan,
 } from "./layout-composer";
+import { selectThroughlineAnchor } from "./throughline-anchor";
 import type { Scene, SceneComposition, ElementSpec } from "../../src/schema";
 
 // ─── Calibration ────────────────────────────────────────────────────────────
@@ -428,7 +429,7 @@ const applyLadder = (
 const runScene = (
   scene: Scene,
   index: number,
-  opts: PlanValidateOpts,
+  opts: PlanValidateOpts & { throughlineAt?: { left: number; top: number } },
   errors: string[],
   events: PlanEvent[],
 ): void => {
@@ -444,7 +445,7 @@ const runScene = (
     const plan = composeSceneLayout(
       { register: scene.register, content, composition: comp },
       aspect,
-      { hasThroughline: opts.hasThroughline },
+      { hasThroughline: opts.hasThroughline, throughlineAt: opts.throughlineAt },
     );
     residual = [
       ...netFiredViolations(comp, scene.register, aspect),
@@ -530,7 +531,26 @@ const summarize = (events: PlanEvent[]): string => {
 export const validateAndRepairPlans = (scenes: Scene[], opts: PlanValidateOpts): PlanValidationResult => {
   const errors: string[] = [];
   const events: PlanEvent[] = [];
-  scenes.forEach((scene, i) => runScene(scene, i, opts, errors, events));
+  // The motif's anchor is a CROSS-SCENE decision, so it is chosen here — where
+  // every scene is in hand — and threaded into each per-scene compose. cast-build
+  // recomputes it from the same pure function over the same scenes, so the plan
+  // validated here is the plan cast will build; deriving it per-scene instead
+  // would let author-time and build-time disagree about where the motif sits.
+  // Computed ONCE, before the ladder mutates any bounds: recomputing it per
+  // repair pass would let the motif chase the boxes it is being cleared of.
+  const choice = opts.hasThroughline
+    ? selectThroughlineAnchor(
+        scenes.map((s) => ({
+          register: s.register,
+          content: (s.content ?? {}) as Record<string, unknown>,
+          composition: s.composition as SceneComposition | undefined,
+        })),
+        opts.aspect,
+      )
+    : null;
+  scenes.forEach((scene, i) =>
+    runScene(scene, i, { ...opts, throughlineAt: choice?.perScene[i] }, errors, events),
+  );
   return { errors, events, summary: summarize(events) };
 };
 

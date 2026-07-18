@@ -45,6 +45,7 @@ import type { Script, ElementSpec } from "../../src/schema";
 import type { Theme, SceneManifest, Piece } from "../edit/piece-model";
 import { castCall, isFireworksModel, type CastEffort } from "../llm/cast-provider";
 import { composeSceneLayout, CANVAS, type Aspect, type ElementSlot, type ScenePlan } from "./layout-composer";
+import { selectThroughlineAnchor } from "./throughline-anchor";
 import { normalizeElementColors, assessAccentPresence, hexToRgb, rgbToHsl, isNeutral } from "./normalize-element";
 import { assembleComposition } from "./assemble";
 import { applyChoreography } from "./choreograph";
@@ -57,6 +58,7 @@ import { deriveTypeScale, describeTypeScale, type ResolvedTypeScale } from "../r
 import { maybeRefineScenePlan } from "../render/optical-refine";
 import {
   checkCopyOverflow,
+  deriveFitScale,
   overflowRepairMessage,
   type CopyEntry,
 } from "../render/copy-fit";
@@ -2593,14 +2595,36 @@ export const castBuild = async (
   const hasThroughline = throughline.length > 0;
   const slug = slugify(throughline);
 
-  const rawPlans = script.scenes.map((scene) =>
+  // The motif's anchor is a CROSS-SCENE decision (the drift gate reads the SPAN
+  // of its px position across scenes), so it is chosen ONCE here — over every
+  // scene's authored frame — instead of read off a global per-aspect constant.
+  // plan-validate recomputes it from the same pure function over the same
+  // scenes at author time, so the two never disagree.
+  const anchorChoice = hasThroughline
+    ? selectThroughlineAnchor(
+        script.scenes.map((s) => ({
+          register: s.register,
+          content: s.content as Record<string, unknown> | undefined,
+          composition: s.composition,
+        })),
+        aspect,
+      )
+    : null;
+  if (anchorChoice) {
+    const t = anchorChoice.telemetry;
+    console.log(
+      `[cast-build] throughline anchor (${anchorChoice.anchor.left},${anchorChoice.anchor.top})${t.isDefaultAnchor ? " [default]" : ""} — ${t.collidingAtAnchor} scene(s) collided, ${t.displaced} displaced, ${t.unresolved} left to the repair ladder; span ${t.spanX}×${t.spanY}px`,
+    );
+  }
+
+  const rawPlans = script.scenes.map((scene, i) =>
     // Frame-authoring: pass the head's composition so composeSceneLayout
     // consumes its authored bounds for the content slots (hero/copy) instead
     // of the content-blind table.
     composeSceneLayout(
       { register: scene.register, content: scene.content, composition: scene.composition },
       aspect,
-      { hasThroughline },
+      { hasThroughline, throughlineAt: anchorChoice?.perScene[i] },
     ),
   );
 
@@ -2679,6 +2703,23 @@ export const castBuild = async (
     }),
   );
 
+  /** The shrink-to-fit factor for one text slot (see copy-fit.ts deriveFitScale).
+   *  Best-effort: any arithmetic surprise degrades to 1 (no downscale), which is
+   *  exactly today's behaviour. */
+  const fitScaleForSlot = (slot: ElementSlot, i: number): number => {
+    try {
+      const entries = ownedCopyEntries(script.scenes[i]?.content, ownedCopyFields(script.scenes[i], slot));
+      return deriveFitScale({
+        entries,
+        box: { w: slot.bounds.w, h: slot.bounds.h },
+        scale: typeScaleForSlot(slot),
+        metrics: metricsForSlot(slot),
+      });
+    } catch {
+      return 1;
+    }
+  };
+
   const scenes: SceneManifest[] = plans.map((plan, i) => ({
     scene: i,
     background: tokenForRole(theme, "canvas"),
@@ -2692,6 +2733,12 @@ export const castBuild = async (
         bounds: slot.bounds,
         ...(slot.kind === "text" ? { contentRef: `scenes[${i}].content` } : {}),
         ...(slot.id === "throughline" ? { throughlineSlug: slug } : {}),
+        // Bug 2 (text arm): a precomputed shrink-to-fit factor, derived from
+        // the SAME calibrated metrics + type scale the capacity budget uses, so
+        // the number the emitter is told to write to and the number the CSS
+        // scales by can never disagree. assemble.ts only emits it under
+        // RB_ENFORCE_BOX; computing it always keeps it visible in the manifest.
+        ...(slot.kind === "text" ? { fitScale: fitScaleForSlot(slot, i) } : {}),
       }),
     ),
   }));

@@ -21,6 +21,7 @@ import {
   MIN_LEGIBLE_H_FRAC,
 } from "./plan-validate";
 import { composeSceneLayout, CANVAS, BOTTOM_SAFE_FRAC, type ElementSlot } from "./layout-composer";
+import { selectThroughlineAnchor } from "./throughline-anchor";
 import type { Scene, SceneComposition } from "../../src/schema";
 
 let passed = 0;
@@ -279,15 +280,46 @@ check("aspects: the ladder works on 9:16 and 1:1 canvases too", () => {
   }
 });
 
-check("throughline: a copy box crossing the pinned motif anchor is repaired, not shipped", () => {
-  // The motif is pinned at the choreographer's anchor (16:9 → 1360,540 + 200²)
-  // so the cross-scene drift gate passes; copy must not sit on it.
+check("throughline: copy and the motif end DISJOINT (the motif now moves first)", () => {
+  // The anchor is no longer a global constant — selectThroughlineAnchor picks it
+  // per video, against these very bounds. So the fix for a copy-over-motif
+  // collision is usually to place the motif elsewhere rather than to amputate
+  // the copy. What must hold either way is the invariant: they end disjoint,
+  // and the copy is NOT trimmed when the motif could simply move.
   const s = scene("centered", { x: 200, y: 120, w: 600, h: 380 }, { x: 1250, y: 300, w: 600, h: 300 });
+  const copyBefore = { ...boundsOf(s, "copy")! };
   const r = validateAndRepairPlans([s], { aspect: "16:9", hasThroughline: true });
   const copy = boundsOf(s, "copy")!;
-  const motif = { x: 1360, y: 540, w: 200, h: 200 };
-  assert(r.errors.length === 0, `expected a clean repair, got ${JSON.stringify(r.errors)}`);
-  assert(!hits(copy, motif), `copy must clear the pinned motif, got ${JSON.stringify(copy)}`);
+  assert(r.errors.length === 0, `expected a clean plan, got ${JSON.stringify(r.errors)}`);
+
+  const choice = selectThroughlineAnchor(
+    [{ register: "centered", content: s.content as Record<string, unknown>, composition: s.composition }],
+    "16:9",
+  );
+  const motif = { x: choice.perScene[0].left, y: choice.perScene[0].top, w: 200, h: 200 };
+  assert(!hits(copy, motif), `copy ${JSON.stringify(copy)} must clear the motif ${JSON.stringify(motif)}`);
+  assert(
+    copy.w === copyBefore.w && copy.h === copyBefore.h,
+    `the copy box must not be trimmed when the motif can move instead: ${JSON.stringify(copyBefore)} -> ${JSON.stringify(copy)}`,
+  );
+});
+
+check("throughline: when the motif has nowhere to go, the copy IS still repaired", () => {
+  // Copy blanketing nearly the whole safe frame leaves the motif no clear
+  // candidate, so the repair ladder has to act — the old behaviour must survive
+  // for the case that actually needs it.
+  const s = scene("centered", { x: 40, y: 40, w: 300, h: 200 }, { x: 0, y: 0, w: 1900, h: 1000 });
+  const r = validateAndRepairPlans([s], { aspect: "16:9", hasThroughline: true });
+  const copy = boundsOf(s, "copy")!;
+  const choice = selectThroughlineAnchor(
+    [{ register: "centered", content: s.content as Record<string, unknown>, composition: s.composition }],
+    "16:9",
+  );
+  const motif = { x: choice.perScene[0].left, y: choice.perScene[0].top, w: 200, h: 200 };
+  assert(
+    !hits(copy, motif) || r.errors.length > 0,
+    `an unresolvable collision must either be repaired or ESCALATED, never silently shipped: copy ${JSON.stringify(copy)} motif ${JSON.stringify(motif)}`,
+  );
 });
 
 for (const { name, fn } of checks) {

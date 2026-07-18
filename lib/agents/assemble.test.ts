@@ -236,5 +236,124 @@ await check("clampPieceOffsets reports unclampable moves as skipped (atmosphere,
   assert(r.code === out, "code untouched when nothing applies");
 });
 
+
+// ─── Declared-box enforcement (Bug 2), flag-gated ──────────────────────────
+//
+// The risk this guards is DESTROYING GOOD DESIGN: deliberate layering appears
+// in our best frames (Razorpay build-8 scene 2's "Payment Successful" toast
+// overhanging its modal edge is reference-grade BECAUSE of the overhang). So
+// these lock three things: the flag is genuinely off by default, clipping is
+// applied at the PIECE boundary only (which is what preserves the toast), and
+// a piece that declares intentional bleed is never clipped.
+
+const boxScenes: SceneManifest[] = [
+  {
+    scene: 0,
+    background: "BG",
+    pieces: [
+      // The Razorpay shape: ONE hero piece containing both the modal and the
+      // toast that overhangs it. Their mutual overlap is INSIDE the piece.
+      { id: "s0.hero", kind: "diegetic", file: "s0/hero.tsx", bounds: { x: 100, y: 100, w: 800, h: 500, z: 1 } },
+      // A piece that means to leave its own box.
+      { id: "s0.bleeder", kind: "diegetic", file: "s0/b.tsx", bounds: { x: 1000, y: 100, w: 300, h: 300, z: 1 }, bleed: true },
+      { id: "s0.copy", kind: "text", file: "s0/copy.tsx", bounds: { x: 100, y: 700, w: 600, h: 240, z: 2 }, fitScale: 0.8 },
+      { id: "s0.copyFits", kind: "text", file: "s0/c2.tsx", bounds: { x: 900, y: 700, w: 400, h: 200, z: 2 }, fitScale: 1 },
+    ],
+  },
+];
+const boxBodies: Record<string, string> = {
+  "s0.hero": `<div style={{ position: "relative", width: 700, height: 400 }}><div data-toast style={{ position: "absolute", right: -40, top: -20 }}>Payment Successful</div></div>`,
+  "s0.bleeder": `<div style={{ width: 400, height: 400 }} />`,
+  "s0.copy": `<h1 data-content-path="headline">{c.headline}</h1>`,
+  "s0.copyFits": `<p data-content-path="lede">{c.lede}</p>`,
+};
+const assembleBox = (): string => assembleComposition({ theme, scenes: boxScenes, pieceBody: (pc) => boxBodies[pc.id] ?? "<div />" });
+const withFlag = (v: string | undefined, fn: () => string): string => {
+  const prev = process.env.RB_ENFORCE_BOX;
+  if (v === undefined) delete process.env.RB_ENFORCE_BOX;
+  else process.env.RB_ENFORCE_BOX = v;
+  try { return fn(); } finally {
+    if (prev === undefined) delete process.env.RB_ENFORCE_BOX;
+    else process.env.RB_ENFORCE_BOX = prev;
+  }
+};
+
+await check("RB_ENFORCE_BOX is OFF by default: no overflow, no maxHeight, no scale", () => {
+  const off = withFlag(undefined, assembleBox);
+  // SECTION_FRAME (the scene container) legitimately sets overflow — scope the
+  // assertion to PIECE wrappers, which is where the change lives.
+  const pieceTags = off.match(/<div data-piece="[^"]*"[^>]*>/g) ?? [];
+  assert(pieceTags.length >= 4, "expected every piece wrapper in the output");
+  assert(!pieceTags.some((t) => /overflow:/.test(t)), "no piece wrapper may set overflow when the flag is off");
+  assert(!off.includes("maxHeight:"), "no maxHeight when the flag is off");
+  assert(!off.includes("transform: \"scale("), "no shrink-to-fit when the flag is off");
+  // And "off" must be the literal status quo for sizing.
+  assert(off.includes(`width: 600, maxWidth: 600`), "text keeps flow height");
+  assert(off.includes(`width: 800, height: 500`), "non-text keeps its fixed rect");
+});
+
+await check("RB_ENFORCE_BOX=on clips NON-TEXT pieces at the piece boundary", () => {
+  const on = withFlag("on", assembleBox);
+  const heroTag = /<div data-piece="s0\.hero"[^>]*>/.exec(on)?.[0] ?? "";
+  assert(/overflow:\s*"hidden"/.test(heroTag), `hero must clip: ${heroTag}`);
+});
+
+await check("BLEED OPT-OUT: a piece declaring intentional overhang is never clipped", () => {
+  const on = withFlag("on", assembleBox);
+  const bleedTag = /<div data-piece="s0\.bleeder"[^>]*>/.exec(on)?.[0] ?? "";
+  assert(bleedTag.length > 0, "bleeder wrapper missing");
+  assert(!/overflow:\s*"hidden"/.test(bleedTag), `a bleed piece must NOT be clipped: ${bleedTag}`);
+  assert(/data-bleed="1"/.test(bleedTag), "bleed must be visible in the DOM for the measurer");
+});
+
+await check("RAZORPAY CASE: a toast overhanging its modal survives clipping (same piece)", () => {
+  const on = withFlag("on", assembleBox);
+  // The toast markup is INSIDE the hero piece body, so the only clip boundary
+  // between it and the modal is... none. Exactly one overflow:hidden exists on
+  // the hero wrapper, and the toast lives inside it, unaltered.
+  const heroBlock = on.slice(on.indexOf('data-piece="s0.hero"'), on.indexOf('data-piece="s0.bleeder"'));
+  assert(heroBlock.includes("data-toast"), "the toast must still be emitted");
+  assert(heroBlock.includes("right: -40"), "its negative offset must be untouched — the overhang is preserved");
+  assert((heroBlock.match(/overflow:\s*"hidden"/g) ?? []).length === 1, "exactly one clip boundary: the piece wrapper");
+});
+
+await check("TEXT is never clipped: it gets maxHeight + a precomputed shrink, not overflow", () => {
+  const on = withFlag("on", assembleBox);
+  const copyTag = /<div data-piece="s0\.copy"[^>]*>/.exec(on)?.[0] ?? "";
+  assert(!/overflow:\s*"hidden"/.test(copyTag), `text must never clip: ${copyTag}`);
+  assert(/maxHeight: 240/.test(copyTag), `text must declare its box ceiling: ${copyTag}`);
+  assert(/transform: "scale\(0\.8\)"/.test(copyTag), `over-long copy must scale down: ${copyTag}`);
+  assert(/transformOrigin: "top left"/.test(copyTag), "scale must anchor at the box origin");
+  // width compensated so the SCALED result still occupies the declared width.
+  assert(/width: 750, maxWidth: 750/.test(copyTag), `width must be 600/0.8 = 750: ${copyTag}`);
+});
+
+await check("a text piece that already fits is not scaled at all", () => {
+  const on = withFlag("on", assembleBox);
+  const tag = /<div data-piece="s0\.copyFits"[^>]*>/.exec(on)?.[0] ?? "";
+  assert(!tag.includes("transform"), `fitScale 1 must emit no transform: ${tag}`);
+  assert(/width: 400, maxWidth: 400/.test(tag), "declared width untouched");
+  assert(/maxHeight: 200/.test(tag), "still declares the ceiling");
+});
+
+await check("data-box-h is emitted on text wrappers REGARDLESS of the flag (measurement hook)", () => {
+  for (const v of [undefined, "on"]) {
+    const code = withFlag(v, assembleBox);
+    const tag = /<div data-piece="s0\.copy"[^>]*>/.exec(code)?.[0] ?? "";
+    assert(/data-box-h=\{240\}/.test(tag), `flag=${v}: text must record its planned height: ${tag}`);
+  }
+  // Non-text already declares a CSS height, so it needs no data hook.
+  const on = withFlag("on", assembleBox);
+  const hero = /<div data-piece="s0\.hero"[^>]*>/.exec(on)?.[0] ?? "";
+  assert(!hero.includes("data-box-h"), "non-text declares height in CSS already");
+});
+
+await check("both flag states COMPILE (esbuild tsx)", async () => {
+  for (const v of [undefined, "on"]) {
+    const err = await verifyCompilable(withFlag(v, assembleBox));
+    assert(err === null, `flag=${v} did not compile: ${err}`);
+  }
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exitCode = 1;
