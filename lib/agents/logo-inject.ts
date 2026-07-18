@@ -17,12 +17,24 @@ export const LOGO_SENTINEL = "__BRAND_LOGO_SRC__";
  * A short brand WORDMARK from a (possibly messy) crawl title: the segment
  * before the first tagline separator, capped. "Klarna US - A secure, flexible
  * way to manage your money" → "Klarna US"; "Linear – Plan and build" →
- * "Linear"; "Liquid Death" → "Liquid Death". Empty in → undefined.
+ * "Linear"; "Liquid Death" → "Liquid Death"; "Brex: The Modern Finance
+ * Software Platform | Spend Smarter" → "Brex". Empty in → undefined.
+ *
+ * P3-C1 (Brex build): a colon/pipe separator in a page <title> is often
+ * ATTACHED to the brand with NO leading space ("Brex: tagline", "Brex|tagline"),
+ * so requiring surrounding whitespace let the whole tagline through and the
+ * corner mark shipped "Brex: The Modern Finance Sof" on every scene. Colon and
+ * pipe split without a leading space; dash/bullet separators still require
+ * surrounding whitespace so hyphenated brands (Coca-Cola) and internal en-dashes
+ * stay intact.
  */
 export const brandWordmarkText = (name: string | undefined): string | undefined => {
   const raw = (name ?? "").trim();
   if (!raw) return undefined;
-  const head = raw.split(/\s+[-|–—:·•]\s+/)[0].trim();
+  // Colon/pipe: near-universal title separators, brand-first, often no space.
+  let head = raw.split(/\s*[|:]\s*/)[0].trim();
+  // Dash/bullet: require surrounding whitespace (never break "Coca-Cola").
+  head = head.split(/\s+[-–—·•]\s+/)[0].trim();
   const clean = (head || raw).slice(0, 28).trim();
   return clean || undefined;
 };

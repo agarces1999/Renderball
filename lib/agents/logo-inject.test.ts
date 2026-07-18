@@ -164,6 +164,18 @@ await check("brandWordmarkText strips a crawl-title tagline", () => {
   assert(brandWordmarkText("") === undefined, "empty → undefined");
 });
 
+await check("brandWordmarkText splits a space-less colon/pipe (the Brex build defect)", () => {
+  // "Brex:" has NO leading space — the old \s+[:]\s+ split let the whole tagline
+  // through and the corner mark shipped "Brex: The Modern Finance Sof".
+  assert(
+    brandWordmarkText("Brex: The Modern Finance Software Platform | Spend Smarter") === "Brex",
+    `colon-no-space → brand only, got ${JSON.stringify(brandWordmarkText("Brex: The Modern Finance Software Platform | Spend Smarter"))}`,
+  );
+  assert(brandWordmarkText("Notion|Your connected workspace") === "Notion", "pipe-no-space separator");
+  assert(brandWordmarkText("Coca-Cola") === "Coca-Cola", "hyphenated brand stays intact (no spaced dash)");
+  assert(brandWordmarkText("Ben & Jerry's") === "Ben & Jerry's", "ampersand is not a separator");
+});
+
 await check("resolveCornerBrandMark: app-icon-only brand → wordmark, no image (Klarna appIcon)", () => {
   const r = resolveCornerBrandMark({ brandName: "Klarna US - manage your money" });
   assert(r.logoSrc === undefined && r.wordmark === "Klarna US", `app-icon brand → wordmark, got ${JSON.stringify(r)}`);
