@@ -959,6 +959,17 @@ export const FILL_COVERAGE_FLOOR_DEFAULT = 0.34; // centered / quote / unknown
  *  an authored empty half is a split-void. (Centered/quote/stat legitimately
  *  weight the middle, so the empty-half advisory does not apply to them.) */
 export const FILL_EMPTY_HALF_FLOOR = 0.12;
+/** C8 #2: the BLOCKING both-columns floor — a split/list whose LEFT or RIGHT half
+ *  carries less than this is an ABANDONED HALF (the head clustered the mock AND
+ *  the copy on one side) and re-authors at the head, upstream of the render
+ *  furnish. Set WELL below the advisory floor: the rect-union metric is
+ *  anti-monotone for TOTAL coverage (a dense compact mock reads sparse — #6's
+ *  reason for demoting the coverage floor to advisory) but it CANNOT make an
+ *  authored-empty half read full, so an empty-HALF signal is reliable to BLOCK on.
+ *  A legit asymmetric split (a slim copy column ~17% of its half, a centered list
+ *  whose rows reach into both halves ~27%) clears it comfortably; only a half the
+ *  head left essentially bare (< 8%) blocks. */
+export const FILL_EMPTY_HALF_BLOCK_FLOOR = 0.08;
 // Audit-1 High #3 edit (1): FILLING registers MIRROR the render occupancy gate.
 // full-bleed is REMOVED — the render barbell/occupancy gate owns a full-bleed
 // scene's voids (occupancy exempts full-bleed entirely), so the head must not
@@ -1127,6 +1138,35 @@ const frameCompositionErrors = (
       if (!onHero && !onCopy) {
         out.push(
           `Scene ${i} ${elName(mtf.el, mtf.j)}: the ${mtf.role} motif's bounds ${JSON.stringify(b)} float in negative space, overlapping neither the hero nor the copy — place the recurring motif ON the focal object (inside/overlapping the hero's bounds, a chip in the mock or a marker on the chart), never pinned in the void where it gets stripped and empties the frame.`,
+        );
+      }
+    }
+  }
+
+  // 3c) SPLIT/LIST BOTH-COLUMNS (C8 #2) — a split (or two-column list) PROMISES a
+  //     filled second region: BOTH the left and right canvas halves must carry real
+  //     content (hero/copy bounds). A half the head authors near-EMPTY is the
+  //     Deel-s1 / Flexport-s1 abandoned-half class the render furnish then has to
+  //     rescue — re-author it at the head so both columns ship carried. Scoped to
+  //     the L/R axis (a split's promised columns) at FILL_EMPTY_HALF_BLOCK_FLOOR,
+  //     well below the advisory floor, so a legit asymmetric split passes and only a
+  //     genuinely abandoned half blocks. (Unlike #6's TOTAL-coverage floor — which
+  //     is anti-monotone with pixel truth — an authored-empty HALF cannot read full,
+  //     so it is a reliable blocking signal.) Only runs once the hero has bounds.
+  if (register === "split" || register === "list") {
+    const contentBoxes = placed.filter((p) => p.bounds).map((p) => p.bounds!);
+    if (contentBoxes.length > 0 && placed.some((p) => p.role === "hero" && p.bounds)) {
+      const covL = gridCoverage(contentBoxes, W, H, "L");
+      const covR = gridCoverage(contentBoxes, W, H, "R");
+      const bare =
+        covL < FILL_EMPTY_HALF_BLOCK_FLOOR
+          ? (["left", covL] as const)
+          : covR < FILL_EMPTY_HALF_BLOCK_FLOOR
+            ? (["right", covR] as const)
+            : null;
+      if (bare) {
+        out.push(
+          `Scene ${i}: the ${bare[0]} half of the frame carries almost no content (${Math.round(bare[1] * 100)}% covered) on a ${register} scene — a ${register} MUST place a substantive element in BOTH the left and right halves (the mock/hero column and the copy column on DIFFERENT sides). Move the copy (or a second mock/panel/rows) into the ${bare[0]} half so neither column ships abandoned.`,
         );
       }
     }

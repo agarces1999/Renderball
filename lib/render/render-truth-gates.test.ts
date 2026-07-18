@@ -822,6 +822,32 @@ await check("findCornerMarkCollision: no brand name → gate skipped", () => {
   const m = scene(0, [chromeMark("Fuse"), el({ text: "Fuse", piece: "s0.hero", x: 52, y: 50, w: 120, h: 44 })]);
   assert(findCornerMarkCollision(m, {}).length === 0, "no brandName → skip");
 });
+// ── C8 #4: corner-mark GHOST — a truncated-prefix double of the corner wordmark ──
+const flexChrome = (): MeasuredElement =>
+  el({ tag: "span", text: "Flexport", piece: "s2.chrome", pieceKind: "chrome", x: 40, y: 40, w: 100, h: 30 });
+await check("findCornerMarkCollision: a 'Flex' PREFIX ghost overlapping the corner chrome FIRES (Flexport s2/s4)", () => {
+  const m = scene(2, [
+    flexChrome(),
+    // a truncated 'Flex' render doubling under the corner wordmark
+    el({ tag: "span", text: "Flex", piece: "s2.hero", pieceKind: "diegetic", x: 48, y: 46, w: 54, h: 28 }),
+  ]);
+  const r = findCornerMarkCollision(m, { brandName: "Flexport" });
+  assert(r.length === 1 && r[0].kind === "corner-mark-collision" && /GHOST/.test(r[0].detail), `got ${JSON.stringify(r)}`);
+});
+await check("findCornerMarkCollision: a DISTANT 'Flex' prefix in a mock PASSES (not a corner double)", () => {
+  const m = scene(2, [
+    flexChrome(),
+    el({ tag: "span", text: "Flex", piece: "s2.hero", pieceKind: "diegetic", x: 700, y: 500, w: 54, h: 28 }),
+  ]);
+  assert(findCornerMarkCollision(m, { brandName: "Flexport" }).length === 0, "a distant prefix word is not a corner ghost");
+});
+await check("findCornerMarkCollision: a short 3-char prefix ('Fle') does NOT ghost-match (min 4)", () => {
+  const m = scene(2, [
+    flexChrome(),
+    el({ tag: "span", text: "Fle", piece: "s2.hero", pieceKind: "diegetic", x: 48, y: 46, w: 40, h: 28 }),
+  ]);
+  assert(findCornerMarkCollision(m, { brandName: "Flexport" }).length === 0, "a 3-char fragment is below the ghost floor");
+});
 
 // ── P3-C2 #2: hollow CTA (Brex s4 empty orange pill) ─────────────────────────
 const BREX_BG = "#15191e";
@@ -867,6 +893,47 @@ await check("findHollowCta: a SQUARE icon chip (aspect ~1) PASSES", () => {
     el({ piece: "s4.hero", pieceKind: "diegetic", bg: "rgb(255,89,0)", text: "", hasTextDesc: false, x: 855, y: 655, w: 44, h: 40 }),
   ]);
   assert(findHollowCta(m, { brandBackground: BREX_BG }).length === 0, "square icon chip is not a label-bearing button");
+});
+
+// ── C8 #3: hollow-CTA ARROW arm (Flexport s4 label-less "→" pill) ─────────────
+const FLEX_BG = "#ffffff";
+await check("findHollowCta: Flexport s4 label-less '→' pill (65×47 neutral, rounded) FIRES", () => {
+  const m = scene(4, [
+    el({ piece: "s4.hero", pieceKind: "diegetic", bg: "rgb(238,240,244)", text: "→", hasTextDesc: true, radius: 24, x: 475, y: 563, w: 65, h: 47 }),
+  ]);
+  const r = findHollowCta(m, { brandBackground: FLEX_BG });
+  assert(r.length === 1 && r[0].kind === "hollow-cta" && /arrow glyph/.test(r[0].detail), `got ${JSON.stringify(r)}`);
+});
+await check("findHollowCta: a REAL labeled CTA ending in an arrow ('Get started with Flexport →') PASSES", () => {
+  const m = scene(4, [
+    el({ piece: "s4.copy", pieceKind: "text", bg: "rgb(21,60,220)", text: "Get started with Flexport →", hasTextDesc: true, radius: 28, x: 905, y: 565, w: 260, h: 56 }),
+  ]);
+  assert(findHollowCta(m, { brandBackground: FLEX_BG }).length === 0, "worded CTA (label + arrow) is not hollow");
+});
+await check("findHollowCta: a pill whose WORDED label lives in a child (arrow is the wrapper's direct text) PASSES", () => {
+  const m = scene(4, [
+    el({ piece: "s4.copy", pieceKind: "text", bg: "rgb(21,60,220)", text: "→", hasTextDesc: true, radius: 28, x: 905, y: 565, w: 260, h: 56 }),
+    el({ piece: "s4.copy", pieceKind: "text", bg: "rgba(0,0,0,0)", text: "Get started", hasTextDesc: true, parentIx: 0, x: 925, y: 578, w: 180, h: 28 }),
+  ]);
+  assert(findHollowCta(m, { brandBackground: FLEX_BG }).length === 0, "a worded descendant means a real CTA");
+});
+await check("findHollowCta: a bare arrowhead (arrow text, NO pill surface: transparent, radius 0) PASSES", () => {
+  const m = scene(0, [
+    el({ piece: "s0.connector", pieceKind: "diegetic", bg: "rgba(0,0,0,0)", text: "→", hasTextDesc: true, radius: 0, x: 900, y: 400, w: 80, h: 44 }),
+  ]);
+  assert(findHollowCta(m, { brandBackground: FLEX_BG }).length === 0, "a connector arrowhead is not a button pill");
+});
+await check("findHollowCta: a tiny breadcrumb chevron '›' (below button width) PASSES", () => {
+  const m = scene(4, [
+    el({ piece: "s4.hero", pieceKind: "diegetic", bg: "rgb(238,240,244)", text: "›", hasTextDesc: true, radius: 6, x: 400, y: 300, w: 18, h: 24 }),
+  ]);
+  assert(findHollowCta(m, { brandBackground: FLEX_BG }).length === 0, "a small chevron is not a button-sized pill");
+});
+await check("findHollowCta: a throughline/connector deco pill with a lone arrow is EXCLUDED (motif territory)", () => {
+  const m = scene(4, [
+    el({ piece: "s4.throughline", pieceKind: "diegetic", bg: "rgb(238,240,244)", text: "→", hasTextDesc: true, radius: 24, x: 475, y: 563, w: 65, h: 47 }),
+  ]);
+  assert(findHollowCta(m, { brandBackground: FLEX_BG }).length === 0, "MOTIF_DECO_PIECE_RX pieces are not CTAs");
 });
 
 // ── P3-C2 #4b: intra-piece control/copy collision (Brex s0 bottom-center) ─────

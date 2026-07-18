@@ -13,6 +13,8 @@ import {
   pickFurnishSurface,
   pickElevatedSurface,
   pairValueRows,
+  furnishDecision,
+  FURNISH_ABANDONMENT_FRAC,
   parseHex,
   relLuminance,
   textOnSurface,
@@ -229,6 +231,43 @@ check("injectFurnishIntoSection: empty panel (no values) → untouched", () => {
   const code = fakeSection(1);
   const out = injectFurnishIntoSection(code, 1, "");
   assert(!out.injected && out.code === code, "empty panel is a no-op");
+});
+
+// ── C8 #1: register-aware furnish decision (calibrated on REAL Flexport frames) ──
+// Measured column/row voids on .data/dogfood/p3-cycle7-flexport/frames:
+//   s0 centered   26% left column   (hero ~healthy) → SKIP (intentional air)
+//   s1 split      52% right column  (hero ~21%)     → FURNISH (abandoned right half)
+//   s2 full-bleed  0% (fills frame)  (healthy)       → SKIP
+//   s3 list       28% bottom row    (healthy)        → SKIP (mild top-weighted band)
+//   s4 split      27% bottom row    (healthy)        → SKIP (mild top-weighted band)
+check("furnishDecision: HOLLOW hero always furnishes its own hole, any register", () => {
+  assert(furnishDecision(true, "centered", 0.05) === "furnish-hollow", "hollow centered");
+  assert(furnishDecision(true, "split", 0.9) === "furnish-hollow", "hollow split");
+  assert(furnishDecision(true, "full-bleed", 0.0) === "furnish-hollow", "hollow full-bleed");
+});
+
+check("furnishDecision: Flexport s1 — a 52% right-column void on a SPLIT with a healthy hero FURNISHES (abandoned half)", () => {
+  assert(furnishDecision(false, "split", 0.52) === "furnish-abandoned", "s1 abandoned right half must furnish");
+});
+
+check("furnishDecision: Flexport s3/s4 — a 27-28% bottom band on split/list with a healthy hero SKIPS (mild breathing, not abandonment)", () => {
+  assert(furnishDecision(false, "split", 0.27) === "skip-healthy", "s4 27% bottom band skips");
+  assert(furnishDecision(false, "list", 0.28) === "skip-healthy", "s3 28% bottom band skips");
+});
+
+check("furnishDecision: Flexport s0/s2 — centered + full-bleed healthy heroes SKIP regardless of void width (intentional air)", () => {
+  assert(furnishDecision(false, "centered", 0.26) === "skip-healthy", "s0 centered 26% is intentional air");
+  assert(furnishDecision(false, "centered", 0.9) === "skip-healthy", "even a huge centered void is intentional (a centered focal breathes)");
+  assert(furnishDecision(false, "full-bleed", 0.5) === "skip-healthy", "full-bleed is not a promised-both-columns register");
+  assert(furnishDecision(false, "quote", 0.6) === "skip-healthy", "quote breathes around its focal");
+});
+
+check("furnishDecision: the abandonment floor is register-gated to split/list only, at FURNISH_ABANDONMENT_FRAC", () => {
+  assert(FURNISH_ABANDONMENT_FRAC === 0.4, "floor is 0.40 (the task's ≥~40% abandonment threshold)");
+  // exactly at the floor → furnish; a hair below → skip
+  assert(furnishDecision(false, "split", FURNISH_ABANDONMENT_FRAC) === "furnish-abandoned", "at-floor furnishes");
+  assert(furnishDecision(false, "split", FURNISH_ABANDONMENT_FRAC - 0.001) === "skip-healthy", "just under skips");
+  assert(furnishDecision(false, undefined, 0.9) === "skip-healthy", "no register → treat air as intentional (never furnish blind)");
 });
 
 if (failed > 0) {

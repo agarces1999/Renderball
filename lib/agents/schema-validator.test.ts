@@ -1530,6 +1530,43 @@ check("frame: a full-bleed connector relationship layer is exempt from containme
   assert(e.length === 0, `full-bleed connector is exempt, got ${JSON.stringify(checkSceneComposition(s))}`);
 });
 
+// C8 #2: SPLIT/LIST BOTH-COLUMNS — a split/list must carry content in BOTH the
+// left and right halves; an authored-empty half (the head clustered the mock AND
+// the copy on one side) is the Deel-s1 / Flexport-s1 abandoned-half class and
+// blocks at the head. Calibrated: a BALANCED split (hero one half, copy the
+// other) passes; both-on-one-side blocks; a centered scene is exempt.
+const splitScene = (
+  heroBounds: { x: number; y: number; w: number; h: number },
+  copyBounds: { x: number; y: number; w: number; h: number },
+  register = "split",
+) => {
+  const s = frameGood();
+  (s[0] as unknown as { register: string }).register = register;
+  (frameHero(s) as { bounds: unknown }).bounds = heroBounds;
+  (frameComp(s) as { elements: { bounds: unknown }[] }).elements[1].bounds = copyBounds;
+  return s;
+};
+check("frame: a BALANCED split (hero right half, copy left half) passes the both-columns check", () => {
+  const s = splitScene({ x: 900, y: 180, w: 720, h: 700 }, { x: 140, y: 320, w: 600, h: 440 });
+  const e = checkSceneComposition(s).filter((x) => /carries almost no content/.test(x));
+  assert(e.length === 0, `balanced split must pass, got ${JSON.stringify(checkSceneComposition(s))}`);
+});
+check("frame: a split with BOTH hero and copy on the RIGHT (empty left half) BLOCKS (Flexport-s1 class)", () => {
+  const s = splitScene({ x: 1000, y: 120, w: 700, h: 640 }, { x: 1020, y: 820, w: 600, h: 200 });
+  const e = checkSceneComposition(s).filter((x) => /the left half of the frame carries almost no content/.test(x));
+  assert(e.length === 1, `empty-left split must block, got ${JSON.stringify(checkSceneComposition(s))}`);
+});
+check("frame: a list with an empty RIGHT half BLOCKS too", () => {
+  const s = splitScene({ x: 60, y: 120, w: 700, h: 640 }, { x: 120, y: 820, w: 600, h: 200 }, "list");
+  const e = checkSceneComposition(s).filter((x) => /the right half of the frame carries almost no content/.test(x));
+  assert(e.length === 1, `empty-right list must block, got ${JSON.stringify(checkSceneComposition(s))}`);
+});
+check("frame: a CENTERED scene with side-weighted content is EXEMPT (only split/list promise both columns)", () => {
+  const s = splitScene({ x: 1000, y: 120, w: 700, h: 640 }, { x: 1020, y: 820, w: 600, h: 200 }, "centered");
+  const e = checkSceneComposition(s).filter((x) => /carries almost no content/.test(x));
+  assert(e.length === 0, `centered is not a both-columns register, got ${JSON.stringify(checkSceneComposition(s))}`);
+});
+
 check("frame: the 9:16 canvas validates bounds against 1080×1920", () => {
   const s = frameGood();
   // {x:900,w:720} escapes 1080-wide but fits 1920-wide — aspect must matter.

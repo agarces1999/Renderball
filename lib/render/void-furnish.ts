@@ -113,6 +113,44 @@ export const pickFurnishSurface = (paletteValues: string[], canvasBg: string): s
   return relLuminance(canvasBg) > 0.5 ? "#181a1f" : "#1c1e24";
 };
 
+// ── register-aware furnish decision (P3-C8 #1) ───────────────────────────────
+
+/**
+ * A void this fraction of the frame (any axis) on a SPLIT/LIST register is an
+ * ABANDONED HALF — an empty column/band the register PROMISED to fill (the
+ * Flexport-s1 / Deel-s1 class) — and must furnish even beside an otherwise
+ * healthy hero. Below it, a healthy hero's residual air is treated as intentional
+ * breathing (a mild bottom/edge band), matching the audit-2 furnish rebalance:
+ * furnish stays a rare terminal net, not "fill every empty region". Calibrated on
+ * the real Flexport frames: s1 (52% right column, split) FURNISHES; s3 (28% bottom
+ * row, list) + s4 (27% bottom row, split) are mild top-weighted breathing bands
+ * and SKIP; s0 (centered) + s2 (full-bleed) skip by register. */
+export const FURNISH_ABANDONMENT_FRAC = 0.4;
+
+export type FurnishDecision = "furnish-hollow" | "furnish-abandoned" | "skip-healthy";
+
+/**
+ * R4 (audit-2) + C8 #1 — the register-aware furnish gate. A genuinely HOLLOW hero
+ * (painted below the health floor — the caller passes the boolean) always
+ * furnishes its OWN hole. A HEALTHY hero owns its frame — the surrounding air is
+ * intentional negative space, furnish suppressed — EXCEPT on a split/list whose
+ * void clears FURNISH_ABANDONMENT_FRAC: those registers promise a filled second
+ * region, so an abandoned column/band there furnishes (the void band, not the
+ * hero's bounds). Centered/quote/full-bleed keep the skip (a centered focal, a
+ * quote, or a full-bleed mock legitimately breathes — the Mailchimp-s0 defect the
+ * hero-health gate was built to stop).
+ */
+export const furnishDecision = (
+  heroHollow: boolean,
+  register: string | undefined,
+  runFracW: number,
+): FurnishDecision => {
+  if (heroHollow) return "furnish-hollow";
+  const promisesBothRegions = register === "split" || register === "list";
+  if (promisesBothRegions && runFracW >= FURNISH_ABANDONMENT_FRAC) return "furnish-abandoned";
+  return "skip-healthy";
+};
+
 // ── the furnish panel ────────────────────────────────────────────────────────
 
 export interface FurnishRect {

@@ -61,6 +61,7 @@ import {
   furnishRectForBand,
   furnishRectForRowBand,
   pickFurnishSurface,
+  furnishDecision,
   FURNISH_INSET_PX,
 } from "./void-furnish";
 import { extractQuotedValues, placeholderTitleFromSubject } from "../agents/cast-build";
@@ -1855,17 +1856,25 @@ export async function runQualityLoop(
       let anyInjected = false;
       for (const f of survivingVoids) {
         const scene = f.scene;
-        // R4: HERO-HEALTH GATE. A hero that PAINTS above the health floor owns its
-        // frame — the void band beside/around it is INTENTIONAL negative space, and
-        // stamping a panel there is the audit-2 defect (a redundant debug-box beside
-        // a healthy composition). Furnish is reserved for a genuinely HOLLOW hero.
+        // R4 + C8 #1: REGISTER-AWARE HERO-HEALTH GATE. A hero painting above the
+        // health floor owns its frame — the air around it is INTENTIONAL negative
+        // space, furnish suppressed (the audit-2 debug-box-beside-a-healthy-hero
+        // defect) — ONLY on registers whose air is deliberate (centered/quote/
+        // full-bleed). On a SPLIT/LIST — registers that PROMISE a filled second
+        // region — a healthy hero on ONE side does NOT license an abandoned OTHER
+        // side: a void ≥ FURNISH_ABANDONMENT_FRAC is the Flexport-s1 / Deel-s1
+        // abandoned-half class and furnishes the VOID BAND regardless of hero health.
         const measurement = finalMeasurements.find((m) => m.scene === scene);
         const heroFrac = measurement ? heroPaintedFraction(measurement) : 1;
-        if (heroFrac >= HERO_HEALTHY_FRAC) {
-          voidFurnishEvents.push({ scene, pieceId: f.pieceId, runFracW: f.runFracW, region: f.region, action: "skipped-healthy-hero", detail: `${(f.runFracW * 100).toFixed(0)}% ${f.region} void beside a HEALTHY hero (painted ${(heroFrac * 100).toFixed(0)}% ≥ ${(HERO_HEALTHY_FRAC * 100).toFixed(0)}%) — intentional negative space, furnish suppressed (R4)` });
-          log(`  [void-furnish] scene ${scene}: hero healthy (${(heroFrac * 100).toFixed(0)}% painted) — ${(f.runFracW * 100).toFixed(0)}% void left as intentional negative space (no furnish)`);
+        const heroHollow = heroFrac < HERO_HEALTHY_FRAC;
+        const register = sceneRegisters?.[scene];
+        const decision = furnishDecision(heroHollow, register, f.runFracW);
+        if (decision === "skip-healthy") {
+          voidFurnishEvents.push({ scene, pieceId: f.pieceId, runFracW: f.runFracW, region: f.region, action: "skipped-healthy-hero", detail: `${(f.runFracW * 100).toFixed(0)}% ${f.region} void beside a HEALTHY ${register ?? "?"} hero (painted ${(heroFrac * 100).toFixed(0)}% ≥ ${(HERO_HEALTHY_FRAC * 100).toFixed(0)}%) — intentional negative space, furnish suppressed (R4/C8)` });
+          log(`  [void-furnish] scene ${scene}: hero healthy (${(heroFrac * 100).toFixed(0)}% painted, ${register ?? "?"}) — ${(f.runFracW * 100).toFixed(0)}% void left as intentional negative space (no furnish)`);
           continue;
         }
+        const abandonedHalf = decision === "furnish-abandoned";
         const comp = config.castInput.script.scenes[scene]?.composition as
           | { elements?: { role?: string; subject?: string; interior?: string[]; bounds?: { x: number; y: number; w: number; h: number } }[] }
           | undefined;
@@ -1899,7 +1908,11 @@ export async function runQualityLoop(
           }
           return out;
         };
-        let values = dedup([...preferred, ...nonHeroInterior, ...heroInterior]);
+        // Admit the hero's OWN inventory only when the hero is HOLLOW (nothing of
+        // it is painted to duplicate). On an abandoned-half furnish (C8 #1) the hero
+        // IS on screen — its strings belong to the opposite column, not this card —
+        // so the card is built from eyebrow/caption/meta + non-hero interior only.
+        let values = dedup([...preferred, ...nonHeroInterior, ...(heroHollow ? heroInterior : [])]);
         if (values.length < 2) {
           values = dedup([...values, ...collectContentStrings(content), BRAND]);
         }
@@ -1907,16 +1920,20 @@ export async function runQualityLoop(
         // a stamped panel of duplicate labels is worse than the void.
         if (values.length < 2) {
           voidFurnishEvents.push({ scene, pieceId: f.pieceId, runFracW: f.runFracW, region: f.region, action: "skipped", detail: `${f.detail} (no non-redundant content → residual flagged rather than a duplicate box)` });
-          warn(`  [void-furnish] scene ${scene}: hollow hero but no non-redundant content to furnish — residual ships FLAGGED (honest)`);
+          warn(`  [void-furnish] scene ${scene}: ${abandonedHalf ? "abandoned half" : "hollow hero"} but no non-redundant content to furnish — residual ships FLAGGED (honest)`);
           continue;
         }
-        const title = placeholderTitleFromSubject(heroEl?.subject);
-        // R4: for a hollow hero, prefer FILLING the hero's own authored bounds
-        // (scale-to-fill where the hero should be) over stamping an adjacent side
-        // panel. Fall back to the void band when the hero has no usable bounds.
+        // Title the panel from the hero subject only when FILLING a hollow hero's
+        // bounds; an abandoned-half card is a supporting panel, not a re-titled hero.
+        const title = heroHollow ? placeholderTitleFromSubject(heroEl?.subject) : undefined;
+        // R4: a HOLLOW hero → FILL its own authored bounds (scale-to-fill where the
+        // hero should be) over stamping an adjacent panel. An ABANDONED-HALF furnish
+        // (C8 #1, healthy hero) must NOT paint the hero's bounds — the hero is
+        // already there — so it furnishes the detected VOID BAND (the empty column/
+        // row band the split/list left abandoned) instead.
         const heroBounds = heroEl?.bounds;
         const heroRect =
-          heroBounds && heroBounds.w >= 200 && heroBounds.h >= 140
+          heroHollow && heroBounds && heroBounds.w >= 200 && heroBounds.h >= 140
             ? {
                 x: Math.max(FURNISH_INSET_PX, heroBounds.x),
                 y: Math.max(FURNISH_INSET_PX, heroBounds.y),
@@ -1948,8 +1965,9 @@ export async function runQualityLoop(
         if (inj.injected) {
           finalCode = inj.code;
           anyInjected = true;
-          voidFurnishEvents.push({ scene, pieceId: `s${scene}.furnish`, runFracW: f.runFracW, region: f.region, action: "furnished", detail: `${(f.runFracW * 100).toFixed(0)}% ${f.region} void (hollow hero ${(heroFrac * 100).toFixed(0)}%) → deterministic furnish panel (${values.length} items)` });
-          log(`  [void-furnish] scene ${scene}: hollow hero (${(heroFrac * 100).toFixed(0)}%) → filled ${(f.runFracW * 100).toFixed(0)}% ${f.region} void with a ${values.length}-item brand panel (deterministic — no regen)`);
+          const cause = abandonedHalf ? `abandoned ${register} half` : `hollow hero ${(heroFrac * 100).toFixed(0)}%`;
+          voidFurnishEvents.push({ scene, pieceId: `s${scene}.furnish`, runFracW: f.runFracW, region: f.region, action: "furnished", detail: `${(f.runFracW * 100).toFixed(0)}% ${f.region} void (${cause}) → deterministic furnish panel (${values.length} items)` });
+          log(`  [void-furnish] scene ${scene}: ${cause} → filled ${(f.runFracW * 100).toFixed(0)}% ${f.region} void with a ${values.length}-item brand panel (deterministic — no regen)`);
         } else {
           voidFurnishEvents.push({ scene, pieceId: f.pieceId, runFracW: f.runFracW, region: f.region, action: "skipped", detail: `${f.detail} (section anchor absent → residual flagged)` });
           warn(`  [void-furnish] scene ${scene}: could not locate Section${scene} anchor — residual ships FLAGGED (honest)`);

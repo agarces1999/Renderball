@@ -1645,6 +1645,22 @@ export const findCornerMarkCollision = (
   const isBrandText = (e: MeasuredElement): boolean => normText(e.text) === brandWord;
   const isLogoImg = (e: MeasuredElement): boolean =>
     e.isImg && /\blogo\b|lockup|wordmark|brand/i.test(e.src ?? "");
+  // C8 #4: a corner-mark GHOST — a distinct element whose text is a ≥4-char PREFIX
+  // of the brand word ("Flex" ⊂ "Flexport") but NOT the whole word. This is the
+  // corner-mark render DOUBLING (a truncated second wordmark ghosting under the
+  // corner chrome — Flexport s2/s4). Exact-word doubles are isBrandText; this
+  // catches the partial-word ghost the exact match misses. Scoped by the same
+  // corner-region + overlap-the-chrome gate below, so it can't fire on prose.
+  const BRAND_GHOST_MIN_LEN = 4;
+  const isBrandGhost = (e: MeasuredElement): boolean => {
+    if (e.isImg) return false;
+    const t = normText(e.text);
+    return (
+      t.length >= BRAND_GHOST_MIN_LEN &&
+      t.length < brandWord.length &&
+      brandWord.startsWith(t)
+    );
+  };
   // The corner chrome mark: chrome-piece elements in the top-left corner that
   // paint the brand name or a logo image. Take their union box.
   const chromeMarks = visible.filter(
@@ -1666,7 +1682,8 @@ export const findCornerMarkCollision = (
   const seenPieces = new Set<string>();
   for (const e of visible) {
     if (e.pieceKind === "chrome") continue; // the sanctioned corner mark itself
-    if (!(isBrandText(e) || isLogoImg(e))) continue;
+    const ghost = isBrandGhost(e);
+    if (!(isBrandText(e) || isLogoImg(e) || ghost)) continue;
     // must be in the top-left corner region AND nearly touching the chrome mark
     const centerX = e.x + e.w / 2;
     const centerY = e.y + e.h / 2;
@@ -1680,7 +1697,7 @@ export const findCornerMarkCollision = (
       scene: m.scene,
       kind: "corner-mark-collision",
       detail:
-        `scene ${m.scene}: piece ${owner} paints a SECOND brand lockup (${e.isImg ? "logo image" : `"${e.text.trim()}"`}) ` +
+        `scene ${m.scene}: piece ${owner} paints a ${ghost ? `partial brand-mark GHOST ("${e.text.trim()}" — a truncated double of the corner wordmark)` : `SECOND brand lockup (${e.isImg ? "logo image" : `"${e.text.trim()}"`})`} ` +
         `in the top-left corner, ${Math.round(gap)}px from the app's corner chrome mark (they overlap as a garbled ` +
         `double wordmark). The corner brand lockup is ALWAYS provided by the chrome — ${owner} must NOT render the ` +
         `brand logo/wordmark in the frame's upper-left. Remove the brand mark from ${owner} (a stat, headline, or ` +
@@ -1710,8 +1727,25 @@ const CTA_ACCENT_CHROMA_MIN = 45;
 /** The accent fill must sit this far (RGB dist) off the brand canvas so a
  *  saturated-canvas brand doesn't flag its own background. */
 const CTA_CANVAS_DIST_MIN = 60;
+/** C8 #3: an arrow/chevron/icon-triangle glyph (the "→" / "↗" / "›" family). A
+ *  button-sized PILL whose only text is one of these — no word — is a hollow
+ *  directional control (Flexport s4 shipped a light "→" pill beside the stats). */
+const ARROW_GLYPH_RX =
+  /[→←↑↓↗↘↖↙⟶⟵⭢⭠⇒⇐⇨⇦↦➔➙➜➝➞➟➠➤➢▶◀▸◂◄►▷◁›‹»«]/u;
+/** Arrow-only text: at least one arrow glyph AND no letter or digit (a lone glyph,
+ *  never a real label like "Get started with Flexport →"). */
+const isArrowOnly = (text: string): boolean => {
+  const t = text.trim();
+  return t.length > 0 && ARROW_GLYPH_RX.test(t) && !/[\p{L}\p{N}]/u.test(t);
+};
+/** Square-ish is allowed for the ARROW arm — an icon button is often ~1:1 — but a
+ *  bare arrowhead/connector (no pill surface) is excluded by the surface gate. */
+const CTA_ARROW_MIN_ASPECT = 0.7;
 
-/** A label-less accent button-shape on a content piece. Pure geometry + color. */
+/** A label-less button-shape on a content piece. Two arms: (1) an empty SOLID
+ *  ACCENT pill (Brex s4 — no text at all); (2) C8 #3: a button-sized PILL whose
+ *  only text is a lone arrow/icon glyph (Flexport s4 — a neutral "→" pill with no
+ *  word). Both read as a broken/unfinished control. Pure geometry + color. */
 export const findHollowCta = (
   m: SceneMeasurement,
   opts: { brandBackground?: string } = {},
@@ -1720,21 +1754,63 @@ export const findHollowCta = (
   const canvasRgb = opts.brandBackground ? hexRgb(opts.brandBackground) : null;
   const out: RenderTruthFinding[] = [];
   const seen = new Set<string>();
-  for (const e of m.elements) {
-    if (e.opacity <= 0.5 || e.isImg) continue;
-    if (e.pieceKind === "atmosphere" || e.pieceKind === "chrome") continue;
-    if (!e.piece || MOTIF_DECO_PIECE_RX.test(e.piece)) continue;
-    // no own text AND no text anywhere in the subtree → truly label-less
-    if (e.text.trim() !== "" || e.hasTextDesc === true) continue;
-    if (e.w < CTA_MIN_W || e.w > CTA_MAX_W || e.h < CTA_MIN_H || e.h > CTA_MAX_H) continue;
+  // A candidate arrow pill's own text is arrow-only; guard against a labelled
+  // button whose worded label lives in a CHILD element (arrow as the wrapper's
+  // direct text) — a descendant carrying a word means it is a real CTA.
+  const hasWord = (t: string): boolean => /[\p{L}\p{N}]/u.test(t);
+  const descendantHasWord = (rootIx: number): boolean => {
+    const stack = m.elements.map((_, k) => k).filter((k) => m.elements[k].parentIx === rootIx);
+    const guard = new Set<number>();
+    while (stack.length) {
+      const ix = stack.pop()!;
+      if (guard.has(ix)) continue;
+      guard.add(ix);
+      if (hasWord(m.elements[ix].text)) return true;
+      for (let k = 0; k < m.elements.length; k++) if (m.elements[k].parentIx === ix) stack.push(k);
+    }
+    return false;
+  };
+  m.elements.forEach((e, ix) => {
+    if (e.opacity <= 0.5 || e.isImg) return;
+    if (e.pieceKind === "atmosphere" || e.pieceKind === "chrome") return;
+    if (!e.piece || MOTIF_DECO_PIECE_RX.test(e.piece)) return;
+    if (e.w < CTA_MIN_W || e.w > CTA_MAX_W || e.h < CTA_MIN_H || e.h > CTA_MAX_H) return;
     const aspect = e.w / e.h;
-    if (aspect < CTA_MIN_ASPECT || aspect > CTA_MAX_ASPECT) continue;
-    if (cssAlpha(e.bg) < 0.9) continue; // must be a SOLID fill (a real button surface)
+
+    // Arm 2 (C8 #3) — arrow-only PILL. The wrapper's direct text is a lone arrow
+    // glyph (a real "Label →" CTA carries a word in its text or a worded child).
+    // Neutral OR accent fill — the defect isn't the color, it's the missing label.
+    if (
+      isArrowOnly(e.text) &&
+      !descendantHasWord(ix) &&
+      aspect >= CTA_ARROW_MIN_ASPECT &&
+      aspect <= CTA_MAX_ASPECT &&
+      (cssAlpha(e.bg) >= 0.5 || (e.radius ?? 0) > 0) && // a real pill surface, not a bare arrowhead
+      !seen.has(e.piece)
+    ) {
+      seen.add(e.piece);
+      out.push({
+        scene: m.scene,
+        kind: "hollow-cta",
+        detail:
+          `scene ${m.scene}: piece ${e.piece} paints a button-sized pill (${Math.round(e.w)}×${Math.round(e.h)} at ` +
+          `${Math.round(e.x)},${Math.round(e.y)}) whose ONLY text is a lone "${e.text.trim()}" arrow glyph — a ` +
+          `label-less directional control reads as broken/unfinished. Re-emit it WITH its action label (the CTA verb, ` +
+          `e.g. "Get started →"), or REMOVE it if it duplicates the scene's real, labeled CTA. A CTA pill must carry a word.`,
+      });
+      return;
+    }
+
+    // Arm 1 (Brex s4) — empty SOLID ACCENT pill: no own text AND no text anywhere
+    // in the subtree → truly label-less.
+    if (e.text.trim() !== "" || e.hasTextDesc === true) return;
+    if (aspect < CTA_MIN_ASPECT || aspect > CTA_MAX_ASPECT) return;
+    if (cssAlpha(e.bg) < 0.9) return; // must be a SOLID fill (a real button surface)
     const rgb = rgbTriplet(e.bg);
-    if (!rgb) continue;
-    if (chromaOf(rgb[0], rgb[1], rgb[2]) < CTA_ACCENT_CHROMA_MIN) continue; // neutral card → not a CTA
-    if (canvasRgb && canvasRgbDist(rgb, canvasRgb) < CTA_CANVAS_DIST_MIN) continue; // ≈ the brand canvas → skip
-    if (seen.has(e.piece)) continue;
+    if (!rgb) return;
+    if (chromaOf(rgb[0], rgb[1], rgb[2]) < CTA_ACCENT_CHROMA_MIN) return; // neutral card → not a CTA
+    if (canvasRgb && canvasRgbDist(rgb, canvasRgb) < CTA_CANVAS_DIST_MIN) return; // ≈ the brand canvas → skip
+    if (seen.has(e.piece)) return;
     seen.add(e.piece);
     out.push({
       scene: m.scene,
@@ -1746,7 +1822,7 @@ export const findHollowCta = (
         `(the CTA verb, e.g. "Start now"/"Get started"), or REMOVE it if it duplicates the scene's real, labeled CTA. ` +
         `A solid accent pill must never ship empty.`,
     });
-  }
+  });
   return out;
 };
 
