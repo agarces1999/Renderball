@@ -946,6 +946,30 @@ export const BOUNDS_OVERLAP_MAX_FRAC = 0.1;
 export const FULL_CANVAS_FRAC = 0.85;
 export const NEGATIVE_SPACE_MIN_WORDS = 4;
 
+/**
+ * FRAME-FILL FLOORS (P3-C3 void prevention). The head cannot author a scene
+ * whose primary content (hero + copy, plus any full-bleed layer) covers too
+ * little of the frame — a small focal object in a big canvas is the
+ * marooned-card-in-a-void composition the render-side furnish then has to
+ * rescue. Register-aware: "filling" registers (split/list/full-bleed) must fill
+ * more; a "stat" scene legitimately breathes around a giant number; the default
+ * (centered/quote) sits between. Calibrated on the real dogfood composition.json
+ * bounds (grid-sampled hero+copy union coverage, step 24 — the exact runtime
+ * metric): PASS Brex s2 53% (reference-grade) / s3 56% / s1 62% / Deel s1 62% /
+ * s2 85% / s3 51% / s4 47% AND the clean frameGood test fixture (38%); CATCH the
+ * genuinely marooned Brex s4 (30%, centered — the real hollow void that shipped).
+ * (Deel s0 39.7% sits just above the clean fixture and is left to the render-side
+ * furnish — the default floor cannot separate 39.7% from a 38% clean frame.) */
+export const FILL_COVERAGE_FLOOR_FILLING = 0.45; // split / list / full-bleed
+export const FILL_COVERAGE_FLOOR_STAT = 0.35; // stat — a big number breathes
+export const FILL_COVERAGE_FLOOR_DEFAULT = 0.34; // centered / quote / unknown
+/** On a FILLING register (split/list/full-bleed), no canvas half may be left
+ *  near-empty — an authored empty half is the split-void the head must not
+ *  compose. (Centered/quote/stat legitimately weight the middle, so the
+ *  empty-half guard does not apply to them.) */
+export const FILL_EMPTY_HALF_FLOOR = 0.12;
+const FILLING_REGISTERS = new Set(["split", "list", "full-bleed"]);
+
 interface RawBounds { x: number; y: number; w: number; h: number }
 const readBounds = (el: RawElement): RawBounds | null => {
   const b = (el as { bounds?: unknown }).bounds;
@@ -961,6 +985,34 @@ const overlapArea = (a: RawBounds, b: RawBounds): number => {
   const ox = Math.max(0, Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x));
   const oy = Math.max(0, Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y));
   return ox * oy;
+};
+
+const inRect = (b: RawBounds, gx: number, gy: number): boolean =>
+  gx >= b.x && gx < b.x + b.w && gy >= b.y && gy < b.y + b.h;
+
+/** Grid-sampled union coverage of a set of rects over the canvas (0..1),
+ *  handling overlaps correctly (an area union, not a naive sum). Optional
+ *  half constraint measures only one half of the frame. */
+const gridCoverage = (
+  boxes: RawBounds[],
+  W: number,
+  H: number,
+  half?: "L" | "R" | "T" | "B",
+  step = 24,
+): number => {
+  let filled = 0;
+  let total = 0;
+  for (let gx = step / 2; gx < W; gx += step) {
+    if (half === "L" && gx >= W / 2) continue;
+    if (half === "R" && gx < W / 2) continue;
+    for (let gy = step / 2; gy < H; gy += step) {
+      if (half === "T" && gy >= H / 2) continue;
+      if (half === "B" && gy < H / 2) continue;
+      total++;
+      if (boxes.some((b) => inRect(b, gx, gy))) filled++;
+    }
+  }
+  return total > 0 ? filled / total : 0;
 };
 
 /** A composition is "frame-authored" when it carries ANY of the frame fields —
@@ -985,6 +1037,7 @@ const frameCompositionErrors = (
   content: Record<string, unknown>,
   canvas: { w: number; h: number },
   elName: (el: RawElement, j: number) => string,
+  register?: string,
 ): string[] => {
   const out: string[] = [];
   const { w: W, h: H } = canvas;
@@ -1108,6 +1161,50 @@ const frameCompositionErrors = (
       out.push(
         `Scene ${i}: budget.cta is "none" but the scene defines a CTA — name the element that owns it (usually "copy").`,
       );
+    }
+  }
+
+  // 6) FRAME FILL (P3-C3 void PREVENTION) — the authored primary content must
+  //    cover enough of the frame, and (on filling registers) leave no empty
+  //    half. This stops the head from composing a marooned-card-in-a-void frame
+  //    at authoring time (cheap thinking round) rather than leaving the
+  //    render-side furnish to rescue it. Only runs when a hero is placed.
+  const fillBoxes = placed.filter((p) => p.bounds).map((p) => p.bounds!);
+  // A full-bleed layer (a relationship connector / atmosphere-scale element)
+  // legitimately fills the canvas — count it toward coverage.
+  for (const el of elements) {
+    const b = readBounds(el);
+    const role = typeof el?.role === "string" ? el.role : "";
+    if (b && !PLACED_ROLES.has(role) && rectArea(b) >= FULL_CANVAS_FRAC * W * H) fillBoxes.push(b);
+  }
+  if (placed.some((p) => p.role === "hero" && p.bounds) && fillBoxes.length > 0) {
+    const reg = register ?? "";
+    const covFloor = FILLING_REGISTERS.has(reg)
+      ? FILL_COVERAGE_FLOOR_FILLING
+      : reg === "stat"
+        ? FILL_COVERAGE_FLOOR_STAT
+        : FILL_COVERAGE_FLOOR_DEFAULT;
+    const cov = gridCoverage(fillBoxes, W, H);
+    if (cov < covFloor) {
+      out.push(
+        `Scene ${i}: authored content covers only ${Math.round(cov * 100)}% of the ${W}×${H} frame (floor ${Math.round(
+          covFloor * 100,
+        )}% for a ${reg || "centered"} scene) — the focal object is marooned in a void. ENLARGE the hero and/or place a substantive subordinate element (a secondary panel, a copy stack, a footer meta strip) so the composed mass FILLS the frame; do not shrink content into one region and leave the rest empty.`,
+      );
+    }
+    if (FILLING_REGISTERS.has(reg)) {
+      const halves: Array<["L" | "R" | "T" | "B", string]> = [
+        ["L", "left"],
+        ["R", "right"],
+        ["T", "top"],
+        ["B", "bottom"],
+      ];
+      const empty = halves.find(([h]) => gridCoverage(fillBoxes, W, H, h) < FILL_EMPTY_HALF_FLOOR);
+      if (empty) {
+        out.push(
+          `Scene ${i}: the ${empty[1]} half of the frame is authored EMPTY (a ${reg} scene must carry both sides) — give that half a real element (the opposite column's mock/rows/tiles, a supporting panel), never a bare void the render must backfill.`,
+        );
+      }
     }
   }
 
@@ -1377,6 +1474,7 @@ export const checkSceneComposition = (
           content,
           canvas,
           elName,
+          typeof scene?.register === "string" ? scene.register : undefined,
         ),
       );
     }

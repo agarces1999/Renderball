@@ -403,6 +403,30 @@ await check("assessEmptyColumnRun: a faint HORIZONTAL hairline (below the column
   assert(r.runFracW > 0.55, `hairline doesn't split the void, got ${r.runFracW.toFixed(2)}`);
 });
 
+// P3-C3 (FIX D): void detection is LUMINANCE-AGNOSTIC — it subtracts the
+// DOMINANT canvas color, so a marooned card fires whether the canvas is white
+// (the Deel defect: a dark bullet-card centered on #fefefe) or dark. Both
+// directions must detect the same ~35% side void.
+await check("assessEmptyColumnRun: a dark card on a WHITE canvas fires a void (Deel s2 class)", async () => {
+  // WHITE canvas, a small DARK card centered → wide empty side runs.
+  const buf = await sharp({ create: { width: CW, height: CH, channels: 3, background: { r: 254, g: 254, b: 254 } } })
+    .composite([{ input: { create: { width: 96, height: 120, channels: 3, background: { r: 22, g: 22, b: 28 } } }, top: 40, left: 112 }])
+    .png()
+    .toBuffer();
+  const r = await assessEmptyColumnRun(buf, { colInkFloor: COLUMN_INK_FLOOR });
+  assert(r.runFracW > 0.3, `a dark card on WHITE must leave a detected void, got ${r.runFracW.toFixed(2)}`);
+});
+
+await check("assessEmptyColumnRun: the DARK-canvas twin fires the same void (luminance symmetry)", async () => {
+  // DARK canvas, a small BRIGHT card centered → the same ~35% side void.
+  const buf = await sharp({ create: { width: CW, height: CH, channels: 3, background: { r: 16, g: 16, b: 24 } } })
+    .composite([{ input: { create: { width: 96, height: 120, channels: 3, background: { r: 240, g: 240, b: 240 } } }, top: 40, left: 112 }])
+    .png()
+    .toBuffer();
+  const r = await assessEmptyColumnRun(buf, { colInkFloor: COLUMN_INK_FLOOR });
+  assert(r.runFracW > 0.3, `a bright card on DARK must leave the same void, got ${r.runFracW.toFixed(2)}`);
+});
+
 await check("assessRegionInk: a painted region reports its ink share; a blank region ~0", async () => {
   const buf = await colFrame([{ x: 0, w: 100 }]); // left ~31% black, white clearly dominant
   const [inked, blank] = await assessRegionInk(buf, [

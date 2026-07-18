@@ -1543,6 +1543,64 @@ check("frame: a LEGACY composition (no frame fields) skips the frame checks", ()
   assert(checkSceneComposition(duoGood()).length === 0, "legacy blueprints must not trip the frame contract");
 });
 
+// ── P3-C3: FRAME-FILL floor (void prevention at the head) ────────────────────
+// Calibrated on the real dogfood composition.json grid coverage (step 24).
+const setBounds = (s: CompScenes, role: "hero" | "copy", b: { x: number; y: number; w: number; h: number }) => {
+  const comp = (s[0] as unknown as { composition: { elements: Record<string, unknown>[] } }).composition;
+  const el = comp.elements.find((e) => e.role === role)!;
+  el.bounds = b;
+};
+const setRegister = (s: CompScenes, reg: string) => {
+  (s[0] as unknown as { register?: string }).register = reg;
+};
+const coverageErr = (s: CompScenes) => checkSceneComposition(s).filter((x) => /authored content covers only/.test(x));
+const emptyHalfErr = (s: CompScenes) => checkSceneComposition(s).filter((x) => /half of the frame is authored EMPTY/.test(x));
+
+check("frame-fill: the clean frameGood fixture (38% cov) passes the coverage floor", () => {
+  assert(coverageErr(frameGood()).length === 0, `clean fixture must clear the fill floor, got ${JSON.stringify(coverageErr(frameGood()))}`);
+});
+
+check("frame-fill: a hollow centered void (Brex s4-shaped ~11%) is REJECTED", () => {
+  const s = frameGood();
+  setRegister(s, "centered");
+  setBounds(s, "hero", { x: 760, y: 340, w: 400, h: 360 }); // small centered focal object
+  setBounds(s, "copy", { x: 690, y: 760, w: 540, h: 180 }); // small caption below
+  assert(coverageErr(s).length === 1, `expected a marooned-void coverage error, got ${JSON.stringify(checkSceneComposition(s))}`);
+});
+
+check("frame-fill: a reference-grade quote scene (Brex s2-shaped ~53%) PASSES", () => {
+  const s = frameGood();
+  setRegister(s, "quote");
+  setBounds(s, "hero", { x: 820, y: 150, w: 1000, h: 780 }); // large dashboard right
+  setBounds(s, "copy", { x: 120, y: 300, w: 620, h: 470 }); // copy column left
+  assert(coverageErr(s).length === 0, `reference-grade quote must pass, got ${JSON.stringify(coverageErr(s))}`);
+});
+
+check("frame-fill: a filling (split) register with an EMPTY half is rejected", () => {
+  const s = frameGood();
+  setRegister(s, "split");
+  setBounds(s, "hero", { x: 100, y: 130, w: 780, h: 820 }); // all left
+  setBounds(s, "copy", { x: 120, y: 900, w: 720, h: 150 }); // also left → right half empty
+  assert(emptyHalfErr(s).length === 1, `expected an empty-half error, got ${JSON.stringify(checkSceneComposition(s))}`);
+});
+
+check("frame-fill: a balanced split (both halves carried) trips no empty-half error", () => {
+  const s = frameGood();
+  setRegister(s, "split");
+  // frameGood hero right {900,..} + copy left {140,..} → both halves carry content.
+  assert(emptyHalfErr(s).length === 0, `balanced split must not flag an empty half, got ${JSON.stringify(emptyHalfErr(s))}`);
+});
+
+check("frame-fill: a stat scene breathes — the stat floor is gentler", () => {
+  const s = frameGood();
+  setRegister(s, "stat");
+  // A big number + subtiles at ~40% coverage: passes stat (0.35) though it would
+  // fail a filling register (0.45).
+  setBounds(s, "hero", { x: 360, y: 200, w: 1200, h: 520 });
+  setBounds(s, "copy", { x: 360, y: 760, w: 1200, h: 190 });
+  assert(coverageErr(s).length === 0, `a breathing stat scene must pass, got ${JSON.stringify(coverageErr(s))}`);
+});
+
 // ── Frame-authoring: cold-open + anti-cliché voice ──────────────────────────
 
 check("voice: a scene-0 headline that names the brand is rejected", () => {

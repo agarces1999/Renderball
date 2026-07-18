@@ -56,6 +56,14 @@ import {
   type CardOccupancyAdvisory,
 } from "./occupancy";
 import {
+  buildFurnishPanelJsx,
+  injectFurnishIntoSection,
+  furnishRectForBand,
+  pickFurnishSurface,
+} from "./void-furnish";
+import { extractQuotedValues, placeholderTitleFromSubject } from "../agents/cast-build";
+import { CANVAS } from "../agents/layout-composer";
+import {
   assessTextNodeContrast,
   type TextContrastFinding,
   type TextContrastStat,
@@ -238,6 +246,18 @@ export interface IconFontStripEvent {
   round: number;
   site: string;
   family: string;
+}
+
+/** P3-C3: a blocking void that survived the loop, filled DETERMINISTICALLY with
+ *  a brand furnish panel (the void-convergence guarantee) — or, when injection
+ *  could not land, left flagged. */
+export interface VoidFurnishEvent {
+  scene: number;
+  pieceId: string;
+  runFracW: number;
+  region: string;
+  action: "furnished" | "furnished-residual" | "skipped";
+  detail: string;
 }
 
 /** cycle-10 P2: a text stack with no accented-glyph coverage, given a Latin-1
@@ -462,6 +482,7 @@ export interface QualityLoopResult {
     bindCopyEvents: BindCopyEvent[];
     noProgressEvents: NoProgressEvent[];
     cacheBustEvents: CacheBustEvent[];
+    voidFurnishEvents: VoidFurnishEvent[];
   };
   finalize: Record<string, unknown>;
   /** Set when castBuild threw on a round (the loop breaks and ships nothing new). */
@@ -819,6 +840,7 @@ export async function runQualityLoop(
   const motifClutterEvents: MotifClutterEvent[] = [];
   const iconFontStripEvents: IconFontStripEvent[] = [];
   const accentFallbackEvents: AccentFallbackEvent[] = [];
+  const voidFurnishEvents: VoidFurnishEvent[] = [];
   const bindCopyEvents: BindCopyEvent[] = [];
   const edgeCropEvents: EdgeCropEvent[] = [];
   const regenHistory = new Map<string, { cls: FailureClass; value: number; aux: number; escalated: boolean }>();
@@ -1762,29 +1784,91 @@ export async function runQualityLoop(
       await hooks.writeComposition(finalCode);
       log(`  motif-clutter [final pass]: excised ${excised} — re-measuring`);
       finalMeasurements = await measureScenes(genDir, script, genDir);
-      // P3-C1 (blanking-never-leaves-a-void): the final blank pass runs
-      // post-loop, so nothing re-gates the region a blanked motif vacated —
-      // exactly how the Fuse s3 throughline blank left a small card in a void
-      // that shipped. Re-run occupancy on the re-measured frames; a NEW blocking
-      // void means the blank emptied the scene. We cannot regen post-loop, so
-      // surface it LOUDLY as a residual so it ships flagged, never silently (the
-      // per-round path already routes a furnish when a blank opens a void).
-      const postBlankOcc = await assessOccupancy(finalMeasurements, sceneRegisters);
-      const openedVoids = postBlankOcc.findings.filter((f) => f.blocking);
-      if (openedVoids.length > 0) {
-        for (const f of openedVoids) {
-          warn(
-            `  [final pass] blanking a floating motif LEFT A VOID in scene ${f.scene} (${(f.runFracW * 100).toFixed(0)}% empty band) — ` +
-              `residual ships FLAGGED (honest); the furnish route needs a build round the post-loop pass cannot start.`,
-          );
-          motifClutterEvents.push({
-            round: round + 1,
-            scene: f.scene,
-            pieceId: f.pieceId,
-            form: "floating-motif",
-            action: "none",
-            detail: `[final pass] blank opened a void → ${f.detail}`,
-          });
+    }
+
+    // P3-C3 — DETERMINISTIC VOID CONVERGENCE (the guarantee). Any blocking void
+    // that survived the loop OR was opened by the final motif-blank is filled
+    // deterministically with a brand furnish panel built from the scene's own
+    // blueprint — a void can no longer ship flagged. (Fuse s3 / Deel s1: the
+    // occupancy gate detected these voids for four brands but the model never
+    // converged them; this closes the loop without a regen round.)
+    const postOcc = await assessOccupancy(finalMeasurements, sceneRegisters);
+    const survivingVoids = postOcc.findings.filter((f) => f.blocking);
+    if (survivingVoids.length > 0) {
+      const canvas = CANVAS[config.castInput.aspect] ?? CANVAS["16:9"];
+      const surfaceHex = pickFurnishSurface(Object.values(theme.palette), canvasBackground);
+      const accentHex = accentHexes.find((h) => /^#[0-9a-fA-F]{3,8}$/.test(h)) ?? surfaceHex;
+      const collectContentStrings = (content: Record<string, unknown>): string[] => {
+        const out: string[] = [];
+        for (const [field, v] of Object.entries(content)) {
+          if (field === "headline") continue; // already rendered by copy
+          if (typeof v === "string" && v.trim().length >= 3) out.push(v.trim());
+          else if (Array.isArray(v)) {
+            for (const item of v) {
+              if (typeof item === "string" && item.trim().length >= 3) out.push(item.trim());
+              else if (item && typeof item === "object") {
+                for (const s of Object.values(item)) if (typeof s === "string" && s.trim().length >= 3) out.push(s.trim());
+              }
+            }
+          }
+        }
+        return out;
+      };
+      let anyInjected = false;
+      for (const f of survivingVoids) {
+        const scene = f.scene;
+        const comp = config.castInput.script.scenes[scene]?.composition as
+          | { elements?: { role?: string; subject?: string; interior?: string[] }[] }
+          | undefined;
+        const els = Array.isArray(comp?.elements) ? comp!.elements! : [];
+        const heroEl = els.find((e) => e.role === "hero");
+        const interiors = els.flatMap((e) => (Array.isArray(e.interior) ? e.interior : []));
+        let values = extractQuotedValues(interiors);
+        if (values.length < 2) {
+          const content = (script.scenes?.[scene]?.content ?? {}) as Record<string, unknown>;
+          values = [...new Set(collectContentStrings(content))];
+        }
+        const title = placeholderTitleFromSubject(heroEl?.subject);
+        const rect = furnishRectForBand(f.band, canvas);
+        if (!rect || values.length < 2) {
+          voidFurnishEvents.push({ scene, pieceId: f.pieceId, runFracW: f.runFracW, region: f.region, action: "skipped", detail: `${f.detail} (no furnishable rect/values → residual flagged)` });
+          warn(`  [void-furnish] scene ${scene}: ${(f.runFracW * 100).toFixed(0)}% void unfurnishable (rect=${!!rect}, values=${values.length}) — residual ships FLAGGED (honest)`);
+          continue;
+        }
+        const panel = buildFurnishPanelJsx({
+          pieceId: `s${scene}.furnish`,
+          rect,
+          values,
+          title,
+          surfaceHex,
+          accentHex,
+          fontDisplay: theme.fonts.display,
+          fontBody: theme.fonts.body,
+        });
+        const inj = injectFurnishIntoSection(finalCode, scene, panel);
+        if (inj.injected) {
+          finalCode = inj.code;
+          anyInjected = true;
+          voidFurnishEvents.push({ scene, pieceId: `s${scene}.furnish`, runFracW: f.runFracW, region: f.region, action: "furnished", detail: `${(f.runFracW * 100).toFixed(0)}% ${f.region} void → deterministic furnish panel (${values.length} items)` });
+          log(`  [void-furnish] scene ${scene}: filled ${(f.runFracW * 100).toFixed(0)}% ${f.region} void with a ${values.length}-item brand panel (deterministic — no regen)`);
+        } else {
+          voidFurnishEvents.push({ scene, pieceId: f.pieceId, runFracW: f.runFracW, region: f.region, action: "skipped", detail: `${f.detail} (section anchor absent → residual flagged)` });
+          warn(`  [void-furnish] scene ${scene}: could not locate Section${scene} anchor — residual ships FLAGGED (honest)`);
+        }
+      }
+      if (anyInjected) {
+        await hooks.writeComposition(finalCode);
+        finalMeasurements = await measureScenes(genDir, script, genDir);
+        // Confirm the fill CONVERGED the void; mark any still-blocking as residual.
+        const confirmOcc = await assessOccupancy(finalMeasurements, sceneRegisters);
+        const stillVoid = new Set(confirmOcc.findings.filter((v) => v.blocking).map((v) => v.scene));
+        for (const ev of voidFurnishEvents.filter((e) => e.action === "furnished")) {
+          if (stillVoid.has(ev.scene)) {
+            ev.action = "furnished-residual";
+            warn(`  [void-furnish] scene ${ev.scene}: panel injected but occupancy still flags a void — residual ships FLAGGED (honest)`);
+          } else {
+            log(`  [void-furnish] scene ${ev.scene}: void CONVERGED (occupancy clean after deterministic fill)`);
+          }
         }
       }
     }
@@ -1802,7 +1886,7 @@ export async function runQualityLoop(
     finalContrast,
     finalAccentFill,
     pieceCache,
-    events: { edgeCropEvents, washoutLiftEvents, imgSwapEvents, strayFragmentEvents, motifClutterEvents, iconFontStripEvents, accentFallbackEvents, bindCopyEvents, noProgressEvents, cacheBustEvents },
+    events: { edgeCropEvents, washoutLiftEvents, imgSwapEvents, strayFragmentEvents, motifClutterEvents, iconFontStripEvents, accentFallbackEvents, bindCopyEvents, noProgressEvents, cacheBustEvents, voidFurnishEvents },
     finalize,
     ...(castRoundError ? { castRoundError } : {}),
   };

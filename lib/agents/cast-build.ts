@@ -1992,6 +1992,31 @@ export const extractQuotedValues = (interior: string[]): string[] => {
   return out;
 };
 
+/** A short, clean title lifted from a hero's blueprint subject: the clause
+ *  before the first em/en-dash/comma, capped to ~6 words / 52 chars, so a
+ *  sprawling "a full-bleed Deel dashboard — a clean left sidebar, a payroll…"
+ *  subject becomes a legible header ("a full-bleed Deel dashboard"). JSX-text
+ *  safe (angle/brace stripped). Empty → "". */
+export const placeholderTitleFromSubject = (subject: string | undefined): string => {
+  if (!subject) return "";
+  const head = subject.split(/[—–,:;(]/)[0].trim().replace(/[<>{}]/g, "");
+  const words = head.split(/\s+/).filter(Boolean).slice(0, 6).join(" ");
+  return words.length > 52 ? words.slice(0, 52).trim() : words;
+};
+
+/** P3-C3 void-convergence: a hero whose settled bounds cover a DOMINANT share of
+ *  the canvas (a full-bleed hero, or a large centered/stat focal object). Its
+ *  placeholder must FILL those bounds — a small centered card inside a dominant
+ *  hero's wrapper is the marooned-card-in-a-void defect (Deel s2: a full-bleed
+ *  1800×980 dashboard compile-broke → a 540px card shipped in ~90% empty white).
+ *  Keyed off the canvas for the aspect, so it is correct on 16:9 / 9:16 / 1:1. */
+export const PLACEHOLDER_FILL_W_FRAC = 0.55;
+export const PLACEHOLDER_FILL_H_FRAC = 0.6;
+const heroFillsCanvas = (bounds: { w: number; h: number }, aspect: Aspect): boolean => {
+  const cv = CANVAS[aspect] ?? CANVAS["16:9"];
+  return bounds.w >= PLACEHOLDER_FILL_W_FRAC * cv.w || bounds.h >= PLACEHOLDER_FILL_H_FRAC * cv.h;
+};
+
 /**
  * POPULATED hero fallback (the invariant closer). When a COMPOSED hero stays
  * broken through its whole repair budget with no salvageable emission — GLM
@@ -2005,13 +2030,61 @@ export const extractQuotedValues = (interior: string[]): string[] => {
  * composed hero must NEVER ship empty" invariant deterministically. Falls back
  * to the neutral shell only when the blueprint yields too few display values.
  * Referenced consts (FONT_DISPLAY/FONT_BODY + theme tokens) are always emitted
- * by the assembler, so it compiles by construction. */
-export const heroBlueprintPlaceholder = (theme: Theme, slot: ElementSlot, spec: ElementSpec): string => {
-  const values = extractQuotedValues(spec.interior).slice(0, 7);
-  if (values.length < 2) return placeholderBody(theme, slot);
+ * by the assembler, so it compiles by construction.
+ *
+ * P3-C3 (void convergence): when the hero's bounds are DOMINANT (a full-bleed or
+ * large focal object — heroFillsCanvas), the fallback FILLS the wrapper with a
+ * composed panel (header + a grid of the interior values + a footer meta line)
+ * instead of a marooned 540px card. The surface is the ink token, which
+ * contrasts the canvas in BOTH directions (light panel on a dark canvas, dark
+ * panel on a light canvas — the washout gate passes by construction, and the
+ * accent is punctuation only so accent-fill passes too), so a compile-broken
+ * full-bleed hero can no longer ship as a small card stranded in a huge void.
+ * A genuinely small/bounded hero keeps the centered card (filling its small
+ * bounds would be wrong). */
+export const heroBlueprintPlaceholder = (
+  theme: Theme,
+  slot: ElementSlot,
+  spec: ElementSpec,
+  aspect: Aspect = "16:9",
+): string => {
   const surface = tokenForRole(theme, "ink"); // light on a dark canvas → contrast
   const ink = tokenForRole(theme, "canvas"); // dark text on the lifted surface
   const accent = tokenForRole(theme, "accent");
+  const hairline = tokenForRole(theme, "hairline");
+
+  if (heroFillsCanvas(slot.bounds, aspect)) {
+    // FILL the dominant hero's bounds — a composed panel that occupies the frame.
+    const values = extractQuotedValues(spec.interior).slice(0, 9);
+    if (values.length < 2) return placeholderBody(theme, slot);
+    const title = placeholderTitleFromSubject(spec.subject);
+    const cards = values
+      .map(
+        (v) =>
+          `        <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "16px 18px", borderRadius: 12, border: "1px solid", borderColor: ${hairline}, minHeight: 54, boxSizing: "border-box" }}>` +
+          `<span style={{ width: 8, height: 8, borderRadius: "50%", background: ${accent}, flexShrink: 0 }} />` +
+          `<span style={{ fontFamily: FONT_BODY, fontSize: 17, color: ${ink}, lineHeight: 1.3 }}>${v}</span></div>`,
+      )
+      .join("\n");
+    return (
+      `<div style={{ width: "100%", height: "100%", boxSizing: "border-box", padding: "clamp(28px, 4%, 64px)", display: "flex" }}>\n` +
+      `    <div style={{ flex: 1, borderRadius: 20, background: ${surface}, boxShadow: "0 24px 64px rgba(0,0,0,0.28)", padding: "34px 40px", boxSizing: "border-box", display: "flex", flexDirection: "column", gap: 26, overflow: "hidden" }}>\n` +
+      (title
+        ? `      <div style={{ display: "flex", alignItems: "center", gap: 14 }}><span style={{ width: 5, height: 30, borderRadius: 3, background: ${accent}, flexShrink: 0 }} /><span style={{ fontFamily: FONT_DISPLAY, fontSize: 32, fontWeight: 600, color: ${ink}, lineHeight: 1.05 }}>${title}</span></div>\n`
+        : "") +
+      `      <div style={{ flex: 1, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gridAutoRows: "min-content", gap: 14, alignContent: "start" }}>\n` +
+      `${cards}\n` +
+      `      </div>\n` +
+      `      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontFamily: FONT_BODY, fontSize: 14, color: ${ink}, opacity: 0.68 }}><span>${title || "Overview"}</span><span>${values.length} items</span></div>\n` +
+      `    </div>\n` +
+      `  </div>`
+    );
+  }
+
+  // A genuinely BOUNDED hero (a modest checkout-sized card): keep the centered
+  // card — filling its small bounds would be wrong.
+  const values = extractQuotedValues(spec.interior).slice(0, 7);
+  if (values.length < 2) return placeholderBody(theme, slot);
   const rows = values
     .map(
       (v, i) =>
@@ -2020,10 +2093,6 @@ export const heroBlueprintPlaceholder = (theme: Theme, slot: ElementSlot, spec: 
         `<span style={{ fontFamily: FONT_BODY, fontSize: 15, color: ${ink}, lineHeight: 1.3 }}>${v}</span></div>`,
     )
     .join("\n");
-  // A BOUNDED, centered card — never a full-bleed fill. The head can author a
-  // full-bleed hero (whole canvas); filling that with a lifted surface would
-  // wash the entire frame, so the fallback centers a modest checkout-sized card
-  // on the dark field (reads like scene 1's card), regardless of wrapper size.
   return (
     `<div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", padding: 48, boxSizing: "border-box" }}>\n` +
     `    <div style={{ width: "min(540px, 92%)", maxHeight: "84%", borderRadius: 16, background: ${surface}, boxShadow: "0 24px 64px rgba(0,0,0,0.42)", padding: "22px 30px", boxSizing: "border-box", display: "flex", flexDirection: "column", overflow: "hidden" }}>\n` +
@@ -2429,7 +2498,7 @@ export const castBuild = async (
     // contrasting surface). The invariant holds: a composed hero never ships
     // empty. Non-heroes (and heroes with no usable blueprint) take the neutral
     // shell as before.
-    const fallback = isHero && heroSpec ? heroBlueprintPlaceholder(theme, job.slot, heroSpec) : placeholderBody(theme, job.slot);
+    const fallback = isHero && heroSpec ? heroBlueprintPlaceholder(theme, job.slot, heroSpec, aspect) : placeholderBody(theme, job.slot);
     console.warn(`[cast-build] ${job.pieceId}: broken through repair — shipping ${isHero && heroSpec ? "BLUEPRINT-populated" : "neutral"} placeholder (${prev.error.slice(0, 120)})`);
     return { pieceId: job.pieceId, body: fallback, outputTokens: tokens, repaired: false, failed: true, colorRewrites: 0, fontRewrites: 0, heroSurfaceCorrected: false, metaTextStrips: 0 };
   };

@@ -60,6 +60,7 @@ import {
   heroPopulateReassert,
   extractQuotedValues,
   heroBlueprintPlaceholder,
+  placeholderTitleFromSubject,
   HERO_MAX_TOKENS_CEREBRAS,
   HERO_MAX_TOKENS_FIREWORKS,
   type CastBuildInput,
@@ -989,10 +990,10 @@ await check("extractQuotedValues: pulls display micro-copy from a blueprint inte
   assert(new Set(v).size === v.length, "values deduped");
 });
 
-await check("heroBlueprintPlaceholder: builds a POPULATED, compilable card from the blueprint — never a blank shell", async () => {
+await check("heroBlueprintPlaceholder: a FULL-BLEED hero FILLS its bounds (P3-C3 — never a 540px card marooned in a void)", async () => {
   const spec = {
     role: "hero" as const,
-    subject: "a full-bleed checkout window",
+    subject: "a full-bleed Deel payroll dashboard — a clean left sidebar, a run panel",
     interior: [
       "URL field reading 'checkout.store.com'",
       "total '$349.95' large",
@@ -1003,19 +1004,46 @@ await check("heroBlueprintPlaceholder: builds a POPULATED, compilable card from 
     focalRank: 1,
   };
   const heroSlot = { id: "hero", kind: "diegetic", bounds: { x: 0, y: 0, w: 1920, h: 1080 }, paletteRoles: [], contentFields: [] } as never;
-  const body = heroBlueprintPlaceholder(theme, heroSlot, spec);
+  const body = heroBlueprintPlaceholder(theme, heroSlot, spec, "16:9");
   // Populated: the real values are present as visible text.
   for (const val of ["checkout.store.com", "$349.95", "Complete Purchase", "Cart: Full"]) {
     assert(body.includes(val), `blueprint placeholder must render "${val}"`);
   }
   // Contrasting surface (INK on a dark canvas), NOT the dark neutral shell.
   assert(body.includes("background: INK"), "lifts onto a contrasting surface (not the canvas-toned shell)");
-  assert(!/borderColor: HAIRLINE \}\} \/>/.test(body), "NOT the blank neutral shell");
-  // Bounded + centered — never a full-bleed fill that would wash the frame.
-  assert(/justifyContent: "center"/.test(body) && /min\(540px/.test(body), "renders a bounded, centered card (not a full-bleed surface)");
-  // Compiles as a fragment (assembler emits FONT_*/token consts).
+  // FILLS the frame — a composed grid panel, NOT the old 540px centered card
+  // (the Deel s2 90%-void defect was exactly a 540px card in a full-bleed hero).
+  assert(!/min\(540px/.test(body), "a full-bleed hero must NOT ship a 540px stamp");
+  assert(/gridTemplateColumns/.test(body), "fills with a value grid");
+  // A clean header lifted from the subject (clause before the em-dash).
+  assert(body.includes("a full-bleed Deel payroll dashboard"), "renders a header from the subject");
   const err = await verifyCompilable(`const __P = () => (\n<div>\n${body}\n</div>\n);`);
   assert(err === null, `blueprint placeholder must compile, got ${err}`);
+});
+
+await check("heroBlueprintPlaceholder: a genuinely BOUNDED hero keeps the centered card", async () => {
+  const spec = {
+    role: "hero" as const,
+    subject: "a compact checkout card",
+    interior: ["total '$349.95'", "'Complete Purchase' button", "meta chip 'Cart: Full'"],
+    ownsCopy: [],
+    focalRank: 1,
+  };
+  // A modest bounded hero (well under the fill thresholds).
+  const heroSlot = { id: "hero", kind: "diegetic", bounds: { x: 690, y: 360, w: 540, h: 360 }, paletteRoles: [], contentFields: [] } as never;
+  const body = heroBlueprintPlaceholder(theme, heroSlot, spec, "16:9");
+  assert(/min\(540px/.test(body) && /justifyContent: "center"/.test(body), "a small hero keeps the bounded centered card");
+  const err = await verifyCompilable(`const __P = () => (\n<div>\n${body}\n</div>\n);`);
+  assert(err === null, `bounded placeholder must compile, got ${err}`);
+});
+
+await check("placeholderTitleFromSubject: a clean short header from a sprawling subject", () => {
+  assert(
+    placeholderTitleFromSubject("a full-bleed Deel dashboard — a clean left sidebar, a payroll panel") ===
+      "a full-bleed Deel dashboard",
+    "clause before the em-dash, capped",
+  );
+  assert(placeholderTitleFromSubject(undefined) === "", "undefined → empty");
 });
 
 await check("heroBlueprintPlaceholder: too few blueprint values → falls back to the neutral shell", () => {
