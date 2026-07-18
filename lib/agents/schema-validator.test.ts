@@ -1201,75 +1201,73 @@ check("composition: motion referencing ANOTHER element's interior does not count
   );
 });
 
-// — v9: hero surface contrast (the washout class, mirrored statically) —
-check("washout mirror: dark atmosphere + hero with no light-surface item fails", () => {
+// — v9 → R7 (audit-2): hero surface contrast keys off the RESOLVED canvas
+//   LUMINANCE (canvasBackground hex), NOT the deleted DARK/LIGHT keyword regex on
+//   the atmosphere prose. dark ⇒ L<0.35 demands a light interior surface; light ⇒
+//   L>0.7 demands a dark one; a mid canvas (or no canvas) demands neither.
+const DARK_CANVAS = "#0a0a0f"; // L ≈ 0.0 → dark
+const LIGHT_CANVAS = "#f7f7fa"; // L ≈ 0.96 → light
+check("washout mirror (R7): dark canvas + hero with no light-surface item fails", () => {
   const s = duoGood();
-  sceneOf(s, 0).composition.atmosphere = "Near-black charcoal wash swallows the frame edge to edge";
-  const e = checkSceneComposition(s);
+  const e = checkSceneComposition(s, { canvasBackground: DARK_CANVAS });
   assert(
     e.some((x) => /Scene 0 hero: atmosphere reads dark but no interior item names a light\/high-contrast surface/.test(x)),
     `expected the washout error, got ${JSON.stringify(e)}`,
   );
 });
 
-check("washout mirror: dark atmosphere + a named light surface passes (cue word)", () => {
+check("washout mirror (R7): dark canvas + a named light surface passes (cue word)", () => {
   const s = duoGood();
-  sceneOf(s, 0).composition.atmosphere = "Pitch-black metal field with faint smoke drifting upward slowly";
   sceneOf(s, 0).composition.elements[0].interior[0] = "lesson card on a bone-white panel surface, XP bar 340/500";
-  const e = checkSceneComposition(s);
-  assert(!e.some((x) => /reads dark/.test(x)), `light-surface item must satisfy the check, got ${JSON.stringify(e)}`);
+  const e = checkSceneComposition(s, { canvasBackground: DARK_CANVAS });
+  // Scoped to scene 0 — with a real dark canvas EVERY scene is judged, and the
+  // other duoGood heroes legitimately lack a light-surface item.
+  assert(!e.some((x) => /Scene 0 hero: atmosphere reads dark/.test(x)), `light-surface item must satisfy the check, got ${JSON.stringify(e)}`);
 });
 
-check("washout mirror: a light HEX in an interior item also satisfies it", () => {
+check("washout mirror (R7): a light HEX in an interior item also satisfies it", () => {
   const s = duoGood();
-  sceneOf(s, 0).composition.atmosphere = "Midnight gradient field, dark and heavy across the whole canvas";
   sceneOf(s, 0).composition.elements[0].interior[0] = "lesson card panel painted #f7f8fa, XP bar 340/500";
-  const e = checkSceneComposition(s);
-  assert(!e.some((x) => /reads dark/.test(x)), `light hex must satisfy the check, got ${JSON.stringify(e)}`);
+  const e = checkSceneComposition(s, { canvasBackground: DARK_CANVAS });
+  assert(!e.some((x) => /Scene 0 hero: atmosphere reads dark/.test(x)), `light hex must satisfy the check, got ${JSON.stringify(e)}`);
 });
 
-check("washout mirror: a DARK hex does NOT satisfy it, and non-dark atmospheres never fire", () => {
+check("washout mirror (R7): a DARK hex does NOT satisfy it, and no-canvas never fires", () => {
   const s = duoGood();
-  sceneOf(s, 0).composition.atmosphere = "Jet-black void with grain and slow dust motes drifting sideways";
   sceneOf(s, 0).composition.elements[0].interior[0] = "lesson card panel painted #14161c, XP bar 340/500";
-  const dark = checkSceneComposition(s);
+  const dark = checkSceneComposition(s, { canvasBackground: DARK_CANVAS });
   assert(dark.some((x) => /reads dark/.test(x)), `a dark hex must not count as a light surface, got ${JSON.stringify(dark)}`);
-  // duoGood's own atmospheres (confetti / sunrise) read light → never fires.
-  assert(!checkSceneComposition(duoGood()).some((x) => /reads dark/.test(x)), "non-dark atmosphere must never fire the check");
+  // R7: with no canvas hex supplied the surface arm is INERT (keyword fallback deleted).
+  assert(!checkSceneComposition(duoGood()).some((x) => /reads dark/.test(x)), "no canvas → the surface arm never fires");
 });
 
-// — v10: the CANVAS-AGNOSTIC washout arm (light canvas → dark surface) —
-check("washout mirror v10: LIGHT atmosphere + hero with no dark/saturated-surface item fails (the Glossier arm)", () => {
+// — v10 → R7: the light-canvas arm (light canvas → dark surface) —
+check("washout mirror (R7): LIGHT canvas + hero with no dark/saturated-surface item fails (the Glossier arm)", () => {
   const s = duoGood();
-  sceneOf(s, 0).composition.atmosphere = "Pale blush-pink wash breathes softly across the whole canvas";
-  const e = checkSceneComposition(s);
+  const e = checkSceneComposition(s, { canvasBackground: LIGHT_CANVAS });
   assert(
     e.some((x) => /Scene 0 hero: atmosphere reads light but no interior item names a dark\/saturated contrasting surface/.test(x)),
     `expected the light-canvas washout error, got ${JSON.stringify(e)}`,
   );
 });
 
-check("washout mirror v10: light atmosphere + a named dark surface passes (cue word or dark hex)", () => {
+check("washout mirror (R7): light canvas + a named dark surface passes (cue word or dark hex)", () => {
   const cue = duoGood();
-  sceneOf(cue, 0).composition.atmosphere = "Powder-pink pastel field with drifting petals across the canvas";
   sceneOf(cue, 0).composition.elements[0].interior[0] = "lesson card on a deep espresso panel, XP bar 340/500";
-  assert(!checkSceneComposition(cue).some((x) => /reads light/.test(x)), "dark cue word must satisfy the light arm");
+  assert(!checkSceneComposition(cue, { canvasBackground: LIGHT_CANVAS }).some((x) => /reads light/.test(x)), "dark cue word must satisfy the light arm");
   const hex = duoGood();
-  sceneOf(hex, 0).composition.atmosphere = "Milky ivory gradient washes the frame edge to edge softly";
   sceneOf(hex, 0).composition.elements[0].interior[0] = "lesson card panel painted #2b1e26, XP bar 340/500";
-  assert(!checkSceneComposition(hex).some((x) => /reads light/.test(x)), "dark hex must satisfy the light arm");
+  assert(!checkSceneComposition(hex, { canvasBackground: LIGHT_CANVAS }).some((x) => /reads light/.test(x)), "dark hex must satisfy the light arm");
 });
 
-check("washout mirror v10: a LIGHT hex does not satisfy the light arm; dark reading wins when both match", () => {
+check("washout mirror (R7): a LIGHT hex does not satisfy the light arm; a dark canvas judges the dark arm", () => {
   const s = duoGood();
-  sceneOf(s, 0).composition.atmosphere = "Pale cream wash floods every corner of the frame gently";
   sceneOf(s, 0).composition.elements[0].interior[0] = "lesson card panel painted #faf7f2, XP bar 340/500";
-  assert(checkSceneComposition(s).some((x) => /reads light/.test(x)), "a light hex must not count as a dark surface");
-  // Both vocabularies present → the dark arm judges (light details on a dark field).
+  assert(checkSceneComposition(s, { canvasBackground: LIGHT_CANVAS }).some((x) => /reads light/.test(x)), "a light hex must not count as a dark surface");
+  // R7: the canvas luminance decides the arm directly (no prose-vocabulary contest).
   const both = duoGood();
-  sceneOf(both, 0).composition.atmosphere = "Pale streaks rake across a near-black charcoal field diagonally";
-  const e = checkSceneComposition(both);
-  assert(e.some((x) => /reads dark/.test(x)) && !e.some((x) => /reads light/.test(x)), `dark wins on mixed vocabulary, got ${JSON.stringify(e)}`);
+  const e = checkSceneComposition(both, { canvasBackground: DARK_CANVAS });
+  assert(e.some((x) => /reads dark/.test(x)) && !e.some((x) => /reads light/.test(x)), `dark canvas judges the dark arm, got ${JSON.stringify(e)}`);
 });
 
 // — v10: the narrow ungrounded mock-value deny-list —

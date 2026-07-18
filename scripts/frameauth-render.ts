@@ -91,14 +91,16 @@ const log = (m: string) => console.log(`[${((Date.now() - t0) / 1000).toFixed(1)
   const composed = await generateComposition({
     script,
     caller: headCaller,
-    validate: (scenes: Scene[]) => checkSceneComposition(scenes, { aspect }),
+    // R7 (audit-2): pass the RESOLVED canvas so the surface-contrast arm keys off
+    // real luminance (the keyword fallback is deleted).
+    validate: (scenes: Scene[]) => checkSceneComposition(scenes, { aspect, canvasBackground: canvasPlan.background }),
     aspect,
     brandName: brand,
     paletteHint: `canvas ${canvasPlan.background} (${canvasPlan.mode}), signature accent ${signature}, brand palette: ${(be?.palette ?? []).join(", ")}`,
     designNotes: `Design system consts downstream: PALETTE (CANVAS/INK/ACCENT/MUTED/SOFT_NEUTRAL/CARD_FILL/WHITE), shared keyframes (glowBreathe, drift1-3, drawWidth, fadeRise, scaleIn). Fonts: display ${theme.fonts.display}, body ${theme.fonts.body}.`,
   });
   const composedScript = { ...script, scenes: composed.scenes };
-  const residual = checkSceneComposition(composed.scenes, { aspect });
+  const residual = checkSceneComposition(composed.scenes, { aspect, canvasBackground: canvasPlan.background });
   log(`head: ${composed.attempts} attempt(s), ${residual.length} residual validation error(s)`);
   await fs.writeFile(
     path.join(OUT, "composition.json"),

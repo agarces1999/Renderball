@@ -170,11 +170,11 @@ await check("system: ONE worked example, branded ILLUSTRATIVE, copying = validat
   assert((system.match(/WORKED EXAMPLE/g) ?? []).length === 1, "exactly ONE example (more = more leakage surface)");
 });
 
-await check("system: the v11 full-bleed vertical-fill clause is STATED (cycle-2 s4 barbell class)", () => {
-  assert(system.includes("FULL-BLEED VERTICAL FILL"), "clause present");
-  assert(system.includes("UPPER third") && system.includes("LOWER third"), "upper+lower-third inventory demand");
-  assert(/barbell/.test(system), "the barbell consequence is named");
-  assert(/fails a blocking gate/.test(system), "the gate consequence is named (models comply better with a stated sensor)");
+await check("system: the R6 full-bleed SHAPE clause is STATED (lean template, not maximal — cycle-2 s4 barbell class)", () => {
+  assert(system.includes("FULL-BLEED SHAPE"), "clause present");
+  assert(/TOP/.test(system) && /BOTTOM/.test(system), "top+bottom anchoring demand");
+  assert(/6.8 items TOTAL/.test(system), "R6: the interior-inventory cap (6–8 items) is stated");
+  assert(/TRUNCATES/.test(system), "R6: the truncation consequence is named (models comply better with a stated sensor)");
 });
 
 await check("system: the v12 mock-territory clause — a full-canvas app shell forfeits the copy column (cycle-3 s1 interleave)", () => {

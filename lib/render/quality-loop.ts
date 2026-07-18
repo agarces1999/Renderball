@@ -61,6 +61,7 @@ import {
   furnishRectForBand,
   furnishRectForRowBand,
   pickFurnishSurface,
+  FURNISH_INSET_PX,
 } from "./void-furnish";
 import { extractQuotedValues, placeholderTitleFromSubject } from "../agents/cast-build";
 import { CANVAS } from "../agents/layout-composer";
@@ -92,6 +93,8 @@ import {
 import {
   assessHeroWashout,
   HERO_UNDERSCALE_MIN_FRAC,
+  HERO_HEALTHY_FRAC,
+  heroPaintedFraction,
   findHeroUnderscale,
   type HeroContrastResult,
   type HeroLuminanceStats,
@@ -261,7 +264,7 @@ export interface VoidFurnishEvent {
   pieceId: string;
   runFracW: number;
   region: string;
-  action: "furnished" | "furnished-residual" | "skipped";
+  action: "furnished" | "furnished-residual" | "skipped" | "skipped-healthy-hero";
   detail: string;
 }
 
@@ -774,16 +777,10 @@ export const computeTargets = (args: {
         add(id, f.scene, fb);
       }
     } else if (f.kind === "barbell") {
-      const register = registers?.[f.scene];
-      if (register === "full-bleed") {
-        add(
-          `s${f.scene}.hero`,
-          f.scene,
-          `[render-truth/barbell] ${f.detail}\nThis is a FULL-BLEED scene: your element IS the frame — populate the empty band named above with interior items in the same diegetic register (a nav/chrome band, rows, floating chips, a footer meta strip), spreading real content across the FULL frame height. Do NOT just stretch a top cluster and a bottom cluster further apart.`,
-        );
-      } else {
-        add(`s${f.scene}.copy`, f.scene, `[render-truth/barbell] ${f.detail}`);
-      }
+      // R4 (audit-2): full-bleed barbell is filtered to advisory before this point
+      // (the row-arm/furnish own full-bleed bands), so any barbell that reaches
+      // here is a non-full-bleed scene — route it to the copy stack.
+      add(`s${f.scene}.copy`, f.scene, `[render-truth/barbell] ${f.detail}`);
     } else if (f.kind === "canvas-coherence" || f.kind === "canvas-brightness") {
       // Canvas-wash defects: the atmosphere owns the full-bleed canvas. P3-C2 #5
       // (Brex s0): when the HERO is full-bleed it IS the canvas — it shipped a
@@ -1283,6 +1280,15 @@ export async function runQualityLoop(
         registers: sceneRegisters,
         brandName: BRAND,
       }),
+    );
+    // R4 (audit-2): the full-bleed barbell is ADVISORY, not blocking. On a
+    // full-bleed scene the occupancy full-bleed ROW arm + the deterministic
+    // furnish own the abandoned top/bottom band; leaving barbell blocking too
+    // routed a regen the full-bleed hero can't satisfy AND double-counted the same
+    // defect (the audit-2 full-bleed split-brain — three postures for one
+    // register). Demote it so the row-arm/furnish is the single owner.
+    rt.blocking = rt.blocking.filter(
+      (f) => !(f.kind === "barbell" && sceneRegisters[f.scene] === "full-bleed"),
     );
 
     // (b2) hero-washout.
@@ -1818,11 +1824,18 @@ export async function runQualityLoop(
     // can no longer ship, whatever its register. (Fuse s3 / Deel s1: detected for
     // four brands, never regen-converged; this closes the loop without a regen.)
     const postOcc = await assessOccupancy(finalMeasurements, sceneRegisters);
-    const survivingVoids = postOcc.findings; // all flagged voids, not only blocking
+    // R4 (audit-2): ONE furnish panel per scene — dedup the surviving voids by
+    // scene, keeping the widest run (the void most worth filling). The 5-arm mesh
+    // used to stamp a panel per finding; the rebalanced contract furnishes at most
+    // one, and only when the hero is genuinely hollow.
+    const survivingVoids = [...postOcc.findings]
+      .sort((a, b) => b.runFracW - a.runFracW)
+      .filter((f, _i, arr) => arr.findIndex((g) => g.scene === f.scene) === arr.indexOf(f));
     if (survivingVoids.length > 0) {
       const canvas = CANVAS[config.castInput.aspect] ?? CANVAS["16:9"];
       const surfaceHex = pickFurnishSurface(Object.values(theme.palette), canvasBackground);
       const accentHex = accentHexes.find((h) => /^#[0-9a-fA-F]{3,8}$/.test(h)) ?? surfaceHex;
+      const norm = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
       const collectContentStrings = (content: Record<string, unknown>): string[] => {
         const out: string[] = [];
         for (const [field, v] of Object.entries(content)) {
@@ -1842,33 +1855,80 @@ export async function runQualityLoop(
       let anyInjected = false;
       for (const f of survivingVoids) {
         const scene = f.scene;
+        // R4: HERO-HEALTH GATE. A hero that PAINTS above the health floor owns its
+        // frame — the void band beside/around it is INTENTIONAL negative space, and
+        // stamping a panel there is the audit-2 defect (a redundant debug-box beside
+        // a healthy composition). Furnish is reserved for a genuinely HOLLOW hero.
+        const measurement = finalMeasurements.find((m) => m.scene === scene);
+        const heroFrac = measurement ? heroPaintedFraction(measurement) : 1;
+        if (heroFrac >= HERO_HEALTHY_FRAC) {
+          voidFurnishEvents.push({ scene, pieceId: f.pieceId, runFracW: f.runFracW, region: f.region, action: "skipped-healthy-hero", detail: `${(f.runFracW * 100).toFixed(0)}% ${f.region} void beside a HEALTHY hero (painted ${(heroFrac * 100).toFixed(0)}% ≥ ${(HERO_HEALTHY_FRAC * 100).toFixed(0)}%) — intentional negative space, furnish suppressed (R4)` });
+          log(`  [void-furnish] scene ${scene}: hero healthy (${(heroFrac * 100).toFixed(0)}% painted) — ${(f.runFracW * 100).toFixed(0)}% void left as intentional negative space (no furnish)`);
+          continue;
+        }
         const comp = config.castInput.script.scenes[scene]?.composition as
-          | { elements?: { role?: string; subject?: string; interior?: string[] }[] }
+          | { elements?: { role?: string; subject?: string; interior?: string[]; bounds?: { x: number; y: number; w: number; h: number } }[] }
           | undefined;
         const els = Array.isArray(comp?.elements) ? comp!.elements! : [];
         const heroEl = els.find((e) => e.role === "hero");
-        const interiors = els.flatMap((e) => (Array.isArray(e.interior) ? e.interior : []));
-        let values = extractQuotedValues(interiors);
+        // R3: content dedup. Never duplicate strings ALREADY PAINTED on screen (the
+        // Mailchimp redundant-label box). Prefer NON-hero interior + eyebrow/caption/
+        // meta; the hero's own inventory is admissible ONLY because the hero is
+        // hollow (nothing of it is on screen to duplicate).
+        const paintedOnScreen = new Set(
+          (measurement?.elements ?? [])
+            .map((e) => norm(e.text ?? ""))
+            .filter((t) => t.length >= 3),
+        );
+        const content = (script.scenes?.[scene]?.content ?? {}) as Record<string, unknown>;
+        const preferred = [content.eyebrow, content.caption, content.meta]
+          .filter((v): v is string => typeof v === "string" && v.trim().length >= 2)
+          .map((v) => v.trim());
+        const nonHeroInterior = extractQuotedValues(
+          els.filter((e) => e.role !== "hero").flatMap((e) => (Array.isArray(e.interior) ? e.interior : [])),
+        );
+        const heroInterior = extractQuotedValues(Array.isArray(heroEl?.interior) ? heroEl!.interior! : []);
+        const dedup = (arr: string[]): string[] => {
+          const seen = new Set<string>();
+          const out: string[] = [];
+          for (const v of arr) {
+            const k = norm(v);
+            if (k.length < 2 || seen.has(k) || paintedOnScreen.has(k)) continue;
+            seen.add(k);
+            out.push(v);
+          }
+          return out;
+        };
+        let values = dedup([...preferred, ...nonHeroInterior, ...heroInterior]);
         if (values.length < 2) {
-          const content = (script.scenes?.[scene]?.content ?? {}) as Record<string, unknown>;
-          values = [...new Set([...values, ...collectContentStrings(content)])];
+          values = dedup([...values, ...collectContentStrings(content), BRAND]);
         }
-        // Audit-1 High #3 edit (5): a void can't ship for want of content. If the
-        // scene is value-thin, pad with the eyebrow/caption/meta and the brand
-        // name (never the headline — the copy piece owns it) so the panel always
-        // has ≥2 rows to render.
+        // R3: if there is still no non-redundant content to render, DON'T furnish —
+        // a stamped panel of duplicate labels is worse than the void.
         if (values.length < 2) {
-          const content = (script.scenes?.[scene]?.content ?? {}) as Record<string, unknown>;
-          const pad = [content.eyebrow, content.caption, content.meta, BRAND]
-            .filter((v): v is string => typeof v === "string" && v.trim().length >= 2)
-            .map((v) => v.trim());
-          values = [...new Set([...values, ...pad])];
+          voidFurnishEvents.push({ scene, pieceId: f.pieceId, runFracW: f.runFracW, region: f.region, action: "skipped", detail: `${f.detail} (no non-redundant content → residual flagged rather than a duplicate box)` });
+          warn(`  [void-furnish] scene ${scene}: hollow hero but no non-redundant content to furnish — residual ships FLAGGED (honest)`);
+          continue;
         }
         const title = placeholderTitleFromSubject(heroEl?.subject);
+        // R4: for a hollow hero, prefer FILLING the hero's own authored bounds
+        // (scale-to-fill where the hero should be) over stamping an adjacent side
+        // panel. Fall back to the void band when the hero has no usable bounds.
+        const heroBounds = heroEl?.bounds;
+        const heroRect =
+          heroBounds && heroBounds.w >= 200 && heroBounds.h >= 140
+            ? {
+                x: Math.max(FURNISH_INSET_PX, heroBounds.x),
+                y: Math.max(FURNISH_INSET_PX, heroBounds.y),
+                w: Math.min(heroBounds.w, canvas.w - 2 * FURNISH_INSET_PX),
+                h: Math.min(heroBounds.h, canvas.h - 2 * FURNISH_INSET_PX),
+              }
+            : null;
         const rect =
-          f.axis === "row" && f.rowBand
+          heroRect ??
+          (f.axis === "row" && f.rowBand
             ? furnishRectForRowBand(f.rowBand, canvas)
-            : furnishRectForBand(f.band, canvas);
+            : furnishRectForBand(f.band, canvas));
         if (!rect || values.length < 1) {
           voidFurnishEvents.push({ scene, pieceId: f.pieceId, runFracW: f.runFracW, region: f.region, action: "skipped", detail: `${f.detail} (no furnishable rect/values → residual flagged)` });
           warn(`  [void-furnish] scene ${scene}: ${(f.runFracW * 100).toFixed(0)}% void unfurnishable (rect=${!!rect}, values=${values.length}) — residual ships FLAGGED (honest)`);
@@ -1888,8 +1948,8 @@ export async function runQualityLoop(
         if (inj.injected) {
           finalCode = inj.code;
           anyInjected = true;
-          voidFurnishEvents.push({ scene, pieceId: `s${scene}.furnish`, runFracW: f.runFracW, region: f.region, action: "furnished", detail: `${(f.runFracW * 100).toFixed(0)}% ${f.region} void → deterministic furnish panel (${values.length} items)` });
-          log(`  [void-furnish] scene ${scene}: filled ${(f.runFracW * 100).toFixed(0)}% ${f.region} void with a ${values.length}-item brand panel (deterministic — no regen)`);
+          voidFurnishEvents.push({ scene, pieceId: `s${scene}.furnish`, runFracW: f.runFracW, region: f.region, action: "furnished", detail: `${(f.runFracW * 100).toFixed(0)}% ${f.region} void (hollow hero ${(heroFrac * 100).toFixed(0)}%) → deterministic furnish panel (${values.length} items)` });
+          log(`  [void-furnish] scene ${scene}: hollow hero (${(heroFrac * 100).toFixed(0)}%) → filled ${(f.runFracW * 100).toFixed(0)}% ${f.region} void with a ${values.length}-item brand panel (deterministic — no regen)`);
         } else {
           voidFurnishEvents.push({ scene, pieceId: f.pieceId, runFracW: f.runFracW, region: f.region, action: "skipped", detail: `${f.detail} (section anchor absent → residual flagged)` });
           warn(`  [void-furnish] scene ${scene}: could not locate Section${scene} anchor — residual ships FLAGGED (honest)`);

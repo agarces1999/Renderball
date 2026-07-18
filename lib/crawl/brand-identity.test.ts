@@ -16,6 +16,7 @@ import {
   brandShortName,
   brandNameFromTitle,
   looksLikeTagline,
+  resolveCanvasPlan,
 } from "./brand-identity";
 import { buildAgentInputFromBrief } from "../agents/pipeline";
 
@@ -368,6 +369,35 @@ check("deriveBrandName is the same SSOT surface brandShortName wraps", () => {
       brandShortName({ url: "https://brex.com", title: "Brex: tagline" }),
     "brandShortName delegates to deriveBrandName",
   );
+});
+
+// ── R1 (audit-2): resolveCanvasPlan — crawl bg wins; palette fallback biases LIGHT ──
+check("resolveCanvasPlan: an extracted crawl background is authoritative (light stays light)", () => {
+  const p = resolveCanvasPlan({ background_color: "#ffffff", palette: ["#15191e", "#ff5900"] });
+  assert(p.background === "#ffffff" && p.source === "crawl" && p.mode === "light", `crawl light bg wins, got ${JSON.stringify(p)}`);
+});
+
+check("resolveCanvasPlan: a dark crawl background stays dark", () => {
+  const p = resolveCanvasPlan({ background_color: "#0b0e13", palette: ["#f5f8fa"] });
+  assert(p.background === "#0b0e13" && p.mode === "dark", `dark crawl bg wins, got ${JSON.stringify(p)}`);
+});
+
+check("resolveCanvasPlan: palette fallback BIASES toward LIGHT when a light token exists (R1)", () => {
+  // No crawl bg. A prominence-ordered palette whose FIRST extreme is a dark brand
+  // token but which also carries a light token: pre-R1 picked the (earlier) dark
+  // extreme; R1 prefers the light one so a light brand no longer ships dark.
+  const p = resolveCanvasPlan({ palette: ["#0a0a0a", "#ff5900", "#fbfbfd"] });
+  assert(p.mode === "light" && p.background === "#fbfbfd", `light-biased fallback, got ${JSON.stringify(p)}`);
+});
+
+check("resolveCanvasPlan: a genuinely DARK-only palette still resolves dark", () => {
+  const p = resolveCanvasPlan({ palette: ["#0a0a0a", "#171717", "#3a3a3a"] });
+  assert(p.mode === "dark" && p.source === "palette", `dark-only palette stays dark, got ${JSON.stringify(p)}`);
+});
+
+check("resolveCanvasPlan: no usable palette → white default", () => {
+  const p = resolveCanvasPlan({ palette: ["#7f7f7f"] }); // mid-tone only, no extreme
+  assert(p.background === "#ffffff" && p.source === "default", `default white, got ${JSON.stringify(p)}`);
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

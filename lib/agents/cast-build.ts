@@ -49,6 +49,7 @@ import { normalizeElementColors, assessAccentPresence, hexToRgb, rgbToHsl, isNeu
 import { assembleComposition } from "./assemble";
 import { applyChoreography } from "./choreograph";
 import { stripCodeFence, verifyCompilable } from "./code-extraction";
+import { pickElevatedSurface } from "../render/void-furnish";
 import { AccountLimiter } from "./account-limiter";
 
 // ─── Public contract ────────────────────────────────────────────────────────
@@ -634,6 +635,13 @@ export const stripMetaText = (
  */
 export const PRE_RENDER_HERO_MIN_ELEMENTS = 15;
 export const PRE_RENDER_HERO_MIN_TEXT = 4;
+/** R5 (audit-2): the RELAXED density floor a hero is held to once it has
+ *  TRUNCATED (finish_reason==="length"). The maximalist ≥15el/≥4tx bar drives GLM
+ *  to exceed its length budget on the deepest bookend heroes; after a truncation
+ *  we ask for a LEANER, COMPLETE body and let it ship ok (a complete moderately-
+ *  rich hero beats a truncated maximal one salvaged as a failure). */
+export const LEAN_HERO_MIN_ELEMENTS = 9;
+export const LEAN_HERO_MIN_TEXT = 3;
 
 /**
  * (d2b) HERO POPULATE-REGEN budget. The density gate (d2) correctly rejects a
@@ -2078,59 +2086,34 @@ const heroFillsCanvas = (bounds: { w: number; h: number }, aspect: Aspect): bool
   return bounds.w >= PLACEHOLDER_FILL_W_FRAC * cv.w || bounds.h >= PLACEHOLDER_FILL_H_FRAC * cv.h;
 };
 
-/** P3-C6 #5: chroma (max−min RGB channel) of a hex, or null. A brand ACCENT
- *  carries chroma; a neutral gray does not (mirrors accent-fill's neutral floor). */
-const PLACEHOLDER_NEUTRAL_CHROMA = 24;
-const chromaOf = (hex: string): number | null => {
-  const rgb = hexToRgb(hex.trim());
-  if (!rgb) return null;
-  return Math.max(rgb[0], rgb[1], rgb[2]) - Math.min(rgb[0], rgb[1], rgb[2]);
-};
-
-/** A truly MONOCHROME dark brand: a dark canvas whose palette carries NO chromatic
- *  accent anywhere (Scale AI's all-black/gray palette — vs Brex, whose near-neutral
- *  dark canvas still ships an orange accent). On such a brand the blueprint
- *  placeholder's role-resolved "ink" surface can collapse to near-black (a
- *  black-on-black panel) which the washout gate force-lifts to a STARK full-white
- *  panel (Scale AI s0) — jarring on an all-black brand. */
-const isMonochromeDarkCanvas = (theme: Theme): boolean => {
-  const canvasHex = theme.palette[tokenForRole(theme, "canvas")];
-  const cl = canvasHex ? luminance709(canvasHex) : null;
-  if (cl === null || cl >= 64) return false; // not a dark canvas (0-255 luminance)
-  for (const hex of Object.values(theme.palette)) {
-    const c = chromaOf(hex);
-    if (c !== null && c >= PLACEHOLDER_NEUTRAL_CHROMA) return false; // a chromatic accent exists → not monochrome
-  }
-  return true;
-};
-
-/** Comfortably above HERO_SURFACE_MIN_DELTA_L (15) so the chosen surface clears
- *  the washout gate with margin and is never force-lifted to a stark extreme. */
-const PLACEHOLDER_SURFACE_MIN_DELTA_L = 18;
-
-/** P3-C6 #5: the surface + contrasting-text CONST NAMES the blueprint placeholder
- *  paints with. Default = role tokens (ink surface + canvas text = the light
- *  "before"-UI look; Brex/Faire and every chromatic brand unchanged). On a
- *  MONOCHROME dark brand, pick a MID-elevated surface — the least-distant palette
- *  token that still clears the washout floor (the brand's own dark card, e.g.
- *  Scale's #171717, NOT a stark full-white lift) — plus the most-distant token as
- *  legible text. Both surface↔canvas and text↔surface are guaranteed to contrast,
- *  so there is no washout to force-lift and no ghost. Returns const names (the
- *  assembler emits a const per palette key). */
+/** P3-C6 #5 → R2 (audit-2): the surface + contrasting-text CONST NAMES the
+ *  blueprint placeholder paints with. On a LIGHT canvas = role tokens (ink
+ *  surface + canvas text = a dark ink panel on the pale field; Faire unchanged).
+ *  On ANY DARK canvas — chromatic OR monochrome — pick a MID-elevated DARK
+ *  surface via the shared pickElevatedSurface (the brand's own dark card, e.g.
+ *  Scale's #171717 / a near-black brand's darkest low-chroma token), NEVER a
+ *  stark full-white "before-UI" lift. R2 dropped the old monochrome-only gate:
+ *  the white-placeholder defect (Mailchimp s2) was not monochrome-specific — any
+ *  dark brand suffered it. The most-distant token is the legible text. Returns
+ *  const names (the assembler emits a const per palette key). */
 export const placeholderSurfaceInk = (theme: Theme): { surface: string; ink: string } => {
-  const fallback = { surface: tokenForRole(theme, "ink"), ink: tokenForRole(theme, "canvas") };
-  if (!isMonochromeDarkCanvas(theme)) return fallback;
+  const roleFallback = { surface: tokenForRole(theme, "ink"), ink: tokenForRole(theme, "canvas") };
   const canvasHex = theme.palette[tokenForRole(theme, "canvas")];
   const canvasL = canvasHex ? luminance709(canvasHex) : null;
-  if (canvasL === null) return fallback;
+  if (canvasL === null || canvasL >= 128) return roleFallback; // light/mid canvas (0-255)
+  const picked = pickElevatedSurface(canvasHex!, Object.entries(theme.palette));
+  if (!picked) return roleFallback;
+  const surfL = luminance709(picked.hex) ?? 0;
+  // Only take the elevated token when it is itself a DARK card (surfL < 128). When
+  // the palette carries no opaque dark card (the only qualifying token is a light
+  // one), keep the role fallback — the light "before-UI" panel (Brex/Faire), never
+  // a token that would read as the same stark-white lift we're avoiding.
+  if (surfL >= 128) return roleFallback;
   const toks = Object.entries(theme.palette)
     .map(([name, hex]) => ({ name, l: luminance709(hex) }))
     .filter((t): t is { name: string; l: number } => t.l !== null);
-  const clearing = toks.filter((t) => Math.abs(t.l - canvasL) >= PLACEHOLDER_SURFACE_MIN_DELTA_L);
-  if (clearing.length === 0) return fallback;
-  const surface = clearing.reduce((a, b) => (Math.abs(b.l - canvasL) < Math.abs(a.l - canvasL) ? b : a));
-  const text = toks.reduce((a, b) => (Math.abs(b.l - surface.l) > Math.abs(a.l - surface.l) ? b : a));
-  return { surface: surface.name, ink: text.name };
+  const text = toks.reduce((a, b) => (Math.abs(b.l - surfL) > Math.abs(a.l - surfL) ? b : a));
+  return { surface: picked.name, ink: text.name };
 };
 
 /**
@@ -2494,8 +2477,13 @@ export const castBuild = async (
     // syntax-verify. A transport throw (castCall retries internally first) is
     // treated like a broken result — the build completes degraded rather than
     // dying on one element.
+    // R5 (audit-2): the finish_reason of the LAST attempt call — "length" is an
+    // authoritative truncation (the model's rich body exceeded its token budget),
+    // which drives the lean-repair path instead of re-sending the maximalist brief.
+    let lastStopReason: string | null = null;
     const attempt = async (
       user: string,
+      lean = false,
     ): Promise<
       | { ok: true; body: string; rewrites: number; fontRewrites: number; heroSurface: boolean; metaStrips: number }
       // `salvage` carries a compilable-but-thin hero body (density-floor
@@ -2505,10 +2493,12 @@ export const castBuild = async (
       | { ok: false; raw: string; error: string; salvage?: { body: string; score: number } }
     > => {
       let text: string;
+      lastStopReason = null;
       try {
         const res = await caller({ system, user, maxTokens: maxTokensFor(job.slot.id, model), effort, model });
         tokens += res.outputTokens;
         text = res.text;
+        lastStopReason = res.stopReason;
       } catch (err) {
         return { ok: false, raw: "", error: err instanceof Error ? err.message : String(err) };
       }
@@ -2604,7 +2594,11 @@ export const castBuild = async (
       let heroSurface = false;
       if (job.slot.id === "hero") {
         const density = staticJsxDensity(bindGuard.code);
-        if (density.elements < PRE_RENDER_HERO_MIN_ELEMENTS || density.textNodes < PRE_RENDER_HERO_MIN_TEXT) {
+        // R5: once the hero has truncated, hold it to the LEAN floor so a leaner
+        // COMPLETE emission ships ok:true rather than being salvaged as a failure.
+        const minEl = lean ? LEAN_HERO_MIN_ELEMENTS : PRE_RENDER_HERO_MIN_ELEMENTS;
+        const minTx = lean ? LEAN_HERO_MIN_TEXT : PRE_RENDER_HERO_MIN_TEXT;
+        if (density.elements < minEl || density.textNodes < minTx) {
           // A thin hero is a FAILURE (→ populate-regen), but it is still real,
           // populated content. Verify it compiles: a body that survives the
           // fragment gate is SALVAGEABLE — it ships in place of the blank
@@ -2620,7 +2614,7 @@ export const castBuild = async (
             raw,
             error:
               `hero interior too thin: statically measured ~${density.elements} element(s) / ~${density.textNodes} text value(s) — ` +
-              `the hero floor is ≥${PRE_RENDER_HERO_MIN_ELEMENTS} nested elements AND ≥${PRE_RENDER_HERO_MIN_TEXT} concrete visible text values ` +
+              `the hero floor is ≥${minEl} nested elements AND ≥${minTx} concrete visible text values ` +
               `(rows, chips, labels, timestamps, values that belong to the product). Rebuild this element as a real product ` +
               `artifact with a furnished interior — every inventory item in the brief visibly present, plus supporting diegetic chrome`,
             salvage: { body: bindGuard.code, score: density.elements + density.textNodes },
@@ -2710,29 +2704,36 @@ export const castBuild = async (
     // inventory each repair (heroPopulateReassert). See HERO_POPULATE_REPAIRS.
     const maxRepairs = isHero ? HERO_POPULATE_REPAIRS : 1;
     let prev: { raw: string; error: string } = first;
+    // R5 (audit-2): once a hero has TRUNCATED (finish_reason==="length", or the
+    // compile error is the truncation signature), switch to LEAN mode for the rest
+    // of the budget — the lean brief + relaxed density floor — rather than
+    // re-sending the maximalist "FILL/≥15el" brief that truncates again.
+    let leanMode = false;
     for (let r = 0; r < maxRepairs; r++) {
-      const reassert = isHero && isDensityFail(prev.error) ? heroPopulateReassert(heroSpec) : "";
-      // P3-C5 (1b): on a hero that COMPILE-broke/truncated, spend the LAST repair
-      // asking for a SIMPLER, SHORTER body that compiles cleanly — a real leaner
-      // emission beats the fallback panel. (Density fails keep re-asserting the
-      // inventory; a truncation needs the opposite — less, not more.)
-      const simplify =
-        isHero && isCompileTruncation(prev.error) && r === maxRepairs - 1
-          ? "Your output keeps exceeding the length budget and TRUNCATING before it closes. Emit a SIMPLER, SHORTER version of this hero that COMPILES cleanly end-to-end: fewer interior rows (keep the 4–6 strongest, real values), shallower nesting, no decorative sub-panels. A COMPLETE, valid, moderately-rich component is far better than a truncated rich one. Close every tag and string."
-          : "";
+      const truncated = lastStopReason === "length" || (isHero && isCompileTruncation(prev.error));
+      if (isHero && truncated) leanMode = true;
+      // Density fails RE-ASSERT the inventory (more) — but NOT in lean mode, where
+      // a truncation needs the opposite (less, not more).
+      const reassert = isHero && !leanMode && isDensityFail(prev.error) ? heroPopulateReassert(heroSpec) : "";
+      const lean = leanMode
+        ? "Your output exceeded the length budget and TRUNCATED before it closed. Emit a LEANER, COMPLETE version of this hero that compiles cleanly end-to-end: ONE primary panel, 6–8 interior rows (the strongest real values), SHALLOW nesting, no decorative sub-panels — and CLOSE every tag and string. A COMPLETE, valid, moderately-rich component is far better than a truncated maximal one."
+        : "";
+      // R5: on truncation do NOT echo prev.raw (~11k of the too-long body) — it
+      // just crowds the budget again; a short note + the lean directive is enough.
       const next = await attempt(
         [
           job.brief,
           "",
-          "Your previous attempt failed:",
-          prev.raw ? `--- previous attempt ---\n${prev.raw}` : "(the call itself failed)",
-          `--- error ---\n${prev.error}`,
+          leanMode ? "Your previous attempt did not finish — it TRUNCATED at the length budget." : "Your previous attempt failed:",
+          leanMode ? "" : prev.raw ? `--- previous attempt ---\n${prev.raw}` : "(the call itself failed)",
+          leanMode ? "" : `--- error ---\n${prev.error}`,
           reassert,
-          simplify,
+          lean,
           "Emit corrected JSX only — output ONLY component code; never narrate your reasoning, plan, or coordinate math as rendered text nodes.",
         ]
           .filter(Boolean)
           .join("\n"),
+        leanMode,
       );
       if (next.ok) {
         return { pieceId: job.pieceId, body: next.body, outputTokens: tokens, repaired: true, failed: false, colorRewrites: next.rewrites, fontRewrites: next.fontRewrites, heroSurfaceCorrected: next.heroSurface, metaTextStrips: next.metaStrips, shippedBlueprintPlaceholder: false };

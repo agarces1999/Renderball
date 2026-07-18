@@ -60,28 +60,57 @@ const chroma = (hex: string): number => {
   return Math.max(...rgb) - Math.min(...rgb);
 };
 
-/**
- * Pick the furnish panel surface: a color that CONTRASTS the scene canvas
- * (opposite luminance side) and reads as a neutral surface (low chroma — never a
- * saturated accent, which would trip the accent-as-fill gate). Prefers an
- * on-brand palette token that qualifies; falls back to a computed neutral
- * (dark surface on a light canvas, light surface on a dark canvas) so the panel
- * always contrasts regardless of palette. The washout gate passes by
- * construction — the surface is on the far luminance side of the canvas.
- */
 export const SURFACE_MIN_LUM_CONTRAST = 0.35;
 export const SURFACE_MAX_CHROMA = 60;
+/** Minimum luminance distance (0..1) an elevated card must clear so it reads as
+ *  a distinct surface, not the canvas — ~18/255, matching the placeholder floor. */
+export const ELEVATED_SURFACE_MIN_DELTA_L = 0.07;
+
+/**
+ * R2 (audit-2) — the ONE elevated-surface picker. Every "an elevated card
+ * surface on the brand canvas" decision (the void-furnish panel AND cast-build's
+ * compile-break blueprint placeholder) routes through this single luminance
+ * policy, so a dark brand can never get a stark-white slab from one picker while
+ * the other paints a tasteful dark card.
+ *
+ * On a DARK canvas it returns a MID-elevated surface — the LEAST-distant palette
+ * token that still clears the ΔL floor (the brand's own dark card, e.g. Scale's
+ * #171717), NOT the most-distant stark-white extreme (the Mailchimp debug-box
+ * defect). On a LIGHT canvas it returns a solid DARK card (the most-distant
+ * darker token) so the panel reads clearly on the pale field. Low-chroma only —
+ * never a saturated accent (that trips accent-as-fill). Returns the chosen
+ * palette entry (name + hex) so a token-ref caller uses `.name` and a
+ * literal-hex caller uses `.hex`; null when the palette carries no qualifying
+ * token (the caller then applies its own literal/role fallback).
+ */
+export const pickElevatedSurface = (
+  canvasHex: string,
+  palette: Array<[string, string]>,
+): { name: string; hex: string } | null => {
+  const canvasLum = relLuminance(canvasHex);
+  const canvasDark = canvasLum < 0.5;
+  const cands = palette
+    .filter(([, hex]) => parseHex(hex) && chroma(hex) <= SURFACE_MAX_CHROMA)
+    .map(([name, hex]) => ({ name, hex, lum: relLuminance(hex), d: Math.abs(relLuminance(hex) - canvasLum) }))
+    .filter((c) => c.d >= ELEVATED_SURFACE_MIN_DELTA_L && (canvasDark ? c.lum > canvasLum : c.lum < canvasLum));
+  if (cands.length === 0) return null;
+  const pick = canvasDark
+    ? cands.reduce((a, b) => (b.d < a.d ? b : a)) // mid-elevated (nearest lighter card)
+    : cands.reduce((a, b) => (b.d > a.d ? b : a)); // solid dark card on a pale field
+  return { name: pick.name, hex: pick.hex };
+};
+
+/**
+ * Pick the furnish panel surface (a literal hex): the shared elevated-surface
+ * policy over the brand palette, with a computed neutral fallback so the panel
+ * always contrasts regardless of palette. R2: the dark-canvas fallback is a
+ * mid-elevated DARK card (#1c1e24), NEVER stark white — that was the Mailchimp
+ * debug-box. The washout gate passes by construction.
+ */
 export const pickFurnishSurface = (paletteValues: string[], canvasBg: string): string => {
-  const canvasLum = relLuminance(canvasBg);
-  let best: { hex: string; d: number } | null = null;
-  for (const hex of paletteValues) {
-    if (!parseHex(hex)) continue;
-    const d = Math.abs(relLuminance(hex) - canvasLum);
-    if (d < SURFACE_MIN_LUM_CONTRAST || chroma(hex) > SURFACE_MAX_CHROMA) continue;
-    if (!best || d > best.d) best = { hex, d };
-  }
-  if (best) return best.hex;
-  return canvasLum > 0.5 ? "#181a1f" : "#f4f4f6";
+  const picked = pickElevatedSurface(canvasBg, paletteValues.map((h) => ["", h] as [string, string]));
+  if (picked) return picked.hex;
+  return relLuminance(canvasBg) > 0.5 ? "#181a1f" : "#1c1e24";
 };
 
 // ── the furnish panel ────────────────────────────────────────────────────────
@@ -119,6 +148,32 @@ const safeText = (s: string, cap = 60): string => {
   return t.length > cap ? t.slice(0, cap).trim() : t;
 };
 
+/** A short, digit-free clause reads as a metric LABEL. */
+const isLabelLike = (s: string): boolean =>
+  s.length <= 22 && !/\d/.test(s) && s.split(/\s+/).length <= 3 && !/[.!?]$/.test(s);
+
+/**
+ * R3 (audit-2): pair a flat token list into label:value ROWS so the furnish
+ * panel reads as a real spec sheet, not a raw bullet dump of every extracted
+ * token (the Mailchimp debug-box). A short, digit-free label immediately
+ * followed by a token that carries a digit (a metric value) becomes ONE
+ * {label,value} row; everything else stays a standalone value row.
+ */
+export const pairValueRows = (values: string[]): Array<{ label?: string; value: string }> => {
+  const rows: Array<{ label?: string; value: string }> = [];
+  for (let i = 0; i < values.length; i++) {
+    const cur = values[i];
+    const nxt = values[i + 1];
+    if (nxt && isLabelLike(cur) && /\d/.test(nxt)) {
+      rows.push({ label: cur, value: nxt });
+      i++;
+    } else {
+      rows.push({ value: cur });
+    }
+  }
+  return rows;
+};
+
 /**
  * Build the self-contained JSX for one furnish panel. Returns a positioned
  * `<div data-piece …>` string ready to inject as a Section child. The layout is
@@ -137,15 +192,24 @@ export const buildFurnishPanelJsx = (o: FurnishPanelOpts): string => {
   const z = o.zIndex ?? 6;
   const { x, y, w, h } = o.rect;
 
-  const rows = values
-    .map(
-      (v, i) =>
-        `      <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "13px 4px"${
-          i > 0 ? `, borderTop: "1px solid ${hairline}"` : ""
-        } }}>` +
+  const inkMuted = relLuminance(surface) < 0.5 ? "rgba(244,244,246,0.62)" : "rgba(22,24,29,0.62)";
+  const rows = pairValueRows(values)
+    .map((row, i) => {
+      const top = i > 0 ? `, borderTop: "1px solid ${hairline}"` : "";
+      if (row.label) {
+        // label:value spec row — label left (muted), value right (strong).
+        return (
+          `      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14, padding: "13px 4px"${top} }}>` +
+          `<span style={{ fontFamily: ${JSON.stringify(o.fontBody)}, fontSize: 15, color: "${inkMuted}", lineHeight: 1.3 }}>${row.label}</span>` +
+          `<span style={{ fontFamily: ${JSON.stringify(o.fontBody)}, fontSize: 16, fontWeight: 600, color: "${ink}", lineHeight: 1.3, textAlign: "right" }}>${row.value}</span></div>`
+        );
+      }
+      return (
+        `      <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "13px 4px"${top} }}>` +
         `<span style={{ width: 7, height: 7, borderRadius: "50%", background: "${accent}", flexShrink: 0 }} />` +
-        `<span style={{ fontFamily: ${JSON.stringify(o.fontBody)}, fontSize: 16, color: "${ink}", lineHeight: 1.3 }}>${v}</span></div>`,
-    )
+        `<span style={{ fontFamily: ${JSON.stringify(o.fontBody)}, fontSize: 16, color: "${ink}", lineHeight: 1.3 }}>${row.value}</span></div>`
+      );
+    })
     .join("\n");
 
   const header = title

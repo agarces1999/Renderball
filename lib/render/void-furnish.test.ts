@@ -11,6 +11,8 @@ import {
   furnishRectForBand,
   furnishRectForRowBand,
   pickFurnishSurface,
+  pickElevatedSurface,
+  pairValueRows,
   parseHex,
   relLuminance,
   textOnSurface,
@@ -63,13 +65,60 @@ check("pickFurnishSurface: DARK canvas → a LIGHT surface (contrast)", () => {
 check("pickFurnishSurface: never picks a SATURATED accent (chroma guard)", () => {
   // Only the accent contrasts the canvas by luminance, but it is saturated → the
   // computed neutral fallback must win (a flat accent panel would trip accent-fill).
+  // R2 (audit-2): the dark-canvas fallback is a MID-elevated DARK card, NEVER
+  // stark white (the Mailchimp debug-box).
   const surface = pickFurnishSurface(["#ff5900"], "#101216");
-  assert(surface === "#f4f4f6", `expected the neutral fallback, got ${surface}`);
+  assert(surface === "#1c1e24", `expected the dark-elevated fallback, got ${surface}`);
 });
 
 check("pickFurnishSurface: unparseable palette → computed neutral fallback", () => {
-  assert(pickFurnishSurface([], "#ffffff") === "#181a1f", "white canvas → dark neutral");
-  assert(pickFurnishSurface([], "#111111") === "#f4f4f6", "dark canvas → light neutral");
+  assert(pickFurnishSurface([], "#ffffff") === "#181a1f", "white canvas → dark card");
+  // R2: dark canvas → a mid-elevated DARK card, not a stark-white slab.
+  assert(pickFurnishSurface([], "#111111") === "#1c1e24", "dark canvas → dark-elevated card");
+});
+
+// ── R2 (audit-2): the shared elevated-surface picker — MID-elevated on dark ─────
+check("pickElevatedSurface: DARK brand → a MID-elevated DARK card, NOT the stark-white token", () => {
+  // Mailchimp-shaped: near-black canvas, a YELLOW accent (chroma-excluded), a
+  // light ink, and a real dark card token. Must pick the dark card, not the ink.
+  const mailchimp: Array<[string, string]> = [["CANVAS", "#06040a"], ["ACCENT", "#ffe01b"], ["INK", "#f7f7f2"], ["CARD", "#1c1a12"]];
+  const p = pickElevatedSurface("#06040a", mailchimp);
+  assert(p !== null && p.name === "CARD", `mid-elevated dark card, got ${JSON.stringify(p)}`);
+  assert(relLuminance(p!.hex) < 0.4, `the surface stays a DARK card (not stark white), got ${p!.hex}`);
+});
+
+check("pickElevatedSurface: Vanta-shaped plum canvas → the least-distant elevated card, not the lightest", () => {
+  const vanta: Array<[string, string]> = [["CANVAS", "#250743"], ["CARD", "#33244a"], ["MUTED", "#68537d"], ["SOFT", "#877697"]];
+  const p = pickElevatedSurface("#250743", vanta);
+  assert(p !== null && p.name === "CARD", `nearest elevated plum card, got ${JSON.stringify(p)}`);
+  assert(p!.name !== "SOFT", "NOT the lightest token — that would be the stark lift");
+  assert(relLuminance(p!.hex) < 0.4, `stays a DARK card, got ${p!.hex}`);
+});
+
+check("pickElevatedSurface: Fuse-shaped maroon canvas → the elevated maroon card, accent excluded by chroma", () => {
+  // ACCENT #ff8c42 (high chroma) is excluded; the near-neutral maroon card wins.
+  const fuse: Array<[string, string]> = [["CANVAS", "#440b12"], ["CARD", "#5a2028"], ["ACCENT", "#ff8c42"], ["INK", "#ecf3fb"]];
+  const p = pickElevatedSurface("#440b12", fuse);
+  assert(p !== null && p.name === "CARD", `elevated maroon card, got ${JSON.stringify(p)}`);
+});
+
+check("pickElevatedSurface: LIGHT brand → a solid DARK card (reads on the pale field)", () => {
+  const light: Array<[string, string]> = [["CANVAS", "#ffffff"], ["INK", "#0f1115"], ["CARD", "#f2f1ee"], ["ACCENT", "#a88cf5"]];
+  const p = pickElevatedSurface("#ffffff", light);
+  assert(p !== null && relLuminance(p!.hex) < 0.4, `dark card on a light canvas, got ${JSON.stringify(p)}`);
+});
+
+check("pickElevatedSurface: no qualifying low-chroma token → null (caller falls back)", () => {
+  // only the canvas + a saturated accent: nothing neutral clears the floor.
+  assert(pickElevatedSurface("#101216", [["CANVAS", "#101216"], ["ACCENT", "#ff5900"]]) === null, "no elevated token → null");
+});
+
+// ── R3 (audit-2): label:value pairing (no raw token dump) ─────────────────────
+check("pairValueRows: a short label followed by a digit value pairs into label:value", () => {
+  const rows = pairValueRows(["Opens", "1,247", "Clicks", "342", "A long descriptive clause with no digit"]);
+  assert(rows.some((r) => r.label === "Opens" && r.value === "1,247"), `Opens:1,247 paired, got ${JSON.stringify(rows)}`);
+  assert(rows.some((r) => r.label === "Clicks" && r.value === "342"), "Clicks:342 paired");
+  assert(rows.some((r) => !r.label && /long descriptive/.test(r.value)), "a prose clause stays a standalone row");
 });
 
 // ── band → rect mapping ───────────────────────────────────────────────────────

@@ -571,6 +571,41 @@ export const assessHeroWashout = async (
 /** Painted-union floor — fraction of canvas area a centered/quote hero must
  *  cover. See the calibration table above. */
 export const HERO_UNDERSCALE_MIN_FRAC = 0.08;
+
+/** R4 (audit-2): a hero at or above this painted fraction is HEALTHY — its
+ *  scene's negative space is INTENTIONAL and the deterministic void-furnish is
+ *  SUPPRESSED (a clean void beside a real composition beats a stamped panel).
+ *  Below it the hero is genuinely HOLLOW — the real hole the furnish fills (in
+ *  the hero's own bounds). Set to the underscale floor: below it a centered/quote
+ *  hero already blocks as a postage-stamp, so filling there is warranted. */
+export const HERO_HEALTHY_FRAC = HERO_UNDERSCALE_MIN_FRAC;
+
+/**
+ * R4 (audit-2): the painted-union fraction of a scene's hero piece(s), 0..1 —
+ * the hero-health signal the void furnish gates on. Register-agnostic (unlike
+ * findHeroUnderscale, which only judges centered/quote) because the furnish gate
+ * runs on every register. An unmeasurable scene returns 1 (treated as healthy —
+ * never furnish blind); a scene with no hero pixels at all returns 0 (hollow).
+ */
+export const heroPaintedFraction = (m: SceneMeasurement): number => {
+  if (m.error) return 1;
+  const canvasArea = m.width * m.height;
+  if (canvasArea <= 0) return 1;
+  const els = m.elements.filter((e) => !!e.piece && e.piece.endsWith(".hero") && e.w > 0 && e.h > 0);
+  if (els.length === 0) return 0;
+  const clamp = (e: MeasuredElement) => {
+    const x0 = Math.max(0, e.x);
+    const y0 = Math.max(0, e.y);
+    return {
+      x: x0,
+      y: y0,
+      w: Math.max(0, Math.min(m.width, e.x + e.w) - x0),
+      h: Math.max(0, Math.min(m.height, e.y + e.h) - y0),
+    };
+  };
+  const painted = els.filter(isPaintedElement).map(clamp);
+  return rectUnionArea(painted) / canvasArea;
+};
 /** Registers whose hero anchors the frame — the only ones this gate judges.
  *  (A full-bleed hero owns the canvas by construction; split/list/stat heroes
  *  share the frame with copy columns and rows.) */

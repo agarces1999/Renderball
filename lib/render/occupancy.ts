@@ -88,18 +88,6 @@ import type { MeasuredElement, SceneMeasurement } from "./measure-scene";
  *  25.0%, Robinhood s2 28.5%) and the nearest must-pass (Patagonia s2 20.6%)
  *  gains margin. */
 export const OCCUPANCY_RUN_FLOOR = 0.23;
-/** SEVERE void: a contiguous empty column run this wide reads as a marooned
- *  content island — a small card stranded in a large void — on ANY register,
- *  so it BLOCKS regardless of the register's normal advisory posture. The
- *  P3-C1 Fuse defect: scene 3 shipped a small list card centered in a ~36%
- *  empty band on a `list` register (advisory-only), so the void shipped. This
- *  floor upgrades a void that wide to blocking. Calibrated on the real Fuse
- *  frames (agent-measured assessEmptyColumnRun): Fuse s3 = 35.8% (MUST fire),
- *  while every genuine weighted-column must-pass stays below it — Fuse s1 list
- *  25.8%, Fuse s2 stat 18.8%, Robinhood s2 split 28.5% — so 0.32 keeps ≥3.5pt
- *  margin on both sides. The anchor exemption still applies first (a deliberate
- *  drawn motif in the band is staged negative space, never a severe void). */
-export const OCCUPANCY_SEVERE_VOID_FLOOR = 0.32;
 /** P3-C5 (horizontal-void arm): the tallest empty-ROW run ≥ this fraction of
  *  frame H, ANCHORED at the top or bottom edge, reads as an abandoned band —
  *  content top-weighted with the bottom third empty (Vanta s3), or the mirror.
@@ -197,12 +185,6 @@ export interface OccupancyVoidFinding {
    *  bottom/top void, P3-C5). Both feed the SAME void-furnish (one contract). */
   axis: "column" | "row";
   blocking: boolean;
-  /** A marooned-island void (≥ OCCUPANCY_SEVERE_VOID_FLOOR). Audit-1 High #3: a
-   *  severe void no longer FORCES a blocking regen (regen never converged it);
-   *  it routes to the deterministic post-loop FURNISH like every flagged void.
-   *  The register still decides `blocking` (quote/centered block; split/stat/list
-   *  advise) — the severe flag is telemetry + furnish emphasis, not a regen gate. */
-  severe: boolean;
   /** For a column void: the widest empty-column run as a fraction of frame W.
    *  For a row void: the tallest empty-row run as a fraction of frame H (the
    *  furnish + telemetry read runFracW uniformly as "void extent"). */
@@ -345,22 +327,17 @@ export const assessOccupancy = async (
             const mid = (run.startFracW + run.endFracW) / 2;
             const region: "left" | "center" | "right" = mid < 0.38 ? "left" : mid > 0.62 ? "right" : "center";
             const bandPx = Math.round(run.runFracW * m.width);
-            // A SEVERE void (≥ OCCUPANCY_SEVERE_VOID_FLOOR) is a marooned island —
-            // a small card in a large void. Audit-1 High #3: it no longer overrides
-            // the register posture into a blocking REGEN (that regen never
-            // converged — the audit's central finding). The register decides
-            // `blocking` (quote/centered block; split/stat/list advise); the
-            // deterministic post-loop FURNISH fills EVERY flagged void, severe or
-            // not, regardless of register — so a severe split/list void converges
-            // via furnish instead of thrashing a regen it can't satisfy.
-            const severe = run.runFracW >= OCCUPANCY_SEVERE_VOID_FLOOR;
+            // Audit-1 High #3 / R4 (audit-2): a wide void no longer overrides the
+            // register posture into a blocking REGEN (that regen never converged —
+            // the audit's central finding). The register decides `blocking`
+            // (quote/centered block; split/stat/list advise); the deterministic
+            // post-loop FURNISH — gated on hero health (R4) — is the terminal owner.
             result.findings.push({
               kind: "occupancy-void",
               scene: m.scene,
               pieceId: `s${m.scene}.hero`,
               axis: "column",
               blocking: judgedBlocking,
-              severe,
               runFracW: run.runFracW,
               band: { startFracW: run.startFracW, endFracW: run.endFracW },
               region,
@@ -369,8 +346,7 @@ export const assessOccupancy = async (
                 `scene ${m.scene}: a ${bandPx}px-wide VOID BAND (${pct(run.runFracW)} of the frame width, the ` +
                 `${region} region, x≈${Math.round(run.startFracW * m.width)}–${Math.round(run.endFracW * m.width)}) ` +
                 `carries no visible ink on this ${register} scene (floor ${pct(OCCUPANCY_RUN_FLOOR)}) and no ` +
-                `anchoring motif. That side of the frame reads abandoned, not staged.` +
-                `${severe ? ` This void is SEVERE (≥${pct(OCCUPANCY_SEVERE_VOID_FLOOR)} of the frame) — the content reads as a small card marooned in a large void; the deterministic furnish will fill it.` : ""}`,
+                `anchoring motif. That side of the frame reads abandoned, not staged.`,
               repairInstruction:
                 `FURNISH THE VOID — do not relayout and do not stretch existing items apart. Populate the ${region} ` +
                 `region with REGISTER-CONSISTENT interior items in the same diegetic world as your existing ` +
@@ -438,14 +414,13 @@ export const assessOccupancy = async (
             const mid = (rrun.startFracH + rrun.endFracH) / 2;
             const region: "top" | "middle" | "bottom" = mid < 0.38 ? "top" : mid > 0.62 ? "bottom" : "middle";
             const bandPx = Math.round(rrun.runFracH * m.height);
-            const severe = rrun.runFracH >= OCCUPANCY_SEVERE_VOID_FLOOR;
+            const rowFloorApplied = judgedFullBleed ? OCCUPANCY_FULLBLEED_ROW_FLOOR : OCCUPANCY_ROW_RUN_FLOOR;
             result.findings.push({
               kind: "occupancy-void",
               scene: m.scene,
               pieceId: `s${m.scene}.hero`,
               axis: "row",
               blocking: judgedBlocking,
-              severe,
               runFracW: rrun.runFracH, // "void extent" (uniform with the column arm)
               band: { startFracW: 0, endFracW: 1 }, // full width; y-range in rowBand
               rowBand: { startFracH: rrun.startFracH, endFracH: rrun.endFracH },
@@ -454,9 +429,8 @@ export const assessOccupancy = async (
               detail:
                 `scene ${m.scene}: a ${bandPx}px-tall VOID BAND (${pct(rrun.runFracH)} of the frame height, the ` +
                 `${region} region, y≈${Math.round(y0)}–${Math.round(y1)}) carries no visible ink on this ` +
-                `${register} scene (floor ${pct(OCCUPANCY_ROW_RUN_FLOOR)}) and no anchoring motif. The content is ` +
-                `weighted to one edge and that band reads abandoned, not staged.` +
-                `${severe ? ` This void is SEVERE (≥${pct(OCCUPANCY_SEVERE_VOID_FLOOR)} of the frame height); the deterministic furnish will fill it.` : ""}`,
+                `${register} scene (floor ${pct(rowFloorApplied)}) and no anchoring motif. The content is ` +
+                `weighted to one edge and that band reads abandoned, not staged.`,
               repairInstruction:
                 `FURNISH THE ${region.toUpperCase()} BAND — do not relayout and do not stretch existing items apart. ` +
                 `Populate it with REGISTER-CONSISTENT interior items in the same diegetic world as your existing ` +

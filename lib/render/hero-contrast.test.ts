@@ -33,6 +33,8 @@ import {
   WASHOUT_STDDEV_FLOOR,
   WASHOUT_NEAR_MISS_STD_MARGIN,
   HERO_UNDERSCALE_MIN_FRAC,
+  HERO_HEALTHY_FRAC,
+  heroPaintedFraction,
   findHeroUnderscale,
   rectUnionArea,
   isPaintedElement,
@@ -329,6 +331,27 @@ await check("underscale skips errored scenes and non-hero pieces; overlap in pai
   ]);
   const f = findHeroUnderscale([overlapped], [undefined, undefined, "centered"]);
   assert(f.length === 1 && Math.abs(f[0].paintedFrac - 200 * 200 / (1080 * 1080)) < 1e-9, `overlap counted once, got ${f[0]?.paintedFrac}`);
+});
+
+// ── R4 (audit-2): heroPaintedFraction — the void-furnish hero-health signal ──
+await check("heroPaintedFraction: a well-painted hero reads HEALTHY (≥ floor) on ANY register", () => {
+  // A 1000x400 painted panel = ~19% of 1920x1080 → healthy.
+  const m = measurement(0, [pel("s0.hero", 200, 200, 1000, 400, { bg: "rgb(24,26,32)" })]);
+  const frac = heroPaintedFraction(m);
+  assert(frac >= HERO_HEALTHY_FRAC, `healthy hero above floor, got ${(frac * 100).toFixed(1)}%`);
+});
+
+await check("heroPaintedFraction: a hero that paints NOTHING (transparent members) is HOLLOW (0)", () => {
+  // .hero pieces exist but none PAINT (transparent bg, no text/img) → the hollow
+  // bookend the furnish must fill (not a side panel beside a healthy hero).
+  const m = measurement(4, [el("s4.hero", 100, 100, 1400, 800), el("s4.hero", 200, 200, 300, 120)]);
+  assert(heroPaintedFraction(m) === 0, `no painted hero ink → hollow (0), got ${heroPaintedFraction(m)}`);
+});
+
+await check("heroPaintedFraction: no hero piece → 0; an errored scene → 1 (never furnish blind)", () => {
+  assert(heroPaintedFraction(measurement(1, [pel("s1.copy", 0, 0, 400, 400, { bg: "rgb(10,10,10)" })])) === 0, "no hero piece → 0");
+  const errored: SceneMeasurement = { ...measurement(2, []), error: "boom" };
+  assert(heroPaintedFraction(errored) === 1, "unmeasurable → healthy (1), never furnish blind");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

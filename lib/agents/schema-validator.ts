@@ -799,28 +799,17 @@ export const PLACEHOLDER_WORD_RX = /\bplaceholder\b/i;
 // hero's painted region has neither luminance spread nor variance — measured
 // dark-plum-on-dark-plum on 3/5 v8 heroes, the last gate-round driver. The
 // prompt now demands one interior item NAME a contrasting surface tone; this
-// static mirror enforces the DARK-canvas case (the measured failure mode):
-// when a composed scene's atmosphere reads dark, each hero interior must name
-// at least one explicit light/high-luminance surface item.
-
-/** Dark-canvas cue words in a composition.atmosphere string. Deliberately
- *  narrow (near-black vocabulary only) — a "deep teal wash" is not proof of a
- *  dark canvas, and a false positive here burns a head repair round. */
-export const DARK_CANVAS_RX =
-  /\b(?:dark|black|near-black|charcoal|midnight|noir|obsidian|onyx|jet-black|pitch-black|blackened)\b/i;
+// static mirror enforces it BOTH directions off the RESOLVED canvas luminance
+// (R7 — canvasBackground): a DARK canvas (L<0.35) demands ≥1 light/high-luminance
+// hero interior surface; a LIGHT canvas (L>0.7) demands ≥1 dark/saturated one.
+// R7 DELETED the DARK/LIGHT_CANVAS_RX keyword regexes on the atmosphere prose —
+// they were Klarna-plum-overfit and failed OPEN on a warm/olive dark canvas whose
+// prose didn't say "dark". A mid-tone canvas, or a caller that supplies no canvas
+// hex, demands neither (the arm is inert rather than guessing from prose).
 
 /** Light-surface cue words in a hero interior item. */
 export const LIGHT_SURFACE_RX =
   /\b(?:white|off-white|light|pale|cream|ivory|bright|luminous|frosted|silver|snow|paper|bone|chalk|high-luminance|high-contrast)\b/i;
-
-/** Light-canvas cue words in a composition.atmosphere string (v10 — the
- *  CANVAS-AGNOSTIC washout contract; Glossier's pale-pink canvas is the
- *  measured case). Deliberately narrow, mirror-image of DARK_CANVAS_RX: only
- *  vocabulary that PROVES a light field ("soft glow" proves nothing). The
- *  dark check wins when both match — "pale streaks over a black canvas" is a
- *  dark scene with light details. */
-export const LIGHT_CANVAS_RX =
-  /\b(?:light|pale|white|off-white|cream|ivory|blush|pastel|powder|milky|airy|eggshell|porcelain)\b/i;
 
 /** Dark/saturated-surface cue words in a hero interior item — the light-canvas
  *  arm's counterpart to LIGHT_SURFACE_RX. */
@@ -1356,16 +1345,10 @@ export const checkSceneComposition = (
     //     atmosphere demands ≥1 light/high-luminance surface item; a light
     //     atmosphere (Glossier pale pink) demands ≥1 dark/saturated one. The
     //     dark reading wins when both vocabularies match.
-    // Prefer the resolved canvas luminance (Medium #6); fall back to the prose
-    // keywords only when no canvas hex was supplied.
-    const atmosphereReadsDark =
-      canvasIsDark !== null
-        ? canvasIsDark
-        : typeof atmosphere === "string" && DARK_CANVAS_RX.test(atmosphere);
-    const atmosphereReadsLight =
-      canvasIsLight !== null
-        ? canvasIsLight
-        : !atmosphereReadsDark && typeof atmosphere === "string" && LIGHT_CANVAS_RX.test(atmosphere);
+    // R7 (audit-2): the surface arm keys ONLY on the resolved canvas luminance —
+    // the prose keyword fallback is deleted. No canvas hex ⇒ both null ⇒ inert.
+    const atmosphereReadsDark = canvasIsDark === true;
+    const atmosphereReadsLight = canvasIsLight === true;
     elements.forEach((el, j) => {
       const interior = stringInterior(el);
       if (el?.role === "hero") {

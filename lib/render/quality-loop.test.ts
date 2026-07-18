@@ -84,6 +84,14 @@ check("computeTargets: washout routes to its named hero", () => {
   assert(t.get("s0.hero")![0].includes("[hero-contrast/hero-washout]"), "carries the washout tag");
 });
 
+check("computeTargets (R4): a non-full-bleed barbell routes to the COPY slot", () => {
+  const rtBlocking = [{ scene: 0, kind: "barbell", detail: "empty horizontal band ~40% of the frame" }] as unknown as RenderTruthFinding[];
+  const t = computeTargets({ ...baseArgs(), rtBlocking, registers: ["split", "split"] });
+  assert(t.has("s0.copy"), "barbell routed to the copy stack (row-arm/furnish own full-bleed voids)");
+  assert(!t.has("s0.hero"), "barbell no longer routes a blocking regen to the hero");
+  assert(t.get("s0.copy")![0].includes("[render-truth/barbell]"), "carries the barbell tag");
+});
+
 check("computeTargets: accent-fill routes to its piece", () => {
   const accentFill = [{
     scene: 1, pieceId: "s1.hero", detail: "accent slab",

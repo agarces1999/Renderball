@@ -1108,8 +1108,8 @@ await check("heroBlueprintPlaceholder: too few blueprint values → falls back t
   assert(body.includes("borderColor: HAIRLINE"), "with <2 usable values, the neutral shell ships");
 });
 
-// ── P3-C6 #5: monochrome bookend placeholder tone (Scale AI s0 stark-white) ──
-await check("P3-C6 #5: placeholderSurfaceInk picks a MID-elevated surface on a MONOCHROME dark brand (not stark white)", () => {
+// ── P3-C6 #5 → R2 (audit-2): dark-brand placeholder tone (Scale AI stark-white) ──
+await check("R2: placeholderSurfaceInk picks a MID-elevated surface on ANY dark brand with a dark card (not stark white)", () => {
   // Scale AI's real all-black/gray palette (no chromatic accent anywhere).
   const mono: Theme = {
     ...theme,
@@ -1121,10 +1121,11 @@ await check("P3-C6 #5: placeholderSurfaceInk picks a MID-elevated surface on a M
   assert(r.surface !== "LIGHT", "the surface is NOT the lightest token — that would be the stark full-white lift");
 });
 
-await check("P3-C6 #5: a CHROMATIC dark brand (Brex-like: neutral canvas + a real accent) keeps the role tokens", () => {
-  // BG #0b0e13 near-neutral, but ACCENT #ff7a59 is chromatic → NOT monochrome.
+await check("R2: a dark brand with NO opaque dark-card token keeps the role fallback (Brex-like light before-UI)", () => {
+  // BG #0b0e13 dark canvas; the only opaque non-accent token is the LIGHT ink, so
+  // there is no dark card to elevate to → the light "before-UI" role fallback holds.
   const r = placeholderSurfaceInk(theme);
-  assert(r.surface === "INK" && r.ink === "BG", `chromatic brand keeps ink surface + canvas text, got ${JSON.stringify(r)}`);
+  assert(r.surface === "INK" && r.ink === "BG", `no dark card → role fallback (ink surface + canvas text), got ${JSON.stringify(r)}`);
 });
 
 await check("P3-C6 #5: the monochrome placeholder body paints the mid-elevated surface + light text (no stark white)", () => {
@@ -1712,6 +1713,41 @@ await check("castBuild end-to-end: hero binding theft rejects in-round; repair t
   assert(/binds scene copy it does not own/.test(heroCalls[1].user), "the repair prompt names the theft");
   assert(/c\.headline/.test(heroCalls[1].user), "the stolen field is named");
   assert(r.elementOutcomes.some((o) => o.pieceId === "s0.hero" && o.repaired && !o.failed), "repair recovered the hero");
+});
+
+// ── R5 (audit-2): compile-break LEAN path driven by finish_reason==="length" ──
+await check("castBuild (R5): a hero that TRUNCATES (finish_reason=length) → lean repair ships a COMPLETE leaner hero", async () => {
+  // A COMPLETE ~10-element hero — ABOVE the LEAN floor (9) but BELOW the strict
+  // floor (15). Under the maximalist floor this would be salvaged as a FAILURE;
+  // R5's lean path (triggered by the length finish_reason) lets it ship ok.
+  const LEAN_HERO = `<div style={{ width: "100%", height: "100%", background: PANEL_BG, padding: 20, display: "flex", flexDirection: "column", gap: 10 }}>` +
+    `<div style={{ display: "flex", justifyContent: "space-between" }}><span style={{ color: INK }}>Revenue</span><span style={{ color: INK }}>$48,210</span></div>` +
+    `<div style={{ display: "flex", justifyContent: "space-between" }}><span style={{ color: INK }}>Active teams</span><span style={{ color: INK }}>1,204</span></div>` +
+    `<div style={{ display: "flex", justifyContent: "space-between" }}><span style={{ color: INK }}>Uptime</span><span style={{ color: ACCENT }}>99.98%</span></div>` +
+    `</div>`;
+  const log: { id: string; user: string; stop: string | null }[] = [];
+  let heroCalls = 0;
+  const leanCaller = async (call: { user: string }) => {
+    const id = /piece id "([^"]+)"/.exec(call.user)?.[1] ?? "?";
+    let text: string;
+    let stopReason: string | null = "stop";
+    if (id === "s0.hero") {
+      heroCalls++;
+      if (heroCalls === 1) { text = `<div style={{ width: "100%" }}><span style={{ color: INK }}>Q3 revenue dash`; stopReason = "length"; } // truncated, unclosed
+      else text = LEAN_HERO;
+    } else {
+      text = cannedFor(id, 1);
+    }
+    log.push({ id, user: call.user, stop: stopReason });
+    return { text, thinking: "", inputTokens: 40, outputTokens: 90, seconds: 0.004, stopReason };
+  };
+  const r = await castBuild(input, { caller: leanCaller as never, concurrency: 4 });
+  assert(heroCalls === 2, `truncation cost exactly ONE lean repair, got ${heroCalls}`);
+  const repairPrompt = log.filter((l) => l.id === "s0.hero")[1].user;
+  assert(/LEANER, COMPLETE/.test(repairPrompt), "the repair prompt carries the lean directive");
+  assert(!/--- previous attempt ---/.test(repairPrompt), "R5: the truncated raw body is NOT echoed back into the budget");
+  assert(r.elementOutcomes.some((o) => o.pieceId === "s0.hero" && o.repaired && !o.failed), "the leaner COMPLETE hero ships ok (lean floor), not salvaged as failed");
+  assert(r.code.includes("$48,210"), "the lean hero body actually shipped");
 });
 
 // ─── (v15 #3) LIFT INTERIOR REPAINT — a lift never creates a ghost ───────────

@@ -17,7 +17,7 @@ import { resolveCanvasPlan, signatureWithLogoFallback, brandShortName } from "..
 import { deriveCrawlTheme } from "../lib/render/crawl-theme";
 import { neutralizeInk } from "../lib/agents/cast-build";
 import { generateComposition, type CompositionCaller } from "../lib/agents/composition-head";
-import { checkSceneComposition } from "../lib/agents/schema-validator";
+import { checkSceneComposition, frameFillAdvisories } from "../lib/agents/schema-validator";
 import { generateScript, claimGroundingSources, sceneClaimCopyByStrictness } from "../lib/agents/script-generator";
 import { findUngroundedClaims } from "../lib/agents/schema-validator";
 import { resolveCornerBrandMark } from "../lib/agents/logo-inject";
@@ -123,14 +123,21 @@ const log = (m: string) => console.log(`[${((Date.now() - t0) / 1000).toFixed(1)
   const composed = await generateComposition({
     script,
     caller: headCaller,
-    validate: (scenes: Scene[]) => checkSceneComposition(scenes, { aspect }),
+    // R7 (audit-2): pass the RESOLVED canvas so the surface-contrast arm keys off
+    // real luminance, not the deleted DARK/LIGHT keyword regex. R6: also surface
+    // the (advisory, non-blocking) frame-fill smell at author time.
+    validate: (scenes: Scene[]) => {
+      const adv = frameFillAdvisories(scenes, { aspect });
+      if (adv.length) log(`  head frame-fill advisories (non-blocking):\n    ${adv.join("\n    ")}`);
+      return checkSceneComposition(scenes, { aspect, canvasBackground: canvasPlan.background });
+    },
     aspect,
     brandName: brand,
     paletteHint: `canvas ${canvasPlan.background} (${canvasPlan.mode}), signature accent ${signature}, brand palette: ${(be?.palette ?? []).join(", ")}`,
     designNotes: `Design system consts downstream: PALETTE (CANVAS/INK/ACCENT/MUTED/SOFT_NEUTRAL/CARD_FILL/WHITE), shared keyframes (glowBreathe, drift1-3, drawWidth, fadeRise, scaleIn). Fonts: display ${theme.fonts.display}, body ${theme.fonts.body}.`,
   });
   const composedScript = { ...script, scenes: composed.scenes };
-  const residual = checkSceneComposition(composed.scenes, { aspect });
+  const residual = checkSceneComposition(composed.scenes, { aspect, canvasBackground: canvasPlan.background });
   log(`head: ${composed.attempts} attempt(s), ${residual.length} residual validation error(s)`);
   await fs.writeFile(path.join(OUT, "composition.json"), JSON.stringify(composed.scenes.map((s, i) => ({ scene: i, composition: s.composition ?? null })), null, 2), "utf8");
 

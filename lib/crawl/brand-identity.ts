@@ -582,12 +582,22 @@ export const resolveCanvasPlan = (
     .filter(isHex6)
     .map((h, i) => {
       const lum = luminanceOf(h);
-      return lum == null ? null : { h: normHex(h), extremity: Math.abs(lum - 0.5), i };
+      return lum == null ? null : { h: normHex(h), lum, extremity: Math.abs(lum - 0.5), i };
     })
-    .filter((x): x is { h: string; extremity: number; i: number } => x !== null)
+    .filter((x): x is { h: string; lum: number; extremity: number; i: number } => x !== null)
     .sort((a, b) => b.extremity - a.extremity || a.i - b.i);
-  if (scored.length > 0 && scored[0].extremity >= 0.3) {
-    return { background: scored[0].h, source: "palette", mode: modeOf(scored[0].h) };
+  const qualifying = scored.filter((s) => s.extremity >= 0.3);
+  if (qualifying.length > 0) {
+    // R1 (audit-2): bias the palette fallback toward LIGHT. Pages are far more
+    // often light-canvas than dark, and the old "highest-extremity wins" rule let
+    // a prominent DARK brand token win for a genuinely light brand — the z.ai-off
+    // dark-canvas class (Faire/Mailchimp shipped dark). Prefer a qualifying LIGHT
+    // token when the palette carries one; only fall to the dark extreme when it
+    // does not. (The deterministic CSS canvas reader (R1) upstream already covers
+    // the genuinely-dark brands, so this last-resort fallback rarely fires.)
+    const light = qualifying.filter((s) => s.lum >= 0.5).sort((a, b) => b.lum - a.lum)[0];
+    const pick = light ?? qualifying[0];
+    return { background: pick.h, source: "palette", mode: modeOf(pick.h) };
   }
   return { background: "#ffffff", source: "default", mode: "light" };
 };

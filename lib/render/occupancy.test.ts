@@ -21,11 +21,14 @@ import sharp from "sharp";
 import {
   assessOccupancy,
   OCCUPANCY_RUN_FLOOR,
-  OCCUPANCY_SEVERE_VOID_FLOOR,
   OCCUPANCY_BLOCKING_REGISTERS,
   OCCUPANCY_ADVISORY_REGISTERS,
   CARD_INTERIOR_FLOOR,
 } from "./occupancy";
+
+// R4 (audit-2) dropped the inert `severe` flag; these calibration tests still
+// verify a WIDE marooned-island void is DETECTED + advisory on a soft register.
+const WIDE_VOID_FRAC = 0.32;
 import { assessEmptyColumnRun, COLUMN_INK_FLOOR } from "./painted-content";
 import type { SceneMeasurement, MeasuredElement } from "./measure-scene";
 
@@ -298,21 +301,19 @@ if (existsSync(framePath("p3-cycle5-scaleai", 2))) {
   // empty run (the right ~65% of the frame) is a severe void.
   const cardW = Math.round(0.28 * W);
   const severePath = await writeFrame("severe-void", [{ x: 8, y: 150, w: cardW, h: 100 }]);
-  await check("SEVERE void (≥0.32) on a `list` register is FLAGGED-severe + advisory (furnish converges it, not regen)", async () => {
+  await check("WIDE void (≥0.32) on a `list` register is DETECTED + advisory (furnish converges it, not regen)", async () => {
     const m = sceneAt(0, severePath, []); // registers[0] = "list"
     const r = await assessOccupancy([m], ["list"]);
     const voids = r.findings.filter((f) => f.kind === "occupancy-void");
     assert(voids.length === 1, `one void, got ${JSON.stringify(r.findings)}`);
-    assert(voids[0].runFracW >= OCCUPANCY_SEVERE_VOID_FLOOR, `severe band ${(voids[0].runFracW * 100).toFixed(0)}% ≥ ${OCCUPANCY_SEVERE_VOID_FLOOR * 100}%`);
-    assert(voids[0].severe === true, "severe flag is set");
-    assert(voids[0].blocking === false, `list-register severe void must NOT force a blocking regen (furnish owns it), got blocking=${voids[0].blocking}`);
-    assert(/SEVERE/.test(voids[0].detail) && /furnish will fill it/.test(voids[0].detail), `detail marks severity + furnish: ${voids[0].detail}`);
+    assert(voids[0].runFracW >= WIDE_VOID_FRAC, `wide band ${(voids[0].runFracW * 100).toFixed(0)}% ≥ ${WIDE_VOID_FRAC * 100}%`);
+    assert(voids[0].blocking === false, `list-register wide void must NOT force a blocking regen (furnish owns it), got blocking=${voids[0].blocking}`);
   });
-  await check("SEVERE void on a `quote` register STILL blocks (its register blocks) + severe flag set", async () => {
+  await check("WIDE void on a `quote` register STILL blocks (its register blocks)", async () => {
     const m = sceneAt(0, severePath, []);
     const r = await assessOccupancy([m], ["quote"]);
     const voids = r.findings.filter((f) => f.kind === "occupancy-void");
-    assert(voids.length === 1 && voids[0].blocking === true && voids[0].severe === true, `quote severe void blocks + severe, got ${JSON.stringify(voids)}`);
+    assert(voids.length === 1 && voids[0].blocking === true, `quote wide void blocks, got ${JSON.stringify(voids)}`);
   });
 }
 
@@ -320,19 +321,19 @@ if (existsSync(framePath("p3-cycle5-scaleai", 2))) {
 // downstream), NOT blocking on the list register; Fuse s2 (stat) stays clean.
 const fuseFrame = (s: number): string => path.join(DF, "fullpipe-fuse", "frames", `scene${s}.png`);
 if (existsSync(fuseFrame(3))) {
-  await check("CALIBRATION: Fuse s3 (list) severe void is severe+advisory (furnished), s2 (stat) clean", async () => {
+  await check("CALIBRATION: Fuse s3 (list) wide void is detected+advisory (furnished), s2 (stat) clean", async () => {
     // The real Fuse per-scene registers, indexed by scene number.
     const fuseRegisters = ["full-bleed", "list", "stat", "list", "centered"];
     const s3: SceneMeasurement = { scene: 3, width: 1920, height: 1080, elements: [], screenshotPath: fuseFrame(3) };
     const s2: SceneMeasurement = { scene: 2, width: 1920, height: 1080, elements: [], screenshotPath: fuseFrame(2) };
     const r3 = await assessOccupancy([s3], fuseRegisters);
     const r2 = await assessOccupancy([s2], fuseRegisters);
-    // The original calibration target: the COLUMN severe void (a right-edge void
-    // on the marooned card). The P3-C5 row arm may additionally flag a bottom
-    // band on the same frame — both are severe + advisory (furnish converges).
-    const v3col = r3.findings.filter((f) => f.kind === "occupancy-void" && f.severe && f.axis === "column");
-    assert(v3col.length === 1 && v3col[0].scene === 3, `Fuse s3 must produce a SEVERE column void, got ${JSON.stringify(r3.findings.map((f) => ({ axis: f.axis, severe: f.severe })))}`);
-    assert(r3.findings.filter((f) => f.severe).every((f) => f.blocking === false), `every Fuse s3 (list) severe void advises (furnish converges, no regen), got ${JSON.stringify(r3.findings.map((f) => ({ axis: f.axis, blocking: f.blocking })))}`);
+    // The original calibration target: the COLUMN wide void (a right-edge void on
+    // the marooned card). The P3-C5 row arm may additionally flag a bottom band on
+    // the same frame — both detected + advisory (furnish converges, no regen).
+    const v3col = r3.findings.filter((f) => f.kind === "occupancy-void" && f.runFracW >= WIDE_VOID_FRAC && f.axis === "column");
+    assert(v3col.length === 1 && v3col[0].scene === 3, `Fuse s3 must produce a WIDE column void, got ${JSON.stringify(r3.findings.map((f) => ({ axis: f.axis, run: f.runFracW })))}`);
+    assert(r3.findings.every((f) => f.blocking === false), `every Fuse s3 (list) void advises (furnish converges, no regen), got ${JSON.stringify(r3.findings.map((f) => ({ axis: f.axis, blocking: f.blocking })))}`);
     assert(!r2.findings.some((f) => f.blocking), `Fuse s2 must NOT block, got ${JSON.stringify(r2.findings)}`);
   });
 } else {

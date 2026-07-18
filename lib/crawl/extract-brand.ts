@@ -294,7 +294,14 @@ export const extractBrand = async (
           : roles.background;
     }
   } catch {
-    /* keep the CSS palette; leave background_color undefined */
+    /* keep the CSS palette; the deterministic CSS canvas reader below fills bg */
+  }
+  // R1 (audit-2): with vision off (no z.ai) the try above never runs, so
+  // background_color stayed undefined and resolveCanvasPlan fell to a dark-biased
+  // palette path (Faire/Mailchimp shipped dark). Read the canvas deterministically
+  // from the stylesheet whenever vision didn't supply one — light brands recover.
+  if (!background_color) {
+    background_color = extractCssCanvasBackground(allCss);
   }
 
   // Design-language analysis (best-effort): screenshot the LIVE homepage and read
@@ -1536,6 +1543,84 @@ export const extractPalette = (
   }
 
   return final;
+};
+
+/** Map a single CSS color TOKEN (hex, rgb(), rgba(), or the white/black
+ *  keywords) to a #rrggbb, or null when it is transparent / unrecognized. */
+const cssColorToHex = (raw: string): string | null => {
+  const v = (raw ?? "").trim().toLowerCase();
+  if (!v || /^(?:transparent|none|inherit|initial|unset|currentcolor)$/.test(v)) return null;
+  if (v === "white") return "#ffffff";
+  if (v === "black") return "#000000";
+  const hex = v.match(/#[0-9a-f]{3,8}\b/i);
+  if (hex) {
+    const h = hex[0].slice(1);
+    if (h.length === 8 && h.slice(6) === "00") return null; // fully transparent
+    if (h.length === 4 && h[3] === "0") return null;
+    return normalizeHex(hex[0]);
+  }
+  const rgb = v.match(/rgba?\(\s*(\d+)\s*[, ]\s*(\d+)\s*[, ]\s*(\d+)\s*(?:[,/]\s*([0-9.]+%?))?\s*\)/i);
+  if (rgb) {
+    const a = rgb[4] != null ? (rgb[4].endsWith("%") ? parseFloat(rgb[4]) / 100 : parseFloat(rgb[4])) : 1;
+    if (!(a > 0.05)) return null; // effectively transparent
+    return `#${toHex(clamp255(parseInt(rgb[1], 10)))}${toHex(clamp255(parseInt(rgb[2], 10)))}${toHex(clamp255(parseInt(rgb[3], 10)))}`;
+  }
+  return null;
+};
+
+/**
+ * R1 (audit-2) — DETERMINISTIC CSS canvas-background reader. `background_color`
+ * was set ONLY inside the vision try (extractBrandColorRoles); with vision off
+ * (no z.ai) it stayed undefined and resolveCanvasPlan fell to a dark-biased
+ * palette path — which is exactly why Faire/Mailchimp (real canvas: white/cream)
+ * built DARK across the phase-3 loop. Read the page canvas straight from the
+ * concatenated stylesheet instead: the background(-color) declared on the root
+ * layout selectors (body / html / :root / #__next / #root / main, in that
+ * priority), resolving a `var(--x)` against the custom-property table, first
+ * OPAQUE color wins. Pure string math — no network, no vision. Returns undefined
+ * when no rooted background is declared (resolveCanvasPlan then falls back).
+ */
+export const extractCssCanvasBackground = (allCss: string): string | undefined => {
+  if (!allCss) return undefined;
+  // 1) custom-property table for var() resolution (first definition wins — a
+  //    later `prefers-color-scheme: dark` override does not clobber the base).
+  const vars = new Map<string, string>();
+  for (const m of allCss.matchAll(/(--[\w-]+)\s*:\s*([^;{}]+?)\s*(?=[;}])/g)) {
+    if (!vars.has(m[1])) vars.set(m[1], m[2].trim());
+  }
+  const resolve = (value: string, depth = 0): string | null => {
+    if (depth > 4) return null;
+    const v = value.trim();
+    const varM = v.match(/var\(\s*(--[\w-]+)\s*(?:,\s*([^)]+))?\)/i);
+    if (varM) {
+      const ref = vars.get(varM[1]);
+      if (ref) { const r = resolve(ref, depth + 1); if (r) return r; }
+      return varM[2] ? resolve(varM[2], depth + 1) : null;
+    }
+    return cssColorToHex(v);
+  };
+  // 2) each rule's selector-list + decls (non-nested; inner rules inside a
+  //    @media block still match individually, which is what we want).
+  const targets = ["body", "html", ":root", "#__next", "#root", "main"];
+  const byTarget = new Map<string, string[]>();
+  for (const m of allCss.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    const selectors = m[1];
+    for (const t of targets) {
+      const re = new RegExp(`(?:^|,)\\s*${t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*(?:,|$)`, "i");
+      if (re.test(selectors)) byTarget.set(t, [...(byTarget.get(t) ?? []), m[2]]);
+    }
+  }
+  for (const t of targets) {
+    for (const decls of byTarget.get(t) ?? []) {
+      const bgColor = decls.match(/(?:^|;|\s)background-color\s*:\s*([^;]+)/i);
+      const bg = decls.match(/(?:^|;|\s)background\s*:\s*([^;]+)/i);
+      for (const cand of [bgColor?.[1], bg?.[1]]) {
+        const hex = cand ? resolve(cand) : null;
+        if (hex) return hex;
+      }
+    }
+  }
+  return undefined;
 };
 
 const normalizeHex = (raw: string): string | null => {

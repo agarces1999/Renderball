@@ -1495,7 +1495,9 @@ const main = async (): Promise<void> => {
       ? script.config!.aspect_ratio
       : "16:9") as "16:9" | "9:16" | "1:1";
     const validateComposition = (scenes: Scene[]): string[] => [
-      ...checkSceneComposition(scenes, { aspect }),
+      // R7 (audit-2): pass the resolved canvas so the surface-contrast arm keys
+      // off real luminance (the DARK/LIGHT keyword fallback is deleted).
+      ...checkSceneComposition(scenes, { aspect, canvasBackground: canvasPlan.background }),
       ...findUngroundedMockValues(scenes, groundingText),
     ];
     let headAttemptN = 0;
