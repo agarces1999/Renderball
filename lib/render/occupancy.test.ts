@@ -111,10 +111,12 @@ await check("a FURNISHED quote frame (content across the width) passes", async (
   assert(r.findings.length === 0, `no void, got ${JSON.stringify(r.findings)}`);
 });
 
-await check("a non-judged register (full-bleed) is exempt from the void arm", async () => {
+await check("full-bleed is exempt from the COLUMN void arm (a left/right void is the barbell's; P3-C6: the ROW arm runs on full-bleed edge bands, see below)", async () => {
+  // leftonly3 is a COLUMN void (left 40% inked, right 60% empty) — every ROW
+  // carries ink, so the row arm finds no empty run and full-bleed stays clean.
   const p = await writeFrame("leftonly3", [{ x: 0, y: 0, w: 128, h: H }]);
   const r = await assessOccupancy([sceneAt(0, p, [])], ["full-bleed"]);
-  assert(r.findings.length === 0, `full-bleed exempt, got ${JSON.stringify(r.findings)}`);
+  assert(r.findings.length === 0, `full-bleed column void exempt, got ${JSON.stringify(r.findings)}`);
 });
 
 await check("DIEGETIC-ANCHOR EXEMPTION: a sparse motif in the void (region ≥3% ink, columns empty) is STAGED, not a defect", async () => {
@@ -243,6 +245,44 @@ if (existsSync(framePath("p3-cycle4-vanta", 3))) {
   });
 } else {
   console.log("  … Vanta row-void calibration skipped (.data/dogfood/p3-cycle4-vanta absent)");
+}
+
+// ── P3-C6 #2: the ROW arm now runs on FULL-BLEED edge bands (Scale AI s2 upper
+// void). Full-bleed stays exempt from the COLUMN arm (barbell owns those).
+// Calibrated on the real full-bleed s2 frames: Scale s2 (0.237 top, start 0.107)
+// FIRES top; Deel s2 (0.289 bottom) FIRES bottom; Faire s2 (0.111 filled) +
+// Vanta s2 (0.033 filled) PASS. Advisory (furnish converges; no regen).
+if (existsSync(framePath("p3-cycle5-scaleai", 2))) {
+  await check("P3-C6 #2 CALIBRATION: Scale AI s2 (full-bleed) yields a TOP row-void (advisory) — the upper-band void", async () => {
+    const m: SceneMeasurement = { scene: 0, width: 1920, height: 1080, elements: [], screenshotPath: framePath("p3-cycle5-scaleai", 2) };
+    const r = await assessOccupancy([m], ["full-bleed"]);
+    const row = r.findings.filter((f) => f.axis === "row");
+    assert(row.length === 1, `one full-bleed row-void, got ${JSON.stringify(r.findings.map((f) => ({ axis: f.axis, region: f.region, run: (f.runFracW * 100).toFixed(0) })))}`);
+    assert(row[0].region === "top", `top band, got ${row[0].region}`);
+    assert(row[0].blocking === false, `full-bleed advises (furnish converges), got blocking=${row[0].blocking}`);
+    // The column arm stays exempt for full-bleed (barbell owns those).
+    assert(r.findings.filter((f) => f.axis === "column").length === 0, "no column void on full-bleed (column arm stays exempt)");
+  });
+  if (existsSync(framePath("p3-cycle2-deel", 2))) {
+    await check("P3-C6 #2 CALIBRATION: Deel s2 (full-bleed, catastrophic bottom void) FIRES a bottom row-void", async () => {
+      const m: SceneMeasurement = { scene: 0, width: 1920, height: 1080, elements: [], screenshotPath: framePath("p3-cycle2-deel", 2) };
+      const r = await assessOccupancy([m], ["full-bleed"]);
+      const row = r.findings.filter((f) => f.axis === "row");
+      assert(row.length === 1 && row[0].region === "bottom", `bottom row-void, got ${JSON.stringify(r.findings.map((f) => ({ axis: f.axis, region: f.region })))}`);
+    });
+  }
+  if (existsSync(framePath("p3-cycle3-faire", 2)) && existsSync(framePath("p3-cycle4-vanta", 2))) {
+    await check("P3-C6 #2 CALIBRATION: Faire s2 + Vanta s2 (filled full-bleed) yield NO row void (no FP)", async () => {
+      const mf: SceneMeasurement = { scene: 0, width: 1920, height: 1080, elements: [], screenshotPath: framePath("p3-cycle3-faire", 2) };
+      const mv: SceneMeasurement = { scene: 0, width: 1920, height: 1080, elements: [], screenshotPath: framePath("p3-cycle4-vanta", 2) };
+      const rf = await assessOccupancy([mf], ["full-bleed"]);
+      const rv = await assessOccupancy([mv], ["full-bleed"]);
+      assert(rf.findings.length === 0, `Faire s2 filled → no void, got ${JSON.stringify(rf.findings.map((f) => f.axis))}`);
+      assert(rv.findings.length === 0, `Vanta s2 filled → no void, got ${JSON.stringify(rv.findings.map((f) => f.axis))}`);
+    });
+  }
+} else {
+  console.log("  … Scale AI full-bleed row-void calibration skipped (.data/dogfood/p3-cycle5-scaleai absent)");
 }
 
 // ── Audit-1 High #3: SEVERE void is FLAGGED-severe (furnished), NOT a blocking

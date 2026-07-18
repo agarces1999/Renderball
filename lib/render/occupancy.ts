@@ -122,6 +122,20 @@ export const OCCUPANCY_ROW_EDGE_TOL = 0.06;
  *  Vanta s3 (top margin ~8%, bottom void 33%) fires; a centered split with 37.5%
  *  margins on both sides does not. */
 export const OCCUPANCY_ROW_OPPOSITE_MAX = 0.15;
+/** P3-C6 #2: full-bleed is no longer void-EXEMPT for an abandoned TOP/BOTTOM edge
+ *  band. A full-bleed scene that weights its content to one edge (Scale AI s2: a
+ *  pipeline + stat cards in the lower ⅔, ~24% empty UPPER band above them) reads
+ *  as a void the barbell (middle-gap) arm misses. The ROW arm runs on full-bleed
+ *  with a RELAXED edge tolerance — a thin chrome/header/copy strip legitimately
+ *  sits between the frame edge and the abandoned band (Scale s2 starts at y=0.107,
+ *  below the header + a copy line) — and a slightly lower floor. Advisory only
+ *  (feeds the furnish; never a regen the full-bleed hero can't satisfy). The
+ *  COLUMN arm stays full-bleed-exempt (the barbell owns those). Calibrated on the
+ *  real full-bleed s2 frames: Scale s2 (0.237 top, start 0.107) FIRES; Deel s2
+ *  (0.289 bottom) FIRES; Faire s2 (0.111, filled placeholder) + Vanta s2 (0.033,
+ *  filled) PASS. */
+export const OCCUPANCY_FULLBLEED_ROW_FLOOR = 0.22;
+export const OCCUPANCY_FULLBLEED_EDGE_TOL = 0.15;
 /** Registers where a void band BLOCKS (the composition owns the full frame).
  *  v15 agent-#2 correction: `split` moved to ADVISORY (below). The task's
  *  cycle-6 calibration says "s1/s2 MUST pass"; Robinhood s2 is a `split` scene
@@ -287,6 +301,9 @@ export const assessOccupancy = async (
     // ── void band (pixel truth + anchor exemption) ──────────────────────────
     const judgedBlocking = !!register && OCCUPANCY_BLOCKING_REGISTERS.has(register);
     const judgedAdvisory = !!register && OCCUPANCY_ADVISORY_REGISTERS.has(register);
+    // P3-C6 #2: full-bleed runs the ROW arm (edge-band voids) but stays exempt
+    // from the COLUMN arm (the barbell owns those).
+    const judgedFullBleed = register === "full-bleed";
     if ((judgedBlocking || judgedAdvisory) && m.screenshotPath) {
       try {
         const run = await assessEmptyColumnRun(m.screenshotPath, { colInkFloor: COLUMN_INK_FLOOR });
@@ -376,19 +393,24 @@ export const assessOccupancy = async (
     // Content top-weighted with the bottom third abandoned (Vanta s3), or the
     // mirror at the top edge: the column-run arm and the barbell middle-gap arm
     // both miss it. Same register posture, same anchor exemption, and it feeds
-    // the SAME void-furnish (one void contract — no competing path).
-    if ((judgedBlocking || judgedAdvisory) && m.screenshotPath) {
+    // the SAME void-furnish (one void contract — no competing path). P3-C6 #2:
+    // full-bleed joins the ROW arm here (edge bands) with a relaxed edge tol +
+    // floor (see OCCUPANCY_FULLBLEED_*) — a thin header/copy strip may sit
+    // between the frame edge and the abandoned band.
+    if ((judgedBlocking || judgedAdvisory || judgedFullBleed) && m.screenshotPath) {
       try {
         const rrun = await assessEmptyRowRun(m.screenshotPath);
-        const bottomAnchored = rrun.endFracH >= 1 - OCCUPANCY_ROW_EDGE_TOL;
-        const topAnchored = rrun.startFracH <= OCCUPANCY_ROW_EDGE_TOL;
+        const rowEdgeTol = judgedFullBleed ? OCCUPANCY_FULLBLEED_EDGE_TOL : OCCUPANCY_ROW_EDGE_TOL;
+        const rowFloor = judgedFullBleed ? OCCUPANCY_FULLBLEED_ROW_FLOOR : OCCUPANCY_ROW_RUN_FLOOR;
+        const bottomAnchored = rrun.endFracH >= 1 - rowEdgeTol;
+        const topAnchored = rrun.startFracH <= rowEdgeTol;
         // One-sided abandonment only: the content must reach the OPPOSITE edge.
         // A bottom void needs a small TOP margin (content top-weighted); a top
         // void needs a small BOTTOM margin. Symmetric margins = centered breathing.
         const oneSided =
           (bottomAnchored && rrun.topMarginFracH <= OCCUPANCY_ROW_OPPOSITE_MAX) ||
           (topAnchored && rrun.bottomMarginFracH <= OCCUPANCY_ROW_OPPOSITE_MAX);
-        if (rrun.runFracH >= OCCUPANCY_ROW_RUN_FLOOR && (topAnchored || bottomAnchored) && oneSided) {
+        if (rrun.runFracH >= rowFloor && (topAnchored || bottomAnchored) && oneSided) {
           // Anchor exemption: a substantial drawn motif whose visible-rect center
           // sits inside the band (vertically) — pixel-verified it actually paints.
           const y0 = rrun.startFracH * m.height;

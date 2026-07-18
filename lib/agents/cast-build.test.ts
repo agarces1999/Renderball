@@ -61,6 +61,9 @@ import {
   extractQuotedValues,
   heroBlueprintPlaceholder,
   placeholderTitleFromSubject,
+  placeholderSurfaceInk,
+  copyLines,
+  SCENE_META_LABEL_RX,
   contrastInkForSurface,
   flipInkColorRefs,
   flipCopyInkOverLightPlaceholder,
@@ -393,6 +396,16 @@ await check("placeholder fallback: element broken through repair ships degraded,
   // The wrapper (not the body) carries the throughline tag — presence survives
   // even a failed body, so the motif thread never silently drops a scene.
   assert((result.code.match(new RegExp(`data-throughline="${SLUG}"`, "g")) ?? []).length === 3, "motif tagged in all 3 scenes");
+});
+
+// P3-C6 #1: a broken DECORATIVE motif (throughline/connector) must VANISH, not
+// ship the neutral placeholder's empty bordered box (Scale AI s2's marooned box).
+await check("P3-C6 #1: a broken throughline ships an EMPTY FRAGMENT, not a placeholder box", () => {
+  const at = result.code.indexOf('data-piece="s2.throughline"');
+  assert(at !== -1, "throughline wrapper present");
+  const win = result.code.slice(at, at + 400);
+  assert(win.includes("<></>"), `broken throughline body is an empty fragment; window: ${JSON.stringify(win.slice(0, 220))}`);
+  assert(!/border:\s*"1px solid"/.test(win), "no neutral placeholder panel border in the throughline wrapper");
 });
 
 await check("telemetry counts are exact", () => {
@@ -1093,6 +1106,74 @@ await check("heroBlueprintPlaceholder: too few blueprint values → falls back t
   const heroSlot = { id: "hero", kind: "diegetic", bounds: { x: 0, y: 0, w: 100, h: 100 }, paletteRoles: [], contentFields: [] } as never;
   const body = heroBlueprintPlaceholder(theme, heroSlot, spec);
   assert(body.includes("borderColor: HAIRLINE"), "with <2 usable values, the neutral shell ships");
+});
+
+// ── P3-C6 #5: monochrome bookend placeholder tone (Scale AI s0 stark-white) ──
+await check("P3-C6 #5: placeholderSurfaceInk picks a MID-elevated surface on a MONOCHROME dark brand (not stark white)", () => {
+  // Scale AI's real all-black/gray palette (no chromatic accent anywhere).
+  const mono: Theme = {
+    ...theme,
+    palette: { CANVAS: "#000000", PANEL: "#171717", MID: "#676767", LIGHT2: "#878787", LIGHT: "#a6a6a6" },
+  };
+  const r = placeholderSurfaceInk(mono);
+  assert(r.surface === "PANEL", `mid-elevated surface (least-distant token clearing the floor), got ${r.surface}`);
+  assert(r.ink === "LIGHT", `most-distant token as legible text, got ${r.ink}`);
+  assert(r.surface !== "LIGHT", "the surface is NOT the lightest token — that would be the stark full-white lift");
+});
+
+await check("P3-C6 #5: a CHROMATIC dark brand (Brex-like: neutral canvas + a real accent) keeps the role tokens", () => {
+  // BG #0b0e13 near-neutral, but ACCENT #ff7a59 is chromatic → NOT monochrome.
+  const r = placeholderSurfaceInk(theme);
+  assert(r.surface === "INK" && r.ink === "BG", `chromatic brand keeps ink surface + canvas text, got ${JSON.stringify(r)}`);
+});
+
+await check("P3-C6 #5: the monochrome placeholder body paints the mid-elevated surface + light text (no stark white)", () => {
+  const mono: Theme = {
+    ...theme,
+    palette: { CANVAS: "#000000", PANEL: "#171717", MID: "#676767", LIGHT2: "#878787", LIGHT: "#a6a6a6" },
+  };
+  const spec = { role: "hero" as const, subject: "Pipeline topology", interior: ["'14.2M rows'", "'812 runs / hr'", "'96.4% accuracy'"], ownsCopy: [], focalRank: 1 };
+  const heroSlot = { id: "hero", kind: "diegetic", bounds: { x: 0, y: 0, w: 1800, h: 980 }, paletteRoles: [], contentFields: [] } as never;
+  const body = heroBlueprintPlaceholder(mono, heroSlot, spec, "16:9");
+  assert(body.includes("background: PANEL"), `fills with the mid-elevated PANEL surface, got body head ${JSON.stringify(body.slice(0, 160))}`);
+  assert(body.includes("color: LIGHT"), "interior text is the light token (contrasts the dark panel)");
+});
+
+// ── P3-C6 #3: headline echo — a caption/eyebrow that repeats the headline drops ──
+await check("P3-C6 #3: copyLines DROPS a caption that is a substring of the headline (Scale AI s3 echo)", () => {
+  const content = {
+    headline: "Of the world's leading generative AI model builders are powered by Scale data.",
+    caption: "of the world's leading generative AI model builders",
+  } as never;
+  const lines = copyLines(content, ["headline", "caption"]);
+  assert(lines.some((l) => l.startsWith("headline:")), "headline kept");
+  assert(!lines.some((l) => l.startsWith("caption:")), `headline-echo caption dropped, got ${JSON.stringify(lines)}`);
+});
+
+await check("P3-C6 #3: a DISTINCT caption + a short thematic eyebrow are KEPT (no over-drop)", () => {
+  const content = {
+    headline: "Of the world's leading generative AI model builders are powered by Scale data.",
+    caption: "Verified across 148 providers",
+    eyebrow: "THE PROOF",
+  } as never;
+  const lines = copyLines(content, ["headline", "caption", "eyebrow"]);
+  assert(lines.some((l) => l.startsWith("caption:")), "a distinct caption stays");
+  assert(lines.some((l) => l.startsWith("eyebrow:")), "a short thematic eyebrow (not a 12+ char echo) stays");
+});
+
+// ── P3-C6 #4: authoring meta-label leak — "SCENE 04 · INVITATION" as chrome ──
+await check("P3-C6 #4: SCENE_META_LABEL_RX + isMetaTextSegment catch 'SCENE 04 · INVITATION'", () => {
+  assert(SCENE_META_LABEL_RX.test("SCENE 04 · INVITATION"), "all-caps middot beat-label matches");
+  assert(SCENE_META_LABEL_RX.test("Scene 12: The Turn"), "colon-separated beat label matches");
+  assert(isMetaTextSegment("SCENE 04 · INVITATION"), "flagged as meta-text");
+  const r = stripMetaText('<div style={{ fontSize: 12 }}>SCENE 04 · INVITATION</div>');
+  assert(!/SCENE 04/.test(r.code), `the meta-footer text is stripped, got ${r.code}`);
+});
+
+await check("P3-C6 #4: a legit DIEGETIC 'scene 5 of 8' + ordinary prose are NOT meta-labels (no FP)", () => {
+  assert(!SCENE_META_LABEL_RX.test("Rendering — scene 5 of 8"), "diegetic render-progress value (no chrome separator after the index) passes");
+  assert(!SCENE_META_LABEL_RX.test("behind the scenes of payroll"), "no digit → not a scene label");
+  assert(!isMetaTextSegment("Set the scene for growth"), "no digit → clean copy passes");
 });
 
 // ── P3-C5 (1a): copy-over-light-placeholder contrast ─────────────────────────

@@ -530,6 +530,16 @@ export const extractJsxTextSegments = (body: string): JsxTextSegment[] => {
 export const META_TEXT_VOCAB_RX =
   /\bQA (?:finding|gate|feedback)|\bmy wrapper\b|\bthe wrapper (?:is|was|ends|starts|owns)\b|\bprevious (?:attempt|version|output)\b|\bblocking finding|\bs\d+\.(?:hero|copy|atmosphere|connector|throughline)\b|\bdata-content-path\b|\b\d+px (?:wide|tall|high)\b|\bat x=-?\d+|\bat y=-?\d+|\b[xy]=-?\d+(?:px)?\b|\bI (?:cap|capped|constrain|clamp|reposition|re-?emit|shift|shrink|reduce)\b|\bLooking at the (?:QA|findings?|brief|blueprint)\b|\bmax-width\b|\boverlapping the (?:panel|slot|column)\b/;
 
+/** P3-C6 #4: an AUTHORING META-LABEL leaking as diegetic chrome — "SCENE 04 ·
+ *  INVITATION" rendered as a mock footer (Scale AI s4). The descriptor guard
+ *  (placeholderTitleFromSubject) catches TITLE subjects, but a footer/caption
+ *  text node carrying a "scene NN · BEAT" chrome label slips through. Anchored on
+ *  the CHROME SEPARATOR (middot/pipe/colon/dash) right after the scene index so
+ *  the beat-label format fires but a legitimate DIEGETIC render-progress value
+ *  ("Rendering — scene 5 of 8", which a video product genuinely shows) does NOT.
+ *  Case-insensitive (the leak ships all-caps). */
+export const SCENE_META_LABEL_RX = /\bscene\s+\d{1,2}\s*[·|:–—]/i;
+
 const META_TEXT_STRUCT_MIN_CHARS = 120;
 const META_PX_COORD_RX = /\b\d+(?:\.\d+)?px\b|\b[xy]\s*=\s*-?\d+/;
 const META_FIRST_PERSON_RX = /(?:^|[^\w])(?:I|my|we|our)(?:$|[^\w])/;
@@ -571,6 +581,7 @@ export const isMetaTextSegment = (text: string, fontNames: string[] = []): boole
   const t = text.trim();
   if (t.length < 3) return false;
   if (META_TEXT_VOCAB_RX.test(t)) return true;
+  if (SCENE_META_LABEL_RX.test(t)) return true;
   if (containsFontName(t, fontNames)) return true;
   return (
     t.length > META_TEXT_STRUCT_MIN_CHARS &&
@@ -1552,12 +1563,29 @@ type SceneContent = Script["scenes"][number]["content"];
 
 /** The copy fields an element owns, as brief lines carrying the VERBATIM
  *  values + the choreograph-consistent data-content-path for each. */
-const copyLines = (content: SceneContent | undefined, owned: string[]): string[] => {
+export const copyLines = (content: SceneContent | undefined, owned: string[]): string[] => {
   const c = (content ?? {}) as Record<string, unknown>;
   const out: string[] = [];
+  // P3-C6 #3: a short label field (eyebrow/caption) that ECHOES the headline is
+  // the Scale AI s3 defect — the copy rendered the headline AND a faint caption
+  // that is a verbatim substring of it. Drop the echo so the headline is stated
+  // once. Normalized substring either way, with a 12-char floor so a short
+  // thematic eyebrow ("THE STAKES") that shares a word is never dropped.
+  const headline = typeof c.headline === "string" ? c.headline.trim() : "";
+  const normEcho = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  const headlineNorm = normEcho(headline);
+  const isHeadlineEcho = (v: string): boolean => {
+    if (!headlineNorm) return false;
+    const a = normEcho(v);
+    if (a.length < 12) return false;
+    const shorter = a.length <= headlineNorm.length ? a : headlineNorm;
+    const longer = a.length <= headlineNorm.length ? headlineNorm : a;
+    return longer.includes(shorter);
+  };
   const scalar = (field: string) => {
     const v = c[field];
     if (owned.includes(field) && typeof v === "string" && v.trim()) {
+      if ((field === "eyebrow" || field === "caption") && isHeadlineEcho(v)) return; // drop headline echo
       out.push(`${field}: ${JSON.stringify(v)} (data-content-path="${field}")`);
     }
   };
@@ -1961,6 +1989,19 @@ const verifyFragment = (body: string): Promise<string | null> =>
  * tokens) are always emitted by the assembler, so the placeholder compiles by
  * construction.
  */
+/** P3-C6 #1: the DECORATIVE motif slots (throughline / connector). A throughline
+ *  bridges/annotates the focal content — it exists only in relation to it. When
+ *  its leaf compile-breaks with no salvageable emission, the neutral
+ *  `placeholderBody` ships a stray EMPTY bordered panel floating on the canvas
+ *  (Scale AI s2: a bordered box marooned right of the pipeline — in-bounds, so the
+ *  motif-clutter "protruding" arm doesn't blank it, and MOTIF_DECO_PIECE_RX makes
+ *  findStrayFullBleedCard skip it). A placeholdered motif is not an intentional
+ *  motif: the focal content already stands on its own, so a broken decoration must
+ *  VANISH (an empty fragment), never leave a box. Contrast a hero/copy, whose
+ *  absence is a hole the scene cannot lose — those keep the populated/headline
+ *  fallback. */
+const MOTIF_DECO_SLOT_IDS: ReadonlySet<string> = new Set(["throughline", "connector"]);
+
 const placeholderBody = (theme: Theme, slot: ElementSlot): string =>
   slot.contentFields.includes("headline")
     ? `<div data-content-path="headline" style={{ fontFamily: FONT_DISPLAY, fontSize: 56, fontWeight: 600, lineHeight: 1.1, color: ${tokenForRole(theme, "ink")} }}>{c.headline}</div>`
@@ -2037,6 +2078,61 @@ const heroFillsCanvas = (bounds: { w: number; h: number }, aspect: Aspect): bool
   return bounds.w >= PLACEHOLDER_FILL_W_FRAC * cv.w || bounds.h >= PLACEHOLDER_FILL_H_FRAC * cv.h;
 };
 
+/** P3-C6 #5: chroma (max−min RGB channel) of a hex, or null. A brand ACCENT
+ *  carries chroma; a neutral gray does not (mirrors accent-fill's neutral floor). */
+const PLACEHOLDER_NEUTRAL_CHROMA = 24;
+const chromaOf = (hex: string): number | null => {
+  const rgb = hexToRgb(hex.trim());
+  if (!rgb) return null;
+  return Math.max(rgb[0], rgb[1], rgb[2]) - Math.min(rgb[0], rgb[1], rgb[2]);
+};
+
+/** A truly MONOCHROME dark brand: a dark canvas whose palette carries NO chromatic
+ *  accent anywhere (Scale AI's all-black/gray palette — vs Brex, whose near-neutral
+ *  dark canvas still ships an orange accent). On such a brand the blueprint
+ *  placeholder's role-resolved "ink" surface can collapse to near-black (a
+ *  black-on-black panel) which the washout gate force-lifts to a STARK full-white
+ *  panel (Scale AI s0) — jarring on an all-black brand. */
+const isMonochromeDarkCanvas = (theme: Theme): boolean => {
+  const canvasHex = theme.palette[tokenForRole(theme, "canvas")];
+  const cl = canvasHex ? luminance709(canvasHex) : null;
+  if (cl === null || cl >= 64) return false; // not a dark canvas (0-255 luminance)
+  for (const hex of Object.values(theme.palette)) {
+    const c = chromaOf(hex);
+    if (c !== null && c >= PLACEHOLDER_NEUTRAL_CHROMA) return false; // a chromatic accent exists → not monochrome
+  }
+  return true;
+};
+
+/** Comfortably above HERO_SURFACE_MIN_DELTA_L (15) so the chosen surface clears
+ *  the washout gate with margin and is never force-lifted to a stark extreme. */
+const PLACEHOLDER_SURFACE_MIN_DELTA_L = 18;
+
+/** P3-C6 #5: the surface + contrasting-text CONST NAMES the blueprint placeholder
+ *  paints with. Default = role tokens (ink surface + canvas text = the light
+ *  "before"-UI look; Brex/Faire and every chromatic brand unchanged). On a
+ *  MONOCHROME dark brand, pick a MID-elevated surface — the least-distant palette
+ *  token that still clears the washout floor (the brand's own dark card, e.g.
+ *  Scale's #171717, NOT a stark full-white lift) — plus the most-distant token as
+ *  legible text. Both surface↔canvas and text↔surface are guaranteed to contrast,
+ *  so there is no washout to force-lift and no ghost. Returns const names (the
+ *  assembler emits a const per palette key). */
+export const placeholderSurfaceInk = (theme: Theme): { surface: string; ink: string } => {
+  const fallback = { surface: tokenForRole(theme, "ink"), ink: tokenForRole(theme, "canvas") };
+  if (!isMonochromeDarkCanvas(theme)) return fallback;
+  const canvasHex = theme.palette[tokenForRole(theme, "canvas")];
+  const canvasL = canvasHex ? luminance709(canvasHex) : null;
+  if (canvasL === null) return fallback;
+  const toks = Object.entries(theme.palette)
+    .map(([name, hex]) => ({ name, l: luminance709(hex) }))
+    .filter((t): t is { name: string; l: number } => t.l !== null);
+  const clearing = toks.filter((t) => Math.abs(t.l - canvasL) >= PLACEHOLDER_SURFACE_MIN_DELTA_L);
+  if (clearing.length === 0) return fallback;
+  const surface = clearing.reduce((a, b) => (Math.abs(b.l - canvasL) < Math.abs(a.l - canvasL) ? b : a));
+  const text = toks.reduce((a, b) => (Math.abs(b.l - surface.l) > Math.abs(a.l - surface.l) ? b : a));
+  return { surface: surface.name, ink: text.name };
+};
+
 /**
  * POPULATED hero fallback (the invariant closer). When a COMPOSED hero stays
  * broken through its whole repair budget with no salvageable emission — GLM
@@ -2068,8 +2164,10 @@ export const heroBlueprintPlaceholder = (
   spec: ElementSpec,
   aspect: Aspect = "16:9",
 ): string => {
-  const surface = tokenForRole(theme, "ink"); // light on a dark canvas → contrast
-  const ink = tokenForRole(theme, "canvas"); // dark text on the lifted surface
+  // P3-C6 #5: surface + text by luminance (mid-elevated on a monochrome dark
+  // brand, so a compile-broken bookend never force-lifts to a stark full-white
+  // panel on an all-black canvas; role tokens for every other brand).
+  const { surface, ink } = placeholderSurfaceInk(theme);
   const accent = tokenForRole(theme, "accent");
   const hairline = tokenForRole(theme, "hairline");
 
@@ -2198,10 +2296,15 @@ export const flipCopyInkOverLightPlaceholder = (
   plans: ScenePlan[],
   theme: Theme,
 ): number => {
+  // P3-C6 #5: contrast the placeholder's ACTUAL surface (not the ink token) —
+  // on a monochrome dark brand the surface is a mid-elevated dark card, so the
+  // copy must stay LIGHT (panelInk == the copy's ink → no flip); on a light
+  // placeholder (Brex/Faire) surface == ink token, so this is unchanged.
   const inkConst = tokenForRole(theme, "ink");
   const inkHex = (theme.palette[inkConst] ?? "").trim();
-  if (!inkHex) return 0;
-  const panelInk = contrastInkForSurface(inkHex);
+  const surfaceHex = (theme.palette[placeholderSurfaceInk(theme).surface] ?? "").trim();
+  if (!inkHex || !surfaceHex) return 0;
+  const panelInk = contrastInkForSurface(surfaceHex);
   if (panelInk.toLowerCase() === inkHex.toLowerCase()) return 0;
   const byPiece = new Map(outcomes.map((o) => [o.pieceId, o]));
   let flippedPieces = 0;
@@ -2646,6 +2749,15 @@ export const castBuild = async (
     if (bestSalvage) {
       console.warn(`[cast-build] ${job.pieceId}: hero stayed under the density floor through ${maxRepairs} repair(s) — shipping the richest real emission (score ${bestSalvage.score}) rather than an empty placeholder`);
       return { pieceId: job.pieceId, body: bestSalvage.body, outputTokens: tokens, repaired: false, failed: true, colorRewrites: 0, fontRewrites: 0, heroSurfaceCorrected: false, metaTextStrips: 0, shippedBlueprintPlaceholder: false };
+    }
+    // P3-C6 #1: a DECORATIVE motif (throughline/connector) that broke with no
+    // salvage must VANISH, not ship the neutral placeholder's empty bordered
+    // panel (Scale AI s2's marooned box). Render an empty fragment — a
+    // placeholdered motif is not an intentional motif, and the focal content
+    // stands on its own.
+    if (MOTIF_DECO_SLOT_IDS.has(job.slot.id)) {
+      console.warn(`[cast-build] ${job.pieceId}: decorative motif broke through repair — shipping an EMPTY fragment (a placeholdered motif is not an intentional motif; render nothing rather than a stray box)`);
+      return { pieceId: job.pieceId, body: "<></>", outputTokens: tokens, repaired: false, failed: true, colorRewrites: 0, fontRewrites: 0, heroSurfaceCorrected: false, metaTextStrips: 0, shippedBlueprintPlaceholder: false };
     }
     // No salvageable emission (every attempt errored or compile-broke). For a
     // COMPOSED hero this is the catastrophic case — the blank shell would ship a
