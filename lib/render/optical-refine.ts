@@ -171,6 +171,16 @@ const TEXT_KINDS = new Set(["text"]);
  *  frame edge by design, and nudging either is a regression by definition. */
 const EXEMPT_KINDS = new Set(["atmosphere", "chrome"]);
 
+/**
+ * Exempt by ID, regardless of kind. The throughline motif is pinned EXACTLY to
+ * `throughlineAnchorFor(aspect)` so the cross-scene DRIFT gate passes by
+ * construction — it is the one box in the plan whose position is a cross-scene
+ * contract, not a per-frame composition choice. A bleed here would still be well
+ * inside SEVERE_DRIFT_PX, but "still inside the tolerance" is a worse guarantee
+ * than "identical in every scene", and the motif gains nothing from polish.
+ */
+const EXEMPT_IDS = new Set(["throughline"]);
+
 // ─── Public shapes ──────────────────────────────────────────────────────────
 
 export type OpticalAdjustment = "ink-inset" | "optical-center" | "focal-bleed";
@@ -437,7 +447,7 @@ const applyFocalBleed = (r: Rect, room: EdgeRoom, canvas: Rect): Rect => {
  * with no focal element gets no focal polish, which is correct.
  */
 export const focalSlotId = (plan: ScenePlan, composition?: SceneComposition): string | null => {
-  const eligible = plan.elements.filter((e) => !EXEMPT_KINDS.has(e.kind));
+  const eligible = plan.elements.filter((e) => !EXEMPT_KINDS.has(e.kind) && !EXEMPT_IDS.has(e.id));
   if (eligible.length === 0) return null;
 
   const ranked = (composition?.elements ?? [])
@@ -550,7 +560,7 @@ export const refineScenePlan = (plan: ScenePlan, opts: RefineOpts): RefineReport
   const touched = new Set<number>();
 
   source.forEach((slot, i) => {
-    if (EXEMPT_KINDS.has(slot.kind)) return;
+    if (EXEMPT_KINDS.has(slot.kind) || EXEMPT_IDS.has(slot.id)) return;
     const neighbours = bases.filter((_, j) => j !== i && source[j].kind !== "atmosphere");
     const { rect, adjustments } = refineOne(rebased[i], bases[i], slot.id === focalId, neighbours, opts, canvas);
     if (adjustments.length === 0) return;

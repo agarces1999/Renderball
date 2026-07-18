@@ -485,6 +485,29 @@ await check("FOCAL BLEED: never crosses the bottom reserve (the containment cont
   assert(out.y + out.h <= reserve, `bled past the bottom reserve: ${out.y + out.h} > ${reserve}`);
 });
 
+await check("EXEMPT: the throughline motif is NEVER moved (its position is a cross-scene contract)", () => {
+  // Pinned to throughlineAnchorFor(aspect) so the cross-scene drift gate passes
+  // by construction. Even a legal bleed would trade "identical in every scene"
+  // for "still inside the tolerance" — a strictly worse guarantee.
+  for (const aspect of ASPECTS) {
+    const p = composeSceneLayout({ register: "centered", content: CONTENT }, aspect, { hasThroughline: true });
+    const before = rectOf(p, "throughline");
+    // Declared rank-1 focal, to prove the exemption beats even an explicit vote.
+    const composition = { elements: [{ role: "throughline", focalRank: 1 }] } as never;
+    const r = refineScenePlan(p, opts(aspect, { composition }));
+    assert(focalSlotId(p, composition) !== "throughline", "the motif must never be selectable as focal");
+    assert(JSON.stringify(rectOf(r.plan, "throughline")) === JSON.stringify(before), `motif moved at ${aspect}`);
+  }
+});
+
+await check("EXEMPT: atmosphere and chrome are never moved either", () => {
+  const p = composeSceneLayout({ register: "centered", content: CONTENT }, "16:9", { hasThroughline: true });
+  const before = { atmosphere: rectOf(p, "atmosphere"), chrome: rectOf(p, "chrome") };
+  const r = refineScenePlan(p, opts("16:9"));
+  assert(JSON.stringify(rectOf(r.plan, "atmosphere")) === JSON.stringify(before.atmosphere), "atmosphere moved");
+  assert(JSON.stringify(rectOf(r.plan, "chrome")) === JSON.stringify(before.chrome), "chrome bar moved");
+});
+
 // ════════════════════════════════════════════════════════════════════════════
 // edgeRoom — the emptiness measurement the growths share
 // ════════════════════════════════════════════════════════════════════════════
