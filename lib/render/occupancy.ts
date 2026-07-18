@@ -74,7 +74,7 @@
  * Fail posture: findings returned, never thrown; a missing screenshot or
  * sharp failure records an error and skips the scene (never fabricates).
  */
-import { assessEmptyColumnRun, assessRegionInk, COLUMN_INK_FLOOR } from "./painted-content";
+import { assessEmptyColumnRun, assessEmptyRowRun, assessRegionInk, COLUMN_INK_FLOOR } from "./painted-content";
 import { rectUnionArea, isPaintedElement } from "./hero-contrast";
 import type { MeasuredElement, SceneMeasurement } from "./measure-scene";
 
@@ -100,6 +100,28 @@ export const OCCUPANCY_RUN_FLOOR = 0.23;
  *  margin on both sides. The anchor exemption still applies first (a deliberate
  *  drawn motif in the band is staged negative space, never a severe void). */
 export const OCCUPANCY_SEVERE_VOID_FLOOR = 0.32;
+/** P3-C5 (horizontal-void arm): the tallest empty-ROW run ≥ this fraction of
+ *  frame H, ANCHORED at the top or bottom edge, reads as an abandoned band —
+ *  content top-weighted with the bottom third empty (Vanta s3), or the mirror.
+ *  Set fractionally above the column floor so a legitimate top/bottom MARGIN
+ *  (content vertically centered) never trips it. Calibrated on the real Vanta
+ *  frames (agent-measured assessEmptyRowRun, ROW_INK_FLOOR): s3 (list) fires at
+ *  33.3% @y67–100 (bottom band, MUST fire); the must-pass margins clear it with
+ *  ≥8pt — s1 (split) 15.2% @y4–20 (a legit top margin), s0 (quote) 6.7% @y67–73
+ *  (a mid-frame breathing gap, and not edge-anchored anyway); s2 full-bleed is
+ *  EXEMPT; s4 (centered) 0% (the placeholder fills). */
+export const OCCUPANCY_ROW_RUN_FLOOR = 0.24;
+/** A row band counts as edge-anchored when it touches the top (start ≤ tol) or
+ *  bottom (end ≥ 1−tol) — a MID-frame gap between two content blocks is not the
+ *  abandoned-edge defect and is left to the deliberate-negative-space budget. */
+export const OCCUPANCY_ROW_EDGE_TOL = 0.06;
+/** …and the content must REACH the OPPOSITE edge (margin ≤ this): a bottom void
+ *  fires only when the content is top-weighted (small top margin), a top void
+ *  only when it's bottom-weighted. This rejects vertically-CENTERED content with
+ *  symmetric top+bottom margins (deliberate breathing room, not abandonment) —
+ *  Vanta s3 (top margin ~8%, bottom void 33%) fires; a centered split with 37.5%
+ *  margins on both sides does not. */
+export const OCCUPANCY_ROW_OPPOSITE_MAX = 0.15;
 /** Registers where a void band BLOCKS (the composition owns the full frame).
  *  v15 agent-#2 correction: `split` moved to ADVISORY (below). The task's
  *  cycle-6 calibration says "s1/s2 MUST pass"; Robinhood s2 is a `split` scene
@@ -156,6 +178,10 @@ export interface OccupancyVoidFinding {
   scene: number;
   /** Routing target — the scene's hero owns furnishing the frame. */
   pieceId: string;
+  /** Which axis the void band runs on. "column" = a vertical empty band (the
+   *  left/right void, the original arm); "row" = a horizontal empty band (the
+   *  bottom/top void, P3-C5). Both feed the SAME void-furnish (one contract). */
+  axis: "column" | "row";
   blocking: boolean;
   /** A marooned-island void (≥ OCCUPANCY_SEVERE_VOID_FLOOR). Audit-1 High #3: a
    *  severe void no longer FORCES a blocking regen (regen never converged it);
@@ -163,9 +189,16 @@ export interface OccupancyVoidFinding {
    *  The register still decides `blocking` (quote/centered block; split/stat/list
    *  advise) — the severe flag is telemetry + furnish emphasis, not a regen gate. */
   severe: boolean;
+  /** For a column void: the widest empty-column run as a fraction of frame W.
+   *  For a row void: the tallest empty-row run as a fraction of frame H (the
+   *  furnish + telemetry read runFracW uniformly as "void extent"). */
   runFracW: number;
+  /** Column void: the vertical band's x-range. Row void: the whole width
+   *  (0..1), with the real y-range carried in rowBand. */
   band: { startFracW: number; endFracW: number };
-  region: "left" | "center" | "right";
+  /** Row void only (axis "row"): the empty band's y-range (fractions of H). */
+  rowBand?: { startFracH: number; endFracH: number };
+  region: "left" | "center" | "right" | "top" | "middle" | "bottom";
   register: string;
   detail: string;
   repairInstruction: string;
@@ -308,6 +341,7 @@ export const assessOccupancy = async (
               kind: "occupancy-void",
               scene: m.scene,
               pieceId: `s${m.scene}.hero`,
+              axis: "column",
               blocking: judgedBlocking,
               severe,
               runFracW: run.runFracW,
@@ -334,6 +368,84 @@ export const assessOccupancy = async (
       } catch (err) {
         result.errors.push(
           `scene ${m.scene}: column-run sampling failed — ${err instanceof Error ? err.message.split("\n")[0] : String(err)}`,
+        );
+      }
+    }
+
+    // ── horizontal void band (P3-C5 — the ROW twin of the column arm) ────────
+    // Content top-weighted with the bottom third abandoned (Vanta s3), or the
+    // mirror at the top edge: the column-run arm and the barbell middle-gap arm
+    // both miss it. Same register posture, same anchor exemption, and it feeds
+    // the SAME void-furnish (one void contract — no competing path).
+    if ((judgedBlocking || judgedAdvisory) && m.screenshotPath) {
+      try {
+        const rrun = await assessEmptyRowRun(m.screenshotPath);
+        const bottomAnchored = rrun.endFracH >= 1 - OCCUPANCY_ROW_EDGE_TOL;
+        const topAnchored = rrun.startFracH <= OCCUPANCY_ROW_EDGE_TOL;
+        // One-sided abandonment only: the content must reach the OPPOSITE edge.
+        // A bottom void needs a small TOP margin (content top-weighted); a top
+        // void needs a small BOTTOM margin. Symmetric margins = centered breathing.
+        const oneSided =
+          (bottomAnchored && rrun.topMarginFracH <= OCCUPANCY_ROW_OPPOSITE_MAX) ||
+          (topAnchored && rrun.bottomMarginFracH <= OCCUPANCY_ROW_OPPOSITE_MAX);
+        if (rrun.runFracH >= OCCUPANCY_ROW_RUN_FLOOR && (topAnchored || bottomAnchored) && oneSided) {
+          // Anchor exemption: a substantial drawn motif whose visible-rect center
+          // sits inside the band (vertically) — pixel-verified it actually paints.
+          const y0 = rrun.startFracH * m.height;
+          const y1 = rrun.endFracH * m.height;
+          const candidates = m.elements.filter((e) => {
+            if (!isAnchorElement(e)) return false;
+            const v = visibleRect(e);
+            if (v.w < OCCUPANCY_ANCHOR_MIN_PX || v.h < OCCUPANCY_ANCHOR_MIN_PX) return false;
+            const cy = v.y + v.h / 2;
+            return cy >= y0 && cy <= y1;
+          });
+          let anchor: MeasuredElement | undefined;
+          if (candidates.length > 0) {
+            const inks = await assessRegionInk(
+              m.screenshotPath,
+              candidates.map((e) => {
+                const v = visibleRect(e);
+                return { x: v.x / m.width, y: v.y / m.height, w: v.w / m.width, h: v.h / m.height };
+              }),
+            );
+            const hit = inks.findIndex((ink) => ink >= OCCUPANCY_ANCHOR_MIN_INK);
+            if (hit !== -1) anchor = candidates[hit];
+          }
+          if (!anchor) {
+            const mid = (rrun.startFracH + rrun.endFracH) / 2;
+            const region: "top" | "middle" | "bottom" = mid < 0.38 ? "top" : mid > 0.62 ? "bottom" : "middle";
+            const bandPx = Math.round(rrun.runFracH * m.height);
+            const severe = rrun.runFracH >= OCCUPANCY_SEVERE_VOID_FLOOR;
+            result.findings.push({
+              kind: "occupancy-void",
+              scene: m.scene,
+              pieceId: `s${m.scene}.hero`,
+              axis: "row",
+              blocking: judgedBlocking,
+              severe,
+              runFracW: rrun.runFracH, // "void extent" (uniform with the column arm)
+              band: { startFracW: 0, endFracW: 1 }, // full width; y-range in rowBand
+              rowBand: { startFracH: rrun.startFracH, endFracH: rrun.endFracH },
+              region,
+              register: register!,
+              detail:
+                `scene ${m.scene}: a ${bandPx}px-tall VOID BAND (${pct(rrun.runFracH)} of the frame height, the ` +
+                `${region} region, y≈${Math.round(y0)}–${Math.round(y1)}) carries no visible ink on this ` +
+                `${register} scene (floor ${pct(OCCUPANCY_ROW_RUN_FLOOR)}) and no anchoring motif. The content is ` +
+                `weighted to one edge and that band reads abandoned, not staged.` +
+                `${severe ? ` This void is SEVERE (≥${pct(OCCUPANCY_SEVERE_VOID_FLOOR)} of the frame height); the deterministic furnish will fill it.` : ""}`,
+              repairInstruction:
+                `FURNISH THE ${region.toUpperCase()} BAND — do not relayout and do not stretch existing items apart. ` +
+                `Populate it with REGISTER-CONSISTENT interior items in the same diegetic world as your existing ` +
+                `content (a supporting row of stat chips, a caption/annotation strip, a secondary panel, or one ` +
+                `substantial drawn motif in the brand's vocabulary) — VISIBLE against the canvas, not near-canvas-toned.`,
+            });
+          }
+        }
+      } catch (err) {
+        result.errors.push(
+          `scene ${m.scene}: row-run sampling failed — ${err instanceof Error ? err.message.split("\n")[0] : String(err)}`,
         );
       }
     }

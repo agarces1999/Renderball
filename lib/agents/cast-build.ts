@@ -2122,6 +2122,110 @@ export const heroBlueprintPlaceholder = (
   );
 };
 
+// ─── P3-C5 (1a): copy-over-light-placeholder contrast ────────────────────────
+// When a hero compile-breaks to the DOMINANT blueprint FILL panel, that panel is
+// painted on the CANVAS-CONTRASTING surface (the ink token — light on a dark
+// canvas). An overlapping copy piece, however, still paints its foreground ink
+// for the CANVAS (light on a dark canvas) — the SAME side as the panel — so the
+// headline washes out (Vanta s4: a white headline on the light placeholder,
+// 1.16:1). The assembler flips that copy's foreground ink to CONTRAST the panel.
+
+/** The foreground ink that reads on a SURFACE — light on a dark surface, dark on
+ *  a light one (local twin of void-furnish.textOnSurface; no cross-layer import). */
+export const contrastInkForSurface = (surfaceHex: string): string => {
+  const lum = luminance709(surfaceHex);
+  return lum !== null && lum < 128 ? "#f4f4f6" : "#16181d";
+};
+
+/** Rewrite a piece body's FOREGROUND text color (the `color:` property) from the
+ *  canvas ink — as a bare const ref (`color: INK`) OR the literal ink hex — to
+ *  `newHex`. Only the `color` property is touched (the preceding-char guard
+ *  excludes borderColor/backgroundColor); accents, backgrounds, and borders are
+ *  left alone. Returns the new body + how many refs flipped. Pure/deterministic. */
+export const flipInkColorRefs = (
+  body: string,
+  inkConst: string,
+  inkHex: string,
+  newHex: string,
+): { body: string; flips: number } => {
+  let flips = 0;
+  let out = body;
+  if (inkConst && /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(inkConst)) {
+    out = out.replace(
+      new RegExp(String.raw`(^|[^A-Za-z0-9_$.])color:\s*${escapeRegExp(inkConst)}\b`, "g"),
+      (_m, pre) => {
+        flips++;
+        return `${pre}color: "${newHex}"`;
+      },
+    );
+  }
+  if (/^#[0-9a-fA-F]{3,8}$/.test(inkHex)) {
+    out = out.replace(
+      new RegExp(String.raw`(^|[^A-Za-z0-9_$.])color:\s*(["'])${escapeRegExp(inkHex)}\2`, "gi"),
+      (_m, pre) => {
+        flips++;
+        return `${pre}color: "${newHex}"`;
+      },
+    );
+  }
+  return { body: out, flips };
+};
+
+/** Fraction of rect A that lies inside rect B (0..1). */
+const rectOverlapFrac = (
+  a: { x: number; y: number; w: number; h: number },
+  b: { x: number; y: number; w: number; h: number },
+): number => {
+  const ix = Math.max(0, Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x));
+  const iy = Math.max(0, Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y));
+  const areaA = a.w * a.h;
+  return areaA > 0 ? (ix * iy) / areaA : 0;
+};
+
+/** A copy box this deeply inside a dominant light hero panel is painted OVER it
+ *  (Vanta s4 centered) — flip its ink. A copy routed to a clear band (full-bleed,
+ *  fix #2) sits mostly outside → below this → left alone (Faire s2 stays clean). */
+export const COPY_OVER_HERO_FLIP_FRAC = 0.6;
+
+/**
+ * Flip the ink of every copy piece that overlaps a hero which shipped the
+ * dominant light blueprint placeholder, so the headline contrasts the panel.
+ * Mutates `bodies` in place; returns the number of pieces flipped.
+ */
+export const flipCopyInkOverLightPlaceholder = (
+  bodies: Map<string, string>,
+  outcomes: ElementOutcome[],
+  plans: ScenePlan[],
+  theme: Theme,
+): number => {
+  const inkConst = tokenForRole(theme, "ink");
+  const inkHex = (theme.palette[inkConst] ?? "").trim();
+  if (!inkHex) return 0;
+  const panelInk = contrastInkForSurface(inkHex);
+  if (panelInk.toLowerCase() === inkHex.toLowerCase()) return 0;
+  const byPiece = new Map(outcomes.map((o) => [o.pieceId, o]));
+  let flippedPieces = 0;
+  for (let si = 0; si < plans.length; si++) {
+    if (!byPiece.get(`s${si}.hero`)?.shippedBlueprintPlaceholder) continue;
+    const heroSlot = plans[si].elements.find((s) => s.id === "hero");
+    const copySlot = plans[si].elements.find((s) => s.id === "copy");
+    if (!heroSlot || !copySlot) continue;
+    if (rectOverlapFrac(copySlot.bounds, heroSlot.bounds) < COPY_OVER_HERO_FLIP_FRAC) continue;
+    const pid = `s${si}.copy`;
+    const body = bodies.get(pid);
+    if (!body) continue;
+    const flipped = flipInkColorRefs(body, inkConst, inkHex, panelInk);
+    if (flipped.flips > 0) {
+      bodies.set(pid, flipped.body);
+      flippedPieces += 1;
+      console.warn(
+        `[cast-build] ${pid}: flipped ${flipped.flips} ink ref(s) → ${panelInk} (copy overlaps the light blueprint placeholder on s${si}.hero — anti-washout)`,
+      );
+    }
+  }
+  return flippedPieces;
+};
+
 // ─── The orchestrator ───────────────────────────────────────────────────────
 
 interface ElementJob {
@@ -2142,6 +2246,13 @@ interface ElementOutcome {
   heroSurfaceCorrected: boolean;
   /** Meta-text segments (leaked reasoning prose) stripped from the shipped body. */
   metaTextStrips: number;
+  /** P3-C5: this hero compile-broke through its whole budget and shipped the
+   *  DOMINANT blueprint FILL panel (a canvas-contrasting surface that occupies
+   *  the frame). An overlapping copy piece paints its ink for the CANVAS, which
+   *  is the OPPOSITE contrast of this panel → a washed-out headline (Vanta s4:
+   *  a white headline on the light placeholder). The assembler flips that copy's
+   *  ink to contrast the panel. False for a real/salvaged/neutral emission. */
+  shippedBlueprintPlaceholder: boolean;
 }
 
 const round2 = (n: number): number => Math.round(n * 100) / 100;
@@ -2454,8 +2565,24 @@ export const castBuild = async (
     // Track the richest compilable-but-thin hero across attempts — the salvage
     // that ships in place of the blank placeholder if the whole budget runs out.
     const isDensityFail = (e: string): boolean => e.startsWith("hero interior too thin");
+    // P3-C5 (1b): a COMPILE/TRUNCATION failure class — esbuild ran out of source
+    // ("Unexpected end of file", "Unterminated string") or the transform failed:
+    // the model's rich bookend hero exceeded its length budget and got cut off.
+    // A pointed SIMPLIFY retry (fewer rows, shallower nesting) recovers a real —
+    // if leaner — emission far more often than another equally-long attempt that
+    // truncates again, and beats dropping straight to the fallback panel.
+    const isCompileTruncation = (e: string): boolean =>
+      /Unexpected end of file|Unterminated string|Transform failed|Expected .* but found|Unexpected "|Unexpected token/i.test(e);
     const isHero = job.slot.id === "hero";
     const heroSpec = isHero ? specForSlot(script.scenes[job.sceneIndex], job.slot.id) : undefined;
+    // Would the blueprint fallback (if the budget exhausts) render the DOMINANT
+    // light FILL panel? Same branch heroBlueprintPlaceholder takes — used to flip
+    // an overlapping copy's ink at assembly so the headline isn't washed out.
+    const shipsFillPanel =
+      isHero &&
+      !!heroSpec &&
+      heroFillsCanvas(job.slot.bounds, aspect) &&
+      extractQuotedValues(heroSpec.interior ?? []).length >= 2;
     let bestSalvage: { body: string; score: number } | undefined;
     const noteSalvage = (r: { salvage?: { body: string; score: number } }): void => {
       if (r.salvage && (!bestSalvage || r.salvage.score > bestSalvage.score)) bestSalvage = r.salvage;
@@ -2463,7 +2590,7 @@ export const castBuild = async (
 
     const first = await attempt(job.brief);
     if (first.ok) {
-      return { pieceId: job.pieceId, body: first.body, outputTokens: tokens, repaired: false, failed: false, colorRewrites: first.rewrites, fontRewrites: first.fontRewrites, heroSurfaceCorrected: first.heroSurface, metaTextStrips: first.metaStrips };
+      return { pieceId: job.pieceId, body: first.body, outputTokens: tokens, repaired: false, failed: false, colorRewrites: first.rewrites, fontRewrites: first.fontRewrites, heroSurfaceCorrected: first.heroSurface, metaTextStrips: first.metaStrips, shippedBlueprintPlaceholder: false };
     }
     noteSalvage(first);
 
@@ -2482,6 +2609,14 @@ export const castBuild = async (
     let prev: { raw: string; error: string } = first;
     for (let r = 0; r < maxRepairs; r++) {
       const reassert = isHero && isDensityFail(prev.error) ? heroPopulateReassert(heroSpec) : "";
+      // P3-C5 (1b): on a hero that COMPILE-broke/truncated, spend the LAST repair
+      // asking for a SIMPLER, SHORTER body that compiles cleanly — a real leaner
+      // emission beats the fallback panel. (Density fails keep re-asserting the
+      // inventory; a truncation needs the opposite — less, not more.)
+      const simplify =
+        isHero && isCompileTruncation(prev.error) && r === maxRepairs - 1
+          ? "Your output keeps exceeding the length budget and TRUNCATING before it closes. Emit a SIMPLER, SHORTER version of this hero that COMPILES cleanly end-to-end: fewer interior rows (keep the 4–6 strongest, real values), shallower nesting, no decorative sub-panels. A COMPLETE, valid, moderately-rich component is far better than a truncated rich one. Close every tag and string."
+          : "";
       const next = await attempt(
         [
           job.brief,
@@ -2490,13 +2625,14 @@ export const castBuild = async (
           prev.raw ? `--- previous attempt ---\n${prev.raw}` : "(the call itself failed)",
           `--- error ---\n${prev.error}`,
           reassert,
+          simplify,
           "Emit corrected JSX only — output ONLY component code; never narrate your reasoning, plan, or coordinate math as rendered text nodes.",
         ]
           .filter(Boolean)
           .join("\n"),
       );
       if (next.ok) {
-        return { pieceId: job.pieceId, body: next.body, outputTokens: tokens, repaired: true, failed: false, colorRewrites: next.rewrites, fontRewrites: next.fontRewrites, heroSurfaceCorrected: next.heroSurface, metaTextStrips: next.metaStrips };
+        return { pieceId: job.pieceId, body: next.body, outputTokens: tokens, repaired: true, failed: false, colorRewrites: next.rewrites, fontRewrites: next.fontRewrites, heroSurfaceCorrected: next.heroSurface, metaTextStrips: next.metaStrips, shippedBlueprintPlaceholder: false };
       }
       noteSalvage(next);
       prev = next;
@@ -2509,7 +2645,7 @@ export const castBuild = async (
     // compilable body was ever produced (every call errored or stayed broken).
     if (bestSalvage) {
       console.warn(`[cast-build] ${job.pieceId}: hero stayed under the density floor through ${maxRepairs} repair(s) — shipping the richest real emission (score ${bestSalvage.score}) rather than an empty placeholder`);
-      return { pieceId: job.pieceId, body: bestSalvage.body, outputTokens: tokens, repaired: false, failed: true, colorRewrites: 0, fontRewrites: 0, heroSurfaceCorrected: false, metaTextStrips: 0 };
+      return { pieceId: job.pieceId, body: bestSalvage.body, outputTokens: tokens, repaired: false, failed: true, colorRewrites: 0, fontRewrites: 0, heroSurfaceCorrected: false, metaTextStrips: 0, shippedBlueprintPlaceholder: false };
     }
     // No salvageable emission (every attempt errored or compile-broke). For a
     // COMPOSED hero this is the catastrophic case — the blank shell would ship a
@@ -2520,11 +2656,16 @@ export const castBuild = async (
     // shell as before.
     const fallback = isHero && heroSpec ? heroBlueprintPlaceholder(theme, job.slot, heroSpec, aspect) : placeholderBody(theme, job.slot);
     console.warn(`[cast-build] ${job.pieceId}: broken through repair — shipping ${isHero && heroSpec ? "BLUEPRINT-populated" : "neutral"} placeholder (${prev.error.slice(0, 120)})`);
-    return { pieceId: job.pieceId, body: fallback, outputTokens: tokens, repaired: false, failed: true, colorRewrites: 0, fontRewrites: 0, heroSurfaceCorrected: false, metaTextStrips: 0 };
+    return { pieceId: job.pieceId, body: fallback, outputTokens: tokens, repaired: false, failed: true, colorRewrites: 0, fontRewrites: 0, heroSurfaceCorrected: false, metaTextStrips: 0, shippedBlueprintPlaceholder: shipsFillPanel };
   };
 
   const outcomes = await Promise.all(jobs.map((job) => limiter.with(() => runElement(job))));
   const bodies = new Map(outcomes.map((o) => [o.pieceId, o.body]));
+
+  // P3-C5 (1a): anti-washout — a copy piece painted OVER a hero that shipped the
+  // dominant light blueprint placeholder gets its foreground ink flipped to
+  // contrast the panel (Vanta s4: white headline on the light placeholder).
+  flipCopyInkOverLightPlaceholder(bodies, outcomes, plans, theme);
 
   // ── 5. Assemble → choreograph (motion is a compile step, invoked exactly
   //       like pipeline.ts's parallel branch) → final compile gate ─────────

@@ -222,6 +222,29 @@ if (existsSync(framePath("cycle6-robinhood", 0))) {
   console.log("  … real-frame calibration skipped (.data/dogfood absent)");
 }
 
+// ── P3-C5: the HORIZONTAL-void arm on the real Vanta frames ───────────────────
+if (existsSync(framePath("p3-cycle4-vanta", 3))) {
+  await check("P3-C5 CALIBRATION: Vanta s3 (list) yields a ROW-axis bottom void via assessOccupancy", async () => {
+    const m: SceneMeasurement = { scene: 0, width: 1920, height: 1080, elements: [], screenshotPath: framePath("p3-cycle4-vanta", 3) };
+    const r = await assessOccupancy([m], ["list"]);
+    const row = r.findings.filter((f) => f.axis === "row");
+    assert(row.length === 1, `one row-void on s3, got ${JSON.stringify(r.findings.map((f) => ({ axis: f.axis, region: f.region, run: (f.runFracW * 100).toFixed(0) })))}`);
+    assert(row[0].region === "bottom", `bottom band, got ${row[0].region}`);
+    assert(row[0].blocking === false, `list advises (furnish converges), got blocking=${row[0].blocking}`);
+    assert(!!row[0].rowBand && row[0].rowBand.endFracH > 0.94, `bottom-anchored rowBand, got ${JSON.stringify(row[0].rowBand)}`);
+  });
+  await check("P3-C5 CALIBRATION: Vanta s0 (quote) + s1 (split) yield NO row void (no FP)", async () => {
+    const m0: SceneMeasurement = { scene: 0, width: 1920, height: 1080, elements: [], screenshotPath: framePath("p3-cycle4-vanta", 0) };
+    const m1: SceneMeasurement = { scene: 0, width: 1920, height: 1080, elements: [], screenshotPath: framePath("p3-cycle4-vanta", 1) };
+    const r0 = await assessOccupancy([m0], ["quote"]);
+    const r1 = await assessOccupancy([m1], ["split"]);
+    assert(r0.findings.filter((f) => f.axis === "row").length === 0, `s0 no row void, got ${JSON.stringify(r0.findings.map((f) => f.axis))}`);
+    assert(r1.findings.filter((f) => f.axis === "row").length === 0, `s1 no row void, got ${JSON.stringify(r1.findings.map((f) => f.axis))}`);
+  });
+} else {
+  console.log("  … Vanta row-void calibration skipped (.data/dogfood/p3-cycle4-vanta absent)");
+}
+
 // ── Audit-1 High #3: SEVERE void is FLAGGED-severe (furnished), NOT a blocking
 // regen on an advisory register. A void band ≥ OCCUPANCY_SEVERE_VOID_FLOOR is a
 // small card marooned in a large void; before, the severe floor OVERRODE the
@@ -264,9 +287,12 @@ if (existsSync(fuseFrame(3))) {
     const s2: SceneMeasurement = { scene: 2, width: 1920, height: 1080, elements: [], screenshotPath: fuseFrame(2) };
     const r3 = await assessOccupancy([s3], fuseRegisters);
     const r2 = await assessOccupancy([s2], fuseRegisters);
-    const v3 = r3.findings.filter((f) => f.kind === "occupancy-void" && f.severe);
-    assert(v3.length === 1 && v3[0].scene === 3, `Fuse s3 must produce a SEVERE void (furnished downstream), got ${JSON.stringify(r3.findings)}`);
-    assert(v3[0].blocking === false, `Fuse s3 (list) severe void must not block a regen, got ${v3[0].blocking}`);
+    // The original calibration target: the COLUMN severe void (a right-edge void
+    // on the marooned card). The P3-C5 row arm may additionally flag a bottom
+    // band on the same frame — both are severe + advisory (furnish converges).
+    const v3col = r3.findings.filter((f) => f.kind === "occupancy-void" && f.severe && f.axis === "column");
+    assert(v3col.length === 1 && v3col[0].scene === 3, `Fuse s3 must produce a SEVERE column void, got ${JSON.stringify(r3.findings.map((f) => ({ axis: f.axis, severe: f.severe })))}`);
+    assert(r3.findings.filter((f) => f.severe).every((f) => f.blocking === false), `every Fuse s3 (list) severe void advises (furnish converges, no regen), got ${JSON.stringify(r3.findings.map((f) => ({ axis: f.axis, blocking: f.blocking })))}`);
     assert(!r2.findings.some((f) => f.blocking), `Fuse s2 must NOT block, got ${JSON.stringify(r2.findings)}`);
   });
 } else {

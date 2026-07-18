@@ -21,6 +21,7 @@ import {
   findCanvasCoherence,
   findCornerMarkCollision,
   findHollowCta,
+  findStrayFullBleedCard,
   findIntraPieceOverlap,
   findGhostFragment,
   CANVAS_COHERENCE_RGB_DELTA,
@@ -940,6 +941,46 @@ if (existsSync(path.join(FUSE_FRAMES, "scene3.png"))) {
   });
 } else {
   console.log("  … Fuse real-frame calibration skipped (.data/dogfood/fullpipe-fuse absent)");
+}
+
+// ── findStrayFullBleedCard (P3-C5 #2a — Vanta s2 stray empty black card) ──────
+{
+  // The primary mock's content (a chart panel with text) the stray card floats over.
+  const mockContent = () => el({ tag: "div", text: "Continuous Monitoring", piece: "s2.hero", pieceKind: "diegetic", x: 300, y: 250, w: 1500, h: 600, hasTextDesc: true });
+  await check("stray-card FIRES: a solid EMPTY card floating over the mock on full-bleed (Vanta s2)", () => {
+    const strayCard = el({ tag: "div", text: "", piece: "s2.strayblock", pieceKind: "diegetic", x: 1360, y: 545, w: 200, h: 195, bg: "rgb(20,20,24)", hasTextDesc: false });
+    const m = scene(2, [mockContent(), strayCard]);
+    const r = findStrayFullBleedCard(m, "full-bleed");
+    assert(r.length === 1 && r[0].kind === "stray-card" && /s2\.strayblock/.test(r[0].detail), `expected one stray-card on s2.strayblock, got ${JSON.stringify(r)}`);
+  });
+  await check("stray-card PASSES: the same card on a NON-full-bleed register is not flagged", () => {
+    const strayCard = el({ tag: "div", text: "", piece: "s2.strayblock", pieceKind: "diegetic", x: 1360, y: 545, w: 200, h: 195, bg: "rgb(20,20,24)", hasTextDesc: false });
+    const m = scene(2, [mockContent(), strayCard]);
+    assert(findStrayFullBleedCard(m, "centered").length === 0, "only full-bleed is in scope");
+    assert(findStrayFullBleedCard(m, undefined).length === 0, "undefined register is not in scope");
+  });
+  await check("stray-card PASSES: a LABELLED card (carries text) is a real panel, not stray", () => {
+    const labelled = el({ tag: "div", text: "", piece: "s2.card", pieceKind: "diegetic", x: 1360, y: 545, w: 200, h: 195, bg: "rgb(20,20,24)", hasTextDesc: true });
+    const m = scene(2, [mockContent(), labelled]);
+    assert(findStrayFullBleedCard(m, "full-bleed").length === 0, "a card with a text descendant is furnished");
+  });
+  await check("stray-card PASSES: a standalone empty card touching NO content (orphan-advisory's job)", () => {
+    const lonely = el({ tag: "div", text: "", piece: "s2.block", pieceKind: "diegetic", x: 60, y: 60, w: 200, h: 195, bg: "rgb(20,20,24)", hasTextDesc: false });
+    const faraway = el({ tag: "div", text: "hi", piece: "s2.hero", pieceKind: "diegetic", x: 1600, y: 800, w: 200, h: 100, hasTextDesc: true });
+    const m = scene(2, [lonely, faraway]);
+    assert(findStrayFullBleedCard(m, "full-bleed").length === 0, "a non-occluding empty card is not a blocking stray card");
+  });
+  await check("stray-card PASSES: a transparent/gradient panel (hasBgImage) is deliberate décor", () => {
+    const gradient = el({ tag: "div", text: "", piece: "s2.glow", pieceKind: "diegetic", x: 1360, y: 545, w: 200, h: 195, bg: "rgba(0,0,0,0)", hasBgImage: true, hasTextDesc: false });
+    const m = scene(2, [mockContent(), gradient]);
+    assert(findStrayFullBleedCard(m, "full-bleed").length === 0, "a gradient/bg-image panel is not an empty stray card");
+  });
+  await check("stray-card PASSES: the huge primary mock surface itself (> canvas frac) is not a stray card", () => {
+    const bigMock = el({ tag: "div", text: "", piece: "s2.hero", pieceKind: "diegetic", x: 40, y: 40, w: 1840, h: 1000, bg: "rgb(20,20,24)", hasTextDesc: false });
+    const label = el({ tag: "div", text: "hi", piece: "s2.copy", pieceKind: "text", x: 100, y: 100, w: 300, h: 80, hasTextDesc: true });
+    const m = scene(2, [bigMock, label]);
+    assert(findStrayFullBleedCard(m, "full-bleed").length === 0, "the mock surface itself exceeds the max card fraction");
+  });
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

@@ -396,6 +396,18 @@ export interface BrandMarkFinding {
 
 const LOGO_MARK_RX = /data-content-path="[^"]*\blogo\b[^"]*"/gi;
 const normWord = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]/g, "");
+/** Common app/spreadsheet CHROME menu words. A diegetic mock (a spreadsheet, a
+ *  dashboard) legitimately paints its menu bar — "File Edit View Data Insert
+ *  Format" — and a short chrome word can land within an edit-distance hop of a
+ *  5-letter brand ("Data" vs "Vanta", the Vanta s1 false positive). These are
+ *  UI furniture, never a scrambled wordmark, so they can never be garble
+ *  candidates. (The correct-brand and duplicate-mark arms are unaffected —
+ *  those key off the logo mount, not text nodes.) */
+const UI_CHROME_WORDS: ReadonlySet<string> = new Set([
+  "file", "edit", "view", "data", "insert", "format", "help", "tools",
+  "window", "sheet", "cell", "table", "select", "home", "share", "options",
+  "settings", "menu", "print", "export", "import", "search",
+]);
 const editDistance = (a: string, b: string): number => {
   const dp = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)]);
   for (let j = 0; j <= b.length; j++) dp[0][j] = j;
@@ -437,6 +449,7 @@ export const findBrandMarkDefects = (code: string, brandName: string): BrandMark
       for (const m of span.body.matchAll(/>\s*([^<>{}\n]{2,40})\s*</g)) {
         const cand = normWord(m[1]);
         if (cand.length < brandWord.length * 0.6 || cand.length > brandWord.length * 1.6) continue;
+        if (UI_CHROME_WORDS.has(cand)) continue; // a mock's menu word, never a scrambled mark
         // A substring relationship is truncation/domain, not a scramble
         // ("falabella" vs "falabellacom"): never a garble.
         if (cand === brandWord || cand.includes(brandWord) || brandWord.includes(cand)) continue;

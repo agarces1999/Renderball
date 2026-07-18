@@ -215,6 +215,32 @@ check("arm3b MUST-FIRE: cycle-9 s4 duplicate brand mark (hero lockup + copy garb
   assert(dup[0].pieceId === "s4.copy", `routes the copy (non-hero) mark, got ${dup[0].pieceId}`);
 });
 
+check("arm3b MENU-WORD FP (Vanta s1): a spreadsheet menu bar 'Data' is not a garbled 'Vanta'", () => {
+  // Vanta s1 shipped a diegetic spreadsheet with a "File Edit View Data Insert
+  // Format" menu bar. "Data" is within edit-distance 2 of "Vanta" (a 5-letter
+  // brand), so the garble arm false-fired on it. UI-chrome menu words are never
+  // scrambled wordmarks.
+  const code = `
+<Piece id="s1.hero" kind="diegetic">
+  <div data-piece="s1.hero" data-kind="diegetic">
+    <span>File</span><span>Edit</span><span>View</span><span>Data</span><span>Insert</span><span>Format</span>
+  </div>
+</Piece>`;
+  const d = findBrandMarkDefects(code, "Vanta");
+  assert(d.length === 0, `menu words must not garble-fire vs 'Vanta', got ${JSON.stringify(d.map((x) => ({ k: x.kind, t: x.garbledText })))}`);
+});
+
+check("arm3b: a GENUINE scramble still fires even for a menu-word-adjacent brand", () => {
+  // The exclusion is menu-word-scoped, not brand-scoped: a real scrambled wordmark
+  // ("Vnata" for "Vanta") must still be caught.
+  const code = `
+<Piece id="s1.copy" kind="text">
+  <div data-piece="s1.copy" data-kind="text"><span style={{ fontWeight: 700 }}>Vnata</span></div>
+</Piece>`;
+  const g = findBrandMarkDefects(code, "Vanta").filter((d) => d.kind === "garbled-brand-mark");
+  assert(g.length === 1 && g[0].garbledText === "Vnata", `real scramble 'Vnata' still fires, got ${JSON.stringify(g)}`);
+});
+
 check("arm3b: garbled text-node wordmark (near-miss spelling) fires", () => {
   const code = `
 <Piece id="s0.copy" kind="text">

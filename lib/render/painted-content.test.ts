@@ -24,6 +24,7 @@ import {
   assessFrameInk,
   assessEmptyBand,
   assessEmptyColumnRun,
+  assessEmptyRowRun,
   assessRegionInk,
   largestEmptyRun,
   verifyPaintedScenes,
@@ -426,6 +427,65 @@ await check("assessEmptyColumnRun: the DARK-canvas twin fires the same void (lum
   const r = await assessEmptyColumnRun(buf, { colInkFloor: COLUMN_INK_FLOOR });
   assert(r.runFracW > 0.3, `a bright card on DARK must leave the same void, got ${r.runFracW.toFixed(2)}`);
 });
+
+// ── P3-C5: assessEmptyRowRun (the HORIZONTAL twin of assessEmptyColumnRun) ────
+// Content is kept a PIXEL-MINORITY (a narrow black block on white) so white stays
+// the dominant background — exactly like the colFrame tests, transposed.
+const rowFrame = (rects: { x: number; y: number; w: number; h: number }[]): Promise<Buffer> =>
+  sharp({ create: { width: CW, height: CH, channels: 3, background: { r: 255, g: 255, b: 255 } } })
+    .composite(rects.map((r) => ({ input: { create: { width: r.w, height: r.h, channels: 3, background: { r: 0, g: 0, b: 0 } } }, top: r.y, left: r.x })))
+    .png()
+    .toBuffer();
+
+await check("assessEmptyRowRun: top-only content leaves a wide BOTTOM void (Vanta s3 class)", async () => {
+  // a narrow block in the top 40% (y 0..80 of 200); rows 80..200 (60%) empty.
+  const buf = await rowFrame([{ x: 0, y: 0, w: 120, h: 80 }]);
+  const r = await assessEmptyRowRun(buf);
+  assert(r.runFracH > 0.5, `bottom void should fire, got ${r.runFracH.toFixed(2)}`);
+  assert(Math.abs(r.endFracH - 1) < 0.05, `band bottom-anchored, got [${r.startFracH.toFixed(2)},${r.endFracH.toFixed(2)}]`);
+});
+
+await check("assessEmptyRowRun: a top MARGIN alone (content fills the rest) stays small", async () => {
+  // a narrow column spanning y 30..200 (85% of H) — only a 15% top margin, like
+  // Vanta s1's top gutter. Every content row is inked; only the margin is empty.
+  const buf = await rowFrame([{ x: 0, y: 30, w: 100, h: 170 }]);
+  const r = await assessEmptyRowRun(buf);
+  assert(r.runFracH < 0.24, `a legit top margin must stay under the row floor, got ${r.runFracH.toFixed(2)}`);
+});
+
+await check("assessEmptyRowRun: a faint VERTICAL hairline (below the row floor) does NOT break a void", async () => {
+  // top content (minority → white dominant) + a 1px vertical rule crossing the
+  // bottom void: each row it crosses carries 1/320 ≈ 0.3% ink ≪ the 0.6% row
+  // floor, so the void stays contiguous.
+  const buf = await sharp({ create: { width: CW, height: CH, channels: 3, background: { r: 255, g: 255, b: 255 } } })
+    .composite([
+      { input: { create: { width: 120, height: 80, channels: 3, background: { r: 0, g: 0, b: 0 } } }, top: 0, left: 0 },
+      { input: { create: { width: 1, height: 110, channels: 3, background: { r: 0, g: 0, b: 0 } } }, top: 82, left: 160 },
+    ])
+    .png()
+    .toBuffer();
+  const r = await assessEmptyRowRun(buf);
+  assert(r.runFracH > 0.5, `a vertical hairline doesn't split the bottom void, got ${r.runFracH.toFixed(2)}`);
+});
+
+// REAL Vanta frames — the horizontal-void arm's calibration (P3-C5). s3 (list)
+// abandons the bottom third; s0/s1 have only legit margins.
+const VANTA = path.join(process.cwd(), ".data", "dogfood", "p3-cycle4-vanta", "frames");
+if (existsSync(path.join(VANTA, "scene3.png"))) {
+  await check("REAL Vanta s3 (list): assessEmptyRowRun fires a bottom-edge void (~33%)", async () => {
+    const r = await assessEmptyRowRun(path.join(VANTA, "scene3.png"));
+    assert(r.runFracH > 0.3, `Vanta s3 bottom void must fire, got ${(r.runFracH * 100).toFixed(1)}%`);
+    assert(r.endFracH > 0.94, `bottom-anchored, got y[${r.startFracH.toFixed(2)},${r.endFracH.toFixed(2)}]`);
+  });
+  await check("REAL Vanta s0 (quote) + s1 (split): row-run below the floor (no FP)", async () => {
+    const r0 = await assessEmptyRowRun(path.join(VANTA, "scene0.png"));
+    const r1 = await assessEmptyRowRun(path.join(VANTA, "scene1.png"));
+    assert(r0.runFracH < 0.24, `Vanta s0 must not fire (breathing mid-gap), got ${(r0.runFracH * 100).toFixed(1)}%`);
+    assert(r1.runFracH < 0.24, `Vanta s1 must not fire (top margin), got ${(r1.runFracH * 100).toFixed(1)}%`);
+  });
+} else {
+  console.log("  … Vanta real-frame row-void calibration skipped (.data/dogfood/p3-cycle4-vanta absent)");
+}
 
 await check("assessRegionInk: a painted region reports its ink share; a blank region ~0", async () => {
   const buf = await colFrame([{ x: 0, w: 100 }]); // left ~31% black, white clearly dominant

@@ -61,6 +61,10 @@ import {
   extractQuotedValues,
   heroBlueprintPlaceholder,
   placeholderTitleFromSubject,
+  contrastInkForSurface,
+  flipInkColorRefs,
+  flipCopyInkOverLightPlaceholder,
+  COPY_OVER_HERO_FLIP_FRAC,
   HERO_MAX_TOKENS_CEREBRAS,
   HERO_MAX_TOKENS_FIREWORKS,
   type CastBuildInput,
@@ -1089,6 +1093,69 @@ await check("heroBlueprintPlaceholder: too few blueprint values → falls back t
   const heroSlot = { id: "hero", kind: "diegetic", bounds: { x: 0, y: 0, w: 100, h: 100 }, paletteRoles: [], contentFields: [] } as never;
   const body = heroBlueprintPlaceholder(theme, heroSlot, spec);
   assert(body.includes("borderColor: HAIRLINE"), "with <2 usable values, the neutral shell ships");
+});
+
+// ── P3-C5 (1a): copy-over-light-placeholder contrast ─────────────────────────
+await check("contrastInkForSurface: dark surface → light ink; light surface → dark ink", () => {
+  assert(contrastInkForSurface("#f5f8fa") === "#16181d", `light placeholder → dark copy ink, got ${contrastInkForSurface("#f5f8fa")}`);
+  assert(contrastInkForSurface("#0b0e13") === "#f4f4f6", `dark placeholder → light copy ink, got ${contrastInkForSurface("#0b0e13")}`);
+});
+
+await check("flipInkColorRefs: flips the ink CONST + the ink HEX; leaves accent/border/bg alone", () => {
+  const body = `<div style={{ color: INK }}><span style={{ color: "#f5f8fa" }}>hi</span>` +
+    `<b style={{ color: ACCENT, borderColor: INK, backgroundColor: INK }}>x</b></div>`;
+  const r = flipInkColorRefs(body, "INK", "#f5f8fa", "#16181d");
+  assert(r.flips === 2, `two color: refs flipped (const + hex), got ${r.flips}`);
+  assert(/color: "#16181d"/.test(r.body), "the ink const → dark literal");
+  assert(!/color: INK\b/.test(r.body), "no bare INK color ref remains");
+  assert(/color: ACCENT/.test(r.body), "accent color is untouched");
+  assert(/borderColor: INK/.test(r.body) && /backgroundColor: INK/.test(r.body), "borderColor/backgroundColor are untouched");
+});
+
+await check("flipCopyInkOverLightPlaceholder: a copy OVER a light placeholder hero gets its ink flipped (Vanta s4)", () => {
+  const bodies = new Map<string, string>([
+    ["s0.hero", "<div>placeholder panel</div>"],
+    ["s0.copy", `<div data-content-path="headline" style={{ color: INK }}>{c.headline}</div>`],
+  ]);
+  const outcomes = [
+    { pieceId: "s0.hero", body: "", outputTokens: 0, repaired: false, failed: true, colorRewrites: 0, fontRewrites: 0, heroSurfaceCorrected: false, metaTextStrips: 0, shippedBlueprintPlaceholder: true },
+    { pieceId: "s0.copy", body: "", outputTokens: 0, repaired: false, failed: false, colorRewrites: 0, fontRewrites: 0, heroSurfaceCorrected: false, metaTextStrips: 0, shippedBlueprintPlaceholder: false },
+  ];
+  // A dominant (full-frame) hero + a copy fully inside it (centered register).
+  const plans = [{ register: "centered", elements: [
+    { id: "hero", kind: "diegetic", bounds: { x: 0, y: 0, w: 1920, h: 1080 }, paletteRoles: [], contentFields: [], allowedOverlaps: ["copy"] },
+    { id: "copy", kind: "text", bounds: { x: 460, y: 300, w: 1000, h: 400 }, paletteRoles: [], contentFields: ["headline"], allowedOverlaps: ["hero"] },
+  ] }] as never;
+  const n = flipCopyInkOverLightPlaceholder(bodies, outcomes as never, plans, theme);
+  assert(n === 1, `one copy flipped, got ${n}`);
+  assert(/color: "#16181d"/.test(bodies.get("s0.copy")!), `copy ink flipped to dark, got ${bodies.get("s0.copy")}`);
+});
+
+await check("flipCopyInkOverLightPlaceholder: NO flip when the hero shipped a REAL emission (not the placeholder)", () => {
+  const bodies = new Map<string, string>([["s0.copy", `<div style={{ color: INK }}>{c.headline}</div>`]]);
+  const outcomes = [
+    { pieceId: "s0.hero", body: "", outputTokens: 0, repaired: false, failed: false, colorRewrites: 0, fontRewrites: 0, heroSurfaceCorrected: false, metaTextStrips: 0, shippedBlueprintPlaceholder: false },
+  ];
+  const plans = [{ register: "centered", elements: [
+    { id: "hero", kind: "diegetic", bounds: { x: 0, y: 0, w: 1920, h: 1080 }, paletteRoles: [], contentFields: [], allowedOverlaps: ["copy"] },
+    { id: "copy", kind: "text", bounds: { x: 460, y: 300, w: 1000, h: 400 }, paletteRoles: [], contentFields: ["headline"], allowedOverlaps: ["hero"] },
+  ] }] as never;
+  assert(flipCopyInkOverLightPlaceholder(bodies, outcomes as never, plans, theme) === 0, "real hero emission → copy untouched");
+  assert(/color: INK\b/.test(bodies.get("s0.copy")!), "copy ink unchanged");
+});
+
+await check("flipCopyInkOverLightPlaceholder: NO flip when the copy sits OUTSIDE the hero (full-bleed clear band, Faire s2)", () => {
+  const bodies = new Map<string, string>([["s0.copy", `<div style={{ color: INK }}>{c.headline}</div>`]]);
+  const outcomes = [
+    { pieceId: "s0.hero", body: "", outputTokens: 0, repaired: false, failed: true, colorRewrites: 0, fontRewrites: 0, heroSurfaceCorrected: false, metaTextStrips: 0, shippedBlueprintPlaceholder: true },
+  ];
+  // hero fills the top 60%; the copy sits fully in the bottom clear band (no overlap).
+  const plans = [{ register: "full-bleed", elements: [
+    { id: "hero", kind: "diegetic", bounds: { x: 0, y: 0, w: 1920, h: 640 }, paletteRoles: [], contentFields: [], allowedOverlaps: [] },
+    { id: "copy", kind: "text", bounds: { x: 120, y: 760, w: 900, h: 260 }, paletteRoles: [], contentFields: ["headline"], allowedOverlaps: [] },
+  ] }] as never;
+  assert(flipCopyInkOverLightPlaceholder(bodies, outcomes as never, plans, theme) === 0, `copy outside the hero (${COPY_OVER_HERO_FLIP_FRAC} overlap floor) → untouched`);
+  assert(/color: INK\b/.test(bodies.get("s0.copy")!), "copy ink unchanged (readable on the dark canvas band)");
 });
 
 await check("heroPopulateReassert: re-states the subject and every interior item as a populate directive", () => {

@@ -9,6 +9,7 @@ import {
   buildFurnishPanelJsx,
   injectFurnishIntoSection,
   furnishRectForBand,
+  furnishRectForRowBand,
   pickFurnishSurface,
   parseHex,
   relLuminance,
@@ -83,6 +84,18 @@ check("furnishRectForBand: a right-half void → a right-half inset rect", () =>
 
 check("furnishRectForBand: a too-thin band → null (not furnishable)", () => {
   assert(furnishRectForBand({ startFracW: 0.48, endFracW: 0.54 }, CANVAS_169) === null, "6% band too thin");
+});
+
+check("furnishRectForRowBand: a bottom-third void → a wide bottom-anchored inset rect (Vanta s3)", () => {
+  const rect = furnishRectForRowBand({ startFracH: 0.67, endFracH: 1.0 }, CANVAS_169);
+  assert(rect !== null, "bottom band must be furnishable");
+  assert(rect!.y > 0.67 * 1080 && rect!.y < 0.72 * 1080, `y inset into the bottom band, got ${rect!.y}`);
+  assert(rect!.y + rect!.h <= 1080, "stays on canvas");
+  assert(rect!.w > 1500 && rect!.w <= 1920, `wide central strip, got ${rect!.w}`);
+});
+
+check("furnishRectForRowBand: a too-short band → null (not furnishable)", () => {
+  assert(furnishRectForRowBand({ startFracH: 0.9, endFracH: 0.98 }, CANVAS_169) === null, "8%H band too short");
 });
 
 // ── the panel JSX ─────────────────────────────────────────────────────────────

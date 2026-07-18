@@ -51,7 +51,7 @@ import type { Script, Scene } from "../../src/schema";
  *  monolithic repair gate, the vision-loop re-gate, and the cast quality loop). */
 const BLOCKING_RENDER_TRUTH_KINDS: RenderTruthKind[] = [
   "overflow", "measure-error", "barbell", "cross-piece-overlap", "canvas-brightness", "stranded-hero",
-  "canvas-coherence", "corner-mark-collision", "hollow-cta", "intra-piece-overlap", "ghost-fragment",
+  "canvas-coherence", "corner-mark-collision", "hollow-cta", "intra-piece-overlap", "ghost-fragment", "stray-card",
 ];
 /** v10 edge-crop clamp breath — a clamped piece never sits flush to the edge. */
 const EDGE_CLAMP_MARGIN_PX = 12;
@@ -319,7 +319,7 @@ export async function runPreviewBuild(
   // AND the vision-loop verify below so the two can't drift.
   const BLOCKING_KINDS: import("./render-truth-gates").RenderTruthKind[] = [
     "overflow", "measure-error", "barbell", "cross-piece-overlap", "canvas-brightness", "stranded-hero",
-    "canvas-coherence", "corner-mark-collision", "hollow-cta", "intra-piece-overlap", "ghost-fragment",
+    "canvas-coherence", "corner-mark-collision", "hollow-cta", "intra-piece-overlap", "ghost-fragment", "stray-card",
   ];
   // Audit-1 P0 #1: the ONE brand-name source of truth (was raw be.title — leaked
   // Faire's whole "Your one-stop shop for whole" tagline into gate feedback).

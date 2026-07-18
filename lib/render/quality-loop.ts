@@ -59,6 +59,7 @@ import {
   buildFurnishPanelJsx,
   injectFurnishIntoSection,
   furnishRectForBand,
+  furnishRectForRowBand,
   pickFurnishSurface,
 } from "./void-furnish";
 import { extractQuotedValues, placeholderTitleFromSubject } from "../agents/cast-build";
@@ -1864,7 +1865,10 @@ export async function runQualityLoop(
           values = [...new Set([...values, ...pad])];
         }
         const title = placeholderTitleFromSubject(heroEl?.subject);
-        const rect = furnishRectForBand(f.band, canvas);
+        const rect =
+          f.axis === "row" && f.rowBand
+            ? furnishRectForRowBand(f.rowBand, canvas)
+            : furnishRectForBand(f.band, canvas);
         if (!rect || values.length < 1) {
           voidFurnishEvents.push({ scene, pieceId: f.pieceId, runFracW: f.runFracW, region: f.region, action: "skipped", detail: `${f.detail} (no furnishable rect/values → residual flagged)` });
           warn(`  [void-furnish] scene ${scene}: ${(f.runFracW * 100).toFixed(0)}% void unfurnishable (rect=${!!rect}, values=${values.length}) — residual ships FLAGGED (honest)`);

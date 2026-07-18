@@ -313,6 +313,103 @@ export const assessEmptyColumnRun = async (
   };
 };
 
+export interface EmptyRowRun {
+  /** Tallest contiguous run of empty rows, as a fraction of frame H. */
+  runFracH: number;
+  /** Where that run starts, as a fraction of frame H. */
+  startFracH: number;
+  /** Where it ends (exclusive), as a fraction of frame H. */
+  endFracH: number;
+  /** Leading empty rows from the top edge, as a fraction of H (the top margin). */
+  topMarginFracH: number;
+  /** Trailing empty rows to the bottom edge, as a fraction of H (bottom margin). */
+  bottomMarginFracH: number;
+}
+
+/**
+ * P3-C5 (occupancy, horizontal-void arm) — the HORIZONTAL twin of
+ * assessEmptyColumnRun: the tallest contiguous run of ROWS carrying (almost) no
+ * painted ink, over the FULL height (margins included — a bottom/top band that
+ * swallows a margin is still a void; the caller's floor + edge-anchor absorb
+ * normal gutters). The column-run arm sees only VERTICAL voids (a left/right
+ * empty band); a content-top-weighted scene that abandons the bottom third
+ * (Vanta s3) is invisible to it. Same dominant-background subtraction, so soft
+ * atmosphere gradients don't count as ink. ROW_INK_FLOOR (not COLUMN_INK_FLOOR):
+ * a row crossed only by a hairline/sparse texture is still empty.
+ */
+export const assessEmptyRowRun = async (
+  input: string | Buffer,
+  opts: InkOptions & { rowInkFloor?: number } = {},
+): Promise<EmptyRowRun> => {
+  const colorDistance = opts.colorDistance ?? DEFAULT_COLOR_DISTANCE;
+  const sampleWidth = opts.sampleWidth ?? BAND_SAMPLE_WIDTH;
+  const rowFloor = opts.rowInkFloor ?? ROW_INK_FLOOR;
+
+  const { data, info } = await sharp(input)
+    .resize({ width: sampleWidth, withoutEnlargement: true })
+    .removeAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  const W = info.width;
+  const H = info.height;
+  const ch = info.channels;
+  const N = W * H;
+
+  const buckets = new Map<number, [number, number, number, number]>();
+  for (let i = 0; i < N; i++) {
+    const p = i * ch;
+    const r = data[p];
+    const g = ch >= 3 ? data[p + 1] : r;
+    const b = ch >= 3 ? data[p + 2] : r;
+    const key = ((r >> 4) << 8) | ((g >> 4) << 4) | (b >> 4);
+    const e = buckets.get(key);
+    if (e) {
+      e[0]++;
+      e[1] += r;
+      e[2] += g;
+      e[3] += b;
+    } else {
+      buckets.set(key, [1, r, g, b]);
+    }
+  }
+  let dom: [number, number, number, number] = [1, 0, 0, 0];
+  for (const e of buckets.values()) if (e[0] > dom[0]) dom = e;
+  const bgR = dom[1] / dom[0];
+  const bgG = dom[2] / dom[0];
+  const bgB = dom[3] / dom[0];
+
+  const d2 = colorDistance * colorDistance;
+  const empty: boolean[] = new Array(H).fill(true);
+  for (let y = 0; y < H; y++) {
+    let ink = 0;
+    for (let x = 0; x < W; x++) {
+      const p = (y * W + x) * ch;
+      const r = data[p];
+      const g = ch >= 3 ? data[p + 1] : r;
+      const b = ch >= 3 ? data[p + 2] : r;
+      const dr = r - bgR;
+      const dg = g - bgG;
+      const db = b - bgB;
+      if (dr * dr + dg * dg + db * db > d2) ink++;
+    }
+    empty[y] = W > 0 && ink / W < rowFloor;
+  }
+  const run = largestEmptyRun(empty, 0, H);
+  // Leading / trailing empty margins (distinguish a one-sided abandoned edge from
+  // symmetric breathing room around vertically-centered content).
+  let top = 0;
+  while (top < H && empty[top]) top++;
+  let bottom = 0;
+  while (bottom < H && empty[H - 1 - bottom]) bottom++;
+  return {
+    runFracH: H > 0 ? run.len / H : 0,
+    startFracH: H > 0 ? run.start / H : 0,
+    endFracH: H > 0 ? (run.start + run.len) / H : 0,
+    topMarginFracH: H > 0 ? top / H : 0,
+    bottomMarginFracH: H > 0 ? bottom / H : 0,
+  };
+};
+
 /**
  * v15 (occupancy anchors) — ink share per FRACTIONAL region (x/y/w/h all as
  * fractions of the frame), dominant-background subtracted like everything

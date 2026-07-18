@@ -30,6 +30,7 @@ export type RenderTruthKind =
   | "hollow-cta"
   | "intra-piece-overlap"
   | "ghost-fragment"
+  | "stray-card"
   | "stranded-hero"
   | "measure-error";
 
@@ -1749,6 +1750,79 @@ export const findHollowCta = (
   return out;
 };
 
+// ── stray empty card on a full-bleed layer (P3-C5 #2a) ───────────────────────
+// Vanta s2 (full-bleed) shipped a stray EMPTY dark rounded card floating over
+// the bar chart — a solid panel carrying no text, no image, no motif, stacked on
+// top of the primary mock. It reads as a rendering artifact (a leftover
+// container). This is the card-scale sibling of the hollow-CTA gate: a solid,
+// text-less, card-sized panel that OVERLAPS other content on a FULL-BLEED scene,
+// where a floating empty card is unambiguously a defect (the reference full-bleed
+// mocks never float an empty container over their surface). Scoped to full-bleed
+// to avoid touching legit empty accent blocks on other registers.
+const STRAY_CARD_MIN_AREA = 14_000; // a real card (≈120×120+), not a chip/rule
+const STRAY_CARD_MAX_CANVAS_FRAC = 0.3; // bigger = the mock surface itself, not a stray card
+const STRAY_CARD_MIN_DIM = 60; // both dims — a panel, not a thin bar
+const STRAY_CARD_MIN_OVERLAP = 0.5; // this share of the CARD must sit over other content
+
+/** A solid, empty, card-sized panel floating OVER content on a full-bleed scene. */
+export const findStrayFullBleedCard = (
+  m: SceneMeasurement,
+  register?: string,
+): RenderTruthFinding[] => {
+  if (m.error || register !== "full-bleed") return [];
+  const canvasArea = m.width * m.height;
+  if (canvasArea <= 0) return [];
+  const out: RenderTruthFinding[] = [];
+  const seen = new Set<string>();
+  // Other content elements a stray card could be occluding (painted, text-bearing
+  // or image, from a DIFFERENT piece).
+  const contentEls = m.elements.filter(
+    (o) =>
+      !!o.piece &&
+      o.pieceKind !== "atmosphere" &&
+      o.pieceKind !== "chrome" &&
+      o.opacity > 0.3 &&
+      o.w > 0 &&
+      o.h > 0 &&
+      (o.isImg || o.text.trim() !== "" || o.hasTextDesc === true || o.hasBgImage === true),
+  );
+  for (const e of m.elements) {
+    if (e.opacity <= 0.5 || e.isImg) continue;
+    if (e.pieceKind === "atmosphere" || e.pieceKind === "chrome") continue;
+    if (!e.piece || MOTIF_DECO_PIECE_RX.test(e.piece)) continue;
+    // EMPTY: no own text, no text descendant, no background image/gradient/motif.
+    if (e.text.trim() !== "" || e.hasTextDesc === true || e.hasBgImage === true) continue;
+    if (cssAlpha(e.bg) < 0.9) continue; // must be a SOLID container surface
+    if (e.w < STRAY_CARD_MIN_DIM || e.h < STRAY_CARD_MIN_DIM) continue;
+    const area = e.w * e.h;
+    if (area < STRAY_CARD_MIN_AREA || area > STRAY_CARD_MAX_CANVAS_FRAC * canvasArea) continue;
+    // Must OVERLAP another piece's content (it floats OVER the mock, occluding it)
+    // — a standalone empty block that touches nothing is the orphaned-card
+    // advisory's job, not a blocking occlusion.
+    const cardArea = e.w * e.h;
+    const occludes = contentEls.some((o) => {
+      if (o.piece === e.piece) return false;
+      const ix = Math.min(e.x + e.w, o.x + o.w) - Math.max(e.x, o.x);
+      const iy = Math.min(e.y + e.h, o.y + o.h) - Math.max(e.y, o.y);
+      if (ix <= 0 || iy <= 0) return false;
+      return cardArea > 0 && (ix * iy) / cardArea >= STRAY_CARD_MIN_OVERLAP;
+    });
+    if (!occludes || seen.has(e.piece)) continue;
+    seen.add(e.piece);
+    out.push({
+      scene: m.scene,
+      kind: "stray-card",
+      detail:
+        `scene ${m.scene}: piece ${e.piece} paints a solid EMPTY card (${Math.round(e.w)}×${Math.round(e.h)} at ` +
+        `${Math.round(e.x)},${Math.round(e.y)}, fill ${e.bg}) — no text, no image, no motif — floating OVER the ` +
+        `primary surface on this full-bleed scene. A solid container carrying nothing, stacked on the mock, reads as ` +
+        `a rendering artifact. REMOVE this empty card (or, if it was meant to hold content, FILL it with the real ` +
+        `rows/values it should carry). A full-bleed scene shows ONE primary surface — never a hollow card floating over it.`,
+    });
+  }
+  return out;
+};
+
 // ── intra-piece overlap (P3-C2 #4b: a control colliding with copy) ───────────
 // Brex s0 shipped, inside ONE hero, a "Submit for Approval" pill overlapping the
 // "1 required field missing…" helper line AND the receipt footer. findTextOverlap
@@ -2120,6 +2194,7 @@ export const findRenderTruthFailures = async (
     findings.push(...findStrandedHero(m, opts.registers?.[m.scene]));
     findings.push(...findCornerMarkCollision(m, { brandName: opts.brandName }));
     findings.push(...findHollowCta(m, { brandBackground: opts.brandBackground }));
+    findings.push(...findStrayFullBleedCard(m, opts.registers?.[m.scene]));
     findings.push(...findIntraPieceOverlap(m));
     findings.push(...findGhostFragment(m));
     findings.push(...(await findEmptyBand(m)));

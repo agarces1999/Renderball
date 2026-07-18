@@ -242,3 +242,32 @@ export const furnishRectForBand = (
     h: Math.min(h, canvas.h - 2 * FURNISH_INSET_PX),
   };
 };
+
+/** The horizontal fraction the furnish panel occupies within a ROW band (a wide
+ *  central strip, leaving air left and right). */
+export const FURNISH_H_FRAC = 0.86;
+
+/**
+ * P3-C5: map a detected HORIZONTAL void band (fractional y-range, full width) to
+ * the absolute-px rect a furnish panel should occupy — the band inset by
+ * FURNISH_INSET_PX, centered horizontally over FURNISH_H_FRAC of the canvas
+ * width. Clamped to stay on canvas. Returns null when the band is too short to
+ * furnish a legible panel.
+ */
+export const furnishRectForRowBand = (
+  rowBand: { startFracH: number; endFracH: number },
+  canvas: { w: number; h: number },
+): FurnishRect | null => {
+  const y0 = rowBand.startFracH * canvas.h + FURNISH_INSET_PX;
+  const y1 = rowBand.endFracH * canvas.h - FURNISH_INSET_PX;
+  const h = y1 - y0;
+  if (h < 120) return null; // too short for a legible panel
+  const w = FURNISH_H_FRAC * canvas.w;
+  const x = (canvas.w - w) / 2;
+  return {
+    x: Math.max(FURNISH_INSET_PX, x),
+    y: Math.max(FURNISH_INSET_PX, y0),
+    w: Math.min(w, canvas.w - 2 * FURNISH_INSET_PX),
+    h: Math.min(h, canvas.h - 2 * FURNISH_INSET_PX),
+  };
+};
