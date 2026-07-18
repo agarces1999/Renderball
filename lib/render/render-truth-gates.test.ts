@@ -4,7 +4,7 @@
  * is exercised for its blocking-subset logic with screenshot-less measurements
  * (contrast/dead-region no-op without a screenshot — overflow is the blocker).
  */
-import { promises as fs } from "fs";
+import { promises as fs, existsSync } from "fs";
 import os from "os";
 import path from "path";
 import sharp from "sharp";
@@ -19,6 +19,10 @@ import {
   planEdgeCropMoves,
   hexLuminance,
   assessCanvasBrightness,
+  assessCanvasCoherence,
+  findCanvasCoherence,
+  findCornerMarkCollision,
+  CANVAS_COHERENCE_RGB_DELTA,
   findStrayFragments,
   exciseStrayFragment,
   findMotifClutter,
@@ -744,6 +748,92 @@ await check("exciseMotifClutter blanks a throughline floating-mark piece end-to-
   const r = exciseMotifClutter(thr, [{ kind: "motif-clutter", scene: 2, pieceId: "s2.throughline", form: "floating-brand-mark", text: "Klarna", rect: { x: 0, y: 0, w: 0, h: 0 }, detail: "" }], { brandName: "Klarna" });
   assert(r.action === "blanked" && !r.code.includes("Klarna"), `got ${JSON.stringify(r)}`);
 });
+
+// ── canvas COHERENCE (P3-C1: a scene shipped on an off-brand canvas) ─────────
+// Calibrated on the real Fuse frames (agent-measured median RGB vs brand
+// #440b12): s3 collapsed to neutral near-black (26,26,30); the rest stayed warm.
+const FUSE_BRAND_BG = "#440b12";
+const FUSE_SCENE_RGB: [number, number, number][] = [
+  [60, 10, 16], // s0 burgundy
+  [76, 24, 30], // s1 burgundy
+  [79, 17, 24], // s2 burgundy (MUST PASS)
+  [26, 26, 30], // s3 neutral near-black (MUST FIRE)
+  [68, 12, 18], // s4 burgundy
+];
+await check("assessCanvasCoherence: Fuse s3 off-brand canvas FIRES, s0/s1/s2/s4 PASS", () => {
+  const f = assessCanvasCoherence(
+    FUSE_BRAND_BG,
+    FUSE_SCENE_RGB.map((rgb, scene) => ({ scene, rgb })),
+  );
+  assert(f.length === 1, `exactly one off-brand scene, got ${f.length}: ${JSON.stringify(f.map((x) => x.scene))}`);
+  assert(f[0].scene === 3 && f[0].kind === "canvas-coherence", `must be scene 3, got ${JSON.stringify(f[0])}`);
+  assert(/chroma collapsed/.test(f[0].detail), `should note the chroma collapse: ${f[0].detail}`);
+});
+await check("assessCanvasCoherence: a coherent burgundy scene at the RGB-delta boundary stays PASS", () => {
+  // dist ~ CANVAS_COHERENCE_RGB_DELTA-1 with intact chroma must not fire.
+  const near: [number, number, number] = [68 + CANVAS_COHERENCE_RGB_DELTA - 5, 11, 18];
+  const f = assessCanvasCoherence(FUSE_BRAND_BG, [{ scene: 0, rgb: near }]);
+  assert(f.length === 0, `just-inside coherent scene should pass, got ${JSON.stringify(f)}`);
+});
+await check("assessCanvasCoherence: neutral-canvas brand (no chroma reference) never flags a neutral scene", () => {
+  const f = assessCanvasCoherence("#0e0e12", [
+    { scene: 0, rgb: [14, 14, 18] },
+    { scene: 1, rgb: [20, 20, 24] },
+  ]);
+  assert(f.length === 0, `a near-black brand can't be "off" by being near-black: ${JSON.stringify(f)}`);
+});
+await check("assessCanvasCoherence: unparseable / missing brand bg → skipped (never fabricates)", () => {
+  assert(assessCanvasCoherence(undefined, [{ scene: 0, rgb: [0, 0, 0] }]).length === 0, "undefined bg skips");
+  assert(assessCanvasCoherence("not-a-hex", [{ scene: 0, rgb: [0, 0, 0] }]).length === 0, "bad hex skips");
+});
+
+// ── corner-mark collision (P3-C1: a duplicate brand lockup in the corner) ────
+const chromeMark = (text = "Fuse"): MeasuredElement =>
+  el({ tag: "span", text, piece: "s0.chrome", pieceKind: "chrome", x: 40, y: 44, w: 92, h: 30 });
+await check("findCornerMarkCollision: hero mark OVERLAPPING the corner chrome FIRES (Fuse s0/s4)", () => {
+  const m = scene(0, [
+    chromeMark("Fuse"),
+    // the head's "Fuse logo upper-left" inside the hero, overlapping the chrome
+    el({ tag: "span", text: "Fuse", piece: "s0.hero", pieceKind: "diegetic", x: 52, y: 50, w: 120, h: 44 }),
+  ]);
+  const r = findCornerMarkCollision(m, { brandName: "Fuse" });
+  assert(r.length === 1 && r[0].kind === "corner-mark-collision", `got ${JSON.stringify(r)}`);
+  assert(/s0\.hero/.test(r[0].detail), `routes to the hero: ${r[0].detail}`);
+});
+await check("findCornerMarkCollision: a DISTANT in-mock brand mark PASSES (Fuse s2 sidebar)", () => {
+  const m = scene(2, [
+    chromeMark("Fuse"),
+    // "Fuse" inside the product mock sidebar, ~330px off the corner chrome
+    el({ tag: "span", text: "Fuse", piece: "s2.hero", pieceKind: "diegetic", x: 465, y: 136, w: 90, h: 28 }),
+  ]);
+  assert(findCornerMarkCollision(m, { brandName: "Fuse" }).length === 0, "distant in-mock mark is not a collision");
+});
+await check("findCornerMarkCollision: a single clean corner mark PASSES (Fuse s3)", () => {
+  const m = scene(3, [chromeMark("Fuse"), el({ tag: "div", text: "Application Portal", piece: "s3.hero", x: 700, y: 400, w: 500, h: 300 })]);
+  assert(findCornerMarkCollision(m, { brandName: "Fuse" }).length === 0, "only the chrome mark → no collision");
+});
+await check("findCornerMarkCollision: no corner chrome mark → nothing to collide with", () => {
+  const m = scene(0, [el({ tag: "span", text: "Fuse", piece: "s0.hero", pieceKind: "diegetic", x: 52, y: 50, w: 120, h: 44 })]);
+  assert(findCornerMarkCollision(m, { brandName: "Fuse" }).length === 0, "no chrome mark measured → skip");
+});
+await check("findCornerMarkCollision: no brand name → gate skipped", () => {
+  const m = scene(0, [chromeMark("Fuse"), el({ text: "Fuse", piece: "s0.hero", x: 52, y: 50, w: 120, h: 44 })]);
+  assert(findCornerMarkCollision(m, {}).length === 0, "no brandName → skip");
+});
+
+// ── real-frame calibration for the two P3-C1 gates (skipped when .data absent) ─
+const FUSE_FRAMES = path.join(process.cwd(), ".data", "dogfood", "fullpipe-fuse", "frames");
+if (existsSync(path.join(FUSE_FRAMES, "scene3.png"))) {
+  await check("CALIBRATION: findCanvasCoherence on real Fuse frames — s3 FIRES, others PASS", async () => {
+    const ms: SceneMeasurement[] = [0, 1, 2, 3, 4].map((i) => ({
+      scene: i, width: 1920, height: 1080, elements: [], screenshotPath: path.join(FUSE_FRAMES, `scene${i}.png`),
+    }));
+    const f = await findCanvasCoherence(ms, FUSE_BRAND_BG);
+    assert(f.length === 1 && f[0].scene === 3, `only s3 off-brand, got ${JSON.stringify(f.map((x) => x.scene))}`);
+  });
+} else {
+  console.log("  … Fuse real-frame calibration skipped (.data/dogfood/fullpipe-fuse absent)");
+}
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exitCode = 1;

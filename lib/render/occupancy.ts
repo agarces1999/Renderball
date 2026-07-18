@@ -88,6 +88,18 @@ import type { MeasuredElement, SceneMeasurement } from "./measure-scene";
  *  25.0%, Robinhood s2 28.5%) and the nearest must-pass (Patagonia s2 20.6%)
  *  gains margin. */
 export const OCCUPANCY_RUN_FLOOR = 0.23;
+/** SEVERE void: a contiguous empty column run this wide reads as a marooned
+ *  content island — a small card stranded in a large void — on ANY register,
+ *  so it BLOCKS regardless of the register's normal advisory posture. The
+ *  P3-C1 Fuse defect: scene 3 shipped a small list card centered in a ~36%
+ *  empty band on a `list` register (advisory-only), so the void shipped. This
+ *  floor upgrades a void that wide to blocking. Calibrated on the real Fuse
+ *  frames (agent-measured assessEmptyColumnRun): Fuse s3 = 35.8% (MUST fire),
+ *  while every genuine weighted-column must-pass stays below it — Fuse s1 list
+ *  25.8%, Fuse s2 stat 18.8%, Robinhood s2 split 28.5% — so 0.32 keeps ≥3.5pt
+ *  margin on both sides. The anchor exemption still applies first (a deliberate
+ *  drawn motif in the band is staged negative space, never a severe void). */
+export const OCCUPANCY_SEVERE_VOID_FLOOR = 0.32;
 /** Registers where a void band BLOCKS (the composition owns the full frame).
  *  v15 agent-#2 correction: `split` moved to ADVISORY (below). The task's
  *  cycle-6 calibration says "s1/s2 MUST pass"; Robinhood s2 is a `split` scene
@@ -277,11 +289,16 @@ export const assessOccupancy = async (
             const mid = (run.startFracW + run.endFracW) / 2;
             const region: "left" | "center" | "right" = mid < 0.38 ? "left" : mid > 0.62 ? "right" : "center";
             const bandPx = Math.round(run.runFracW * m.width);
+            // P3-C1: a SEVERE void (≥ OCCUPANCY_SEVERE_VOID_FLOOR) is a marooned
+            // island — a small card in a large void — and BLOCKS on ANY register,
+            // not just quote/centered. A weighted list/stat/split column stays
+            // under the severe floor; this only fires the genuinely-abandoned frame.
+            const severe = run.runFracW >= OCCUPANCY_SEVERE_VOID_FLOOR;
             result.findings.push({
               kind: "occupancy-void",
               scene: m.scene,
               pieceId: `s${m.scene}.hero`,
-              blocking: judgedBlocking,
+              blocking: judgedBlocking || severe,
               runFracW: run.runFracW,
               band: { startFracW: run.startFracW, endFracW: run.endFracW },
               region,
@@ -290,7 +307,8 @@ export const assessOccupancy = async (
                 `scene ${m.scene}: a ${bandPx}px-wide VOID BAND (${pct(run.runFracW)} of the frame width, the ` +
                 `${region} region, x≈${Math.round(run.startFracW * m.width)}–${Math.round(run.endFracW * m.width)}) ` +
                 `carries no visible ink on this ${register} scene (floor ${pct(OCCUPANCY_RUN_FLOOR)}) and no ` +
-                `anchoring motif. That side of the frame reads abandoned, not staged.`,
+                `anchoring motif. That side of the frame reads abandoned, not staged.` +
+                `${severe ? ` This void is SEVERE (≥${pct(OCCUPANCY_SEVERE_VOID_FLOOR)} of the frame) — the content reads as a small card marooned in a large void, which is BLOCKING on any register.` : ""}`,
               repairInstruction:
                 `FURNISH THE VOID — do not relayout and do not stretch existing items apart. Populate the ${region} ` +
                 `region with REGISTER-CONSISTENT interior items in the same diegetic world as your existing ` +

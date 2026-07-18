@@ -51,6 +51,7 @@ import type { Script, Scene } from "../../src/schema";
  *  monolithic repair gate, the vision-loop re-gate, and the cast quality loop). */
 const BLOCKING_RENDER_TRUTH_KINDS: RenderTruthKind[] = [
   "overflow", "measure-error", "barbell", "cross-piece-overlap", "canvas-brightness", "stranded-hero",
+  "canvas-coherence", "corner-mark-collision",
 ];
 /** v10 edge-crop clamp breath — a clamped piece never sits flush to the edge. */
 const EDGE_CLAMP_MARGIN_PX = 12;
@@ -318,7 +319,9 @@ export async function runPreviewBuild(
   // AND the vision-loop verify below so the two can't drift.
   const BLOCKING_KINDS: import("./render-truth-gates").RenderTruthKind[] = [
     "overflow", "measure-error", "barbell", "cross-piece-overlap", "canvas-brightness", "stranded-hero",
+    "canvas-coherence", "corner-mark-collision",
   ];
+  const brandNameForGates = (brief?.brand_extract as { title?: string } | undefined)?.title;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const registersOf = (s: any): (string | undefined)[] =>
     (s?.scenes ?? []).map((sc: { register?: string }) => sc?.register);
@@ -337,6 +340,7 @@ export async function runPreviewBuild(
           brandBackground: resolveCanvasPlan(brief?.brand_extract).background,
           blockingKinds: BLOCKING_KINDS,
           registers: registersOf(currentScript),
+          brandName: brandNameForGates,
         });
         return { ...gate, measurements };
       },
@@ -588,6 +592,7 @@ export async function runPreviewBuild(
           brandBackground: resolveCanvasPlan(brief?.brand_extract).background,
           blockingKinds: BLOCKING_KINDS,
           registers: registersOf(currentScript),
+          brandName: brandNameForGates,
         });
         if (regate.blocking.length > 0) {
           console.warn(

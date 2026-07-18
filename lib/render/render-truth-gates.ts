@@ -28,6 +28,8 @@ export type RenderTruthKind =
   | "contrast"
   | "dead-region"
   | "canvas-brightness"
+  | "canvas-coherence"
+  | "corner-mark-collision"
   | "stranded-hero"
   | "interior-clip"
   | "measure-error";
@@ -568,6 +570,126 @@ export const findCanvasBrightness = async (
     })),
   );
   return assessCanvasBrightness(brandBackground, sceneLumas);
+};
+
+// ── canvas COHERENCE (a scene shipped on an off-brand canvas) ────────────────
+// The P3-C1 Fuse defect the light-brand canvas-brightness gate could not see:
+// Fuse is a DARK burgundy brand (#440b12), and 4 of 5 scenes shipped that warm
+// canvas — but scene 3 shipped a NEUTRAL near-black (#1a1a1a-class) canvas that
+// broke the video's canvas coherence. canvas-brightness only fires for LIGHT
+// brands (lum > 0.6), so a dark brand shipping one off-color scene is invisible
+// to it. This gate is brand-agnostic: it compares each scene's median frame
+// color to the BRAND canvas color and flags a scene whose canvas has drifted
+// off-brand (a large RGB distance OR a collapse of the brand's chroma). Pure
+// color math on the downsampled frame; advisory-vs-blocking is the caller's.
+//
+// CALIBRATION (agent-measured median RGB of the real Fuse frames vs brand
+// #440b12 = (68,11,18), chroma 57):
+//   MUST FIRE  — s3 (26,26,30): RGB dist 46, chroma 4 (neutral — lost the warm)
+//   MUST PASS  — s0 (60,10,16) dist 9 · s1 (76,24,30) dist 19 · s2 (79,17,24)
+//                dist 14 · s4 (68,12,18) dist 1 — all chroma 50–62, on-brand.
+// dist floor 30 keeps ≥11pt margin on both sides; the chroma-collapse arm is a
+// second, independent confirmation for a chromatic brand. Skipped entirely when
+// the brand canvas is unparseable (no reference to compare against).
+export const CANVAS_COHERENCE_RGB_DELTA = 30;
+/** A brand canvas with at least this chroma is "chromatic" — a scene that
+ *  collapses to near-neutral (below CANVAS_NEUTRAL_CHROMA) has lost the brand
+ *  canvas color, an independent incoherence signal. */
+const CANVAS_BRAND_CHROMATIC_MIN = 30;
+const CANVAS_NEUTRAL_CHROMA = 14;
+
+const hexRgb = (hex: string): [number, number, number] | null => {
+  const m = /^#?([0-9a-fA-F]{6})$/.exec((hex ?? "").trim());
+  if (!m) return null;
+  const n = parseInt(m[1], 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+};
+const chromaOf = (r: number, g: number, b: number): number =>
+  Math.max(r, g, b) - Math.min(r, g, b);
+const canvasRgbDist = (a: [number, number, number], b: [number, number, number]): number =>
+  Math.round(Math.sqrt((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2));
+
+/** Median RGB of the downsampled frame — the canvas dominates the area, so the
+ *  median ≈ the canvas color, robust to foreground content. null on failure. */
+const frameCanvasColor = async (
+  screenshotPath: string,
+): Promise<[number, number, number] | null> => {
+  const sharpMod = await import("sharp").catch(() => null);
+  if (!sharpMod) return null;
+  try {
+    const { data, info } = await sharpMod
+      .default(screenshotPath)
+      .resize({ width: 64, withoutEnlargement: true })
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+    const ch = info.channels;
+    const rs: number[] = [], gs: number[] = [], bs: number[] = [];
+    for (let i = 0; i + 2 < data.length; i += ch) {
+      rs.push(data[i]); gs.push(data[i + 1]); bs.push(data[i + 2]);
+    }
+    if (rs.length === 0) return null;
+    const med = (a: number[]): number => {
+      const s = [...a].sort((x, y) => x - y);
+      return s[Math.floor(s.length / 2)];
+    };
+    return [med(rs), med(gs), med(bs)];
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * PURE: given the brand canvas color + each scene's measured canvas color, flag
+ * scenes whose canvas has drifted off-brand (RGB distance ≥ delta, OR chroma
+ * collapse below neutral when the brand canvas is chromatic). Separated from the
+ * pixel read so the rule is unit-tested without an image.
+ */
+export const assessCanvasCoherence = (
+  brandBackground: string | undefined,
+  sceneColors: { scene: number; rgb: [number, number, number] | null }[],
+): RenderTruthFinding[] => {
+  const brand = brandBackground ? hexRgb(brandBackground) : null;
+  if (!brand) return []; // no reference → skip (never fabricate a canvas truth)
+  const brandChroma = chromaOf(brand[0], brand[1], brand[2]);
+  const out: RenderTruthFinding[] = [];
+  for (const s of sceneColors) {
+    if (!s.rgb) continue;
+    const dist = canvasRgbDist(s.rgb, brand);
+    const sceneChroma = chromaOf(s.rgb[0], s.rgb[1], s.rgb[2]);
+    const chromaCollapse =
+      brandChroma >= CANVAS_BRAND_CHROMATIC_MIN && sceneChroma < CANVAS_NEUTRAL_CHROMA;
+    if (dist < CANVAS_COHERENCE_RGB_DELTA && !chromaCollapse) continue;
+    out.push({
+      scene: s.scene,
+      kind: "canvas-coherence",
+      detail:
+        `scene ${s.scene} ships an OFF-BRAND canvas: measured median color rgb(${s.rgb.join(",")}) ` +
+        `is ${dist} away from the brand canvas ${brandBackground} (floor ${CANVAS_COHERENCE_RGB_DELTA})` +
+        `${chromaCollapse ? `, and its chroma collapsed to ${sceneChroma} (brand chroma ${brandChroma}) — a neutral near-black where the brand is warm/colored` : ""}. ` +
+        `Every scene must share ONE coherent brand canvas; this scene reads as a different video. Repaint the ` +
+        `full-bleed canvas/atmosphere to the brand background ${brandBackground} (or a deliberate brand-palette ` +
+        `tint of it), never a neutral near-black or an unrelated tone.`,
+    });
+  }
+  return out;
+};
+
+/** Measure each scene's canvas color + apply the coherence rule. */
+export const findCanvasCoherence = async (
+  measurements: SceneMeasurement[],
+  brandBackground: string | undefined,
+): Promise<RenderTruthFinding[]> => {
+  if (!brandBackground || !hexRgb(brandBackground)) return []; // no reference → skip (no pixel work)
+  const sceneColors = await Promise.all(
+    measurements.map(async (m) => ({
+      scene: m.scene,
+      rgb:
+        m.error || !m.screenshotPath
+          ? null
+          : await frameCanvasColor(m.screenshotPath),
+    })),
+  );
+  return assessCanvasCoherence(brandBackground, sceneColors);
 };
 
 // ── stranded hero (the layout composer contract) ─────────────────────────────
@@ -1509,6 +1631,84 @@ export const findMotifClutter = (
   return out;
 };
 
+// ── corner-mark collision (a duplicate brand lockup in the corner chrome) ────
+// The P3-C1 Fuse defect the source-based dup-mark gate (findBrandMarkDefects)
+// and the deco-layer motif gate both missed: the composition head authored
+// "the Fuse logo upper-left" INSIDE the hero while the app's BrandChrome ALWAYS
+// paints its own corner lockup top-left — so scenes 0 and 4 shipped "Fuse Fuse"
+// overlapping in the corner. findBrandMarkDefects excludes kind="chrome" and
+// needs ≥2 NON-chrome marks, so a chrome-mark + one hero-mark collision scores 1
+// and never fires. This gate is POSITION-AWARE on measured boxes: it finds the
+// corner chrome mark, then any NON-chrome element that repaints the brand name
+// (or a logo image) overlapping / nearly touching it. A diegetic brand mention
+// INSIDE a mock, far from the corner (Fuse s2's sidebar "Fuse", ~330px off the
+// chrome), is not a collision — the small proximity gate is what separates a
+// duplicate corner lockup from a legitimate in-mock brand mark.
+const CORNER_MARK_REGION_X_FRAC = 0.32; // the top-left chrome corner: x < 32% W
+const CORNER_MARK_REGION_Y_FRAC = 0.22; // …and y < 22% H
+const CORNER_MARK_COLLISION_GAP = 44;   // overlapping / nearly touching the chrome mark
+
+/** A duplicate brand lockup colliding with the corner chrome mark. Measured. */
+export const findCornerMarkCollision = (
+  m: SceneMeasurement,
+  opts: { brandName?: string } = {},
+): RenderTruthFinding[] => {
+  if (m.error) return [];
+  const brandWord = brandFirstWord(opts.brandName);
+  if (brandWord.length < 2) return [];
+  const cornerX = CORNER_MARK_REGION_X_FRAC * m.width;
+  const cornerY = CORNER_MARK_REGION_Y_FRAC * m.height;
+  const visible = m.elements.filter((e) => e.opacity > 0.05 && e.w > 0 && e.h > 0);
+  const normText = (t: string): string => (t ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  const isBrandText = (e: MeasuredElement): boolean => normText(e.text) === brandWord;
+  const isLogoImg = (e: MeasuredElement): boolean =>
+    e.isImg && /\blogo\b|lockup|wordmark|brand/i.test(e.src ?? "");
+  // The corner chrome mark: chrome-piece elements in the top-left corner that
+  // paint the brand name or a logo image. Take their union box.
+  const chromeMarks = visible.filter(
+    (e) =>
+      e.pieceKind === "chrome" &&
+      e.x < cornerX && e.y < cornerY &&
+      (isBrandText(e) || isLogoImg(e) || (e.isImg && e.x < cornerX * 0.5)),
+  );
+  if (chromeMarks.length === 0) return []; // no corner lockup measured → nothing to collide with
+  const cx0 = Math.min(...chromeMarks.map((e) => e.x));
+  const cy0 = Math.min(...chromeMarks.map((e) => e.y));
+  const chromeBox = {
+    x: cx0,
+    y: cy0,
+    w: Math.max(...chromeMarks.map((e) => e.x + e.w)) - cx0,
+    h: Math.max(...chromeMarks.map((e) => e.y + e.h)) - cy0,
+  };
+  const out: RenderTruthFinding[] = [];
+  const seenPieces = new Set<string>();
+  for (const e of visible) {
+    if (e.pieceKind === "chrome") continue; // the sanctioned corner mark itself
+    if (!(isBrandText(e) || isLogoImg(e))) continue;
+    // must be in the top-left corner region AND nearly touching the chrome mark
+    const centerX = e.x + e.w / 2;
+    const centerY = e.y + e.h / 2;
+    if (centerX > cornerX || centerY > cornerY) continue;
+    const gap = rectGap({ x: e.x, y: e.y, w: e.w, h: e.h }, chromeBox);
+    if (gap > CORNER_MARK_COLLISION_GAP) continue; // a distant in-mock brand mark → not a collision
+    const owner = e.piece || `s${m.scene}.hero`;
+    if (seenPieces.has(owner)) continue;
+    seenPieces.add(owner);
+    out.push({
+      scene: m.scene,
+      kind: "corner-mark-collision",
+      detail:
+        `scene ${m.scene}: piece ${owner} paints a SECOND brand lockup (${e.isImg ? "logo image" : `"${e.text.trim()}"`}) ` +
+        `in the top-left corner, ${Math.round(gap)}px from the app's corner chrome mark (they overlap as a garbled ` +
+        `double wordmark). The corner brand lockup is ALWAYS provided by the chrome — ${owner} must NOT render the ` +
+        `brand logo/wordmark in the frame's upper-left. Remove the brand mark from ${owner} (a stat, headline, or ` +
+        `product detail belongs there instead); a brand mark may appear only as diegetic chrome INSIDE a device/app ` +
+        `mock, well clear of the frame corner.`,
+    });
+  }
+  return out;
+};
+
 // ── motif-clutter repair (deterministic, zero tokens) ────────────────────────
 // decorative-glyph → strip the glyph element(s) from the piece body.
 // floating-brand-mark on a throughline/connector piece (the pill IS the piece)
@@ -1741,6 +1941,9 @@ export interface RenderTruthOptions {
    *  register-aware layout contracts (split hero placement). Omitted ⇒ only
    *  the universal stranded-corner rule runs. */
   registers?: (string | undefined)[];
+  /** Brand name — enables the corner-mark-collision gate (a duplicate brand
+   *  lockup colliding with the app's corner chrome). Omitted ⇒ gate skipped. */
+  brandName?: string;
 }
 
 /**
@@ -1765,12 +1968,15 @@ export const findRenderTruthFailures = async (
     findings.push(...findCrossPieceOverlap(m));
     findings.push(...findStrandedHero(m, opts.registers?.[m.scene]));
     findings.push(...findInteriorClip(m));
+    findings.push(...findCornerMarkCollision(m, { brandName: opts.brandName }));
     findings.push(...(await findEmptyBand(m)));
     findings.push(...(await findContrast(m)));
     findings.push(...(await findDeadRegion(m)));
   }
   // Cross-scene: light brand shipped on a dark canvas (advisory by default).
   findings.push(...(await findCanvasBrightness(measurements, opts.brandBackground)));
+  // Cross-scene: a scene shipped on an off-brand canvas (breaks video coherence).
+  findings.push(...(await findCanvasCoherence(measurements, opts.brandBackground)));
   const blocking = findings.filter((f) => blockingKinds.has(f.kind));
   return { findings, blocking };
 };

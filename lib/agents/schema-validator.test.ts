@@ -1493,6 +1493,44 @@ check("frame: budget.cta 'none' with a defined CTA is rejected", () => {
   assert(e.length === 1, `expected a cta-owner error, got ${JSON.stringify(checkSceneComposition(s))}`);
 });
 
+// P3-C1 (defect c): the throughline motif must sit ON the focal object, not
+// float pinned in negative space where the render gate strips it and empties
+// the scene (the Fuse s3 void). Hero is {900,180,720,700}; copy {140,320,600,440}.
+const addThroughline = (s: CompScenes, bounds: { x: number; y: number; w: number; h: number }) => {
+  (frameComp(s) as { elements: Record<string, unknown>[] }).elements.push({
+    role: "throughline",
+    subject: "a small loan-status chip carried across scenes",
+    focalRank: 3,
+    bounds,
+    interior: ["mono chip 'Loan #4471 · Queued'"],
+    motion: "the chip drifts slowly at low opacity",
+  });
+  return s;
+};
+check("frame: a throughline floating in negative space is rejected (Fuse s3 void root)", () => {
+  const s = addThroughline(frameGood(), { x: 760, y: 900, w: 200, h: 44 }); // below hero, right of copy — floating
+  const e = checkSceneComposition(s).filter((x) => /float in negative space|float.*overlapping neither/.test(x));
+  assert(e.length === 1, `expected a floating-throughline error, got ${JSON.stringify(checkSceneComposition(s))}`);
+});
+check("frame: a throughline sitting ON the hero passes", () => {
+  const s = addThroughline(frameGood(), { x: 1000, y: 800, w: 200, h: 44 }); // inside the hero box
+  const e = checkSceneComposition(s).filter((x) => /float in negative space|overlapping neither/.test(x));
+  assert(e.length === 0, `on-hero throughline should pass, got ${JSON.stringify(checkSceneComposition(s))}`);
+});
+check("frame: a full-bleed connector relationship layer is exempt from containment", () => {
+  const s = frameGood();
+  (frameComp(s) as { elements: Record<string, unknown>[] }).elements.push({
+    role: "connector",
+    subject: "a frame-spanning relationship SVG",
+    focalRank: 4,
+    bounds: { x: 0, y: 0, w: 1920, h: 1080 },
+    interior: ["dotted arcs linking the panels"],
+    motion: "the arcs draw on in sequence",
+  });
+  const e = checkSceneComposition(s).filter((x) => /float in negative space|overlapping neither/.test(x));
+  assert(e.length === 0, `full-bleed connector is exempt, got ${JSON.stringify(checkSceneComposition(s))}`);
+});
+
 check("frame: the 9:16 canvas validates bounds against 1080×1920", () => {
   const s = frameGood();
   // {x:900,w:720} escapes 1080-wide but fits 1920-wide — aspect must matter.

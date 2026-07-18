@@ -1051,6 +1051,32 @@ const frameCompositionErrors = (
     }
   }
 
+  // 3b) THROUGHLINE ON-CONTENT — the recurring motif must sit ON the focal
+  //     object, not float pinned in the frame's negative space. A small
+  //     throughline/connector whose bounds overlap NEITHER the hero NOR the copy
+  //     is disconnected clutter — the render gate strips it, and stripping a
+  //     floating motif can empty the scene into a void (the P3-C1 Fuse s3
+  //     defect). Full-bleed connectors (a frame-spanning relationship SVG) are
+  //     exempt — they legitimately own the whole canvas.
+  const heroBoundsForMotif = firstHero?.bounds ?? null;
+  if (heroBoundsForMotif) {
+    const motifs = elements
+      .map((el, j) => ({ el, j, bounds: readBounds(el), role: typeof el?.role === "string" ? el.role : "" }))
+      .filter((e) => (e.role === "throughline" || e.role === "connector") && e.bounds);
+    const copyBoundsForMotif = firstCopy?.bounds ?? null;
+    for (const mtf of motifs) {
+      const b = mtf.bounds!;
+      if (rectArea(b) >= FULL_CANVAS_FRAC * W * H) continue; // full-bleed relationship layer — exempt
+      const onHero = overlapArea(b, heroBoundsForMotif) > 0;
+      const onCopy = copyBoundsForMotif ? overlapArea(b, copyBoundsForMotif) > 0 : false;
+      if (!onHero && !onCopy) {
+        out.push(
+          `Scene ${i} ${elName(mtf.el, mtf.j)}: the ${mtf.role} motif's bounds ${JSON.stringify(b)} float in negative space, overlapping neither the hero nor the copy — place the recurring motif ON the focal object (inside/overlapping the hero's bounds, a chip in the mock or a marker on the chart), never pinned in the void where it gets stripped and empties the frame.`,
+        );
+      }
+    }
+  }
+
   // 4) NEGATIVE SPACE — a composed plan, not an afterthought.
   const neg = comp.negativeSpace;
   if (typeof neg !== "string" || neg.trim().split(/\s+/).filter(Boolean).length < NEGATIVE_SPACE_MIN_WORDS) {

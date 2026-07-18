@@ -748,7 +748,9 @@ export const computeTargets = (args: {
         add(`s${f.scene}.copy`, f.scene, `[render-truth/barbell] ${f.detail}`);
       }
     } else {
-      const slot = f.kind === "canvas-brightness" ? "atmosphere" : "hero";
+      // canvas brightness/coherence are canvas-wash defects → the atmosphere
+      // owns the full-bleed canvas; everything else routes to the hero.
+      const slot = f.kind === "canvas-brightness" || f.kind === "canvas-coherence" ? "atmosphere" : "hero";
       add(`s${f.scene}.${slot}`, f.scene, `[render-truth/${f.kind}] ${f.detail}`);
     }
   }
@@ -1222,6 +1224,7 @@ export async function runQualityLoop(
         brandBackground: canvasBackground,
         blockingKinds: config.blockingKinds,
         registers: sceneRegisters,
+        brandName: BRAND,
       }),
     );
 
@@ -1714,6 +1717,31 @@ export async function runQualityLoop(
       await hooks.writeComposition(finalCode);
       log(`  motif-clutter [final pass]: excised ${excised} — re-measuring`);
       finalMeasurements = await measureScenes(genDir, script, genDir);
+      // P3-C1 (blanking-never-leaves-a-void): the final blank pass runs
+      // post-loop, so nothing re-gates the region a blanked motif vacated —
+      // exactly how the Fuse s3 throughline blank left a small card in a void
+      // that shipped. Re-run occupancy on the re-measured frames; a NEW blocking
+      // void means the blank emptied the scene. We cannot regen post-loop, so
+      // surface it LOUDLY as a residual so it ships flagged, never silently (the
+      // per-round path already routes a furnish when a blank opens a void).
+      const postBlankOcc = await assessOccupancy(finalMeasurements, sceneRegisters);
+      const openedVoids = postBlankOcc.findings.filter((f) => f.blocking);
+      if (openedVoids.length > 0) {
+        for (const f of openedVoids) {
+          warn(
+            `  [final pass] blanking a floating motif LEFT A VOID in scene ${f.scene} (${(f.runFracW * 100).toFixed(0)}% empty band) — ` +
+              `residual ships FLAGGED (honest); the furnish route needs a build round the post-loop pass cannot start.`,
+          );
+          motifClutterEvents.push({
+            round: round + 1,
+            scene: f.scene,
+            pieceId: f.pieceId,
+            form: "floating-motif",
+            action: "none",
+            detail: `[final pass] blank opened a void → ${f.detail}`,
+          });
+        }
+      }
     }
   }
 
