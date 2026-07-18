@@ -78,6 +78,7 @@ const log = (m: string) => console.log(`[${((Date.now() - t0) / 1000).toFixed(1)
     ...findUngroundedClaims(split.caption, src, { exemptDiegeticPrices: true }),
   ];
   log(`script generated: ${gen.script.scenes.length} scenes; residual ungrounded (post-fix): ${JSON.stringify(ung)}`);
+  log(`script stage tokens (Fireworks GLM-5.2): in=${gen.usage.input_tokens} out=${gen.usage.output_tokens}`);
   await fs.writeFile(path.join(OUT, "script.generated.json"), JSON.stringify(gen.script, null, 2), "utf8");
   for (const [i, sc] of gen.script.scenes.entries()) {
     const c = (sc.content ?? {}) as Record<string, unknown>;
@@ -100,7 +101,11 @@ const log = (m: string) => console.log(`[${((Date.now() - t0) / 1000).toFixed(1)
   const { logoSrc } = resolveCornerBrandMark({ userLogoUrl: userLogo?.url, logoHd: be?.logo_hd, brandName: brand });
   log(`corner logo resolved: ${logoSrc ? logoSrc : "(none → wordmark fallback)"}`);
 
-  let usage = { input: 0, output: 0 };
+  // Seed the token meter with the SCRIPT stage (now on Fireworks GLM-5.2 via
+  // generateScript) so the summary's cost total is complete — script gen used to
+  // be excluded, which undercounted spend by the whole first stage.
+  const scriptUsage = { input: gen.usage.input_tokens, output: gen.usage.output_tokens };
+  let usage = { input: scriptUsage.input, output: scriptUsage.output };
   const track = (r: { inputTokens: number; outputTokens: number }) => {
     usage = { input: usage.input + r.inputTokens, output: usage.output + r.outputTokens };
   };
@@ -188,7 +193,7 @@ const log = (m: string) => console.log(`[${((Date.now() - t0) / 1000).toFixed(1)
 
   await fs.writeFile(
     path.join(OUT, "fullpipe-summary.json"),
-    JSON.stringify({ brand, aspect, scriptScenes: gen.script.scenes.length, residualUngrounded: ung, headAttempts: composed.attempts, headResidual: residual, rounds: loop.rounds + 1, round0Clean: loop.round0?.passed ?? false, motifClutter: loop.events.motifClutterEvents ?? [], telemetry: loop.roundTelemetry[loop.roundTelemetry.length - 1] ?? null, usage, wallSeconds: (Date.now() - t0) / 1000 }, null, 2),
+    JSON.stringify({ brand, aspect, scriptScenes: gen.script.scenes.length, residualUngrounded: ung, headAttempts: composed.attempts, headResidual: residual, rounds: loop.rounds + 1, round0Clean: loop.round0?.passed ?? false, motifClutter: loop.events.motifClutterEvents ?? [], telemetry: loop.roundTelemetry[loop.roundTelemetry.length - 1] ?? null, usage, scriptUsage, wallSeconds: (Date.now() - t0) / 1000 }, null, 2),
     "utf8",
   );
   log(`DONE — frames in ${path.join(OUT, "frames")}; tokens in/out ${usage.input}/${usage.output}`);

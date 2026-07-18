@@ -1,4 +1,5 @@
 import { getAnthropic, MODELS } from "../anthropic";
+import { castCall } from "../llm/cast-provider";
 import { withTransientRetry } from "./transient-retry";
 import { SCRIPT_GENERATOR_SYSTEM_PROMPT } from "./prompts/script-generator";
 import {
@@ -248,6 +249,96 @@ export const sceneClaimCopyByStrictness = (
  */
 const MAX_ATTEMPTS = 3; // 1 initial + 2 retries
 
+// ── LLM transport (provider-configurable) ───────────────────────────────────
+//
+// The parse / validate / repair loop below is TRANSPORT-AGNOSTIC: given the
+// running message history it wants the model's text + token usage, and nothing
+// else. Only THIS layer differs by provider, so a provider swap can never touch
+// the SCRIPT_GENERATOR_SYSTEM_PROMPT, buildUserMessage, the richness/grounding/
+// cold-open validators, or the MAX_ATTEMPTS feedback loop.
+//
+// DEFAULT = fireworks: production script generation runs on GLM-5.2 via
+// castCall (the funded, faster provider the frame-authoring cast already uses),
+// OFF the z.ai single-point-of-failure that took the fusefinance build down at
+// script-gen (z.ai [1113] "insufficient balance"). `RB_SCRIPT_PROVIDER=zai`
+// keeps the original Anthropic-SDK → z.ai path reachable (streaming + the
+// balance breaker + transient-retry) so nothing hard-breaks. Vision is a
+// SEPARATE dependency and stays on z.ai (callZaiVision / GLM-4.5V) — untouched.
+
+/** One repair-loop turn's message. */
+export type ScriptMsg = { role: "user" | "assistant"; content: string };
+
+/** A script-gen transport: given the running history, return the model's text
+ *  and token usage. Injected in tests; production resolves it from the env. */
+export type ScriptTransport = (
+  history: ScriptMsg[],
+) => Promise<{ text: string; usage: Usage }>;
+
+export type ScriptProvider = "fireworks" | "zai";
+
+/** Which provider generates the script. Default fireworks; only an explicit
+ *  `RB_SCRIPT_PROVIDER=zai` selects the legacy z.ai path (case-insensitive). */
+export const resolveScriptProvider = (): ScriptProvider =>
+  (process.env.RB_SCRIPT_PROVIDER || "").trim().toLowerCase() === "zai"
+    ? "zai"
+    : "fireworks";
+
+/** Fireworks model for script generation — the same GLM-5.2 Fast router the
+ *  cast runs on. Override with RB_SCRIPT_MODEL. */
+const fireworksScriptModel = (): string =>
+  process.env.RB_SCRIPT_MODEL || "accounts/fireworks/routers/glm-5p2-fast";
+
+/**
+ * Flatten the repair loop's multi-turn history into castCall's single user
+ * turn. First attempt = just the brief (byte-identical to the seed user
+ * message). Retries fold the rejected output + the correction into ONE user
+ * message so the fast model sees the same feedback the SDK path delivers as
+ * separate turns.
+ */
+export const flattenHistoryToUser = (history: ScriptMsg[]): string =>
+  history.length <= 1
+    ? history[0]?.content ?? ""
+    : history
+        .map((m) =>
+          m.role === "user"
+            ? m.content
+            : `--- Your previous response (rejected; see the correction below) ---\n${m.content}`,
+        )
+        .join("\n\n");
+
+/**
+ * Fireworks transport over castCall → GLM-5.2. `json:true` (the script is a
+ * JSON contract — kills the fence/parse failure class at the decoder) and
+ * bounded high-effort thinking for the taste work. castCall owns its own retry
+ * ladder (429 / transport drops); the z.ai balance breaker does NOT apply here.
+ * Exported so the transport wire is unit-testable in isolation.
+ */
+export const fireworksScriptTransport: ScriptTransport = async (history) => {
+  const r = await castCall({
+    system: SCRIPT_GENERATOR_SYSTEM_PROMPT,
+    user: flattenHistoryToUser(history),
+    maxTokens: 16000,
+    effort: "high",
+    json: true,
+    model: fireworksScriptModel(),
+  });
+  return {
+    text: r.text ?? "",
+    usage: {
+      input_tokens: r.inputTokens,
+      output_tokens: r.outputTokens,
+      cache_creation_input_tokens: 0,
+      cache_read_input_tokens: 0,
+    },
+  };
+};
+
+/** Options for generateScript. `transport` is a test seam — production resolves
+ *  the transport from RB_SCRIPT_PROVIDER. */
+export interface ScriptGenOptions {
+  transport?: ScriptTransport;
+}
+
 /**
  * Run Agent 1 with auto-retry on validation failure.
  *
@@ -263,40 +354,41 @@ const MAX_ATTEMPTS = 3; // 1 initial + 2 retries
 export const generateScript = async (
   brief: AgentBrief,
   briefId: string,
+  opts?: ScriptGenOptions,
 ): Promise<ScriptGenerationResult> => {
-  let client;
-  try {
-    client = getAnthropic();
-  } catch (err) {
-    return {
-      ok: false,
-      error: err instanceof Error ? err.message : "Anthropic client init failed.",
-    };
-  }
+  const provider = resolveScriptProvider();
 
-  const initialUserMessage = buildUserMessage(brief);
-  type Msg = { role: "user" | "assistant"; content: string };
-  const history: Msg[] = [{ role: "user", content: initialUserMessage }];
-
-  let totalUsage = EMPTY_USAGE;
-  let lastError = "Unknown error.";
-
-  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-    let response;
+  // Resolve the transport ONCE. Fireworks (default) generates via castCall;
+  // zai builds the Anthropic-SDK stream (+ balance breaker + transient-retry).
+  // Tests inject `opts.transport` to drive the loop without a live provider.
+  let transport: ScriptTransport;
+  if (opts?.transport) {
+    transport = opts.transport;
+  } else if (provider === "zai") {
+    let client;
     try {
-      // Streaming, not messages.create: a 16k-token non-streaming Sonnet call
-      // exceeds the SDK request timeout under load ("Request timed out" — the
-      // exact reason the Opus design/animation calls were moved to streaming).
-      // Richer brand context (e.g. liquiddeath.com's 8 headlines + body
-      // excerpts) makes the generation long enough to trip it. .finalMessage()
-      // returns the same Message shape, so downstream parsing is unchanged.
-      // A dropped stream ("terminated") is transient — re-run the WHOLE call a
-      // bounded few times rather than failing the entire script step on one blip
-      // (which cascaded into the worker re-attempting the brand for hours). Only
-      // the transport drop retries here; content/validation retries are the outer
-      // MAX_ATTEMPTS loop, and a real API error (400/auth) still fails fast.
-      response = await withTransientRetry("script-gen", () =>
-        client.messages
+      client = getAnthropic();
+    } catch (err) {
+      return {
+        ok: false,
+        error: err instanceof Error ? err.message : "Anthropic client init failed.",
+      };
+    }
+    const c = client;
+    transport = async (history) => {
+      // Streaming, not messages.create: a 16k-token non-streaming call exceeds
+      // the SDK request timeout under load ("Request timed out" — the exact
+      // reason the design/animation calls were moved to streaming). Richer brand
+      // context (e.g. liquiddeath.com's 8 headlines + body excerpts) makes the
+      // generation long enough to trip it. .finalMessage() returns the same
+      // Message shape, so downstream parsing is unchanged. A dropped stream
+      // ("terminated") is transient — re-run the WHOLE call a bounded few times
+      // rather than failing the entire script step on one blip (which cascaded
+      // into the worker re-attempting the brand for hours). Only the transport
+      // drop retries here; content/validation retries are the outer MAX_ATTEMPTS
+      // loop, and a real API error (400/auth) still fails fast.
+      const response = await withTransientRetry("script-gen", () =>
+        c.messages
           .stream({
             model: MODELS.scriptGenerator,
             max_tokens: 16000,
@@ -311,20 +403,42 @@ export const generateScript = async (
           })
           .finalMessage(),
       );
+      noteZaiSuccess(); // closes a half-open balance breaker on success
+      const textBlock = response.content.find((cb) => cb.type === "text");
+      return {
+        text: textBlock && textBlock.type === "text" ? textBlock.text : "",
+        usage: usageOf(response.usage),
+      };
+    };
+  } else {
+    transport = fireworksScriptTransport;
+  }
+
+  const initialUserMessage = buildUserMessage(brief);
+  const history: ScriptMsg[] = [{ role: "user", content: initialUserMessage }];
+
+  let totalUsage = EMPTY_USAGE;
+  let lastError = "Unknown error.";
+
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    let result: { text: string; usage: Usage };
+    try {
+      result = await transport(history);
     } catch (err) {
-      noteZaiError(err); // trips the balance breaker on [1113] — fast-fails later callers
+      // The z.ai balance breaker only makes sense on the zai path (the [1113]
+      // account state). The fireworks path relies on castCall's own retry ladder.
+      if (provider === "zai") noteZaiError(err);
       return {
         ok: false,
-        error: `Anthropic API error: ${err instanceof Error ? err.message : String(err)}`,
+        error: `${provider === "zai" ? "Anthropic API error" : "Fireworks script-gen error"}: ${err instanceof Error ? err.message : String(err)}`,
       };
     }
-    noteZaiSuccess();
 
-    totalUsage = addUsage(totalUsage, usageOf(response.usage));
+    totalUsage = addUsage(totalUsage, result.usage);
 
-    const textBlock = response.content.find((c) => c.type === "text");
-    if (!textBlock || textBlock.type !== "text") {
-      lastError = "No text content in Anthropic response.";
+    const raw = result.text.trim();
+    if (!raw) {
+      lastError = "No text content in model response.";
       // Push placeholder assistant message + retry instruction.
       history.push({
         role: "assistant",
@@ -338,7 +452,6 @@ export const generateScript = async (
       continue;
     }
 
-    const raw = textBlock.text.trim();
     const cleaned = stripCodeFence(raw);
 
     let parsed: unknown;
