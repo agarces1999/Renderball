@@ -13,7 +13,7 @@ import { promises as fs } from "fs";
 import path from "path";
 import { loadBrief, DEV_OWNER_ID } from "../lib/store";
 import { withDbRetry } from "../lib/db";
-import { resolveCanvasPlan, signatureWithLogoFallback } from "../lib/crawl/brand-identity";
+import { resolveCanvasPlan, signatureWithLogoFallback, brandShortName } from "../lib/crawl/brand-identity";
 import { deriveCrawlTheme } from "../lib/render/crawl-theme";
 import { neutralizeInk } from "../lib/agents/cast-build";
 import { generateComposition, type CompositionCaller } from "../lib/agents/composition-head";
@@ -50,7 +50,10 @@ const log = (m: string) => console.log(`[${((Date.now() - t0) / 1000).toFixed(1)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const b: any = brief;
   const be = b?.brand_extract?.ok ? b.brand_extract : undefined;
-  const brand = (be?.title as string | undefined)?.trim() || "Klarna";
+  // Audit-1 P0 #1: the dogfood harness is a brand-name consumer too — was the raw
+  // <title> ("SOC 2, HIPAA, ISO 27001, … Compliance" for Vanta), which leaked into
+  // the corner wordmark + CTA. brandShortName host-matches vanta.com → "Vanta".
+  const brand = be ? brandShortName(be) : "Klarna";
   log(`brief ${BRIEF_ID} loaded — brand "${brand}", freeform=${JSON.stringify(b.freeform_prompt)}, moments=${b.moments?.length ?? 0}`);
 
   // ── SCRIPT GENERATION (the product path — NOT held constant) ──
