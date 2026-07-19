@@ -21,7 +21,7 @@
  */
 import { castBuild, ownedCopyEntries, type CastBuildInput } from "./cast-build";
 import { calibrateBuildFonts } from "../render/calibrate-build-fonts";
-import { CALIBRATION_GLYPHS, type FontMetrics, metricsKey } from "../render/font-metrics";
+import { CALIBRATION_GLYPHS, type FontMetrics, METRICS_VERSION, metricsKey } from "../render/font-metrics";
 import type { Script } from "../../src/schema";
 import type { Theme } from "../edit/piece-model";
 
@@ -89,6 +89,8 @@ const MONO: FontMetrics = {
   normalLineHeight: 1.2,
   source: "chromium",
   calibratedAt: new Date().toISOString(),
+  version: METRICS_VERSION,
+  resolution: "asserted",
 };
 
 /** A calibrate stub that reports MEASURED metrics for both theme faces, and

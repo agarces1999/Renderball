@@ -168,6 +168,10 @@ const enforceBoxEnabled = (): boolean => (process.env.RB_ENFORCE_BOX ?? "").toLo
 /** Inline one piece (and its nested children) into a positioned wrapper. Text
  *  pieces flow-size (maxWidth, height auto) so a wrapped headline is never clipped;
  *  others use a fixed rect. Atmosphere is full-bleed. Chrome is emitted by the
+ *  Section itself (see emitSection), which passes `showCornerLogo={false}` when
+ *  the manifest says the head's singularity budget gave the scene's one brand
+ *  mark to an authored element instead of the corner lockup. The decision is
+ *  made upstream in cast-build (`cornerLogoVisible`); this module only emits it.
  *  Section itself. Throughline pieces co-locate data-throughline + literal px. */
 const emitPiece = (piece: Piece, sceneIndex: number, resolve: PieceBodyResolver, pad: string): string => {
   if (piece.kind === "chrome") return ""; // Section emits <Chrome/> itself
@@ -262,7 +266,7 @@ const emitSection = (scene: SceneManifest, resolve: PieceBodyResolver): string =
     <div style={{ ...SECTION_FRAME, background: ${scene.background}, fontFamily: FONT_BODY, color: INK }}>
       <style dangerouslySetInnerHTML={{ __html: BRAND_FONTS_CSS + SHARED_KEYFRAMES }} />
 ${pieces}
-      <Chrome sceneIndex={${k}} totalScenes={script.scenes.length} />
+      <Chrome sceneIndex={${k}} totalScenes={script.scenes.length}${scene.showCornerLogo === false ? " showCornerLogo={false}" : ""} />
     </div>
   );
 };`;

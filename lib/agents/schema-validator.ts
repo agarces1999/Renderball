@@ -1101,9 +1101,24 @@ const frameCompositionErrors = (
   // 3) DISJOINTNESS — the CONSUMED hero and copy (the first of each role, the
   //    pair layout-composer actually places from head bounds) must not overlap,
   //    unless the hero is a near-full-canvas treatment (the full-bleed hero the
-  //    copy sits over). Scoped to that pair: extra copy elements feed the same
-  //    single copy slot, and the throughline/connector overlays overlap the
-  //    hero by design — checking every pair mislabels those legal overlaps.
+  //    copy sits over). Scoped to that pair because the throughline/connector
+  //    overlays overlap the hero by design — checking every pair mislabels
+  //    those legal overlaps.
+  //
+  //    NOTE: extra elements of a role do NOT "feed the same slot" — both
+  //    consumers (`composeSceneLayout`, cast-build's `specForSlot`) resolve a
+  //    role with `.find()`, so every element past the first is DISCARDED.
+  //
+  //    Deliberately NOT rejected here. Measured over the 125 stored scenes, a
+  //    >1-per-role rule fires on 23 scenes across 14 of 25 builds — it would
+  //    cost an extra composition-head retry on more than half of all builds,
+  //    and a head that re-authors the duplicate through its retry budget ends
+  //    at `enforcePlanFallback`, which throws away EVERY authored bound for the
+  //    video. That is strictly worse than discarding one duplicate. The actual
+  //    damage from a duplicate was its orphaned copy fields, and that is fixed
+  //    at the ownership site (cast-build's `ownedCopyFields` / `survivingSpecs`)
+  //    for zero tokens. Revisit only with evidence that a discarded duplicate
+  //    costs something the ownership fix does not recover.
   const firstHero = placed.find((p) => p.role === "hero" && p.bounds);
   const firstCopy = placed.find((p) => p.role === "copy" && p.bounds);
   if (firstHero?.bounds && firstCopy?.bounds) {

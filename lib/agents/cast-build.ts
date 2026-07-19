@@ -1861,6 +1861,72 @@ const specForSlot = (scene: CastScene | undefined, slotId: string): ElementSpec 
   scene?.composition?.elements.find((e) => e.role === slotId);
 
 /**
+ * The specs that will actually be BUILT — the first element of each role.
+ *
+ * Both consumers of a composition resolve a role with `.find()`: this module's
+ * `specForSlot`, and `composeSceneLayout` (layout-composer.ts), which mounts
+ * the head's bounds. There is exactly one slot per role, so when the head
+ * authors two `copy` elements the second is silently discarded. It never gets
+ * a brief, never emits, never paints.
+ *
+ * That makes the discarded duplicate the WRONG basis for any ownership
+ * question: a copy field claimed only by an element that is never built is
+ * owned by nobody. Ownership must be computed over the survivors — see
+ * `ownedCopyFields`. Measured across 125 stored scenes: 23 duplicate a role.
+ */
+/**
+ * THE SINGULARITY BUDGET, ENFORCED (flag-gated — `RB_BRAND_MARK_BUDGET=on`).
+ *
+ * The head is told: "exactly ONE brand mark per scene… if you need the mark on
+ * a role you must NOT also expect the corner lockup." Nothing read that. Every
+ * scene got `<Chrome/>`, so the 10 stored scenes that assigned the mark to a
+ * role shipped TWO marks (fullpipe-fuse s0 paints the corner lockup plus a
+ * second "Fuse" wordmark, clipped to "rigina").
+ *
+ * WHY SUPPRESSION IS NARROW. Removing the corner lockup when the owning element
+ * does not actually paint a mark leaves the scene with NO brand anywhere —
+ * strictly worse than a doubled mark. So this only fires when the budget names
+ * a real ELEMENT ROLE that this scene is actually building:
+ *   - absent / empty budget  → show (35 of 125 stored scenes predate the field)
+ *   - "chrome"               → show (the corner lockup IS the budgeted mark)
+ *   - "none"                 → show; "the scene carries neither" is not a
+ *                              licence to strip the brand out of the frame, and
+ *                              a wrong "none" would be unrecoverable
+ *   - a role with no slot     → show (nothing would paint the mark)
+ *   - a role with a slot      → SUPPRESS
+ *
+ * WHY IT IS STILL FLAG-GATED OFF. Checked against all 10 affected stored
+ * scenes: 9 authored a mark in the owning element's subject/interior, but
+ * p5a-off s4 declared `brandMark:"hero"` and authored a hero with no mark in
+ * any of its 9 interior items (its sibling arm p5a-on s4, same script, did).
+ * The budget is a DECLARATION; whether the emitted element paints a mark is
+ * unverified without frames. 1-in-10 brand-less scenes is not a trade to make
+ * silently, so the mechanism ships wired and tested but dark until frames say
+ * otherwise.
+ */
+export const cornerLogoVisible = (args: {
+  brandMark: string | undefined;
+  /** Slot ids this scene is actually building. */
+  roles: Set<string>;
+  enabled: boolean;
+}): boolean => {
+  if (!args.enabled) return true;
+  const owner = (args.brandMark ?? "").trim();
+  if (!owner || owner === "chrome" || owner === "none") return true;
+  return !args.roles.has(owner);
+};
+
+/** OFF unless `RB_BRAND_MARK_BUDGET=on` — see `cornerLogoVisible`. */
+const brandMarkBudgetEnabled = (): boolean =>
+  (process.env.RB_BRAND_MARK_BUDGET ?? "").toLowerCase() === "on";
+
+export const survivingSpecs = (comp: { elements: ElementSpec[] } | undefined): ElementSpec[] => {
+  if (!comp) return [];
+  const seen = new Set<string>();
+  return comp.elements.filter((e) => (seen.has(e.role) ? false : (seen.add(e.role), true)));
+};
+
+/**
  * The copy fields an element OWNS, for both its brief and the unowned-copy
  * guard. With a composition present the spec is the ownership source of
  * truth: `ownsCopy` is explicit and exclusive, so a hero spec that owns
@@ -1869,12 +1935,20 @@ const specForSlot = (scene: CastScene | undefined, slotId: string): ElementSpec 
  * anyway, but DID let an under-specified world be ambiguous). Fields NO spec
  * claims fall back to their slot owner, so an incomplete composition can
  * never strip the headline out of the copy element that structurally owns it.
+ *
+ * `claimed` is computed over SURVIVING specs only (see `survivingSpecs`). It
+ * has to be: `claimed` exists solely to answer "has some element already taken
+ * this field?", and a discarded duplicate takes nothing — it is never built.
+ * Counting it made the field owned by nobody, so it fell through the fallback,
+ * and `stripUnownedCopy` then deleted the authored value from the frame.
+ * Measured over 125 stored scenes: 13 scenes orphaned 24 copy fields this way
+ * (p5a-off scene 0 shipped without its authored lede and meta).
  */
-const ownedCopyFields = (scene: CastScene | undefined, slot: ElementSlot): string[] => {
+export const ownedCopyFields = (scene: CastScene | undefined, slot: ElementSlot): string[] => {
   const comp = scene?.composition;
   if (!comp) return slot.contentFields;
   const owned = new Set(specForSlot(scene, slot.id)?.ownsCopy ?? []);
-  const claimed = new Set(comp.elements.flatMap((e) => e.ownsCopy ?? []));
+  const claimed = new Set(survivingSpecs(comp).flatMap((e) => e.ownsCopy ?? []));
   for (const f of slot.contentFields) if (!claimed.has(f)) owned.add(f);
   return [...owned];
 };
@@ -2723,6 +2797,11 @@ export const castBuild = async (
   const scenes: SceneManifest[] = plans.map((plan, i) => ({
     scene: i,
     background: tokenForRole(theme, "canvas"),
+    showCornerLogo: cornerLogoVisible({
+      brandMark: script.scenes[i]?.composition?.budget?.brandMark,
+      roles: new Set(slotsFor(plan, i).map((s) => s.id)),
+      enabled: brandMarkBudgetEnabled(),
+    }),
     pieces: slotsFor(plan, i).map(
       (slot): Piece => ({
         id: `s${i}.${slot.id}`, // the Piece id convention (see ElementSlot.id)

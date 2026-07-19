@@ -74,6 +74,9 @@ import {
   COPY_OVER_HERO_FLIP_FRAC,
   HERO_MAX_TOKENS_CEREBRAS,
   HERO_MAX_TOKENS_FIREWORKS,
+  cornerLogoVisible,
+  ownedCopyFields,
+  survivingSpecs,
   type CastBuildInput,
 } from "./cast-build";
 import { verifyCompilable } from "./code-extraction";
@@ -1914,6 +1917,108 @@ await check("SCENE_META_LABEL_RX C9#4b: 'SCENE 01 / 06' (slash) is caught; a leg
   assert(SCENE_META_LABEL_RX.test("SCENE 04 · INVITATION"), "the middot format still matches (no regression)");
   assert(!SCENE_META_LABEL_RX.test("1 / 5"), "a bare carousel pagination (no SCENE prefix) is NOT over-caught");
   assert(!SCENE_META_LABEL_RX.test("showing 2 / 8 results"), "generic '/'-separated copy without a scene prefix passes");
+});
+
+// ── Duplicate-role elements must not orphan their copy fields ────────────────
+// Both consumers resolve a role with `.find()`, so element #2 of a role is
+// DISCARDED — it never emits. Counting its `ownsCopy` as "claimed" made a field
+// owned by NOBODY, and stripUnownedCopy then deleted the authored value.
+// Measured over 125 stored scenes: 23 duplicate a role, 13 orphaned 24 fields.
+
+/** A minimal copy slot — the one layout-composer builds for scene text. */
+const copySlot = {
+  id: "copy",
+  kind: "text",
+  bounds: { x: 0, y: 0, w: 100, h: 100 },
+  contentFields: ["eyebrow", "headline", "lede", "meta"],
+  paletteRoles: [],
+  mayOverlap: [],
+} as unknown as Parameters<typeof ownedCopyFields>[1];
+
+const sceneWith = (elements: { role: string; ownsCopy?: string[] }[]) =>
+  ({ composition: { elements } }) as unknown as Parameters<typeof ownedCopyFields>[0];
+
+await check("survivingSpecs keeps exactly the first element of each role", () => {
+  const specs = survivingSpecs({
+    elements: [
+      { role: "copy", subject: "first" },
+      { role: "hero", subject: "h" },
+      { role: "copy", subject: "second" },
+      { role: "copy", subject: "third" },
+    ],
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  } as any);
+  assert(specs.length === 2, `expected 2 survivors, got ${specs.length}`);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  assert((specs[0] as any).subject === "first", "the FIRST copy survives — same as .find()");
+  assert(specs.map((s) => s.role).join(",") === "copy,hero", "authored order is preserved");
+  assert(survivingSpecs(undefined).length === 0, "no composition → no survivors");
+});
+
+await check("ORPHAN FIX: a field claimed only by a DISCARDED duplicate falls back to its slot", () => {
+  // The exact stored shape (p5a-off s0, fullpipe-fuse s3, …): copy #1 takes the
+  // headline, copy #2 takes lede+meta — and copy #2 is never built.
+  const scene = sceneWith([
+    { role: "hero", ownsCopy: [] },
+    { role: "copy", ownsCopy: ["eyebrow", "headline"] },
+    { role: "copy", ownsCopy: ["lede", "meta"] },
+  ]);
+  const owned = ownedCopyFields(scene, copySlot);
+  for (const f of ["eyebrow", "headline", "lede", "meta"]) {
+    assert(owned.includes(f), `"${f}" was orphaned — it must fall back to the copy slot`);
+  }
+});
+
+await check("ORPHAN FIX does not hand a field to a slot that another SURVIVING element owns", () => {
+  // The guard's real job is intact: a hero that genuinely claims the headline
+  // (and survives) keeps it away from the copy slot.
+  const owned = ownedCopyFields(
+    sceneWith([
+      { role: "hero", ownsCopy: ["headline"] },
+      { role: "copy", ownsCopy: ["lede"] },
+    ]),
+    copySlot,
+  );
+  assert(!owned.includes("headline"), "a SURVIVING hero's claim must still be exclusive");
+  assert(owned.includes("lede") && owned.includes("eyebrow") && owned.includes("meta"), "unclaimed fields still fall back");
+});
+
+await check("ORPHAN FIX: an absent composition still falls back to the slot's own fields", () => {
+  assert(
+    ownedCopyFields(undefined, copySlot).join(",") === copySlot.contentFields.join(","),
+    "no composition → the slot owns its structural fields",
+  );
+});
+
+// ── Singularity budget → the corner lockup (flag-gated) ──────────────────────
+// 10 stored scenes assign the single brand mark to a role and still shipped the
+// corner lockup — two marks. Suppression must be NARROW: stripping the lockup
+// when nothing else paints a mark leaves the scene brand-less, which is worse.
+
+await check("cornerLogoVisible: OFF by default — the flag is the only thing that can suppress", () => {
+  const roles = new Set(["hero", "copy", "chrome"]);
+  assert(cornerLogoVisible({ brandMark: "hero", roles, enabled: false }), "disabled ⇒ always shown");
+});
+
+await check("cornerLogoVisible: suppresses ONLY for a budgeted role this scene actually builds", () => {
+  const roles = new Set(["atmosphere", "hero", "copy", "throughline", "chrome"]);
+  assert(!cornerLogoVisible({ brandMark: "hero", roles, enabled: true }), "budget names the hero ⇒ suppress");
+  assert(!cornerLogoVisible({ brandMark: "throughline", roles, enabled: true }), "budget names the motif ⇒ suppress");
+  assert(cornerLogoVisible({ brandMark: "chrome", roles, enabled: true }), '"chrome" IS the corner lockup ⇒ show');
+});
+
+await check("cornerLogoVisible NO-MARK-ANYWHERE GUARD: never strips the only brand in the frame", () => {
+  const roles = new Set(["atmosphere", "copy", "chrome"]); // no hero slot this scene
+  // A budgeted role with NO slot would paint nothing — suppressing leaves the
+  // scene with no brand at all. Strictly worse than a doubled mark.
+  assert(cornerLogoVisible({ brandMark: "hero", roles, enabled: true }), "budgeted role has no slot ⇒ show");
+  // 35 of the 125 stored scenes predate budget entirely.
+  assert(cornerLogoVisible({ brandMark: undefined, roles, enabled: true }), "absent budget ⇒ show");
+  assert(cornerLogoVisible({ brandMark: "", roles, enabled: true }), "empty budget ⇒ show");
+  assert(cornerLogoVisible({ brandMark: "   ", roles, enabled: true }), "whitespace budget ⇒ show");
+  // "none" declares the scene carries no mark — but honouring that literally
+  // guarantees a brand-less frame with no way back, so the lockup stays.
+  assert(cornerLogoVisible({ brandMark: "none", roles, enabled: true }), '"none" ⇒ show (unrecoverable otherwise)');
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

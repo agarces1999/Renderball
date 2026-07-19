@@ -355,5 +355,48 @@ await check("both flag states COMPILE (esbuild tsx)", async () => {
   }
 });
 
+// ── Singularity budget → showCornerLogo on <Chrome/> ────────────────────────
+// The manifest decides (cast-build's cornerLogoVisible); assemble only emits.
+// The prop already exists on BrandChrome (build-wrapper.ts) — nothing here
+// invents behaviour, it just stops ignoring the budget.
+
+const chromeScenes = (showCornerLogo?: boolean): SceneManifest[] => [
+  {
+    scene: 0,
+    background: "BG",
+    ...(showCornerLogo === undefined ? {} : { showCornerLogo }),
+    pieces: [
+      { id: "s0.text", kind: "text", file: "scene0/text.tsx", bounds: { x: 80, y: 120, w: 760, h: 0, z: 2 } },
+      { id: "s0.chrome", kind: "chrome", file: "scene0/chrome.tsx", bounds: { x: 0, y: 0, w: 1920, h: 1080, z: 20 } },
+    ],
+  },
+];
+const assembleChrome = (showCornerLogo?: boolean): string =>
+  assembleComposition({ theme, scenes: chromeScenes(showCornerLogo), pieceBody: () => "<div />" });
+
+await check("Chrome carries showCornerLogo={false} ONLY when the manifest suppresses it", () => {
+  const suppressed = assembleChrome(false);
+  assert(
+    suppressed.includes("<Chrome sceneIndex={0} totalScenes={script.scenes.length} showCornerLogo={false} />"),
+    "showCornerLogo={false} must be emitted when the manifest says so",
+  );
+  // Absent or true ⇒ byte-identical to the historical emission. A manifest that
+  // predates the field must not change one character of output.
+  const bare = "<Chrome sceneIndex={0} totalScenes={script.scenes.length} />";
+  assert(assembleChrome(undefined).includes(bare), "absent ⇒ unchanged emission");
+  assert(assembleChrome(true).includes(bare), "true ⇒ unchanged emission");
+  // …and no <Chrome/> CALL SITE mentions the prop (the Chrome helper's own
+  // signature always declares it — that is the pre-existing prop we reuse).
+  const callSites = (out: string) => out.match(/<Chrome [^>]*\/>/g) ?? [];
+  assert(callSites(assembleChrome(undefined)).every((s) => !s.includes("showCornerLogo")), "absent ⇒ no prop at the call site");
+});
+
+await check("both Chrome emissions COMPILE", async () => {
+  for (const v of [undefined, true, false]) {
+    const err = await verifyCompilable(assembleChrome(v));
+    assert(err === null, `showCornerLogo=${String(v)} did not compile: ${err}`);
+  }
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exitCode = 1;

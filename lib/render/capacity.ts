@@ -25,6 +25,7 @@ import {
   measureText,
   textWidth,
   DEFAULT_NORMAL_LINE_HEIGHT,
+  isCalibrated,
 } from "./font-metrics";
 
 /**
@@ -256,7 +257,7 @@ export const linesNeededPx = (
 // ── margin plumbing ─────────────────────────────────────────────────────────
 
 const marginFor = (m: FontMetrics): number =>
-  m.source === "chromium" ? CAPACITY_SAFETY_MARGIN : UNCALIBRATED_SAFETY_MARGIN;
+  isCalibrated(m) ? CAPACITY_SAFETY_MARGIN : UNCALIBRATED_SAFETY_MARGIN;
 
 /** The box an emitter may actually plan against: shrunk by the safety margin. */
 export const usableBox = (box: Box, m: FontMetrics): Box => {
@@ -313,7 +314,7 @@ export const capacityFor = (box: Box, scale: TypeScale, m: FontMetrics): Capacit
   const empty: Capacity = {
     headlineChars: 0, headlineCharsUppercase: 0, maxRows: 0, maxHeadlineRows: 0, maxChips: 0,
     chipsPerRow: 0, maxDepth: 0, marginApplied: margin,
-    estimated: m.source !== "chromium",
+    estimated: !isCalibrated(m),
   };
   if (!(usable.w > 0) || !(usable.h > 0) || !(scale.headlinePx > 0) || !(scale.bodyPx > 0)) {
     return empty;
@@ -380,7 +381,7 @@ export const capacityFor = (box: Box, scale: TypeScale, m: FontMetrics): Capacit
     chipsPerRow,
     maxDepth,
     marginApplied: margin,
-    estimated: m.source !== "chromium",
+    estimated: !isCalibrated(m),
   };
 };
 

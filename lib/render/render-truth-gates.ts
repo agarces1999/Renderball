@@ -1494,7 +1494,18 @@ export const findMotifClutter = (
         ? Math.min(...anchors.map((a) => rectGap(rect, { x: a.x, y: a.y, w: a.w, h: a.h })))
         : Infinity;
       const isolated = gap >= isolationPx;
-      if (budgeted && !isolated) continue; // the sanctioned, on-content motif mark — keep
+      // The sanctioned, on-content motif mark — keep. This branch STANDS even
+      // now that the corner lockup is derived from the budget (cast-build's
+      // `cornerLogoVisible`): when the budget names the throughline, that motif
+      // legitimately IS the scene's only brand mark, and the chrome's is gone.
+      //
+      // It is also NOT what blinded this gate to the doubled marks in the
+      // stored builds. `isDecoLayer` scopes the whole loop to atmosphere and
+      // `.throughline`/`.connector` pieces, so a wordmark painted inside a HERO
+      // (fullpipe-fuse s0's clipped "Fuse" lockup) is never examined at all —
+      // `role` is "" there and `budgeted` is false. Widening the gate to hero
+      // pieces is a separate, unmade decision; do not "fix" it here.
+      if (budgeted && !isolated) continue;
       seenMarkPiece.add(e.piece);
       out.push({
         kind: "motif-clutter",

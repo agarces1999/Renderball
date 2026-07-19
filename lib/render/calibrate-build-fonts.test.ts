@@ -22,6 +22,8 @@ import path from "path";
 import {
   type FontMetrics,
   CALIBRATION_GLYPHS,
+  METRICS_VERSION,
+  isCalibrated,
   metricsKey,
   saveFontMetrics,
 } from "./font-metrics";
@@ -78,6 +80,10 @@ const fakePageFactory = () => {
             adv: Object.fromEntries(glyphs.map((g) => [g, 50])),
             kern: {},
             normalLineHeight: 1.2,
+            // The in-page RESOLUTION ASSERTION verdict. A fake page must state
+            // it: `resolved:false` is exactly how a substituted face reports,
+            // and calibrateFont then refuses to stamp `source:"chromium"`.
+            resolved: true,
           };
         },
       },
@@ -150,6 +156,8 @@ await check("CACHE-FIRST: a face measured by an earlier build opens no page at a
     normalLineHeight: 1.18,
     source: "chromium",
     calibratedAt: new Date().toISOString(),
+    version: METRICS_VERSION,
+    resolution: "asserted",
   };
   await saveFontMetrics(cached, dir);
   const { openPage, state } = fakePageFactory();
@@ -249,6 +257,51 @@ await check("resolveMetricsFor finds the exact key, then any calibrated weight, 
   const unknown = resolveMetricsFor('"Nobody Has This", serif', table.metrics, 400);
   assert(unknown.source === "fallback", "an unknown family must flag");
   assert(unknown.family === "Nobody Has This", `family should be preserved, got ${unknown.family}`);
+});
+
+// ── The COUNTER must derive from the assertion, not the label ───────────────
+// This is the reason the substitution went unnoticed for a whole phase: the
+// telemetry line counted `source === "chromium"` and therefore reported
+// "2 face(s) calibrated / 0 estimated" in the exact case where BOTH tables were
+// Chromium's substituted default face.
+
+await check("SUBSTITUTED FACE: a page reporting resolved:false yields 0 calibrated / N estimated", async () => {
+  const dir = await tmpDir();
+  const state = { opens: 0, closes: 0 };
+  // Identical to fakePageFactory except the in-page assertion says the
+  // requested family never resolved — a full, plausible, WRONG advance table.
+  const openPage = async () => {
+    state.opens++;
+    return {
+      page: {
+        setContent: async () => {},
+        evaluate: async (_fn: unknown, arg?: unknown) => {
+          if (!arg) return undefined;
+          const glyphs = (arg as { glyphs?: string[] }).glyphs ?? [];
+          return {
+            adv: Object.fromEntries(glyphs.map((g) => [g, 50])),
+            kern: {},
+            normalLineHeight: 1.2,
+            resolved: false,
+          };
+        },
+      },
+      close: async () => {
+        state.closes++;
+      },
+    };
+  };
+  const table = await calibrateBuildFonts({ fonts: FONTS, stacks: STACKS, dir, fetchFont: fakeFetch, openPage });
+  assert(table.calibrated === 0, `expected 0 calibrated, got ${table.calibrated} (the label was trusted again)`);
+  assert(table.estimated === 2, `expected 2 estimated, got ${table.estimated}`);
+  for (const m of Object.values(table.metrics)) {
+    assert(m.source === "fallback", `${m.family}: a substituted face must not be stamped chromium`);
+    assert(!isCalibrated(m), `${m.family}: must not count as calibrated`);
+  }
+  // …and nothing is written to disk, so the next build does not inherit it.
+  const written = await fs.readdir(dir).catch(() => [] as string[]);
+  assert(written.length === 0, `a substituted face must not be cached, found ${written.join(",")}`);
+  assert(state.closes === 1, "the shared page must still be closed");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

@@ -37,6 +37,7 @@ import {
   calibrateFont,
   calibrateBrandFonts,
   fallbackMetrics,
+  isCalibrated,
   loadFontMetrics,
   saveFontMetrics,
   metricsKey,
@@ -69,9 +70,15 @@ export const MAX_CALIBRATIONS_PER_BUILD = 4;
 export interface BuildFontTable {
   /** Keyed by `metricsKey(family, weight)`. */
   metrics: Record<string, FontMetrics>;
-  /** Faces whose advances were really measured in Chromium (cache hits count). */
+  /**
+   * Faces whose advances were really measured on the REQUESTED face (cache hits
+   * count). Derived from `isCalibrated`, i.e. the resolution assertion — never
+   * from the `source` label alone. Counting the label is what let this number
+   * report "2 calibrated / 0 estimated" while every one of those tables was
+   * Chromium's substituted default face.
+   */
   calibrated: number;
-  /** Faces that fell back to synthesized advances. */
+  /** Faces that fell back to synthesized advances (the 10% margin path). */
   estimated: number;
 }
 
@@ -106,7 +113,7 @@ export const resolveMetricsFor = (
   if (exact) return exact;
   const prefix = `${metricsKey(family, weight).replace(/-\d+$/, "")}-`;
   for (const [key, m] of Object.entries(table)) {
-    if (key.startsWith(prefix) && m.source === "chromium") return m;
+    if (key.startsWith(prefix) && isCalibrated(m)) return m;
   }
   return fallbackMetrics(family, weight);
 };
@@ -257,7 +264,7 @@ export const calibrateBuildFonts = async (
             src: f.src,
             page: opened.page,
           }).catch(() => fallbackMetrics(f.family, f.weight));
-          if (m.source === "chromium") await saveFontMetrics(m, dir).catch(() => "");
+          if (isCalibrated(m)) await saveFontMetrics(m, dir).catch(() => "");
           metrics[metricsKey(f.family, f.weight)] = m;
         }
       } finally {
@@ -288,7 +295,7 @@ export const calibrateBuildFonts = async (
   const all = Object.values(metrics);
   return {
     metrics,
-    calibrated: all.filter((m) => m.source === "chromium").length,
-    estimated: all.filter((m) => m.source !== "chromium").length,
+    calibrated: all.filter((m) => isCalibrated(m)).length,
+    estimated: all.filter((m) => !isCalibrated(m)).length,
   };
 };

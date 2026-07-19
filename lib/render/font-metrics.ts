@@ -37,6 +37,22 @@
  *   deliberately WIDE advance and sets `fallbackUsed` on the result. A budget
  *   that quietly under-estimates width is worse than no budget: it tells a blind
  *   emitter it has room it does not have, and ships overflow.
+ *
+ * NEVER MEASURE A SUBSTITUTED FACE (the assertion — see the RESOLUTION ASSERTION in PAGE_MEASURE)
+ *   The failure this module is most exposed to is not a face that measures
+ *   ZERO; it is a face that measures FINE and is the wrong face. If the
+ *   requested family never loads, Chromium silently substitutes its default
+ *   (Times) and every advance comes back plausible and non-zero — sailing past
+ *   the zero-table guard and persisting as `source:"chromium"`, i.e. as a
+ *   measurement. Downstream, capacity.ts then applies its TIGHT 4% calibrated
+ *   margin to numbers nobody measured.
+ *
+ *   This really happened: all four caches written before this assertion existed
+ *   were byte-identical to the browser's default face (proven by measuring a
+ *   deliberately-nonexistent family locally and comparing advance tables). So
+ *   calibration now PROVES the requested family resolved before stamping
+ *   `source:"chromium"`, and `METRICS_VERSION` invalidates every cache written
+ *   without that proof.
  */
 import { promises as fs } from "fs";
 import path from "path";
@@ -89,6 +105,28 @@ export const KERN_PAIRS: string[] = (() => {
 
 // ── the persisted shape ─────────────────────────────────────────────────────
 
+/**
+ * Cache schema/contract version. BUMP whenever the meaning of a persisted
+ * table changes, so stale caches are re-measured instead of trusted.
+ *
+ *   1 — original (no font-resolution assertion; a substituted face persisted as
+ *       `source:"chromium"`). Every v1 cache is untrustworthy by construction.
+ *   2 — `calibrateFont` proves the requested family actually resolved before
+ *       stamping `source:"chromium"` (see the RESOLUTION ASSERTION in PAGE_MEASURE).
+ */
+export const METRICS_VERSION = 2;
+
+/** How a face's identity was established. */
+export type FontResolution =
+  /** A CSS generic keyword (`serif`, `sans-serif`, …). Whatever Chromium maps
+   *  it to IS the requested face — substitution is not a possible failure. */
+  | "generic"
+  /** A named family that PASSED the sentinel-advance differential (and, when an
+   *  `@font-face` was declared, `document.fonts.check`). */
+  | "asserted"
+  /** Never measured — synthesized fallback metrics. */
+  | "none";
+
 export interface FontMetrics {
   family: string;
   weight: number;
@@ -114,7 +152,29 @@ export interface FontMetrics {
   source: "chromium" | "fallback";
   /** ISO timestamp of the calibration run. */
   calibratedAt: string;
+  /** Cache schema version — see `METRICS_VERSION`. */
+  version: number;
+  /** How the face's identity was proven. See `FontResolution`. */
+  resolution: FontResolution;
 }
+
+/**
+ * THE predicate for "were these advances really measured on the face we asked
+ * for?". Everything that changes behaviour on calibration status — the capacity
+ * safety margin, the `estimated` flag surfaced to an emitter, the
+ * calibrated/estimated telemetry counter — must ask THIS, never `source` alone.
+ *
+ * `source` is a LABEL. Before the resolution assertion existed it was stamped
+ * on substituted faces, so a counter keyed off it reported 100% success in the
+ * exact failure case it was built to catch. This predicate requires the label
+ * AND the current schema version AND a real resolution proof, so a stale v1
+ * cache can never masquerade as calibrated.
+ */
+export const isCalibrated = (m: FontMetrics | null | undefined): boolean =>
+  !!m &&
+  m.source === "chromium" &&
+  m.version === METRICS_VERSION &&
+  (m.resolution === "generic" || m.resolution === "asserted");
 
 export interface WidthResult {
   /** Predicted rendered width in px. */
@@ -153,6 +213,8 @@ export const fallbackMetrics = (family: string, weight = 400): FontMetrics => ({
   normalLineHeight: DEFAULT_NORMAL_LINE_HEIGHT,
   source: "fallback",
   calibratedAt: new Date(0).toISOString(),
+  version: METRICS_VERSION,
+  resolution: "none",
 });
 
 /**
@@ -221,6 +283,12 @@ export const saveFontMetrics = async (
 /**
  * Load cached metrics, or null when this font was never calibrated. Never
  * throws — a corrupt/absent cache degrades to the flagged fallback path.
+ *
+ * A cache from an OLDER schema version is treated as absent, not as data. That
+ * is the whole point of `METRICS_VERSION`: v1 files were written before the
+ * resolution assertion existed, so a v1 table is indistinguishable from a
+ * measurement of Chromium's substituted default face. Re-measuring costs one
+ * ~1s Chromium pass; trusting it costs every budget derived from it.
  */
 export const loadFontMetrics = async (
   family: string,
@@ -232,6 +300,7 @@ export const loadFontMetrics = async (
     const parsed = JSON.parse(raw) as FontMetrics;
     if (!parsed || typeof parsed.adv !== "object" || !parsed.adv) return null;
     if (typeof parsed.fallbackAdv !== "number" || !(parsed.fallbackAdv > 0)) return null;
+    if (!isCalibrated(parsed)) return null;
     return parsed;
   } catch {
     return null;
@@ -261,47 +330,128 @@ const CSS_GENERIC_FAMILIES = new Set([
   "math", "emoji", "fangsong",
 ]);
 
+/**
+ * True for a CSS generic keyword. A generic is EXEMPT from the substitution
+ * assertion: whatever Chromium maps `serif` to IS the requested face, so there
+ * is no "wrong face" to detect. The exemption is also load-bearing in the other
+ * direction — Chromium's default fallback IS its `serif` face, so a `serif`
+ * calibration is byte-identical to the sentinel and the differential below
+ * would reject it. (Measured locally: `serif@400` and a nonexistent family at
+ * 400 produce the same 194-glyph advance table.)
+ */
+export const isGenericFamily = (family: string): boolean =>
+  CSS_GENERIC_FAMILIES.has(family.trim().toLowerCase());
+
 /** A family as it must appear in a `font-family` declaration. */
 export const cssFontFamily = (family: string): string =>
-  CSS_GENERIC_FAMILIES.has(family.trim().toLowerCase())
+  isGenericFamily(family)
     ? family.trim().toLowerCase()
     : `"${family.replace(/["\\]/g, "")}"`;
+
+/**
+ * A family name no font on earth carries, used as the differential SENTINEL: it
+ * matches nothing, so it renders in Chromium's default fallback face — exactly
+ * what a family that failed to load also renders in.
+ */
+export const SENTINEL_FAMILY = "__rb_no_such_family_7f3a9c__";
+
+/**
+ * The differential probe string. Deliberately glyph-diverse (caps, lowercase,
+ * digits, punctuation, accents) and long, so two genuinely different faces
+ * cannot tie by coincidence: at font-size 100px this measures several thousand
+ * px, and the equality test uses a sub-pixel epsilon.
+ */
+export const RESOLUTION_PROBE =
+  "Hamburgefonstiv 0123456789 AVWTYjgqp .,;:!? MMMiiilll ñáüßœ @#%&";
+
+/** Width equality tolerance for the sentinel differential, in px at 100px type. */
+const SENTINEL_EPSILON_PX = 0.5;
 
 /**
  * The in-page measurement routine. Kept dependency-free and self-contained
  * because it is serialized into the browser (same constraint as
  * measure-scene.ts's PAGE_WALK).
  */
-const PAGE_MEASURE = (args: {
+const PAGE_MEASURE = async (args: {
   /** Ready-to-use `font-family` value (already quoted, or a bare generic). */
   cssFamily: string;
   weight: number;
   glyphs: string[];
   pairs: string[];
   repeat: number;
+  /** True when `cssFamily` is a CSS generic keyword — exempt from the assertion. */
+  generic: boolean;
+  /** `font-family` value for a family that matches nothing (the differential control). */
+  sentinelFamily: string;
+  /** Glyph-diverse string measured under both families. */
+  probe: string;
+  /** Sub-pixel tolerance for calling two probe widths equal. */
+  epsilon: number;
 }) => {
-  const { cssFamily, weight, glyphs, pairs, repeat } = args;
+  const { cssFamily, weight, glyphs, pairs, repeat, generic, sentinelFamily, probe, epsilon } = args;
   const host = document.createElement("div");
   host.style.cssText =
     "position:absolute;left:-99999px;top:0;width:auto;height:auto;visibility:hidden;";
   document.body.appendChild(host);
 
   const span = document.createElement("span");
-  const base =
+  const baseFor = (family: string) =>
     `display:inline-block;white-space:pre;letter-spacing:0;word-spacing:0;` +
-    `font-family:${cssFamily};font-weight:${weight};font-size:100px;` +
+    `font-family:${family};font-weight:${weight};font-size:100px;` +
     `font-variant-ligatures:none;font-feature-settings:"liga" 0,"clig" 0,"calt" 0;`;
+  const base = baseFor(cssFamily);
   host.appendChild(span);
 
-  const measure = (text: string, kerning: boolean): number => {
+  const measureWith = (family: string, text: string, kerning: boolean): number => {
     span.style.cssText =
-      base +
+      baseFor(family) +
       (kerning
         ? `font-kerning:normal;`
         : `font-kerning:none;font-feature-settings:"liga" 0,"clig" 0,"calt" 0,"kern" 0;`);
     span.textContent = text;
     return span.getBoundingClientRect().width;
   };
+  const measure = (text: string, kerning: boolean): number =>
+    measureWith(cssFamily, text, kerning);
+
+  // ── THE RESOLUTION ASSERTION ──────────────────────────────────────────────
+  // Ask the browser to actually LOAD the face first. This is not just belt and
+  // braces, it is the root-cause fix: nothing on the page referenced the
+  // family, so the @font-face was never requested, `document.fonts.ready`
+  // resolved vacuously, and the measurement below raced a lazy load it always
+  // won — measuring the substituted default face every time.
+  const spec = `${weight} 100px ${cssFamily}`;
+  let checkOk = true;
+  if (!generic) {
+    try {
+      if (document.fonts && typeof document.fonts.load === "function") {
+        await document.fonts.load(spec, probe);
+      }
+    } catch {
+      /* load() rejects on an undecodable face — the differential still decides */
+    }
+    try {
+      checkOk =
+        !document.fonts || typeof document.fonts.check !== "function"
+          ? true
+          : document.fonts.check(spec);
+    } catch {
+      checkOk = true;
+    }
+  }
+  // The AUTHORITATIVE signal: does the requested family measure differently
+  // from a family that matches nothing? Both fall back to Chromium's default
+  // face, so identical probe widths mean the requested family contributed
+  // NOTHING — i.e. we are about to measure a substitute.
+  //
+  // `check()` alone cannot carry this: per spec it returns TRUE for a family
+  // with no matching @font-face rule (vacuously — "all zero matched faces are
+  // loaded"), which is precisely the undeclared-family case. It is kept as a
+  // necessary condition, not a sufficient one.
+  const probeRequested = generic ? 0 : measureWith(cssFamily, probe, false);
+  const probeSentinel = generic ? 0 : measureWith(`"${sentinelFamily}"`, probe, false);
+  const differsFromSentinel = generic || Math.abs(probeRequested - probeSentinel) > epsilon;
+  const resolved = generic || (checkOk && differsFromSentinel);
 
   // Per-glyph advance, kerning OFF, averaged over `repeat` copies.
   const adv: Record<string, number> = {};
@@ -325,17 +475,26 @@ const PAGE_MEASURE = (args: {
   }
 
   // line-height:normal, as a multiple of font-size.
-  const probe = document.createElement("div");
-  probe.style.cssText =
+  const probeEl = document.createElement("div");
+  probeEl.style.cssText =
     `position:absolute;left:-99999px;font-family:${cssFamily};font-weight:${weight};` +
     `font-size:100px;line-height:normal;white-space:pre;`;
-  probe.textContent = "Hxg";
-  document.body.appendChild(probe);
-  const normalLineHeight = probe.getBoundingClientRect().height / 100;
-  probe.remove();
+  probeEl.textContent = "Hxg";
+  document.body.appendChild(probeEl);
+  const normalLineHeight = probeEl.getBoundingClientRect().height / 100;
+  probeEl.remove();
   host.remove();
 
-  return { adv, kern, normalLineHeight };
+  return {
+    adv,
+    kern,
+    normalLineHeight,
+    resolved,
+    checkOk,
+    differsFromSentinel,
+    probeRequested,
+    probeSentinel,
+  };
 };
 
 const percentile = (values: number[], p: number): number => {
@@ -391,13 +550,30 @@ export const calibrateFont = async (opts: CalibrateOpts): Promise<FontMetrics> =
       );
     });
     await page.evaluate("document.fonts && document.fonts.ready").catch(() => {});
+    const generic = isGenericFamily(family);
     const measured = (await page.evaluate(PAGE_MEASURE, {
       cssFamily: cssFontFamily(family),
       weight,
       glyphs: CALIBRATION_GLYPHS,
       pairs: KERN_PAIRS,
       repeat: REPEAT,
-    })) as { adv: Record<string, number>; kern: Record<string, number>; normalLineHeight: number };
+      generic,
+      sentinelFamily: SENTINEL_FAMILY,
+      probe: RESOLUTION_PROBE,
+      epsilon: SENTINEL_EPSILON_PX,
+    })) as {
+      adv: Record<string, number>;
+      kern: Record<string, number>;
+      normalLineHeight: number;
+      resolved: boolean;
+    };
+
+    // THE ASSERTION. A substituted face measures fine, so this — not the
+    // zero-table guard below — is what stands between us and persisting Times
+    // as "the brand's display face". Failing it is not an error: it degrades to
+    // flagged fallback metrics and capacity.ts's wider 10% margin, which is the
+    // honest answer for a face we could not put in front of the engine.
+    if (!measured.resolved) return fallbackMetrics(family, weight);
 
     const advances = Object.values(measured.adv).filter((v) => v > 0);
     if (advances.length < CALIBRATION_GLYPHS.length / 2) {
@@ -417,6 +593,8 @@ export const calibrateFont = async (opts: CalibrateOpts): Promise<FontMetrics> =
       normalLineHeight: measured.normalLineHeight > 0.5 ? measured.normalLineHeight : DEFAULT_NORMAL_LINE_HEIGHT,
       source: "chromium",
       calibratedAt: new Date().toISOString(),
+      version: METRICS_VERSION,
+      resolution: generic ? "generic" : "asserted",
     };
   };
 
@@ -477,7 +655,7 @@ export const calibrateBrandFonts = async (
       continue;
     }
     const m = await calibrateFont({ family: f.family, weight, src: f.src });
-    if (m.source === "chromium") await saveFontMetrics(m, dir).catch(() => "");
+    if (isCalibrated(m)) await saveFontMetrics(m, dir).catch(() => "");
     out[metricsKey(f.family, weight)] = m;
   }
   return out;

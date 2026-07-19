@@ -40,6 +40,7 @@
 import {
   type FontMetrics,
   DEFAULT_NORMAL_LINE_HEIGHT,
+  isCalibrated,
 } from "./font-metrics";
 import { type Box, linesNeeded, usableBox } from "./capacity";
 import type { ResolvedTypeScale } from "./type-scale";
@@ -285,7 +286,7 @@ export const checkCopyOverflow = (args: CheckCopyOverflowArgs): CopyFitReport =>
     availablePx: Math.round(usable.h),
     entries: out,
     worst,
-    estimated: metrics.source !== "chromium",
+    estimated: !isCalibrated(metrics),
   };
 };
 

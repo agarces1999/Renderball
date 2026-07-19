@@ -15,8 +15,11 @@ import {
   KERN_PAIRS,
   UNCALIBRATED_ADVANCE_100,
   DEFAULT_NORMAL_LINE_HEIGHT,
+  METRICS_VERSION,
   type FontMetrics,
   fallbackMetrics,
+  isCalibrated,
+  isGenericFamily,
   measureText,
   textWidth,
   metricsKey,
@@ -53,6 +56,8 @@ const synth = (adv: Record<string, number>, over: Partial<FontMetrics> = {}): Fo
   normalLineHeight: 1.2,
   source: "chromium",
   calibratedAt: new Date().toISOString(),
+  version: METRICS_VERSION,
+  resolution: "asserted",
   ...over,
 });
 
@@ -189,6 +194,54 @@ await check("missing / corrupt cache degrades to null, never throws", async () =
   assert((await loadFontMetrics("Hollow", 400, tmp)) === null, "hollow → null");
   await fs.writeFile(path.join(tmp, "nofb-400.json"), JSON.stringify({ adv: { a: 10 } }), "utf8");
   assert((await loadFontMetrics("Nofb", 400, tmp)) === null, "missing fallbackAdv → null");
+});
+
+// ── the resolution assertion, pure half ─────────────────────────────────────
+// (The browser half — genuine vs substituted face in real Chromium — lives in
+// capacity.test.ts, next to the margin it protects.)
+
+await check("isCalibrated demands the ASSERTION, not just the `source` label", () => {
+  assert(isCalibrated(synth({ a: 50 })), "an asserted v2 table is calibrated");
+  assert(isCalibrated(synth({ a: 50 }, { resolution: "generic" })), "a generic face is calibrated");
+  assert(!isCalibrated(fallbackMetrics("X")), "fallback metrics are never calibrated");
+  // THE REGRESSION SHAPE: `source:"chromium"` with no proof behind it. Every
+  // poisoned cache looked exactly like this — a full 194-glyph table of the
+  // browser's substituted default face, labelled as a measurement.
+  assert(!isCalibrated(synth({ a: 50 }, { resolution: "none" })), "chromium + no resolution proof is NOT calibrated");
+  assert(!isCalibrated(synth({ a: 50 }, { version: 1 })), "a pre-assertion (v1) table is NOT calibrated");
+  assert(!isCalibrated(null) && !isCalibrated(undefined), "null/undefined are not calibrated");
+});
+
+await check("isGenericFamily: CSS keywords only — a brand family is never generic", () => {
+  for (const g of ["serif", "sans-serif", "monospace", "SYSTEM-UI", " ui-rounded "]) {
+    assert(isGenericFamily(g), `${g} must be generic`);
+  }
+  for (const n of ["Nunito", "PP Object Sans", "National 2", "Argent CF", ""]) {
+    assert(!isGenericFamily(n), `${n} must NOT be generic`);
+  }
+});
+
+await check("a PRE-ASSERTION (v1) cache file is treated as absent, not as data", async () => {
+  await fs.mkdir(tmp, { recursive: true });
+  // Byte-for-byte the shape of the four poisoned caches this fix deleted:
+  // a complete advance table, `source:"chromium"`, and no resolution proof.
+  const poisoned = {
+    family: "Nunito",
+    weight: 400,
+    adv: Object.fromEntries(CALIBRATION_GLYPHS.map((g) => [g, 55])),
+    kern: {},
+    meanAdv: 54.231,
+    fallbackAdv: 75.977,
+    normalLineHeight: 1.15,
+    source: "chromium",
+    calibratedAt: "2026-07-18T13:54:54.585Z",
+  };
+  await fs.writeFile(path.join(tmp, `${metricsKey("Nunito", 400)}.json`), JSON.stringify(poisoned), "utf8");
+  assert((await loadFontMetrics("Nunito", 400, tmp)) === null, "a v1 cache must NOT load");
+  // …and the consumer therefore gets the flagged fallback + the wider margin.
+  const m = await getFontMetrics("Nunito", 400, tmp);
+  assert(m.source === "fallback", `getFontMetrics → ${m.source}`);
+  assert(!isCalibrated(m), "must not count as calibrated");
 });
 
 await check("getFontMetrics always returns usable metrics, flagged when uncached", async () => {

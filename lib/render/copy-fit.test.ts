@@ -20,7 +20,7 @@
  *  4. degradation — an uncalibrated face still produces a usable verdict, just
  *     a flagged one.
  */
-import { type FontMetrics, CALIBRATION_GLYPHS, fallbackMetrics } from "./font-metrics";
+import { type FontMetrics, CALIBRATION_GLYPHS, METRICS_VERSION, fallbackMetrics } from "./font-metrics";
 import {
   checkCopyOverflow,
   deriveFitScale,
@@ -64,6 +64,8 @@ const MONO_CAPS: FontMetrics = {
   normalLineHeight: 1.2,
   source: "chromium",
   calibratedAt: new Date().toISOString(),
+  version: METRICS_VERSION,
+  resolution: "asserted",
 };
 
 const SCALE = deriveTypeScale({ role: "copy", box: { w: 800, h: 500 }, canvas: { w: 1920, h: 1080 } });

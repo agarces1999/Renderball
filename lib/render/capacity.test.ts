@@ -29,11 +29,15 @@ import {
 import {
   CALIBRATION_GLYPHS,
   type FontMetrics,
+  METRICS_VERSION,
+  RESOLUTION_PROBE,
   calibrateFont,
   cssFontFamily,
   fallbackMetrics,
+  isCalibrated,
   textWidth,
 } from "./font-metrics";
+import { promises as fs } from "fs";
 
 let passed = 0;
 let failed = 0;
@@ -66,6 +70,8 @@ const MONO: FontMetrics = {
   normalLineHeight: 1.2,
   source: "chromium",
   calibratedAt: new Date().toISOString(),
+  version: METRICS_VERSION,
+  resolution: "asserted",
 };
 
 // ── UAX#14 break opportunities ──────────────────────────────────────────────
@@ -517,6 +523,107 @@ if (!page) {
     console.log(`      ${meta.length} budget×vocabulary combinations, ${violations.length} overflowed — ${budgets.join(", ")}`);
     assert(violations.length === 0, `budget overflowed:\n      ${violations.slice(0, 5).join("\n      ")}`);
   });
+
+  // ── THE FONT-RESOLUTION ASSERTION ──────────────────────────────────────
+  // The failure this guards is NOT a face that measures zero — it is a face
+  // that measures fine and is the WRONG face. Every cache written before the
+  // assertion existed was byte-identical to Chromium's substituted default,
+  // yet stamped `source:"chromium"` and therefore budgeted on the tight 4%
+  // margin. These three cases pin both directions of the new gate.
+
+  await check("ASSERTION positive: a generic family calibrates as `generic` (incl. the serif trap)", async () => {
+    for (const family of ["serif", "sans-serif", "monospace"]) {
+      const m = await calibrateFont({ family, page });
+      assert(m.source === "chromium", `${family}: fell back — a generic keyword always resolves`);
+      assert(m.resolution === "generic", `${family}: resolution → ${m.resolution}`);
+      assert(isCalibrated(m), `${family}: must count as calibrated`);
+    }
+    // `serif` is the trap the generic exemption exists for: Chromium's DEFAULT
+    // fallback face IS its serif face, so the sentinel differential would find
+    // `serif` byte-identical to a nonexistent family and reject it. Prove the
+    // premise rather than asserting the exemption on faith.
+    const sentinelWidth = await page.evaluate((probe: string) => {
+      const s = document.createElement("span");
+      s.style.cssText =
+        'position:absolute;left:-99999px;white-space:pre;font-size:100px;font-kerning:none;' +
+        'font-family:"__rb_no_such_family_7f3a9c__";';
+      s.textContent = probe;
+      document.body.appendChild(s);
+      const w = s.getBoundingClientRect().width;
+      s.remove();
+      return w;
+    }, RESOLUTION_PROBE);
+    const serifWidth = await page.evaluate((probe: string) => {
+      const s = document.createElement("span");
+      s.style.cssText =
+        "position:absolute;left:-99999px;white-space:pre;font-size:100px;font-kerning:none;font-family:serif;";
+      s.textContent = probe;
+      document.body.appendChild(s);
+      const w = s.getBoundingClientRect().width;
+      s.remove();
+      return w;
+    }, RESOLUTION_PROBE);
+    assert(
+      Math.abs(serifWidth - sentinelWidth) < 0.5,
+      `PREMISE CHANGED: serif (${serifWidth}) no longer matches the default fallback (${sentinelWidth}) — ` +
+        `the generic exemption may no longer be needed, but verify before removing it`,
+    );
+  });
+
+  await check("ASSERTION negative: a named family we cannot supply is NOT stamped calibrated", async () => {
+    // THE REGRESSION. Before the assertion this returned a complete 194-glyph
+    // `source:"chromium"` table — Times, wearing the brand's name.
+    for (const src of [undefined, "https://127.0.0.1:1/nope.woff2"]) {
+      const m = await calibrateFont({ family: "Definitely Not Installed XYZQ", weight: 400, page, src });
+      assert(m.source === "fallback", `src=${String(src)}: source → ${m.source} (substituted face was accepted)`);
+      assert(m.resolution === "none", `src=${String(src)}: resolution → ${m.resolution}`);
+      assert(!isCalibrated(m), `src=${String(src)}: must NOT count as calibrated`);
+      // …and the downstream consequence the assertion exists to produce.
+      assert(capacityFor({ w: 800, h: 400 }, SCALE, m).estimated,
+        `src=${String(src)}: budget must report estimated:true`);
+    }
+  });
+
+  // A REAL named face, when this machine has one to lend. Inlined as a data:
+  // URL exactly as calibrate-build-fonts does for a brand face, under a family
+  // name nothing could match by accident — so passing proves the differential
+  // accepts a genuinely-loaded named family, not just a generic keyword.
+  const SYSTEM_FONTS = [
+    "/System/Library/Fonts/Supplemental/Arial.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+  ];
+  let realFontDataUrl: string | null = null;
+  for (const p of SYSTEM_FONTS) {
+    try {
+      realFontDataUrl = `data:font/ttf;base64,${(await fs.readFile(p)).toString("base64")}`;
+      break;
+    } catch {
+      /* try the next candidate */
+    }
+  }
+  if (!realFontDataUrl) {
+    console.log("  … ASSERTION named-face positive skipped (no readable system font on this machine)");
+  } else {
+    await check("ASSERTION positive: a real NAMED face that loads calibrates as `asserted`", async () => {
+      const m = await calibrateFont({
+        family: "RB Assertion Probe Face",
+        weight: 400,
+        page,
+        src: realFontDataUrl!,
+      });
+      assert(m.source === "chromium", `fell back despite real bytes (resolution=${m.resolution})`);
+      assert(m.resolution === "asserted", `resolution → ${m.resolution}`);
+      assert(isCalibrated(m), "must count as calibrated");
+      assert(Object.keys(m.adv).length >= CALIBRATION_GLYPHS.length - 2, "sparse table");
+      // The whole point: these advances are NOT the substituted default face.
+      const substituted = await calibrateFont({ family: "serif", page });
+      const differs = CALIBRATION_GLYPHS.some(
+        (g) => Math.abs((m.adv[g] ?? 0) - (substituted.adv[g] ?? 0)) > 0.01,
+      );
+      assert(differs, "measured table is identical to the default face — the assertion let a substitute through");
+    });
+  }
 
   await browser.close().catch(() => {});
 }

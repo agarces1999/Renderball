@@ -111,6 +111,17 @@ export interface SceneManifest {
   background: string;
   /** Ordered (paint order). A piece may nest `children`. */
   pieces: Piece[];
+  /**
+   * Whether the app paints its own brand lockup in the frame's top-left corner
+   * for this scene. Absent ⇒ yes (the historical, unconditional behaviour).
+   *
+   * `false` means the head's singularity budget assigned the scene's ONE brand
+   * mark to an authored element instead of the chrome, so painting the corner
+   * lockup too would ship the doubled wordmark the budget exists to prevent.
+   * Derived once, in cast-build (`cornerLogoVisible`); assemble.ts only emits
+   * it. See `BrandChrome`'s `showCornerLogo` prop.
+   */
+  showCornerLogo?: boolean;
 }
 
 /**
