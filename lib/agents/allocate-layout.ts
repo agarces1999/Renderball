@@ -129,7 +129,38 @@ export interface AllocElementInput {
    * "the head's placement is wrong" from "the head's SIZING is wrong".
    */
   authoredSize?: { w: number; h: number } | null;
+  /**
+   * How much room this element's content ACTUALLY needs (lib/agents/
+   * content-extent.ts): a measured painted rect where one exists, otherwise a
+   * capacity-derived extent from the real copy strings, otherwise the head's
+   * authored box as a scale anchor. Round 1 had none of this and sized from a
+   * role name; both control regressions it produced were size errors.
+   */
+  contentExtent?: { neededArea: number; naturalW: number; naturalH: number; minW: number; source: string } | null;
+  /**
+   * THE EMBEDDED-MOTIF RELATION. When the head placed this element fully INSIDE
+   * another (71 of 95 stored hero+motif scenes do exactly this — a status chip
+   * in a card header, a payment button inside a checkout modal), it is a CHILD,
+   * not a peer to be re-placed. The allocator keeps it inside its parent at the
+   * same relative rect. Round 1 turned every one of these into a floating
+   * badge, which is what wrecked all three controls.
+   */
+  embeddedIn?: string | null;
+  /** The child's rect as fractions of the parent's box: preserved verbatim. */
+  embeddedRect?: { fx: number; fy: number; fw: number; fh: number } | null;
 }
+
+/**
+ * Whether the scene's dominant visual is a CANVAS TREATMENT or a PLACED object.
+ * Round 1 called this underivable from structure and it is — from *structure*.
+ * It is not underivable from the plan: the head's own authored hero area says
+ * so exactly (≥85% of the frame is the same threshold every other module uses
+ * for a canvas treatment). Passed in explicitly rather than guessed, because
+ * guessing it from the register alone is what converted a centred checkout
+ * modal into a full-bleed wash. `null` = unknown → treat as PLACED and preserve
+ * the head's hero scale; never inflate on an absent signal.
+ */
+export type HeroTreatment = "bleed" | "placed" | null;
 
 /**
  * Which authority the allocator takes from the model.
@@ -149,6 +180,8 @@ export interface AllocInput {
   register?: string;
   elements: AllocElementInput[];
   mode?: AllocMode;
+  /** See HeroTreatment. Absent → "placed" (never inflate on an absent signal). */
+  heroTreatment?: HeroTreatment;
 }
 
 export type SlotLayer = "base" | "content" | "overlay" | "chrome";
@@ -277,14 +310,49 @@ const DEFAULT_BOUND: SizeBound = { minW: 120, minH: 80, maxAreaFrac: 0.6, minFoc
 export const boundsFor = (role: string): SizeBound => SIZE_BOUNDS[role] ?? DEFAULT_BOUND;
 
 /**
- * Clamp a box's SIZE into its role's legal band, scaled about the box's own
- * centre so the composition's balance is preserved while the size changes.
+ * A TEXT BOX MAY NOT EXCEED WHAT ITS CONTENT NEEDS BY MORE THAN THIS FACTOR.
+ * Round 1 blew a 320×200 corner of copy up to 795×648 — 8× — purely from a role
+ * prior. A box enlarged past its content without a matching capacity budget
+ * paints a large sparse panel, which is strictly worse than the small full one
+ * it replaced. 2.0 leaves genuine breathing room (the head's own authored boxes
+ * measure 1.1–1.9× their painted ink across the 10 measured scenes) while
+ * making an 8× inflation impossible.
+ */
+export const COPY_AREA_CEILING = 2.0;
+
+/**
+ * How far a hero may depart from the head's authored SCALE. There is no
+ * content-derived hero size available from anything on disk — painted area
+ * equals authored area in all 10 measured scenes, and interior-item count does
+ * not correlate with it — so the head's own area is the only honest anchor.
+ * Growth is still allowed up to the focal floor, which is what rescues a
+ * genuinely adrift focal object (flags-notion s0's hero is 9.3% of frame).
+ */
+export const HERO_GROWTH_CAP = 1.6;
+export const HERO_SHRINK_CAP = 1.35;
+
+/**
+ * Clamp a box's SIZE into its legal band, scaled about the box's own centre so
+ * the composition's balance is preserved while the size changes. Three bands
+ * apply, tightest wins:
+ *   - the role band (legibility floor, area ceiling);
+ *   - the CONTENT band, when a measured/derived extent is known: at least what
+ *     the content needs, at most COPY_AREA_CEILING × that, for text;
+ *   - the AUTHORED SCALE band for a hero (see HERO_GROWTH_CAP).
  * `isFocal` engages the minimum-area floor — the "small element adrift" fix.
  */
-const clampSize = (b: Rect, role: string, C: Rect, isFocal: boolean): Rect => {
+const clampSize = (
+  b: Rect,
+  role: string,
+  C: Rect,
+  isFocal: boolean,
+  el?: AllocElementInput,
+): Rect => {
   const bound = boundsFor(role);
   const cA = area(C);
   let { w, h } = b;
+  const extent = el?.contentExtent ?? null;
+  const isText = role === "copy";
   // Floors first (a rank-1 element must command real area), ceilings second, so
   // a role whose floor and ceiling conflict resolves in favour of the ceiling.
   const scaleTo = (target: number) => {
@@ -294,6 +362,27 @@ const clampSize = (b: Rect, role: string, C: Rect, isFocal: boolean): Rect => {
   };
   if (isFocal && w * h < bound.minFocalAreaFrac * cA) scaleTo(bound.minFocalAreaFrac * cA);
   if (w * h > bound.maxAreaFrac * cA) scaleTo(bound.maxAreaFrac * cA);
+
+  // CONTENT BAND — text only. A text box must hold its content, and must not
+  // exceed it by more than the ceiling. Applied AFTER the role band so a
+  // content-driven bound always wins over a role prior.
+  if (isText && extent && extent.neededArea > 0) {
+    if (w * h < extent.neededArea) scaleTo(extent.neededArea);
+    if (w * h > COPY_AREA_CEILING * extent.neededArea) scaleTo(COPY_AREA_CEILING * extent.neededArea);
+    // Never narrower than the longest unbreakable word.
+    if (w < extent.minW) w = extent.minW;
+  }
+
+  // AUTHORED-SCALE BAND — non-text (heroes). Growth is bounded, but never below
+  // the focal floor: a genuinely adrift focal object is still rescued.
+  if (!isText && el?.authoredSize && el.authoredSize.w > 0 && el.authoredSize.h > 0) {
+    const authored = el.authoredSize.w * el.authoredSize.h;
+    const ceiling = Math.max(HERO_GROWTH_CAP * authored, isFocal ? bound.minFocalAreaFrac * cA : 0);
+    const floorA = authored / HERO_SHRINK_CAP;
+    if (w * h > ceiling) scaleTo(ceiling);
+    if (w * h < floorA) scaleTo(floorA);
+  }
+
   w = Math.max(w, bound.minW);
   h = Math.max(h, bound.minH);
   w = Math.min(w, C.w);
@@ -373,13 +462,20 @@ const SHAPES: Record<string, Shape> = {
       { name: "column-right", f: { x: 0.59, y: 0.17, w: 0.41, h: 0.62 } },
     ],
   },
-  /** The stat register's soft split: both columns vertically centred, the
-   *  metric column tall and airy rather than a full-height panel. */
+  /**
+   * The stat register: a wide metric band high in frame with its support
+   * beneath. This was FIRST authored as a left/right split, and the corpus
+   * refuted it — a dominant column pinned to the left edge produced the worst
+   * ink centroids in the whole run (p5a-off s3 head 0.060 → allocator 0.332),
+   * while the head puts a stat counter across the middle of the frame
+   * (flags-notion s3 hero at x 460..1460 on a 1920 canvas). A stat is read, not
+   * compared side-by-side.
+   */
   "stat-band": {
     id: "stat-band",
     slots: [
-      { name: "focal", f: { x: 0.0, y: 0.09, w: 0.48, h: 0.8 } },
-      { name: "support", f: { x: 0.52, y: 0.22, w: 0.48, h: 0.54 } },
+      { name: "focal", f: { x: 0.06, y: 0.06, w: 0.88, h: 0.5 } },
+      { name: "support", f: { x: 0.19, y: 0.62, w: 0.62, h: 0.36 } },
     ],
   },
   /** Tall list column beside a squarer supporting panel. */
@@ -409,13 +505,14 @@ const SHAPES: Record<string, Shape> = {
       { name: "strip-base", f: { x: 0.14, y: 0.81, w: 0.72, h: 0.19 } },
     ],
   },
-  /** Two columns plus a full-width footing strip. */
+  /** Three centred bands: the metric, its caption row, then a footing strip.
+   *  Same correction as `stat-band` — the left/right original centroid-failed. */
   "stat-band-strip": {
     id: "stat-band-strip",
     slots: [
-      { name: "focal", f: { x: 0.0, y: 0.0, w: 0.48, h: 0.7 } },
-      { name: "support", f: { x: 0.52, y: 0.06, w: 0.48, h: 0.58 } },
-      { name: "strip-base", f: { x: 0.04, y: 0.76, w: 0.92, h: 0.24 } },
+      { name: "focal", f: { x: 0.1, y: 0.0, w: 0.8, h: 0.42 } },
+      { name: "support", f: { x: 0.1, y: 0.48, w: 0.8, h: 0.28 } },
+      { name: "strip-base", f: { x: 0.06, y: 0.8, w: 0.88, h: 0.2 } },
     ],
   },
   /** List column left; the right side stacks focal over a secondary panel. */
@@ -463,6 +560,27 @@ const SHAPES: Record<string, Shape> = {
     ],
   },
 
+  /**
+   * ONE DOMINANT PLACED OBJECT with a whisper of copy in a corner — the
+   * composition `p3-cycle8-razorpay s2` actually has (a 1080×920 checkout modal
+   * floating dead-centre, 320×200 of copy in the lower-left). Round 1 had no
+   * shape for this and sent every full-bleed REGISTER to a canvas bleed, which
+   * is what destroyed that control. It is chosen when the register says
+   * full-bleed but the hero treatment says PLACED.
+   */
+  "dominant-center-corner-copy": {
+    id: "dominant-center-corner-copy",
+    slots: [
+      // The focal object is centred on the FRAME's axis (x 0.17 + w 0.66 → a
+      // centre of exactly 0.5), because that centring is the composition: the
+      // head put razorpay's modal at x 420..1500 on a 1920 frame, dead centre.
+      // An off-axis focal here measured a 2.4× worse ink centroid.
+      { name: "focal", f: { x: 0.17, y: 0.0, w: 0.66, h: 0.78 } },
+      { name: "corner-copy", f: { x: 0.0, y: 0.82, w: 0.42, h: 0.18 } },
+      { name: "corner-second", f: { x: 0.5, y: 0.82, w: 0.5, h: 0.18 } },
+    ],
+  },
+
   // ── Full-bleed treatments (declared layering) ─────────────────────────────
   /** The canvas IS the focal object; copy sits in a lower-left inset. */
   "full-bleed-corner-copy": {
@@ -499,6 +617,8 @@ const PORTRAIT_SUBSTITUTE: Record<string, string> = {
   "stat-band-strip": "centered-focal-base",
   "list-grid-stack": "centered-focal-base",
   "editorial-quad": "column-plus-stack",
+  // An 18%-wide corner of copy is 175px at 1080 — below the legibility floor.
+  "dominant-center-corner-copy": "centered-focal-base",
 };
 
 // ─── The chooser ────────────────────────────────────────────────────────────
@@ -517,6 +637,8 @@ export const chooseShape = (
    *  of the chooser's signals, so this must not be pre-sorted by focal rank. */
   bodies: AllocElementInput[],
   aspect: Aspect,
+  /** See HeroTreatment. Absent → PLACED: never assume a canvas bleed. */
+  heroTreatment: HeroTreatment = null,
 ): string => {
   const n = bodies.length;
   const focal = bodies
@@ -535,10 +657,16 @@ export const chooseShape = (
   if (n <= 1) {
     id = register === "full-bleed" ? "full-bleed-center-copy" : "poster-center";
   } else if (register === "full-bleed" && n <= 3) {
+    // THE ROUND-1 BUG, FIXED. The register alone does NOT mean the visual is a
+    // canvas treatment — 7 of the 18 stored full-bleed scenes place a bounded
+    // hero (razorpay s2 at 48% of frame, rappi s2 at 22%). Sending those to a
+    // canvas bleed is what destroyed the razorpay control. The treatment is now
+    // an explicit input, and an ABSENT signal resolves to PLACED.
+    if (heroTreatment === "bleed") id = focalIsCopy ? "full-bleed-center-copy" : "full-bleed-corner-copy";
+    else id = n <= 1 ? "poster-center" : "dominant-center-corner-copy";
     // A canvas treatment PLUS four more placed elements is not a full-bleed
     // composition — it is a dashboard. Over 3 bodies, fall through to the
     // placed families below, which have enough slots to keep every box legible.
-    id = focalIsCopy ? "full-bleed-center-copy" : "full-bleed-corner-copy";
   } else if (n === 2) {
     if (register === "split") id = heroBeforeCopy ? "split-mock-left" : "split-mock-right";
     else if (register === "stat") id = "stat-band";
@@ -559,6 +687,14 @@ export const chooseShape = (
   }
 
   if (aspect === "9:16" && PORTRAIT_SUBSTITUTE[id]) id = PORTRAIT_SUBSTITUTE[id];
+  // The narrow-corner shape needs the landscape's width for its 18% copy
+  // column; on BOTH square and portrait canvases that column is ~175px, under
+  // the copy legibility floor. Substituted at any non-landscape aspect.
+  // Count-aware: substituting a 3-slot shape for a 2-body scene leaves an
+  // unused slot, and an unused slot IS a dead region (27.8% at 1:1).
+  if (aspect !== "16:9" && id === "dominant-center-corner-copy") {
+    id = n <= 2 ? "centered-focal" : "centered-focal-base";
+  }
   return id;
 };
 
@@ -720,7 +856,7 @@ const relieveCrowding = (slots: AllocSlot[], gutter: number): void => {
   }
 };
 
-const absorbVoid = (slots: AllocSlot[], C: Rect, gutter: number): void => {
+const absorbVoid = (slots: AllocSlot[], C: Rect, gutter: number, canGrow?: (s: AllocSlot) => boolean): void => {
   const content = slots.filter((s) => s.layer === "content");
   if (content.length === 0) return;
   // Requirement 3 outranks requirement 2: absorbing a void must never let a
@@ -733,6 +869,7 @@ const absorbVoid = (slots: AllocSlot[], C: Rect, gutter: number): void => {
   // Which slot shares the longest edge with the void, and on which side?
   let best: { s: AllocSlot; axis: "x" | "y"; dir: 1 | -1; shared: number } | null = null;
   for (const s of content) {
+    if (canGrow && !canGrow(s)) continue;
     const b = s.bounds;
     const overlapX = Math.min(b.x + b.w, v.x + v.w) - Math.max(b.x, v.x);
     const overlapY = Math.min(b.y + b.h, v.y + v.h) - Math.max(b.y, v.y);
@@ -770,7 +907,12 @@ const absorbVoid = (slots: AllocSlot[], C: Rect, gutter: number): void => {
   const escaped = b.x < C.x || b.y < C.y || b.x + b.w > C.x + C.w || b.y + b.h > C.y + C.h;
   const collided = content.some((o) => o !== best!.s && rectsOverlap(o.bounds, b));
   const stoleFocal = best.s !== focalSlot && area(b) > focalArea;
-  if (escaped || collided || stoleFocal) Object.assign(b, before);
+  // Absorption must respect the size bands too — growing the focal object past
+  // a text role's ceiling reintroduces exactly the inflated-copy-panel defect
+  // the ceiling exists to prevent.
+  const bound = boundsFor(best.s.role);
+  const overRole = area(b) > bound.maxAreaFrac * area(C);
+  if (escaped || collided || stoleFocal || overRole) Object.assign(b, before);
 };
 
 /**
@@ -995,9 +1137,15 @@ export const allocateLayout = (input: AllocInput, opts?: { forceShape?: string; 
 
   const atmos = input.elements.filter((e) => e.role === "atmosphere");
   const chrome = input.elements.filter((e) => e.role === "chrome");
-  const motifs = input.elements.filter((e) => e.role === "throughline");
+  // EMBEDDED CHILDREN are not bodies. The head placed them inside another
+  // element on purpose (71 of 95 stored hero+motif scenes); they are positioned
+  // relative to their parent's final box, after the parent is placed.
+  const isEmbedded = (e: AllocElementInput): boolean =>
+    !!e.embeddedIn && !!e.embeddedRect && e.embeddedIn !== e.id;
+  const embedded = input.elements.filter(isEmbedded);
+  const motifs = input.elements.filter((e) => e.role === "throughline" && !isEmbedded(e));
   const bodiesRaw = input.elements.filter(
-    (e) => e.role !== "atmosphere" && e.role !== "chrome" && e.role !== "throughline",
+    (e) => e.role !== "atmosphere" && e.role !== "chrome" && e.role !== "throughline" && !isEmbedded(e),
   );
 
   // Focal order: rank 1 first, unranked last, input order as the stable
@@ -1011,7 +1159,7 @@ export const allocateLayout = (input: AllocInput, opts?: { forceShape?: string; 
   // element count + roles. The chooser reads AUTHOR order (reading order is a
   // signal); the SLOT mapping below reads focal order. Two different orderings,
   // deliberately.
-  const shapeId = opts?.forceShape ?? chooseShape(register, bodiesRaw, aspect);
+  const shapeId = opts?.forceShape ?? chooseShape(register, bodiesRaw, aspect, input.heroTreatment ?? null);
   const shape = SHAPES[shapeId];
   if (!shape) throw new Error(`allocate-layout: unknown shape "${shapeId}"`);
 
@@ -1081,7 +1229,19 @@ export const allocateLayout = (input: AllocInput, opts?: { forceShape?: string; 
       }
       break;
     }
-    const bounds = sSpec.bleed ? { x: 0, y: 0, w: W, h: H } : place(C, sSpec.f);
+    // A BLEED SLOT KEEPS THE HEAD'S AUTHORED SCALE when one exists. Forcing
+    // (0,0,W,H) discarded final-checkr s2's deliberate 40px inset — the
+    // dashboard is a single app shell sitting IN the frame, not running off it.
+    const bleedBox = (): Rect => {
+      const a = el.authoredSize;
+      if (a && a.w > 0 && a.h > 0 && (a.w < W || a.h < H)) {
+        const w = Math.min(a.w, W);
+        const h = Math.min(a.h, H);
+        return { x: Math.round((W - w) / 2), y: Math.round((H - h) / 2), w, h };
+      }
+      return { x: 0, y: 0, w: W, h: H };
+    };
+    const bounds = sSpec.bleed ? bleedBox() : place(C, sSpec.f);
     const s: AllocSlot = {
       id: el.id,
       role: el.role,
@@ -1104,11 +1264,11 @@ export const allocateLayout = (input: AllocInput, opts?: { forceShape?: string; 
   // STAGE 2 — ALLOCATE AREA WITHIN THE DISTRIBUTION. This decides SIZE: the
   // shape's fractions give the focal object the dominant share, and the role
   // bounds keep every box legible and stop any one element crowding the frame.
-  if (mode === "resize") {
+  const applySizeBands = (): void => {
     for (const s of placed) {
       if (s.layer !== "content") continue;
       const isFocal = s.slot === "focal" || s.slot.startsWith("focal/");
-      const sized = clampSize(s.bounds, s.role, C, isFocal);
+      const sized = clampSize(s.bounds, s.role, C, isFocal, input.elements.find((e) => e.id === s.id));
       // A size clamp must never manufacture a collision or leave the frame.
       const trial = {
         x: clamp(sized.x, C.x, C.x + C.w - sized.w),
@@ -1119,7 +1279,8 @@ export const allocateLayout = (input: AllocInput, opts?: { forceShape?: string; 
       const collides = placed.some((o) => o !== s && o.layer === "content" && rectsOverlap(o.bounds, trial));
       if (!collides && trial.w > 0 && trial.h > 0) s.bounds = trial;
     }
-  }
+  };
+  if (mode === "resize") applySizeBands();
 
   if (mode === "reposition") {
     const sizeOf = new Map<string, { w: number; h: number }>();
@@ -1132,8 +1293,24 @@ export const allocateLayout = (input: AllocInput, opts?: { forceShape?: string; 
   } else {
     // REPAIR RULE — local dead space is absorbed by the NEIGHBOUR that touches
     // it; a subordinate crowding the focal object is SHRUNK, not moved.
-    absorbVoid(slots, C, gutter);
+    // A TEXT BOX WHOSE CONTENT NEED IS KNOWN IS NOT AN ABSORBER. Dead space is
+    // absorbed by the visual next to it, never by inflating a copy panel past
+    // what its strings need — growing it and then re-clamping to the ceiling
+    // also DRIFTS it off its slot anchor (final-checkr s2's copy walked from
+    // the dashboard's quiet lower-left margin up to mid-left).
+    absorbVoid(slots, C, gutter, (s) => {
+      if (s.role !== "copy") return true;
+      const el = input.elements.find((e) => e.id === s.id);
+      return !(el?.contentExtent && el.contentExtent.neededArea > 0);
+    });
     relieveCrowding(slots, gutter);
+    // RE-APPLY THE SIZE BANDS. `absorbVoid` grows a box into adjacent dead
+    // space, and its own guards only knew about the ROLE ceiling — it grew
+    // final-checkr s2's copy from the shape's 795×375 to 795×648, blowing
+    // through the CONTENT ceiling and reproducing the exact inflated-panel
+    // defect this round exists to fix. A second banding pass catches it; a
+    // shrink can never introduce a collision.
+    applySizeBands();
 
     // REPAIR RULE — STRUCTURAL dead space (a large void REMOTE from every
     // element) means the distribution is wrong. Re-pick the shape and re-run
@@ -1171,6 +1348,45 @@ export const allocateLayout = (input: AllocInput, opts?: { forceShape?: string; 
       overlaps = placed.filter((s) => rectsOverlap(s.bounds, bounds)).map((s) => s.id);
     }
     const s: AllocSlot = { id: m.id, role: m.role, bounds, layer: "content", allowedOverlaps: overlaps, slot: "motif" };
+    placed.push(s);
+    slots.push(s);
+  }
+
+  // EMBEDDED CHILDREN — placed inside the parent's FINAL box at the relative
+  // rect the head authored, so a status chip in a card header stays a status
+  // chip in a card header. The overlap with the parent is DECLARED (it is the
+  // whole point), and the child inherits the parent's layer for stacking.
+  for (const child of embedded) {
+    const parent = slots.find((p) => p.id === child.embeddedIn);
+    const r = child.embeddedRect!;
+    const box: Rect = parent
+      ? {
+          x: Math.round(parent.bounds.x + r.fx * parent.bounds.w),
+          y: Math.round(parent.bounds.y + r.fy * parent.bounds.h),
+          w: Math.max(8, Math.round(r.fw * parent.bounds.w)),
+          h: Math.max(8, Math.round(r.fh * parent.bounds.h)),
+        }
+      : { x: C.x, y: C.y, w: throughlineSize(aspect), h: throughlineSize(aspect) };
+    // A child of a BLEED parent inherits the parent's overlap declarations. A
+    // mark painted inside the canvas treatment IS part of the canvas treatment,
+    // and everything that may sit over the canvas may sit over the mark — which
+    // is exactly what the head authored (fullpipe-fuse s0 puts a 300×44 motif
+    // at y=940 under a copy block that overlays the same full-bleed hero).
+    // Without this the child collides with a re-placed sibling and throws.
+    const inheritsBleed = parent?.layer === "base";
+    const s: AllocSlot = {
+      id: child.id,
+      role: child.role,
+      bounds: box,
+      layer: "content",
+      allowedOverlaps: parent
+        ? inheritsBleed
+          ? [parent.id, ...slots.filter((o) => o.id !== child.id && o.id !== parent.id).map((o) => o.id)]
+          : [parent.id]
+        : [],
+      slot: parent ? `embedded:${parent.id}` : "motif",
+    };
+    if (parent) parent.allowedOverlaps = [...parent.allowedOverlaps, child.id];
     placed.push(s);
     slots.push(s);
   }

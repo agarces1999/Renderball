@@ -25,6 +25,9 @@ import {
   largestFreeRect,
   contentWeight,
   SIZE_BOUNDS,
+  COPY_AREA_CEILING,
+  HERO_GROWTH_CAP,
+  HERO_SHRINK_CAP,
   type Aspect,
   type AllocElementInput,
   type AllocInput,
@@ -731,6 +734,199 @@ check("repair: a structurally-dead distribution is RE-PICKED, not patched", () =
     { forceShape: "poster-center" },
   );
   assert(forced.shape === "poster-center" && forced.repicked === true, "a forced shape must be honoured and flagged");
+});
+
+// ─── 10. The two inputs round 1 lacked ──────────────────────────────────────
+
+check("hero treatment: an ABSENT signal never inflates a placed hero to a bleed", () => {
+  const els = [
+    el("atmosphere", "atmosphere", null),
+    el("hero", "hero", 1, { interiorCount: 7, authoredSize: { w: 1080, h: 920 } }),
+    el("copy", "copy", 2, { textChars: 170, authoredSize: { w: 320, h: 200 } }),
+  ];
+  for (const t of [undefined, null, "placed" as const]) {
+    const alloc = allocateLayout({ aspect: "16:9", register: "full-bleed", heroTreatment: t, elements: els });
+    const hero = alloc.slots.find((x) => x.id === "hero")!;
+    assert(hero.layer === "content", `treatment ${String(t)}: a placed hero must not become a canvas layer`);
+    assert(
+      alloc.shape === "dominant-center-corner-copy",
+      `treatment ${String(t)}: expected the placed family, got ${alloc.shape}`,
+    );
+  }
+});
+
+check("hero treatment: an explicit BLEED signal does produce a canvas treatment", () => {
+  const alloc = allocateLayout({
+    aspect: "16:9",
+    register: "full-bleed",
+    heroTreatment: "bleed",
+    elements: [
+      el("atmosphere", "atmosphere", null),
+      el("hero", "hero", 1, { interiorCount: 7, authoredSize: { w: 1920, h: 1080 } }),
+      el("copy", "copy", 2, { textChars: 170 }),
+    ],
+  });
+  const hero = alloc.slots.find((x) => x.id === "hero")!;
+  assert(hero.layer === "base", "an explicit bleed hero is the canvas layer");
+  assert(hero.bounds.w === 1920 && hero.bounds.h === 1080, "a full-canvas authored bleed stays full-canvas");
+});
+
+check("hero treatment: a bleed hero KEEPS the head's deliberate inset margin", () => {
+  const alloc = allocateLayout({
+    aspect: "16:9",
+    register: "full-bleed",
+    heroTreatment: "bleed",
+    elements: [
+      el("hero", "hero", 1, { interiorCount: 7, authoredSize: { w: 1840, h: 1000 } }),
+      el("copy", "copy", 2, { textChars: 150 }),
+    ],
+  });
+  const hero = alloc.slots.find((x) => x.id === "hero")!;
+  assert(
+    hero.bounds.w === 1840 && hero.bounds.h === 1000 && hero.bounds.x === 40 && hero.bounds.y === 40,
+    `final-checkr's 40px inset must survive, got ${JSON.stringify(hero.bounds)}`,
+  );
+});
+
+check("hero scale: the authored area anchors growth, so a healthy hero is not ballooned", () => {
+  const authored = { w: 1080, h: 920 };
+  const alloc = allocateLayout({
+    aspect: "16:9",
+    register: "full-bleed",
+    heroTreatment: "placed",
+    elements: [
+      el("hero", "hero", 1, { interiorCount: 7, authoredSize: authored }),
+      el("copy", "copy", 2, { textChars: 170, authoredSize: { w: 320, h: 200 } }),
+    ],
+  });
+  const hero = alloc.slots.find((x) => x.id === "hero")!;
+  const ratio = area(hero.bounds) / (authored.w * authored.h);
+  assert(ratio <= HERO_GROWTH_CAP + 0.01, `hero grew ${ratio.toFixed(2)}× — cap is ${HERO_GROWTH_CAP}`);
+  assert(ratio >= 1 / HERO_SHRINK_CAP - 0.01, `hero shrank to ${ratio.toFixed(2)}× — floor is 1/${HERO_SHRINK_CAP}`);
+});
+
+check("hero scale: an ADRIFT focal object is still rescued past the growth cap", () => {
+  // flags-notion s0's shape: a 600×320 card as the rank-1 object, 9% of frame.
+  const authored = { w: 600, h: 320 };
+  const alloc = allocateLayout({
+    aspect: "16:9",
+    register: "centered",
+    elements: [
+      el("hero", "hero", 1, { interiorCount: 8, authoredSize: authored }),
+      el("copy", "copy", 2, { textChars: 180, authoredSize: { w: 1300, h: 210 } }),
+    ],
+  });
+  const hero = alloc.slots.find((x) => x.id === "hero")!;
+  const C = contentRect("16:9");
+  assert(
+    area(hero.bounds) >= SIZE_BOUNDS.hero.minFocalAreaFrac * area(C) * 0.995,
+    `an adrift focal object must reach the focal floor, got ${(area(hero.bounds) / area(C)).toFixed(3)}`,
+  );
+});
+
+check("copy ceiling: a text box may not exceed its content's need by more than the factor", () => {
+  const extent = { neededArea: 64000, naturalW: 320, naturalH: 200, minW: 200, source: "derived" };
+  const alloc = allocateLayout({
+    aspect: "16:9",
+    register: "split",
+    elements: [
+      el("hero", "hero", 1, { interiorCount: 7, authoredSize: { w: 900, h: 800 } }),
+      el("copy", "copy", 2, { textChars: 120, contentExtent: extent, authoredSize: { w: 320, h: 200 } }),
+    ],
+  });
+  const copy = alloc.slots.find((x) => x.id === "copy")!;
+  assert(
+    area(copy.bounds) <= COPY_AREA_CEILING * extent.neededArea * 1.02,
+    `copy claimed ${area(copy.bounds)} against a ceiling of ${COPY_AREA_CEILING * extent.neededArea}`,
+  );
+});
+
+check("copy ceiling: a text box is never SMALLER than its content needs", () => {
+  const extent = { neededArea: 300000, naturalW: 690, naturalH: 435, minW: 400, source: "derived" };
+  const alloc = allocateLayout({
+    aspect: "16:9",
+    register: "centered",
+    elements: [
+      el("hero", "hero", 1, { interiorCount: 9, authoredSize: { w: 1200, h: 700 } }),
+      el("copy", "copy", 2, { textChars: 400, contentExtent: extent }),
+    ],
+  });
+  const copy = alloc.slots.find((x) => x.id === "copy")!;
+  assert(area(copy.bounds) >= extent.neededArea * 0.98, `copy ${area(copy.bounds)} is under its need ${extent.neededArea}`);
+  assert(copy.bounds.w >= extent.minW, `copy width ${copy.bounds.w} fractures its longest word (${extent.minW})`);
+});
+
+check("copy ceiling: void absorption cannot blow through it", () => {
+  // A shape with room to grow into, plus a tiny content need: the absorption
+  // pass must leave the text box alone (final-checkr s2's regression).
+  const extent = { neededArea: 40000, naturalW: 300, naturalH: 133, minW: 250, source: "derived" };
+  const alloc = allocateLayout({
+    aspect: "16:9",
+    register: "centered",
+    elements: [
+      el("hero", "hero", 1, { interiorCount: 6, authoredSize: { w: 700, h: 400 } }),
+      el("copy", "copy", 2, { textChars: 60, contentExtent: extent }),
+    ],
+  });
+  const copy = alloc.slots.find((x) => x.id === "copy")!;
+  assert(
+    area(copy.bounds) <= COPY_AREA_CEILING * extent.neededArea * 1.02,
+    `absorption inflated copy to ${area(copy.bounds)} past the ${COPY_AREA_CEILING}× ceiling`,
+  );
+});
+
+check("embedded motif: a child stays INSIDE its parent at the same relative rect", () => {
+  const alloc = allocateLayout({
+    aspect: "16:9",
+    register: "split",
+    heroTreatment: "placed",
+    elements: [
+      el("hero", "hero", 1, { interiorCount: 8, authoredSize: { w: 920, h: 920 } }),
+      el("copy", "copy", 2, { textChars: 200, authoredSize: { w: 800, h: 666 } }),
+      el("throughline", "throughline", 3, {
+        authoredSize: { w: 130, h: 34 },
+        embeddedIn: "hero",
+        // The chip sits ~28% across and ~11% down the workspace panel.
+        embeddedRect: { fx: 0.283, fy: 0.109, fw: 0.141, fh: 0.037 },
+      }),
+    ],
+  });
+  const hero = alloc.slots.find((x) => x.id === "hero")!;
+  const chip = alloc.slots.find((x) => x.id === "throughline")!;
+  assert(chip.slot === "embedded:hero", `expected an embedded slot, got "${chip.slot}"`);
+  const inside =
+    chip.bounds.x >= hero.bounds.x &&
+    chip.bounds.y >= hero.bounds.y &&
+    chip.bounds.x + chip.bounds.w <= hero.bounds.x + hero.bounds.w + 1 &&
+    chip.bounds.y + chip.bounds.h <= hero.bounds.y + hero.bounds.h + 1;
+  assert(inside, `the chip escaped its parent: ${JSON.stringify(chip.bounds)} vs ${JSON.stringify(hero.bounds)}`);
+  // Relative position preserved to within a rounding px.
+  const fx = (chip.bounds.x - hero.bounds.x) / hero.bounds.w;
+  assert(Math.abs(fx - 0.283) < 0.01, `relative x drifted to ${fx.toFixed(3)}`);
+  assert(area(chip.bounds) < 0.05 * area(hero.bounds), "an embedded chip must stay a chip, not become a badge");
+});
+
+check("embedded motif: the overlap with its parent is DECLARED, not a defect", () => {
+  const alloc = allocateLayout({
+    aspect: "16:9",
+    register: "centered",
+    elements: [
+      el("hero", "hero", 1, { interiorCount: 7, authoredSize: { w: 800, h: 600 } }),
+      el("copy", "copy", 2, { textChars: 150 }),
+      el("throughline", "throughline", 3, {
+        authoredSize: { w: 64, h: 64 },
+        embeddedIn: "hero",
+        embeddedRect: { fx: 0.5, fy: 0.2, fw: 0.08, fh: 0.1 },
+      }),
+    ],
+  });
+  const sc = scoreLayout(
+    alloc.slots
+      .filter((x) => x.role !== "atmosphere" && x.layer !== "chrome")
+      .map((x) => ({ id: x.id, role: x.role, bounds: x.bounds, allowedOverlaps: x.allowedOverlaps })),
+    "16:9",
+  );
+  assert(sc.overlaps === 0, `an embedded child's overlap must be declared, got ${sc.overlaps}`);
 });
 
 for (const { name, fn } of checks) {

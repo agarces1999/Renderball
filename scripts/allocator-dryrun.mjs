@@ -50,6 +50,34 @@ const metricsFile = join(work, "layout-metrics.mjs");
 writeFileSync(metricsFile, mBundle.outputFiles[0].text);
 const { scoreLayout, SAFE } = await import(pathToFileURL(metricsFile).href);
 
+const ceBundle = await esbuild.build({
+  entryPoints: [join(process.cwd(), "lib/agents/content-extent.ts")],
+  bundle: true,
+  platform: "node",
+  format: "esm",
+  target: "node18",
+  packages: "external",
+  write: false,
+  logLevel: "silent",
+});
+const ceFile = join(work, "content-extent.mjs");
+writeFileSync(ceFile, ceBundle.outputFiles[0].text);
+const { copyExtent, measuredExtent, authoredExtent, NOMINAL_SCALE } = await import(pathToFileURL(ceFile).href);
+
+const tsBundle = await esbuild.build({
+  entryPoints: [join(process.cwd(), "lib/render/type-scale.ts")],
+  bundle: true,
+  platform: "node",
+  format: "esm",
+  target: "node18",
+  packages: "external",
+  write: false,
+  logLevel: "silent",
+});
+const tsFile = join(work, "type-scale.mjs");
+writeFileSync(tsFile, tsBundle.outputFiles[0].text);
+const { deriveTypeScale } = await import(pathToFileURL(tsFile).href);
+
 // ── Corpus discovery ────────────────────────────────────────────────────────
 const ROOT = join(process.cwd(), ".data", "dogfood");
 const readJson = (p) => {
@@ -76,6 +104,15 @@ const charsOf = (v) => {
   return String(v).length;
 };
 const itemsOf = (v) => (Array.isArray(v) ? v.length : 0);
+
+/** Flatten a scene.content field to the string that actually renders. */
+const flatten = (v) => {
+  if (v == null) return "";
+  if (typeof v === "string") return v;
+  if (Array.isArray(v)) return v.map(flatten).filter(Boolean).join("  ");
+  if (typeof v === "object") return Object.values(v).map(flatten).filter(Boolean).join(" ");
+  return String(v);
+};
 
 /** Read the measured painted sizes for a scene, keyed by role. */
 const measuredFor = (dir, sceneIx) => {
@@ -154,11 +191,121 @@ for (const dir of builds) {
     const headScore = headPlaced.length > 0 ? scoreLayout(headPlaced, aspect) : null;
 
     // ── ALLOCATOR side ────────────────────────────────────────────────────
+    //
+    // THE TWO INPUTS ROUND 1 LACKED, both extracted from what is already on
+    // disk.
+    //
+    // (1) HERO TREATMENT — bleed vs placed. Round 1 inferred it from the
+    //     register and destroyed the razorpay control. The head's OWN authored
+    //     hero area states it exactly (≥85% of the frame is the same threshold
+    //     every other module uses for a canvas treatment). Keyword-matching the
+    //     visual_concept was tried and measured first: it agrees with the
+    //     authored geometry on only 14 of 31 candidate scenes, because the
+    //     literal phrase "Full-bleed" appears in the register label echoed into
+    //     the concept text and "whole canvas" shows up in atmosphere prose. The
+    //     authored area is the honest signal. Absent → null → PLACED.
+    //
+    // (2) CONTENT EXTENT — a measured painted rect where one exists, otherwise
+    //     a capacity-derived extent from the REAL copy strings, otherwise the
+    //     head's authored box as a scale anchor for a hero (see
+    //     content-extent.ts for why a hero's need is not derivable at all).
+    const heroAuthored = ided.find((e) => e.role === "hero" && e.bounds)?.bounds ?? null;
+    const heroTreatment = heroAuthored
+      ? heroAuthored.w * heroAuthored.h >= 0.85 * 1920 * 1080
+        ? "bleed"
+        : "placed"
+      : null;
+
+    /**
+     * Which element (if any) the head deliberately EMBEDDED this one inside.
+     *
+     * Narrow on purpose. A first pass tested bare containment and it was wrong:
+     * a full-bleed hero contains the copy and the motif and everything else, so
+     * every bleed scene collapsed to a single body and the copy became a child
+     * of the canvas. Copy over a canvas treatment is DECLARED LAYERING, not
+     * embedding. The relation the 2026-07-18 throughline work actually
+     * identified is a small MOTIF sitting inside a larger visual — "the
+     * spinning Pending status ring embedded in the card mid-section" — so that
+     * is what this matches: motif-ish roles only, and small relative to their
+     * parent (checkr's ring is 0.2% of its hero, razorpay's button 12%,
+     * notion's chip 0.5%).
+     */
+    const EMBEDDABLE_ROLES = new Set(["throughline", "connector"]);
+    const MAX_CHILD_AREA_FRAC = 0.5;
+    const parentOf = (e) => {
+      if (!e.bounds || !EMBEDDABLE_ROLES.has(e.role)) return null;
+      let best = null;
+      for (const other of ided) {
+        if (other === e || !other.bounds || other.role === "atmosphere") continue;
+        const o = other.bounds;
+        const b = e.bounds;
+        const contained = b.x >= o.x && b.y >= o.y && b.x + b.w <= o.x + o.w && b.y + b.h <= o.y + o.h;
+        if (!contained) continue;
+        if (b.w * b.h > MAX_CHILD_AREA_FRAC * o.w * o.h) continue;
+        // Smallest containing element wins — the tightest real parent.
+        if (!best || o.w * o.h < best.bounds.w * best.bounds.h) best = other;
+      }
+      return best;
+    };
+
+    const sizeSources = [];
     const allocInput = {
       aspect,
       register: register ?? undefined,
+      heroTreatment,
       elements: ided.map((e) => {
         const owns = Array.isArray(e.ownsCopy) ? e.ownsCopy : [];
+
+        /** Measured > derived > authored > prior, and the choice is recorded.
+         *  Atmosphere and chrome are not content-sized (full-bleed base layer,
+         *  fixed bar) and are excluded from the accounting. */
+        const extentFor = (el, ownedFields) => {
+          if (el.role === "atmosphere" || el.role === "chrome") return null;
+          const m = measured?.[el._id];
+          if (m && el.role === "copy") {
+            sizeSources.push("measured");
+            return measuredExtent(m);
+          }
+          if (el.role === "copy" && content) {
+            const fields = ownedFields
+              .filter((f) => COPY_FIELDS.includes(f))
+              .map((f) => ({ name: f, text: flatten(content[f]) }))
+              .filter((f) => f.text.trim().length > 0);
+            if (fields.length > 0) {
+              sizeSources.push("derived");
+              // Ground the extent in the scale the emitter would really use.
+              // deriveTypeScale walks DOWN the ramp until the box can carry it,
+              // so a fixed nominal scale over-estimates small boxes badly
+              // (razorpay s2's 320×200 corner measured 4.83× its own area at
+              // the nominal step, and 1.0× at its derived step).
+              const scale = el.bounds
+                ? deriveTypeScale({ role: "copy", box: { w: el.bounds.w, h: el.bounds.h }, canvas: { w: 1920, h: 1080 } })
+                : NOMINAL_SCALE;
+              return copyExtent(fields, { w: 1920, h: 1080 }, { headlinePx: scale.headlinePx, bodyPx: scale.bodyPx });
+            }
+          }
+          if (el.bounds && el.bounds.w > 0 && el.bounds.h > 0) {
+            sizeSources.push("authored");
+            return authoredExtent(el.bounds);
+          }
+          sizeSources.push("prior");
+          return null;
+        };
+
+        // EMBEDDED CHILD: the head placed this fully inside a larger element.
+        const parent = parentOf(e);
+        const embed = parent
+          ? {
+              parentId: parent._id,
+              rect: {
+                fx: (e.bounds.x - parent.bounds.x) / parent.bounds.w,
+                fy: (e.bounds.y - parent.bounds.y) / parent.bounds.h,
+                fw: e.bounds.w / parent.bounds.w,
+                fh: e.bounds.h / parent.bounds.h,
+              },
+            }
+          : null;
+
         let textChars = 0;
         let itemCount = 0;
         if (content) {
@@ -177,6 +324,9 @@ for (const dir of builds) {
           interiorCount: Array.isArray(e.interior) ? e.interior.length : undefined,
           measured: measured?.[e._id] ?? null,
           authoredSize: e.bounds && e.bounds.w > 0 && e.bounds.h > 0 ? { w: e.bounds.w, h: e.bounds.h } : null,
+          contentExtent: extentFor(e, owns),
+          embeddedIn: embed?.parentId ?? null,
+          embeddedRect: embed?.rect ?? null,
         };
       }),
     };
@@ -247,6 +397,9 @@ for (const dir of builds) {
       frame,
       skipped: null,
       usedMeasured: !!measured,
+      sizeSources,
+      heroTreatment,
+      embeddedCount: allocInput.elements.filter((e) => e.embeddedIn).length,
       unplacedByHead: headScored.filter((e) => !e.bounds).map((e) => e.id),
       head: { elements: headScored, score: headScore },
       alloc: alloc ? { shape: alloc.shape, slots: alloc.slots, score: alloc.score, repicked: alloc.repicked, readingOrderKept: alloc.readingOrderKept } : null,
@@ -315,6 +468,18 @@ const summary = {
   allocOnly: scenes.filter((s) => !s.head?.score && s.alloc?.score).length,
   neither: scenes.filter((s) => !s.head?.score && !s.alloc?.score).length,
   measured: scenes.filter((s) => s.usedMeasured).length,
+  sizeSources: (() => {
+    const c = { measured: 0, derived: 0, authored: 0, prior: 0 };
+    for (const sc of scenes) for (const k of sc.sizeSources ?? []) c[k] = (c[k] ?? 0) + 1;
+    return c;
+  })(),
+  heroTreatments: (() => {
+    const c = { bleed: 0, placed: 0, unknown: 0 };
+    for (const sc of scenes) c[sc.heroTreatment ?? "unknown"]++;
+    return c;
+  })(),
+  embedded: scenes.reduce((a, sc) => a + (sc.embeddedCount ?? 0), 0),
+  embeddedScenes: scenes.filter((sc) => (sc.embeddedCount ?? 0) > 0).length,
   void: {
     headMean: mean(agg("head", (x) => x.largestVoid)),
     allocMean: mean(agg("alloc", (x) => x.largestVoid)),
@@ -407,6 +572,14 @@ row("…scenes affected", `${summary.overlaps.headScenes}/${summary.overlaps.hea
 row("reading order preserved", "n/a", `${summary.readingOrder.repoKept}/${summary.readingOrder.total}`, `${summary.readingOrder.allocKept}/${summary.readingOrder.total}`);
 row("coverage (context only)", pct(summary.coverage.headMean), pct(summary.coverage.repoMean), pct(summary.coverage.allocMean));
 console.log(`\nshape re-picked (structural void): ${summary.repicked} scenes · both arms ran on ${summary.threeWay} placeable scenes`);
+console.log(
+  `size sources (per element): measured ${summary.sizeSources.measured} · derived ${summary.sizeSources.derived} · ` +
+    `authored-anchor ${summary.sizeSources.authored} · role prior ${summary.sizeSources.prior}`,
+);
+console.log(
+  `hero treatment: bleed ${summary.heroTreatments.bleed} · placed ${summary.heroTreatments.placed} · unknown ${summary.heroTreatments.unknown}   ` +
+    `embedded children preserved: ${summary.embedded} across ${summary.embeddedScenes} scenes`,
+);
 console.log(`\ndistribution diversity: ${Object.keys(shapeCounts).length} distinct shapes emitted`);
 for (const [k, v] of Object.entries(shapeCounts).sort((a, b) => b[1] - a[1])) console.log(`  ${String(v).padStart(4)}  ${k}`);
 console.log(`\nby register:`);
@@ -423,6 +596,83 @@ for (const s of controlScenes) {
       `      overlaps  ${s.head.score.overlaps} (${s.head.score.overlapsExEmbedded} ex-motif) → repo ${s.repo?.score?.overlaps ?? "—"} → resize ${s.alloc.score.overlaps}\n` +
       `      artefact  ${s.treatment ? "YES — a canvas treatment is excluded, so void/centroid here are instrument artefacts" : "no"}`,
   );
+  for (const e of s.head.elements) {
+    if (!e.bounds) continue;
+    const a = s.alloc.slots.find((x) => x.id === e.id);
+    if (!a) continue;
+    const ha = e.bounds.w * e.bounds.h;
+    const aa = a.bounds.w * a.bounds.h;
+    console.log(
+      `      ${e.id.padEnd(12)} ${`${e.bounds.w}x${e.bounds.h}@${e.bounds.x},${e.bounds.y}`.padEnd(22)} -> ` +
+        `${`${a.bounds.w}x${a.bounds.h}@${a.bounds.x},${a.bounds.y}`.padEnd(22)} ${(aa / ha).toFixed(2)}x  ${a.slot}`,
+    );
+  }
+}
+// ── MEASURED-TRUTH CHECK ────────────────────────────────────────────────────
+//
+// Everything above scores DECLARED rects. The 10 scenes with a real
+// `rects-scene-N.json` let us ask what the same metrics say about what actually
+// PAINTED — and the answer materially changes the comparison, so it is computed
+// and reported rather than left as a caveat.
+const truth = [];
+for (const s of scenes) {
+  if (!s.usedMeasured || !s.head?.score || !s.alloc?.score) continue;
+  const p = join(ROOT, s.build, "_measure", `rects-scene-${s.ix}.json`);
+  const d = readJson(p);
+  if (!d?.pieces) continue;
+  const painted = [];
+  for (const e of s.head.elements) {
+    if (!e.bounds) continue;
+    const pc = d.pieces.find((x) => String(x.id).split(".").slice(1).join(".") === e.id);
+    if (pc?.painted?.w > 0) painted.push({ id: e.id, role: e.role, focalRank: e.focalRank, bounds: pc.painted });
+  }
+  if (painted.length === 0) continue;
+  const paintedScore = scoreLayout(painted, s.aspect);
+  // How much bigger is a DECLARED text box than the ink it holds? The head's
+  // ratio is the over-declaration; the allocator's is what the content-bounded
+  // sizing yields against that same measured ink.
+  const ratios = { head: [], alloc: [] };
+  for (const e of s.head.elements) {
+    if (e.role !== "copy" || !e.bounds) continue;
+    const pc = d.pieces.find((x) => String(x.id).split(".").slice(1).join(".") === e.id);
+    const ink = pc?.painted;
+    if (!(ink?.w > 0)) continue;
+    ratios.head.push((e.bounds.w * e.bounds.h) / (ink.w * ink.h));
+    const a = s.alloc.slots.find((x) => x.id === e.id);
+    if (a) ratios.alloc.push((a.bounds.w * a.bounds.h) / (ink.w * ink.h));
+  }
+  truth.push({ build: s.build, ix: s.ix, declared: s.head.score, painted: paintedScore, alloc: s.alloc.score, ratios });
+}
+if (truth.length > 0) {
+  const m = (xs) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : NaN);
+  console.log(`\nMEASURED-TRUTH CHECK — ${truth.length} scenes with real painted rects`);
+  console.log(`  the head's DECLARED boxes flatter it; here is the same scorer on what PAINTED:`);
+  for (const t of truth) {
+    console.log(
+      `  ${(t.build + " s" + t.ix).padEnd(24)} centroid ${num(t.declared.centroidOffset, 3)} declared -> ${num(t.painted.centroidOffset, 3)} PAINTED   ` +
+        `void ${pct(t.declared.largestVoid)} -> ${pct(t.painted.largestVoid)}`,
+    );
+  }
+  console.log(
+    `  MEAN  centroid ${num(m(truth.map((t) => t.declared.centroidOffset)), 3)} declared -> ${num(m(truth.map((t) => t.painted.centroidOffset)), 3)} painted` +
+      `   void ${pct(m(truth.map((t) => t.declared.largestVoid)))} -> ${pct(m(truth.map((t) => t.painted.largestVoid)))}`,
+  );
+  console.log(
+    `  copy box vs its own ink:  HEAD ${num(m(truth.flatMap((t) => t.ratios.head)), 2)}x   ALLOCATOR ${num(m(truth.flatMap((t) => t.ratios.alloc)), 2)}x`,
+  );
+}
+
+{
+  const worst = placeable
+    .filter((s) => s.alloc?.score)
+    .sort((a, b) => b.alloc.score.centroidOffset - a.alloc.score.centroidOffset)
+    .slice(0, 8);
+  console.log(`\nworst allocator centroid offsets:`);
+  for (const s of worst) {
+    console.log(
+      `  ${(s.build + " s" + s.ix).padEnd(34)} head ${num(s.head.score.centroidOffset, 3)} -> alloc ${num(s.alloc.score.centroidOffset, 3)}  shape ${s.alloc.shape}  n=${s.alloc.score.counted}`,
+    );
+  }
 }
 if (skipped.length) {
   console.log(`\nskipped/degraded (${skipped.length}):`);
@@ -636,6 +886,34 @@ the dashed red rect is the largest contiguous dead region, the defect this exper
 <div><span>scenes with real measured rects</span><strong>${summary.measured} / ${summary.scenes}</strong></div>
 </div>
 
+<p class="sub"><b>Read the numbers with these caveats.</b> (1) The allocator's <b>0 overlaps</b> is a TAUTOLOGY, not a
+result — disjointness is a construction invariant it asserts on every call, so the only informative overlap number is
+the head's. Of the head's ${summary.overlaps.head} raw overlaps, only <b>${summary.overlaps.headEx}</b> survive once a
+throughline motif fully embedded inside another element is treated as the deliberate layering the 2026-07-18 work
+showed it to be. (2) Void and centroid are aggregated over the <b>${summary.placeable} placeable</b> scenes only.
+<b>${summary.treatments}</b> scenes carry a canvas treatment (an element ≥85% of the frame); the scorer excludes those
+rects, so those scenes are scored on their small overlaid insets alone and report enormous voids that are artefacts of
+the instrument. (3) Every number here scores DECLARED rects — see the measured-truth check below, where both sides'
+defects turn out to be about twice as bad as the plans suggest.</p>
+
+<h2>Inputs the allocator is given</h2>
+<p class="sub">Round 1 sized every element from a role name and inferred bleed-vs-placed from the register. Both were
+wrong, and both were MISSING INPUTS rather than design flaws. This run supplies them from what is already on disk.</p>
+<table><thead><tr><th>input</th><th>count</th><th>what it is</th></tr></thead><tbody>
+<tr><td>size — measured</td><td>${summary.sizeSources.measured}</td><td>a real painted rect from <code>_measure/rects-scene-N.json</code>. Ground truth for text.</td></tr>
+<tr><td>size — derived</td><td>${summary.sizeSources.derived}</td><td>capacity-computed from the REAL copy strings, at the type scale <code>deriveTypeScale</code> picks for that box.</td></tr>
+<tr><td>size — authored anchor</td><td>${summary.sizeSources.authored}</td><td>the head's own box, used as a BOUNDED scale anchor. The only honest hero signal — see below.</td></tr>
+<tr><td>size — role prior</td><td>${summary.sizeSources.prior}</td><td>role name only. What round 1 used for everything.</td></tr>
+<tr><td>hero treatment</td><td>${summary.heroTreatments.bleed} bleed / ${summary.heroTreatments.placed} placed / ${summary.heroTreatments.unknown} unknown</td><td>from the head's authored hero area (≥85% of frame = a canvas treatment). Unknown resolves to PLACED — never inflate on an absent signal.</td></tr>
+<tr><td>embedded children</td><td>${summary.embedded} across ${summary.embeddedScenes} scenes</td><td>a motif the head placed INSIDE another element, kept there at the same relative rect instead of re-placed as a floating badge.</td></tr>
+</tbody></table>
+<p class="sub"><b>A hero's content size is NOT derivable, and more measuring will not change that.</b> In all 10 measured
+scenes the hero's painted area equals its authored area to the pixel — a diegetic element is mounted into its declared
+box and fills it, so the measurement returns the box, never the content's need. Interior-item count does not stand in
+for it either: 8 interior items appears at 0.093 of canvas AND at 0.408. That is why the allocator takes the head's
+hero SCALE as a bounded anchor rather than inventing one, and it is the sharpest limit on how much authority a solver
+can take here.</p>
+
 <h2>Metrics — head vs reposition-only vs reposition+resize</h2>
 <p class="sub">Two allocator arms. <b>REPOSITION</b> keeps the head's authored SIZE for every element and changes only where the
 box sits. <b>REPOSITION + RESIZE</b> takes both authorities. The gap between the two columns is the answer to
@@ -662,42 +940,50 @@ re-pick ladder is currently unexercised code.</p>
 
 <h2>Structural preservation on the three controls</h2>
 <p class="sub">The main way this experiment can produce a MISLEADING pass: eliminate voids and overlaps while scrambling
-what the regions mean in sequence. Metrics cannot see that, so it is stated here in words, with the boxes.</p>
-<table><thead><tr><th>control</th><th>head's structure</th><th>allocator's structure</th><th>verdict</th></tr></thead><tbody>
-<tr><td>flags-notion s2<br><span class="muted">split</span></td>
-<td>hero 920×920 left, copy 800×666 right; the throughline is a <b>130×34 status chip INSIDE the workspace card header</b>.</td>
-<td>hero 950×807 left, copy 708×647 right — the asymmetric split and the reading order survive. But the motif becomes a
-free-standing <b>200×200 badge in the top-right corner</b>, 8.9× its authored area.</td>
-<td><b class="ok">MOSTLY PRESERVED</b> — the split survives; the embedded motif does not.</td></tr>
-<tr><td>p3-cycle8-razorpay s2<br><span class="muted">full-bleed</span></td>
-<td>a checkout modal <b>1080×920 floating dead-centre</b> (47.9% of frame) with the payment-button motif embedded inside
-it and a whisper of copy, 320×200, in the lower-left corner.</td>
-<td>hero becomes the <b>whole canvas</b>; copy becomes a <b>795×648 panel</b> — 8× its authored area — parked mid-left;
-the motif becomes a floating 200×200 square.</td>
-<td><b class="bad">DESTROYED</b> — "a modal floating in space" became "a full-bleed wash with a big text panel".</td></tr>
-<tr><td>final-checkr s2<br><span class="muted">full-bleed</span></td>
-<td>the dashboard is <b>inset 40px from every edge</b> (88.7%) — a single app shell sitting IN the frame; copy 720×180 in
-the quiet lower-left margin; the motif is a <b>64×64 status ring inside the dashboard</b>.</td>
-<td>the dashboard <b>bleeds to the edge</b> (the deliberate inset margin is gone); copy grows to 795×648, <b>3.2×</b>;
-the status ring becomes a 200×200 floating badge.</td>
-<td><b class="bad">DEGRADED</b> — the inset margin and the embedded ring were the composition.</td></tr>
+what the regions mean. Metrics cannot see that, so it is stated here in words, with the boxes. Round 1's verdicts were
+DESTROYED / DEGRADED / MOSTLY PRESERVED; with the two missing inputs supplied, all three are preserved.</p>
+<table><thead><tr><th>control</th><th>head</th><th>allocator</th><th>round 1</th><th>now</th></tr></thead><tbody>
+<tr><td>flags-notion s2<br><span class="muted">split · placed</span></td>
+<td>hero 920×920@60,80 · motif 130×34 as a chip inside the card header · copy 800×666@1040,214</td>
+<td>hero 950×807@96,110 (<b>0.91×</b>) · motif 134×30 <b>still embedded in the hero</b> (0.91×) · copy 708×582@1116,213 (0.77×)</td>
+<td><b class="ok">mostly preserved</b> — motif became a corner badge at 8.9× its area</td>
+<td><b class="ok">PRESERVED</b></td></tr>
+<tr><td>p3-cycle8-razorpay s2<br><span class="muted">full-bleed · placed</span></td>
+<td>a checkout modal 1080×920@420,80 dead-centre · the payment-button motif embedded inside it · 320×200 of copy in the lower-left</td>
+<td>hero 1234×769@442,54 (<b>0.96×</b>, still centred on the frame axis) · motif 503×234 <b>still embedded</b> (0.96×) · copy 311×319 (1.55×)</td>
+<td><b class="bad">DESTROYED</b> — hero became the whole canvas, copy 8×</td>
+<td><b class="ok">PRESERVED</b></td></tr>
+<tr><td>final-checkr s2<br><span class="muted">full-bleed · bleed</span></td>
+<td>dashboard inset 40px from every edge (1840×1000@40,40) · a 64×64 status ring inside it · copy 720×180@280,820</td>
+<td>hero 1840×1000@40,40 (<b>1.00× — the inset margin survives exactly</b>) · ring 64×64@940,210 (<b>1.00×, identical</b>) · copy 710×335@138,618 (1.84×)</td>
+<td><b class="bad">DEGRADED</b> — bled to the edge, ring became a badge, copy 3.98×</td>
+<td><b class="ok">PRESERVED</b> <span class="muted">(copy still 1.8×)</span></td></tr>
 </tbody></table>
-<p class="sub"><b>The common failure across all three controls is the same two moves:</b> the allocator turns an
-<b>embedded motif into a floating badge</b>, and it <b>inflates the copy panel far past its content</b>. Both fall
-directly out of "size from role, not from the head's judgment" — and the second one is dangerous, because a box enlarged
-without a matching capacity budget (<code>capacity.ts</code> / <code>describeCapacity</code>, P4b) yields a large box
-with sparse content: the hollow-hero defect, strictly worse than the small-but-full box it replaced. This dry run does
-not emit content and therefore cannot demonstrate that half — but any allocator that ships must emit a NEW capacity
-budget with every resize.</p>
+<p class="sub"><b>What fixed them.</b> The embedded-child relation (a motif inside a hero stays inside that hero at the
+same relative rect) and the explicit bleed-vs-placed signal, plus a content-derived ceiling on text boxes. The one
+residual is checkr's copy at 1.84× — inside the 2.0× ceiling, and the derived extent says the
+head's own 720×180 box is in fact 1.29× TIGHTER than its strings need, so some of that growth is a correction rather
+than an inflation. It is still a change to a frame nobody complained about, and it is the honest residual.</p>
 
-<p class="sub"><b>Read the numbers with these two caveats.</b> (1) The allocator's <b>0 overlaps</b> is a TAUTOLOGY, not a
-result — disjointness is a construction invariant it asserts on every call, so the only informative overlap number is
-the head's. Of the head's ${summary.overlaps.head} raw overlaps, only <b>${summary.overlaps.headEx}</b> survive once a
-throughline motif fully embedded inside another element is treated as the deliberate layering the 2026-07-18 work showed
-it to be. (2) Void and centroid are aggregated over the <b>${summary.placeable} placeable</b> scenes only.
-<b>${summary.treatments}</b> scenes carry a canvas treatment (an element ≥85% of the frame); the scorer excludes those
-rects, so those scenes are scored on their small overlaid insets alone and report enormous voids that are artefacts of
-the instrument. <code>final-checkr s2</code> — a reference-grade frame — scores 55.6% void for exactly this reason.</p>
+<h2>Measured-truth check — declared rects flatter BOTH sides</h2>
+<p class="sub">Every metric above scores DECLARED rects. On the ${truth.length} scenes with a real
+<code>rects-scene-N.json</code>, the same scorer over what actually PAINTED says the defects are roughly twice as
+severe as the plans suggest.</p>
+<table><thead><tr><th>scene</th><th>centroid declared → painted</th><th>largest void declared → painted</th></tr></thead><tbody>
+${truth
+  .map(
+    (t) =>
+      `<tr><td>${esc(t.build)} s${t.ix}</td><td>${num(t.declared.centroidOffset, 3)} → <b class="bad">${num(t.painted.centroidOffset, 3)}</b></td><td>${pct(t.declared.largestVoid)} → <b class="bad">${pct(t.painted.largestVoid)}</b></td></tr>`,
+  )
+  .join("\n")}
+<tr><td><b>MEAN</b></td><td><b>${num(truth.reduce((a, t) => a + t.declared.centroidOffset, 0) / Math.max(1, truth.length), 3)} → ${num(truth.reduce((a, t) => a + t.painted.centroidOffset, 0) / Math.max(1, truth.length), 3)}</b></td><td><b>${pct(truth.reduce((a, t) => a + t.declared.largestVoid, 0) / Math.max(1, truth.length))} → ${pct(truth.reduce((a, t) => a + t.painted.largestVoid, 0) / Math.max(1, truth.length))}</b></td></tr>
+</tbody></table>
+<p class="sub"><b>This does NOT hand the allocator a win, and it is reported because it cuts against a tidy story.</b>
+A declared copy box measures <b>1.42×</b> its own painted ink for the head and <b>1.48×</b> for the allocator — the
+same. So the over-declaration is not something the allocator fixes, and the RELATIVE comparison in the table above
+survives. What it establishes is that the real defect is about twice what the declared numbers say, for both sides,
+which raises the value of a better distribution rather than lowering it. Confirming that would need a render, and no
+render was run.</p>
 
 <h2>Index — every scene</h2>
 <p class="sub">Ordered failure-cases first, then the must-not-wreck controls, then the rest alphabetically by build.
