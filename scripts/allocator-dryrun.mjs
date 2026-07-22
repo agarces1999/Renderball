@@ -78,6 +78,34 @@ const tsFile = join(work, "type-scale.mjs");
 writeFileSync(tsFile, tsBundle.outputFiles[0].text);
 const { deriveTypeScale } = await import(pathToFileURL(tsFile).href);
 
+const piBundle = await esbuild.build({
+  entryPoints: [join(process.cwd(), "lib/agents/predict-ink.ts")],
+  bundle: true,
+  platform: "node",
+  format: "esm",
+  target: "node18",
+  packages: "external",
+  write: false,
+  logLevel: "silent",
+});
+const piFile = join(work, "predict-ink.mjs");
+writeFileSync(piFile, piBundle.outputFiles[0].text);
+const { predictInkRect, typicalSansMetrics } = await import(pathToFileURL(piFile).href);
+
+const fmBundle = await esbuild.build({
+  entryPoints: [join(process.cwd(), "lib/render/font-metrics.ts")],
+  bundle: true,
+  platform: "node",
+  format: "esm",
+  target: "node18",
+  packages: "external",
+  write: false,
+  logLevel: "silent",
+});
+const fmFile = join(work, "font-metrics.mjs");
+writeFileSync(fmFile, fmBundle.outputFiles[0].text);
+const { metricsKey, isCalibrated } = await import(pathToFileURL(fmFile).href);
+
 // ── Corpus discovery ────────────────────────────────────────────────────────
 const ROOT = join(process.cwd(), ".data", "dogfood");
 const readJson = (p) => {
@@ -92,6 +120,34 @@ const builds = readdirSync(ROOT, { withFileTypes: true })
   .filter((e) => e.isDirectory())
   .map((e) => e.name)
   .sort();
+
+/**
+ * INK METRICS SOURCE, per build. The predictor needs an advance table; the
+ * honest one is the build's OWN calibrated brand face (the flags/rappi-era
+ * builds persisted genuinely-calibrated v2 tables to .data/font-metrics —
+ * notioninter, pp-object-sans, nunito). First declared family with a
+ * calibrated cache wins; builds whose faces never calibrated fall back to
+ * `typicalSansMetrics()` (0.52em/char — the PREDICTION posture, not the 0.62em
+ * budget posture). The choice is recorded per build and reported.
+ */
+const metricsDir = join(process.cwd(), ".data", "font-metrics");
+const metricsCache = new Map();
+const loadCalibrated = (family) => {
+  const k = metricsKey(family, 400);
+  if (metricsCache.has(k)) return metricsCache.get(k);
+  const m = readJson(join(metricsDir, `${k}.json`));
+  const ok = m && isCalibrated(m) ? m : null;
+  metricsCache.set(k, ok);
+  return ok;
+};
+const metricsForBuild = (script) => {
+  for (const f of script?.assets?.fonts ?? []) {
+    if (!f?.family) continue;
+    const m = loadCalibrated(f.family);
+    if (m) return { metrics: m, source: `calibrated:${f.family}` };
+  }
+  return { metrics: typicalSansMetrics(), source: "typical-sans(0.52em)" };
+};
 
 /** The copy fields an element can own, mirroring layout-composer.COPY_FIELDS. */
 const COPY_FIELDS = ["eyebrow", "headline", "lede", "bullets", "caption", "meta", "cta", "texts"];
@@ -154,6 +210,7 @@ for (const dir of builds) {
   }
   const script = readJson(join(ROOT, dir, "script.generated.json"));
   const aspect = script?.config?.aspect_ratio || "16:9";
+  const buildInk = metricsForBuild(script);
 
   for (const entry of comp) {
     const ix = typeof entry.scene === "number" ? entry.scene : comp.indexOf(entry);
@@ -389,6 +446,71 @@ for (const dir of builds) {
       skipped.push({ build: dir, scene: ix, why: `allocator (reposition) threw: ${err instanceof Error ? err.message : String(err)}` });
     }
 
+    // ── INK RE-SCORE ─────────────────────────────────────────────────────
+    //
+    // Everything above scores DECLARED boxes. The measured truth (10 scenes):
+    // a diegetic piece paints its box pixel-exact (21/21), a text piece NEVER
+    // does (0/10 — the box runs 1.04–2.09× its ink). So the ink view keeps
+    // every non-text box verbatim and replaces each copy box with its
+    // PREDICTED ink: the element's own verbatim strings wrapped through the
+    // calibrated stack at the type scale the pipeline declares for that box,
+    // anchored top-left (block flow), full measure. Same scorer, same
+    // held-out rules — only the rectangles change.
+    const inkFieldsById = new Map();
+    let inkUnpredictable = null;
+    for (const e of ided) {
+      if (e.role !== "copy") continue;
+      const owns = (Array.isArray(e.ownsCopy) ? e.ownsCopy : []).filter((f) => COPY_FIELDS.includes(f));
+      const fields = content
+        ? owns.map((name) => ({ name, value: content[name] })).filter((f) => f.value !== null && f.value !== undefined)
+        : [];
+      if (fields.length > 0) inkFieldsById.set(e._id, fields);
+      else if (!inkUnpredictable) inkUnpredictable = content ? `copy "${e._id}" owns no copy fields` : "no script.generated.json (no strings on disk)";
+    }
+    // `hScale` exists for the SENSITIVITY check: the predictor's measured mean
+    // |height error| is ~10–14%, so the gate is re-evaluated with every
+    // prediction uniformly biased ±15% (both sides share one predictor, so a
+    // systematic model error moves both sides together — that is the realistic
+    // failure mode, and the one the verdict must be robust to).
+    const inkView = (entries, hScale = 1) =>
+      entries.map((e) => {
+        const fields = inkFieldsById.get(e.id);
+        if (e.role !== "copy" || !fields) return e;
+        const { rect, prediction } = predictInkRect(e.bounds, fields, { w: 1920, h: 1080 }, buildInk.metrics);
+        if (hScale === 1 || prediction.blocks === 0) return { ...e, bounds: rect };
+        return { ...e, bounds: { ...rect, h: Math.max(1, Math.round(rect.h * hScale)) } };
+      });
+    const inkScoreOf = (entries, hScale = 1) => (entries.length > 0 ? scoreLayout(inkView(entries, hScale), aspect) : null);
+    const armEntries = (a) =>
+      a.slots
+        .filter((s) => s.layer !== "chrome" && s.role !== "atmosphere")
+        .map((s) => ({
+          id: s.id,
+          role: s.role,
+          focalRank: allocInput.elements.find((e) => e.id === s.id)?.focalRank ?? null,
+          bounds: s.bounds,
+          allowedOverlaps: s.allowedOverlaps,
+        }));
+    let headInkScore = null;
+    let allocInkScore = null;
+    let repoInkScore = null;
+    let inkSensitivity = null;
+    try {
+      headInkScore = headPlaced.length > 0 ? inkScoreOf(headPlaced) : null;
+      allocInkScore = alloc ? inkScoreOf(armEntries(alloc)) : null;
+      repoInkScore = allocRepo ? inkScoreOf(armEntries(allocRepo)) : null;
+      if (headInkScore && allocInkScore) {
+        inkSensitivity = {
+          headLo: inkScoreOf(headPlaced, 0.85),
+          headHi: inkScoreOf(headPlaced, 1.15),
+          allocLo: inkScoreOf(armEntries(alloc), 0.85),
+          allocHi: inkScoreOf(armEntries(alloc), 1.15),
+        };
+      }
+    } catch (err) {
+      inkUnpredictable = `ink scoring threw: ${err instanceof Error ? err.message : String(err)}`;
+    }
+
     scenes.push({
       build: dir,
       ix,
@@ -405,6 +527,14 @@ for (const dir of builds) {
       alloc: alloc ? { shape: alloc.shape, slots: alloc.slots, score: alloc.score, repicked: alloc.repicked, readingOrderKept: alloc.readingOrderKept } : null,
       repo: allocRepo ? { shape: allocRepo.shape, slots: allocRepo.slots, score: allocRepo.score, readingOrderKept: allocRepo.readingOrderKept } : null,
       allocError,
+      inkMetricsSource: buildInk.source,
+      inkUnpredictable,
+      headInk: headInkScore,
+      allocInk: allocInkScore,
+      repoInk: repoInkScore,
+      inkSensitivity,
+      copyFields: Object.fromEntries(inkFieldsById),
+      _inkMetrics: buildInk.metrics,
     });
   }
 }
@@ -539,6 +669,93 @@ const summary = {
   },
 };
 
+// ── INK aggregates + THE GATE ───────────────────────────────────────────────
+//
+// Scored over the placeable scenes whose every copy element has verbatim
+// strings on disk (script.generated.json). A scene with a string-less copy is
+// excluded from BOTH sides' ink aggregate — like-for-like or not at all.
+const inkScored = placeable.filter((s) => !s.inkUnpredictable && s.headInk && s.allocInk);
+const inkExcluded = placeable.filter((s) => s.inkUnpredictable || !s.headInk || !s.allocInk);
+const aggInk = (key, f) => inkScored.map((s) => s[key] && f(s[key])).filter((v) => typeof v === "number" && Number.isFinite(v));
+const inkSummary = {
+  scored: inkScored.length,
+  excluded: inkExcluded.length,
+  excludedWhy: inkExcluded.map((s) => `${s.build} s${s.ix}: ${s.inkUnpredictable ?? "no ink score"}`),
+  void: {
+    headMean: mean(aggInk("headInk", (x) => x.largestVoid)),
+    allocMean: mean(aggInk("allocInk", (x) => x.largestVoid)),
+    repoMean: mean(aggInk("repoInk", (x) => x.largestVoid)),
+    headMedian: median(aggInk("headInk", (x) => x.largestVoid)),
+    allocMedian: median(aggInk("allocInk", (x) => x.largestVoid)),
+    repoMedian: median(aggInk("repoInk", (x) => x.largestVoid)),
+    headWorst: Math.max(...aggInk("headInk", (x) => x.largestVoid)),
+    allocWorst: Math.max(...aggInk("allocInk", (x) => x.largestVoid)),
+    repoWorst: Math.max(...aggInk("repoInk", (x) => x.largestVoid)),
+    headOver25: aggInk("headInk", (x) => x.largestVoid).filter((v) => v > 0.25).length,
+    allocOver25: aggInk("allocInk", (x) => x.largestVoid).filter((v) => v > 0.25).length,
+    repoOver25: aggInk("repoInk", (x) => x.largestVoid).filter((v) => v > 0.25).length,
+  },
+  focal: {
+    headOk: inkScored.filter((s) => s.headInk.focalIsLargest === true).length,
+    allocOk: inkScored.filter((s) => s.allocInk.focalIsLargest === true).length,
+    repoOk: inkScored.filter((s) => s.repoInk?.focalIsLargest === true).length,
+    headMargin: median(aggInk("headInk", (x) => x.focalMargin)),
+    allocMargin: median(aggInk("allocInk", (x) => x.focalMargin)),
+  },
+  centroid: {
+    headMean: mean(aggInk("headInk", (x) => x.centroidOffset)),
+    allocMean: mean(aggInk("allocInk", (x) => x.centroidOffset)),
+    repoMean: mean(aggInk("repoInk", (x) => x.centroidOffset)),
+    headWorst: Math.max(...aggInk("headInk", (x) => x.centroidOffset)),
+    allocWorst: Math.max(...aggInk("allocInk", (x) => x.centroidOffset)),
+  },
+  metricsSources: (() => {
+    const c = {};
+    for (const s of inkScored) c[s.inkMetricsSource] = (c[s.inkMetricsSource] ?? 0) + 1;
+    return c;
+  })(),
+};
+
+/**
+ * THE GATE — pre-registered before the numbers were read, so the verdict is
+ * computed, not narrated. The allocator's box-space advantage was: mean void
+ * −3.0pp, >25%-void count 14→1, focal dominance +22 scenes. "Materially
+ * better on INK" is defined as ALL of:
+ *   (a) ink >25%-void count: allocator ≤ half the head's (rounded up);
+ *   (b) ink mean largest-void: allocator at least 2.0pp below the head;
+ *   (c) ink focal dominance: allocator ≥ the head.
+ * Anything less means the box-space win was substantially an artefact of
+ * scoring reserved rectangles, and Stage B does not proceed.
+ */
+const gate = {
+  a: { pass: inkSummary.void.allocOver25 <= Math.ceil(inkSummary.void.headOver25 / 2), detail: `>25% ink-void: alloc ${inkSummary.void.allocOver25} vs head ${inkSummary.void.headOver25} (need ≤ ${Math.ceil(inkSummary.void.headOver25 / 2)})` },
+  b: { pass: inkSummary.void.headMean - inkSummary.void.allocMean >= 0.02, detail: `mean ink-void: head ${(inkSummary.void.headMean * 100).toFixed(1)}% − alloc ${(inkSummary.void.allocMean * 100).toFixed(1)}% = ${((inkSummary.void.headMean - inkSummary.void.allocMean) * 100).toFixed(1)}pp (need ≥ 2.0pp)` },
+  c: { pass: inkSummary.focal.allocOk >= inkSummary.focal.headOk, detail: `ink focal-1 largest: alloc ${inkSummary.focal.allocOk}/${inkSummary.scored} vs head ${inkSummary.focal.headOk}/${inkSummary.scored}` },
+};
+gate.pass = gate.a.pass && gate.b.pass && gate.c.pass;
+
+// SENSITIVITY: the same three criteria with every prediction uniformly biased
+// −15% and +15% (see inkView's hScale). The verdict is only trustworthy if it
+// is the same at both extremes.
+const gateAt = (headKey, allocKey) => {
+  const withSens = inkScored.filter((s) => s.inkSensitivity?.[headKey] && s.inkSensitivity?.[allocKey]);
+  const hv = withSens.map((s) => s.inkSensitivity[headKey].largestVoid);
+  const av = withSens.map((s) => s.inkSensitivity[allocKey].largestVoid);
+  const hOver = hv.filter((v) => v > 0.25).length;
+  const aOver = av.filter((v) => v > 0.25).length;
+  const hMean = mean(hv);
+  const aMean = mean(av);
+  const hFocal = withSens.filter((s) => s.inkSensitivity[headKey].focalIsLargest === true).length;
+  const aFocal = withSens.filter((s) => s.inkSensitivity[allocKey].focalIsLargest === true).length;
+  return {
+    n: withSens.length,
+    pass: aOver <= Math.ceil(hOver / 2) && hMean - aMean >= 0.02 && aFocal >= hFocal,
+    detail: `>25%: ${aOver} vs ${hOver} · mean: ${(hMean * 100).toFixed(1)}% vs ${(aMean * 100).toFixed(1)}% · focal: ${aFocal} vs ${hFocal}`,
+  };
+};
+gate.sensitivity = { lo: gateAt("headLo", "allocLo"), hi: gateAt("headHi", "allocHi") };
+gate.robust = gate.sensitivity.lo.pass === gate.pass && gate.sensitivity.hi.pass === gate.pass;
+
 const shapeCounts = {};
 for (const s of scenes) if (s.alloc) shapeCounts[s.alloc.shape] = (shapeCounts[s.alloc.shape] ?? 0) + 1;
 const shapesByRegister = {};
@@ -571,6 +788,24 @@ row("overlaps ex-embedded motif", summary.overlaps.headEx, "—", summary.overla
 row("…scenes affected", `${summary.overlaps.headScenes}/${summary.overlaps.headScenesEx}`, summary.overlaps.repoScenes, summary.overlaps.allocScenes);
 row("reading order preserved", "n/a", `${summary.readingOrder.repoKept}/${summary.readingOrder.total}`, `${summary.readingOrder.allocKept}/${summary.readingOrder.total}`);
 row("coverage (context only)", pct(summary.coverage.headMean), pct(summary.coverage.repoMean), pct(summary.coverage.allocMean));
+console.log(`\n── INK RE-SCORE ── same scorer, copy boxes replaced by PREDICTED INK (${inkSummary.scored} scenes; ${inkSummary.excluded} excluded for missing strings)`);
+console.log(`| metric                     | HEAD      | REPOSITION | REPOS+RESIZE |`);
+console.log(`|----------------------------|-----------|------------|--------------|`);
+row("largest ink-void — mean", pct(inkSummary.void.headMean), pct(inkSummary.void.repoMean), pct(inkSummary.void.allocMean));
+row("largest ink-void — median", pct(inkSummary.void.headMedian), pct(inkSummary.void.repoMedian), pct(inkSummary.void.allocMedian));
+row("largest ink-void — worst", pct(inkSummary.void.headWorst), pct(inkSummary.void.repoWorst), pct(inkSummary.void.allocWorst));
+row("scenes with ink-void > 25%", inkSummary.void.headOver25, inkSummary.void.repoOver25, inkSummary.void.allocOver25);
+row("focal-1 largest (ink area)", `${inkSummary.focal.headOk}/${inkSummary.scored}`, `${inkSummary.focal.repoOk}/${inkSummary.scored}`, `${inkSummary.focal.allocOk}/${inkSummary.scored}`);
+row("ink focal margin (median x)", num(inkSummary.focal.headMargin), "—", num(inkSummary.focal.allocMargin));
+row("ink-centroid offset — mean", num(inkSummary.centroid.headMean, 3), num(inkSummary.centroid.repoMean, 3), num(inkSummary.centroid.allocMean, 3));
+row("ink-centroid offset — worst", num(inkSummary.centroid.headWorst, 3), "—", num(inkSummary.centroid.allocWorst, 3));
+console.log(`ink metrics sources: ${Object.entries(inkSummary.metricsSources).map(([k, v]) => `${k}×${v}`).join(" · ")}`);
+console.log(`\nTHE GATE (pre-registered): ${gate.pass ? "PASS — the allocator's advantage SURVIVES ink scoring" : "STOP — the allocator's box-space win does not survive ink scoring"}`);
+for (const k of ["a", "b", "c"]) console.log(`  (${k}) ${gate[k].pass ? "✓" : "✗"} ${gate[k].detail}`);
+console.log(
+  `  sensitivity (uniform predictor bias): −15% → ${gate.sensitivity.lo.pass ? "PASS" : "STOP"} (${gate.sensitivity.lo.detail}) · +15% → ${gate.sensitivity.hi.pass ? "PASS" : "STOP"} (${gate.sensitivity.hi.detail}) — verdict ${gate.robust ? "STABLE" : "NOT STABLE — do not trust it"}`,
+);
+
 console.log(`\nshape re-picked (structural void): ${summary.repicked} scenes · both arms ran on ${summary.threeWay} placeable scenes`);
 console.log(
   `size sources (per element): measured ${summary.sizeSources.measured} · derived ${summary.sizeSources.derived} · ` +
@@ -632,6 +867,9 @@ for (const s of scenes) {
   // ratio is the over-declaration; the allocator's is what the content-bounded
   // sizing yields against that same measured ink.
   const ratios = { head: [], alloc: [] };
+  // PREDICTOR CALIBRATION: predicted ink height (at the render's own declared
+  // wrapper box, from the rects file) vs the height that actually painted.
+  const calib = [];
   for (const e of s.head.elements) {
     if (e.role !== "copy" || !e.bounds) continue;
     const pc = d.pieces.find((x) => String(x.id).split(".").slice(1).join(".") === e.id);
@@ -640,11 +878,19 @@ for (const s of scenes) {
     ratios.head.push((e.bounds.w * e.bounds.h) / (ink.w * ink.h));
     const a = s.alloc.slots.find((x) => x.id === e.id);
     if (a) ratios.alloc.push((a.bounds.w * a.bounds.h) / (ink.w * ink.h));
+    const fields = s.copyFields?.[e.id];
+    const wrapper = pc.declared ?? pc.wrapper;
+    if (fields && wrapper?.w > 0) {
+      const { prediction } = predictInkRect({ x: wrapper.x, y: wrapper.y, w: wrapper.w, h: wrapper.h }, fields, { w: 1920, h: 1080 }, s._inkMetrics);
+      calib.push({ id: e.id, declaredH: wrapper.h, paintedH: ink.h, predictedH: prediction.h, hErr: (prediction.h - ink.h) / ink.h });
+    }
   }
-  truth.push({ build: s.build, ix: s.ix, declared: s.head.score, painted: paintedScore, alloc: s.alloc.score, ratios });
+  truth.push({ build: s.build, ix: s.ix, declared: s.head.score, painted: paintedScore, alloc: s.alloc.score, ratios, calib, inkMetricsSource: s.inkMetricsSource });
 }
+const calibAll = truth.flatMap((t) => t.calib.map((c) => ({ ...c, build: t.build, ix: t.ix, src: t.inkMetricsSource })));
+const meanOf = (xs) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : NaN);
 if (truth.length > 0) {
-  const m = (xs) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : NaN);
+  const m = meanOf;
   console.log(`\nMEASURED-TRUTH CHECK — ${truth.length} scenes with real painted rects`);
   console.log(`  the head's DECLARED boxes flatter it; here is the same scorer on what PAINTED:`);
   for (const t of truth) {
@@ -660,6 +906,18 @@ if (truth.length > 0) {
   console.log(
     `  copy box vs its own ink:  HEAD ${num(m(truth.flatMap((t) => t.ratios.head)), 2)}x   ALLOCATOR ${num(m(truth.flatMap((t) => t.ratios.alloc)), 2)}x`,
   );
+  const calibs = calibAll;
+  if (calibs.length > 0) {
+    console.log(`\nPREDICTOR CALIBRATION — predicted ink vs painted, per measured text piece:`);
+    for (const c of calibs) {
+      console.log(
+        `  ${(c.build + " s" + c.ix + "." + c.id).padEnd(30)} declared h ${String(c.declaredH).padStart(4)} → painted h ${String(c.paintedH).padStart(4)} → predicted h ${String(c.predictedH).padStart(4)}  (${(c.hErr * 100).toFixed(1)}%)  [${c.src}]`,
+      );
+    }
+    console.log(
+      `  mean |hErr| ${(m(calibs.map((c) => Math.abs(c.hErr))) * 100).toFixed(1)}%  bias ${(m(calibs.map((c) => c.hErr)) * 100).toFixed(1)}%  worst ${(Math.max(...calibs.map((c) => Math.abs(c.hErr))) * 100).toFixed(1)}%`,
+    );
+  }
 }
 
 {
@@ -938,6 +1196,51 @@ Note also that the shape re-pick (structural dead space → change the distribut
 <b>${summary.repicked}</b> scenes — the local grow-the-neighbour repair handled every void in the corpus, so the
 re-pick ladder is currently unexercised code.</p>
 
+<h2>Ink re-score — the same metrics on PREDICTED INK, not declared boxes</h2>
+<p class="sub"><b>Why.</b> The measured rects split the corpus cleanly: a diegetic piece paints its declared box pixel-exact
+(21/21), a text piece never does (0/10 — the declared box runs 1.04–2.09× its own ink, mean ≈1.5×). Every number in the
+box-space table above therefore overstates how full a frame is. Here every copy box is replaced by its <b>predicted
+ink</b> — the element's own verbatim strings wrapped through the calibrated capacity stack (<code>lib/agents/predict-ink.ts</code>)
+at the type scale the pipeline declares for that box — anchored <b>top-left</b> (block flow) at the <b>full measure</b>
+(both stated assumptions; 8/10 measured text pieces paint exactly their declared width and all 10 paint from the top edge).
+Diegetic boxes are unchanged (declared = painted, measured). Same scorer, same held-out rules.
+Scored over <b>${inkSummary.scored}</b> placeable scenes; <b>${inkSummary.excluded}</b> excluded because a copy element
+has no strings on disk. Metrics: ${esc(Object.entries(inkSummary.metricsSources).map(([k, v]) => `${k}×${v}`).join(" · "))}.</p>
+<table><thead><tr><th>metric (INK space)</th><th>HEAD</th><th>REPOSITION ONLY</th><th>REPOSITION + RESIZE</th></tr></thead><tbody>
+<tr><td>largest ink-void — mean</td><td>${pct(inkSummary.void.headMean)}</td><td>${pct(inkSummary.void.repoMean)}</td><td>${pct(inkSummary.void.allocMean)}</td></tr>
+<tr><td>largest ink-void — median</td><td>${pct(inkSummary.void.headMedian)}</td><td>${pct(inkSummary.void.repoMedian)}</td><td>${pct(inkSummary.void.allocMedian)}</td></tr>
+<tr><td>largest ink-void — worst</td><td>${pct(inkSummary.void.headWorst)}</td><td>${pct(inkSummary.void.repoWorst)}</td><td>${pct(inkSummary.void.allocWorst)}</td></tr>
+<tr><td>scenes with ink-void &gt; 25%</td><td>${inkSummary.void.headOver25}</td><td>${inkSummary.void.repoOver25}</td><td>${inkSummary.void.allocOver25}</td></tr>
+<tr><td>focal-1 holds the largest INK area</td><td>${inkSummary.focal.headOk}/${inkSummary.scored}</td><td>${inkSummary.focal.repoOk}/${inkSummary.scored}</td><td>${inkSummary.focal.allocOk}/${inkSummary.scored}</td></tr>
+<tr><td>ink focal margin (median ×)</td><td>${num(inkSummary.focal.headMargin)}</td><td class="muted">—</td><td>${num(inkSummary.focal.allocMargin)}</td></tr>
+<tr><td>ink-centroid offset — mean</td><td>${num(inkSummary.centroid.headMean, 3)}</td><td>${num(inkSummary.centroid.repoMean, 3)}</td><td>${num(inkSummary.centroid.allocMean, 3)}</td></tr>
+<tr><td>ink-centroid offset — worst</td><td>${num(inkSummary.centroid.headWorst, 3)}</td><td class="muted">—</td><td>${num(inkSummary.centroid.allocWorst, 3)}</td></tr>
+</tbody></table>
+<p class="sub"><b>THE GATE — ${gate.pass ? '<b class="ok">PASS</b>: the allocator&#39;s advantage survives ink scoring' : '<b class="bad">STOP</b>: the allocator&#39;s box-space win does not survive ink scoring'}.</b>
+Pre-registered before the numbers were read: (a) allocator must at most halve the head&#39;s &gt;25% ink-void count —
+${gate.a.pass ? "✓" : "✗"} ${esc(gate.a.detail)}; (b) mean ink-void at least 2.0pp below the head — ${gate.b.pass ? "✓" : "✗"}
+${esc(gate.b.detail)}; (c) ink focal dominance not worse — ${gate.c.pass ? "✓" : "✗"} ${esc(gate.c.detail)}.
+Sensitivity to predictor error (every prediction uniformly biased): −15% → ${gate.sensitivity.lo.pass ? "PASS" : "STOP"}
+(${esc(gate.sensitivity.lo.detail)}); +15% → ${gate.sensitivity.hi.pass ? "PASS" : "STOP"} (${esc(gate.sensitivity.hi.detail)}).
+The verdict is ${gate.robust ? "STABLE under the predictor&#39;s measured error band" : "NOT STABLE — do not trust it"}.</p>
+${
+  calibAll.length > 0
+    ? `<h2>Predictor calibration — predicted ink vs what actually painted</h2>
+<p class="sub">The ink re-score is only as good as the predictor. On the ${calibAll.length} measured text pieces
+(the only pieces with painted ground truth), predicted height vs painted height, at the render&#39;s own wrapper box,
+using each build&#39;s own calibrated brand face:</p>
+<table><thead><tr><th>piece</th><th>declared h</th><th>painted h</th><th>predicted h</th><th>height error</th><th>metrics</th></tr></thead><tbody>
+${calibAll.map((c) => `<tr><td>${esc(c.build)} s${c.ix}.${esc(c.id)}</td><td>${c.declaredH}</td><td>${c.paintedH}</td><td>${c.predictedH}</td><td class="${Math.abs(c.hErr) > 0.2 ? "bad" : ""}">${(c.hErr * 100).toFixed(1)}%</td><td class="muted">${esc(c.src)}</td></tr>`).join("\n")}
+<tr><td><b>MEAN |err| / bias</b></td><td></td><td></td><td></td><td><b>${(meanOf(calibAll.map((c) => Math.abs(c.hErr))) * 100).toFixed(1)}% / ${(meanOf(calibAll.map((c) => c.hErr)) * 100).toFixed(1)}%</b></td><td></td></tr>
+</tbody></table>
+<p class="sub">Two of the ten scenes are emission-contract violations, not predictor error (flags-notion s4&#39;s render
+DROPPED its owned headline; flags-on-rappi s3&#39;s copy leaf DUPLICATED the hero-owned stat + chips into its own box —
+both verified in the measured element walk). Excluding those two, the predictor&#39;s mean |height error| is ~10%
+(worst ~19%) — the golden test <code>predict-ink.test.ts</code> pins both numbers. For comparison, scoring the DECLARED
+box as if it were ink errs by the full over-declaration: mean ≈ +52% on the same pieces.</p>`
+    : ""
+}
+
 <h2>Structural preservation on the three controls</h2>
 <p class="sub">The main way this experiment can produce a MISLEADING pass: eliminate voids and overlaps while scrambling
 what the regions mean. Metrics cannot see that, so it is stated here in words, with the boxes. Round 1's verdicts were
@@ -1045,5 +1348,99 @@ console.log(`\nwrote ${outPath} (${(html.length / 1024).toFixed(0)} KB, ${scenes
 
 writeFileSync(
   join(ROOT, "ALLOCATOR_DRYRUN.json"),
-  JSON.stringify({ summary, shapeCounts, shapesByRegister: Object.fromEntries(Object.entries(shapesByRegister).map(([k, v]) => [k, [...v].sort()])), skipped }, null, 2),
+  JSON.stringify({ summary, ink: inkSummary, gate, calibration: calibAll, shapeCounts, shapesByRegister: Object.fromEntries(Object.entries(shapesByRegister).map(([k, v]) => [k, [...v].sort()])), skipped }, null, 2),
 );
+
+// ── ALLOCATOR_INK_RESCORE.md — the standalone comparison the gate reads ─────
+const mdRow = (label, h, r, a) => `| ${label} | ${h} | ${r} | ${a} |`;
+const md = `# Allocator ink re-score — ${new Date().toISOString().slice(0, 10)}
+
+Re-scores the round-2 allocator dry run on **predicted ink** instead of declared
+boxes. ZERO API calls — pure replay over stored artifacts plus
+\`lib/agents/predict-ink.ts\` run locally.
+
+## Why ink
+
+From the persisted \`rects-scene-N.json\` (10 measured scenes):
+- **Diegetic pieces: declared box = painted ink, pixel-exact (21/21).**
+- **Text pieces: 0/10 match** — painted ink is always smaller than the declared
+  box (the box runs 1.04–2.09× its ink, mean ≈1.5×). A declared text box is a
+  ceiling, not a fill.
+Every box-space metric therefore overstates how full a frame is. Ink is the
+unit of account.
+
+## Assumptions (stated, per the brief)
+
+- Text ink = the element's own verbatim strings (from \`script.generated.json\`)
+  wrapped through the calibrated capacity stack at the type scale
+  \`deriveTypeScale\` picks for the box — the same scale the pipeline declares
+  to the emitter.
+- The ink rect is anchored **top-left** in the declared box (block flow) at the
+  **full measure** (ink w = box w). Measured support: all 10 text pieces paint
+  from the box's top edge (offsets 2–48px); 8/10 paint exactly their declared
+  width. Over-stating ink width under-states voids for BOTH sides symmetrically.
+- Diegetic/mock boxes are ink verbatim (measured exact).
+- Metrics: each build's own calibrated brand face where one exists on disk
+  (${Object.entries(inkSummary.metricsSources).map(([k, v]) => `${k}×${v}`).join(" · ")});
+  otherwise a 0.52em/char typical-sans prediction posture.
+- Scenes where a copy element has no strings on disk are EXCLUDED from ink
+  aggregates on both sides (${inkSummary.excluded} scenes: ${inkExcluded.map((s) => `${s.build} s${s.ix}`).join(", ") || "none"}).
+
+## Box-space vs ink-space, head vs allocator (${summary.placeable} / ${inkSummary.scored} placeable scenes)
+
+| metric (BOX space) | HEAD | REPOSITION | REPOS+RESIZE |
+|---|---|---|---|
+${mdRow("largest void — mean", pct(summary.void.headMean), pct(summary.void.repoMean), pct(summary.void.allocMean))}
+${mdRow("largest void — median", pct(summary.void.headMedian), pct(summary.void.repoMedian), pct(summary.void.allocMedian))}
+${mdRow("largest void — worst", pct(summary.void.headWorst), pct(summary.void.repoWorst), pct(summary.void.allocWorst))}
+${mdRow("scenes with void > 25%", summary.void.headOver25, summary.void.repoOver25, summary.void.allocOver25)}
+${mdRow("focal-1 holds largest area", `${summary.focal.headOk}/${summary.placeable}`, `${summary.focal.repoOk}/${summary.placeable}`, `${summary.focal.allocOk}/${summary.placeable}`)}
+${mdRow("centroid offset — mean", num(summary.centroid.headMean, 3), num(summary.centroid.repoMean, 3), num(summary.centroid.allocMean, 3))}
+
+| metric (INK space) | HEAD | REPOSITION | REPOS+RESIZE |
+|---|---|---|---|
+${mdRow("largest ink-void — mean", pct(inkSummary.void.headMean), pct(inkSummary.void.repoMean), pct(inkSummary.void.allocMean))}
+${mdRow("largest ink-void — median", pct(inkSummary.void.headMedian), pct(inkSummary.void.repoMedian), pct(inkSummary.void.allocMedian))}
+${mdRow("largest ink-void — worst", pct(inkSummary.void.headWorst), pct(inkSummary.void.repoWorst), pct(inkSummary.void.allocWorst))}
+${mdRow("scenes with ink-void > 25%", inkSummary.void.headOver25, inkSummary.void.repoOver25, inkSummary.void.allocOver25)}
+${mdRow("focal-1 holds largest INK area", `${inkSummary.focal.headOk}/${inkSummary.scored}`, `${inkSummary.focal.repoOk}/${inkSummary.scored}`, `${inkSummary.focal.allocOk}/${inkSummary.scored}`)}
+${mdRow("ink focal margin (median ×)", num(inkSummary.focal.headMargin), "—", num(inkSummary.focal.allocMargin))}
+${mdRow("ink-centroid offset — mean", num(inkSummary.centroid.headMean, 3), num(inkSummary.centroid.repoMean, 3), num(inkSummary.centroid.allocMean, 3))}
+${mdRow("ink-centroid offset — worst", num(inkSummary.centroid.headWorst, 3), "—", num(inkSummary.centroid.allocWorst, 3))}
+
+## THE GATE — ${gate.pass ? "PASS" : "STOP"}
+
+Pre-registered criteria ("materially better on ink" = ALL of):
+
+- (a) ${gate.a.pass ? "✓" : "✗"} ${gate.a.detail}
+- (b) ${gate.b.pass ? "✓" : "✗"} ${gate.b.detail}
+- (c) ${gate.c.pass ? "✓" : "✗"} ${gate.c.detail}
+
+Sensitivity (the predictor's measured error is ~10–14%, so the verdict is
+re-evaluated with every prediction uniformly biased ±15% — both sides share the
+predictor, so systematic error moves them together):
+
+- −15%: ${gate.sensitivity.lo.pass ? "PASS" : "STOP"} (${gate.sensitivity.lo.detail})
+- +15%: ${gate.sensitivity.hi.pass ? "PASS" : "STOP"} (${gate.sensitivity.hi.detail})
+- verdict is ${gate.robust ? "**STABLE** under predictor error" : "**NOT STABLE** — do not trust it"}
+
+${gate.pass ? "The allocator's advantage survives ink scoring; Stage B (pipeline wiring, flag-gated off) proceeds." : "The allocator's box-space advantage was substantially an artefact of scoring reserved rectangles. Stage B does NOT proceed; only this re-score lands."}
+
+## Predictor calibration — predicted ink vs painted (${calibAll.length} measured text pieces)
+
+| piece | declared h | painted h | predicted h | height error | metrics |
+|---|---|---|---|---|---|
+${calibAll.map((c) => `| ${c.build} s${c.ix}.${c.id} | ${c.declaredH} | ${c.paintedH} | ${c.predictedH} | ${(c.hErr * 100).toFixed(1)}% | ${c.src} |`).join("\n")}
+| **mean abs / bias** | | | | **${(meanOf(calibAll.map((c) => Math.abs(c.hErr))) * 100).toFixed(1)}% / ${(meanOf(calibAll.map((c) => c.hErr)) * 100).toFixed(1)}%** | |
+
+Two of the ten are emission-contract violations, not predictor error
+(flags-notion s4's render dropped its owned headline; flags-on-rappi s3's copy
+leaf duplicated the hero-owned stat + chips into its own box — both verified in
+the measured element walk). Excluding those two: mean |height error| ≈ 10%,
+worst ≈ 19% (pinned by \`predict-ink.test.ts\`). Scoring the DECLARED box as if
+it were ink errs by the full over-declaration (mean ≈ +52% on the same pieces),
+so even an imperfect predictor is ~5× closer to the truth than box-space
+scoring.
+`;
+writeFileSync(join(ROOT, "ALLOCATOR_INK_RESCORE.md"), md);
+console.log(`wrote ${join(ROOT, "ALLOCATOR_INK_RESCORE.md")}`);
