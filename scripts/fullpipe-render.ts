@@ -220,6 +220,14 @@ const log = (m: string) => console.log(`[${((Date.now() - t0) / 1000).toFixed(1)
   log(`cast loop done — ${loop.rounds + 1} round(s), round0 ${loop.round0?.passed ? "CLEAN" : "failed"}, castError=${loop.castRoundError?.error ?? "none"}`);
   log(`motif-clutter events: ${JSON.stringify(loop.events.motifClutterEvents?.map((e) => `${e.pieceId}:${e.form}→${e.action}`) ?? [])}`);
 
+  // RB_ALLOCATE: persist the allocator's per-scene record next to
+  // composition.json (the corpus location every dry run reads), so a future
+  // replay can diff the head's plan against the allocation that shipped.
+  if (loop.castResult?.allocations && loop.castResult.allocations.length > 0) {
+    await fs.writeFile(path.join(OUT, "allocated.json"), JSON.stringify(loop.castResult.allocations, null, 2), "utf8");
+    log(`allocated.json written (${loop.castResult.allocations.filter((r) => r.applied).length}/${loop.castResult.allocations.length} scenes re-allocated)`);
+  }
+
   // Re-render frames from the shipped finalCode so deterministic excisions show.
   await fs.writeFile(path.join(GEN_DIR, "Composition.tsx"), loop.finalCode, "utf8");
   const outMeasure = path.join(OUT, "_measure");

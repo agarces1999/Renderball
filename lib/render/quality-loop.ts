@@ -1107,6 +1107,15 @@ export async function runQualityLoop(
       genDirReady = true;
     }
     await hooks.writeComposition(finalCode);
+    // RB_ALLOCATE telemetry artifact: the allocator's per-scene decision
+    // record, persisted next to the gen artifacts (and by fullpipe next to
+    // composition.json) so future dry runs can diff plan vs allocation.
+    // Overwritten per round — the LAST cast round is the one that ships.
+    if (castResult.allocations && castResult.allocations.length > 0) {
+      await fs
+        .writeFile(path.join(genDir, "allocated.json"), JSON.stringify(castResult.allocations, null, 2), "utf8")
+        .catch((e) => warn(`  allocated.json not persisted: ${e instanceof Error ? e.message : e}`));
+    }
 
     // (a) density gates — blocking, including the per-hero floor.
     const density = await phase(`density-r${round}`, async () => assessDensity(finalCode, script));

@@ -148,6 +148,24 @@ export interface AllocElementInput {
   embeddedIn?: string | null;
   /** The child's rect as fractions of the parent's box: preserved verbatim. */
   embeddedRect?: { fx: number; fy: number; fw: number; fh: number } | null;
+  /**
+   * PIPELINE MODE ONLY (`mode: "pipeline"`): these bounds pass through
+   * VERBATIM — never moved, never resized, never absorbed. The two pipeline
+   * pins are the HERO (the head's declared bounds + treatment are the one
+   * honest scale/bleed signal — see HERO_GROWTH_CAP's note) and the
+   * THROUGHLINE (its position is the per-video cross-scene anchor contract,
+   * not a per-frame choice). A pinned×pinned overlap is accepted as upstream
+   * geometry (it was plan-validated at author time); a pinned×free overlap
+   * the separation pass cannot clear is reported in `Allocation.unresolved`
+   * so the caller can revert the scene rather than ship a collision.
+   */
+  pinnedBounds?: Rect | null;
+  /**
+   * PIPELINE MODE ONLY: the exact size this element must keep (the ink-sized
+   * text box — predicted ink + type-scale padding, computed by the caller
+   * from the element's own strings). The allocator owns only its POSITION.
+   */
+  fixedSize?: { w: number; h: number } | null;
 }
 
 /**
@@ -171,8 +189,17 @@ export type HeroTreatment = "bleed" | "placed" | null;
  *                    reposition-only captures most of the gain, the head's
  *                    placement is broadly fine and the fix is small; if it
  *                    captures little, the sizing is what is wrong.
+ *   - `"pipeline"` — the RB_ALLOCATE production posture (2026-07-22, after the
+ *                    ink re-score gate passed): pinned elements (hero,
+ *                    throughline) keep the plan's bounds VERBATIM; free
+ *                    elements keep their caller-fixed size (text = predicted
+ *                    ink + padding) and take only their POSITION from the
+ *                    shape. No absorption, no crowding shrink, no re-pick —
+ *                    every size is contractual, so the only repair is
+ *                    separation, and an inseparable pair is reported in
+ *                    `unresolved` for the caller to revert the scene.
  */
-export type AllocMode = "resize" | "reposition";
+export type AllocMode = "resize" | "reposition" | "pipeline";
 
 export interface AllocInput {
   aspect: Aspect;
@@ -211,6 +238,14 @@ export interface Allocation {
   repicked: boolean;
   /** True when at least one element carried a real measured size. */
   usedMeasured: boolean;
+  /**
+   * PIPELINE MODE ONLY: id pairs the separation pass could not make disjoint
+   * (a fixed-size element vs a pinned one, at sizes that genuinely do not
+   * pack). Non-empty means the caller must NOT consume this allocation —
+   * revert the scene to its input plan instead. Always empty/absent in the
+   * other modes.
+   */
+  unresolved?: [string, string][];
 }
 
 // ─── Registers ──────────────────────────────────────────────────────────────
@@ -1078,6 +1113,123 @@ const repositionOnly = (
   }
 };
 
+/**
+ * PIPELINE placement (`mode: "pipeline"`). Pinned elements keep their bounds
+ * verbatim; free elements keep their caller-fixed SIZE and take only their
+ * POSITION from the shape slot they were mapped onto (centred on it), then a
+ * deterministic separation pass moves FREE elements — never pinned ones —
+ * apart along the axis of minimum overlap, keeping a full gutter of clearance
+ * so a text block never parks against the hero's edge.
+ *
+ * Pinned×pinned overlaps are SKIPPED entirely: that geometry came out of the
+ * validated plan (the composer's throughline anchor may legally sit inside a
+ * full-bleed hero with the overlap declared upstream), and re-litigating it
+ * here would second-guess contracts this pass exists to respect.
+ *
+ * Returns the id pairs that remained overlapping after the iteration budget —
+ * sizes are contractual in this mode (ink-sized text, pinned hero), so an
+ * unpackable pair is a signal to REVERT THE SCENE, never to shrink something.
+ */
+const pipelinePlace = (
+  slots: AllocSlot[],
+  pinned: Map<string, Rect>,
+  sizeOf: Map<string, { w: number; h: number }>,
+  rankOf: Map<string, number>,
+  C: Rect,
+  gutter: number,
+): [string, string][] => {
+  const content = slots.filter((s) => s.layer === "content" || s.layer === "base");
+  for (const s of content) {
+    const pin = pinned.get(s.id);
+    if (pin) s.bounds = { ...pin };
+  }
+  // Base layers (atmosphere, a bleed hero) are canvas treatments — never
+  // clamped into the content rect and never moved; pins were applied above.
+  const free = content.filter((s) => !pinned.has(s.id) && s.layer !== "base");
+  for (const s of free) {
+    const size = sizeOf.get(s.id);
+    if (!size) continue;
+    const cx = s.bounds.x + s.bounds.w / 2;
+    const cy = s.bounds.y + s.bounds.h / 2;
+    const w = Math.min(Math.max(1, Math.round(size.w)), C.w);
+    const h = Math.min(Math.max(1, Math.round(size.h)), C.h);
+    s.bounds = { x: Math.round(cx - w / 2), y: Math.round(cy - h / 2), w, h };
+  }
+  const clampIn = (b: Rect) => {
+    b.x = Math.round(clamp(b.x, C.x, Math.max(C.x, C.x + C.w - b.w)));
+    b.y = Math.round(clamp(b.y, C.y, Math.max(C.y, C.y + C.h - b.h)));
+  };
+  for (const s of free) clampIn(s.bounds);
+
+  const legal = (a: AllocSlot, b: AllocSlot): boolean =>
+    a.allowedOverlaps.includes(b.id) || b.allowedOverlaps.includes(a.id) || a.layer === "base" || b.layer === "base";
+  const pairGap = (s: AllocSlot): number => (s.layer === "base" ? 0 : gutter);
+
+  for (let iter = 0; iter < SEPARATION_ITERATIONS; iter++) {
+    let moved = false;
+    for (let i = 0; i < content.length && !moved; i++) {
+      for (let j = i + 1; j < content.length && !moved; j++) {
+        const a = content[i];
+        const b = content[j];
+        if (pinned.has(a.id) && pinned.has(b.id)) continue; // upstream geometry
+        if (legal(a, b)) continue;
+        if (!rectsOverlap(a.bounds, b.bounds)) continue;
+        // The free element moves; between two free elements, the SUBORDINATE
+        // (higher focalRank) yields, matching repositionOnly's rule.
+        let mover: AllocSlot;
+        let anchor: AllocSlot;
+        if (pinned.has(a.id)) [mover, anchor] = [b, a];
+        else if (pinned.has(b.id)) [mover, anchor] = [a, b];
+        else {
+          const ra = rankOf.get(a.id) ?? Number.MAX_SAFE_INTEGER;
+          const rb = rankOf.get(b.id) ?? Number.MAX_SAFE_INTEGER;
+          [mover, anchor] = rb >= ra ? [b, a] : [a, b];
+        }
+        const gap = Math.max(pairGap(anchor), 2);
+        const ox = Math.min(mover.bounds.x + mover.bounds.w, anchor.bounds.x + anchor.bounds.w) - Math.max(mover.bounds.x, anchor.bounds.x);
+        const oy = Math.min(mover.bounds.y + mover.bounds.h, anchor.bounds.y + anchor.bounds.h) - Math.max(mover.bounds.y, anchor.bounds.y);
+        const before = { ...mover.bounds };
+        const pushX = () => {
+          const dir = mover.bounds.x + mover.bounds.w / 2 >= anchor.bounds.x + anchor.bounds.w / 2 ? 1 : -1;
+          mover.bounds.x += dir * (ox + gap);
+        };
+        const pushY = () => {
+          const dir = mover.bounds.y + mover.bounds.h / 2 >= anchor.bounds.y + anchor.bounds.h / 2 ? 1 : -1;
+          mover.bounds.y += dir * (oy + gap);
+        };
+        if (ox <= oy) pushX();
+        else pushY();
+        clampIn(mover.bounds);
+        if (rectsOverlap(mover.bounds, anchor.bounds)) {
+          // Pinned against the frame edge on that axis — try the other one.
+          Object.assign(mover.bounds, before);
+          if (ox <= oy) pushY();
+          else pushX();
+          clampIn(mover.bounds);
+          if (rectsOverlap(mover.bounds, anchor.bounds)) {
+            Object.assign(mover.bounds, before);
+            continue; // leave for the unresolved report
+          }
+        }
+        moved = true;
+      }
+    }
+    if (!moved) break;
+  }
+
+  const unresolved: [string, string][] = [];
+  for (let i = 0; i < content.length; i++) {
+    for (let j = i + 1; j < content.length; j++) {
+      const a = content[i];
+      const b = content[j];
+      if (pinned.has(a.id) && pinned.has(b.id)) continue;
+      if (legal(a, b)) continue;
+      if (rectsOverlap(a.bounds, b.bounds)) unresolved.push([a.id, b.id]);
+    }
+  }
+  return unresolved;
+};
+
 /** Throws when the allocation violates a hard invariant. Called on EVERY
  *  allocate — a violation is an allocator bug (a bad shape table), never a
  *  runtime condition. Mirrors layout-composer.assertPlanInvariants. */
@@ -1282,7 +1434,35 @@ export const allocateLayout = (input: AllocInput, opts?: { forceShape?: string; 
   };
   if (mode === "resize") applySizeBands();
 
-  if (mode === "reposition") {
+  let unresolved: [string, string][] = [];
+  if (mode === "pipeline") {
+    // Pinned motifs join the content set BEFORE placement so the separation
+    // pass treats them as anchors (a moved copy must clear the throughline's
+    // per-video anchor box, not discover it afterwards).
+    for (const m of motifs) {
+      if (!m.pinnedBounds) continue;
+      const s: AllocSlot = {
+        id: m.id,
+        role: m.role,
+        bounds: { ...m.pinnedBounds },
+        layer: "content",
+        allowedOverlaps: [],
+        slot: "motif-pinned",
+      };
+      placed.push(s);
+      slots.push(s);
+    }
+    const pinnedMap = new Map<string, Rect>();
+    const sizeOf = new Map<string, { w: number; h: number }>();
+    const rankOf = new Map<string, number>();
+    for (const e of input.elements) {
+      if (e.pinnedBounds && e.pinnedBounds.w > 0 && e.pinnedBounds.h > 0) pinnedMap.set(e.id, e.pinnedBounds);
+      const size = e.fixedSize ?? e.authoredSize;
+      if (size && size.w > 0 && size.h > 0) sizeOf.set(e.id, size);
+      rankOf.set(e.id, focalKey(e));
+    }
+    unresolved = pipelinePlace(slots, pinnedMap, sizeOf, rankOf, C, gutter);
+  } else if (mode === "reposition") {
     const sizeOf = new Map<string, { w: number; h: number }>();
     const rankOf = new Map<string, number>();
     for (const e of input.elements) {
@@ -1327,8 +1507,10 @@ export const allocateLayout = (input: AllocInput, opts?: { forceShape?: string; 
     }
   }
 
-  // Throughline motif: centred in the largest residual void.
+  // Throughline motif: centred in the largest residual void. Pipeline pins
+  // were already placed verbatim above.
   for (const m of motifs) {
+    if (mode === "pipeline" && m.pinnedBounds) continue;
     const size = throughlineSize(aspect);
     const claimed = slots.filter((s) => s.layer === "content").map((s) => s.bounds);
     const v = largestFreeRect(claimed, C);
@@ -1410,12 +1592,15 @@ export const allocateLayout = (input: AllocInput, opts?: { forceShape?: string; 
     mode,
     repicked: !!opts?.forceShape,
     usedMeasured: input.elements.some((e) => !!e.measured),
+    ...(mode === "pipeline" ? { unresolved } : {}),
   };
   // Disjointness is an INVARIANT in resize mode (the shapes tile by
   // construction) but only a best-effort OUTCOME in reposition mode — authored
   // sizes are not guaranteed to be packable, and pretending otherwise would
-  // hide the finding.
-  assertAllocation(alloc, { allowResidualOverlap: mode === "reposition" });
+  // hide the finding. Pipeline mode manages it via `unresolved` + the caller's
+  // scene revert, and its pinned geometry may legally sit outside the content
+  // rect (a full-bleed hero) — upstream plan-validate owns those contracts.
+  assertAllocation(alloc, { allowResidualOverlap: mode === "reposition" || mode === "pipeline" });
   return alloc;
 };
 

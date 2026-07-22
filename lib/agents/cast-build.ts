@@ -56,6 +56,7 @@ import { capacityFor, describeCapacity, type Capacity } from "../render/capacity
 import type { FontMetrics } from "../render/font-metrics";
 import { deriveTypeScale, describeTypeScale, type ResolvedTypeScale } from "../render/type-scale";
 import { maybeRefineScenePlan } from "../render/optical-refine";
+import { maybeAllocateScenePlans, type SceneAllocationRecord } from "./allocate-apply";
 import {
   checkCopyOverflow,
   deriveFitScale,
@@ -141,6 +142,13 @@ export interface CastBuildResult {
    * rendered and re-measured the placeholder's byte-identical density).
    */
   elementOutcomes: { pieceId: string; failed: boolean; repaired: boolean }[];
+  /**
+   * RB_ALLOCATE only (absent when the flag is off): the ink-based allocator
+   * post-pass's per-scene decision record. Callers persist it next to
+   * composition.json as `allocated.json` so future dry runs can diff the
+   * allocator's plan against what shipped.
+   */
+  allocations?: SceneAllocationRecord[];
 }
 
 // ─── Per-slot output ceilings ───────────────────────────────────────────────
@@ -2758,6 +2766,32 @@ export const castBuild = async (
   const typeScaleForSlot = (slot: ElementSlot): ResolvedTypeScale =>
     deriveTypeScale({ role: slot.id, box: slot.bounds, canvas });
 
+  // ── 1b2. RB_ALLOCATE — ink-based allocator post-pass (default OFF) ────────
+  // Runs AFTER the plan is composed + validated (plan-validate fired at author
+  // time inside the head's retry loop) and BEFORE any leaf emission — the same
+  // slot the optical pass uses, and BEFORE it, so refinement polishes the
+  // bounds the frame will actually carry. Hero and throughline pass through
+  // verbatim; text boxes are sized to their own predicted ink using the SAME
+  // metrics the capacity budgets below are computed with, so box and budget
+  // cannot disagree. Flag off returns rawPlans BY REFERENCE.
+  const allocation = maybeAllocateScenePlans(rawPlans, {
+    aspect,
+    scenes: script.scenes.map((s) => ({
+      content: s.content as Record<string, unknown> | undefined,
+      composition: s.composition,
+    })),
+    ownedFieldsFor: (i, slot) => ownedCopyFields(script.scenes[i], slot),
+    metricsFor: metricsForSlot,
+  });
+  if (allocation.enabled) {
+    const applied = allocation.records.filter((r) => r.applied).length;
+    console.log(
+      `[cast-build] RB_ALLOCATE on — ${applied}/${allocation.records.length} scene(s) re-allocated, ` +
+        `${allocation.records.filter((r) => !r.applied && r.reason && !r.reason.startsWith("no-")).length} reverted, ` +
+        `${(allocation.records.reduce((n, r) => n + r.freedPxTotal, 0) / 1000).toFixed(0)}kpx freed`,
+    );
+  }
+
   // ── 1c. OPTICAL REFINEMENT (P5a) — deterministic, flag-gated, zero-LLM ────
   // Applied HERE and nowhere else: this is the last point at which bounds are
   // still a plan, and the first at which the font metrics + type scale the ink
@@ -2767,7 +2801,7 @@ export const castBuild = async (
   //
   // OFF unless RB_OPTICAL_REFINE=on. It cannot introduce a plan violation (it
   // re-validates and reverts), and any throw inside degrades to the input plan.
-  const plans = rawPlans.map((plan, i) =>
+  const plans = allocation.plans.map((plan, i) =>
     maybeRefineScenePlan(plan, {
       aspect,
       composition: script.scenes[i]?.composition,
@@ -3285,5 +3319,6 @@ export const castBuild = async (
       overflowRepaired: outcomes.filter((o) => o.overflowRepaired).length,
     },
     elementOutcomes: outcomes.map((o) => ({ pieceId: o.pieceId, failed: o.failed, repaired: o.repaired })),
+    ...(allocation.enabled ? { allocations: allocation.records } : {}),
   };
 };
