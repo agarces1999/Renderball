@@ -889,6 +889,9 @@ for (const s of scenes) {
 }
 const calibAll = truth.flatMap((t) => t.calib.map((c) => ({ ...c, build: t.build, ix: t.ix, src: t.inkMetricsSource })));
 const meanOf = (xs) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : NaN);
+/** The error of treating the DECLARED box as ink, on the same pieces — the
+ *  benchmark the predictor must beat for ink scoring to mean anything. */
+const declaredAsInkErrPct = (meanOf(calibAll.map((c) => Math.abs(c.declaredH - c.paintedH) / c.paintedH)) * 100).toFixed(0);
 if (truth.length > 0) {
   const m = meanOf;
   console.log(`\nMEASURED-TRUTH CHECK — ${truth.length} scenes with real painted rects`);
@@ -1237,7 +1240,7 @@ ${calibAll.map((c) => `<tr><td>${esc(c.build)} s${c.ix}.${esc(c.id)}</td><td>${c
 DROPPED its owned headline; flags-on-rappi s3&#39;s copy leaf DUPLICATED the hero-owned stat + chips into its own box —
 both verified in the measured element walk). Excluding those two, the predictor&#39;s mean |height error| is ~10%
 (worst ~19%) — the golden test <code>predict-ink.test.ts</code> pins both numbers. For comparison, scoring the DECLARED
-box as if it were ink errs by the full over-declaration: mean ≈ +52% on the same pieces.</p>`
+box as if it were ink errs by the full over-declaration: mean ≈ +${declaredAsInkErrPct}% on the same pieces.</p>`
     : ""
 }
 
@@ -1438,9 +1441,9 @@ Two of the ten are emission-contract violations, not predictor error
 leaf duplicated the hero-owned stat + chips into its own box — both verified in
 the measured element walk). Excluding those two: mean |height error| ≈ 10%,
 worst ≈ 19% (pinned by \`predict-ink.test.ts\`). Scoring the DECLARED box as if
-it were ink errs by the full over-declaration (mean ≈ +52% on the same pieces),
-so even an imperfect predictor is ~5× closer to the truth than box-space
-scoring.
+it were ink errs by the full over-declaration (mean ≈ +${declaredAsInkErrPct}% on the same
+pieces), so even an imperfect predictor is ~3–4× closer to the truth than
+box-space scoring.
 `;
 writeFileSync(join(ROOT, "ALLOCATOR_INK_RESCORE.md"), md);
 console.log(`wrote ${join(ROOT, "ALLOCATOR_INK_RESCORE.md")}`);
