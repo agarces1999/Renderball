@@ -940,6 +940,320 @@ if (skipped.length) {
   for (const s of skipped) console.log(`  ${s.build} s${s.scene}: ${s.why}`);
 }
 
+// ── GATE-FIX REPLAY (2026-07-22) — the SHIPPING pass, three attribution arms ─
+//
+// Everything above dry-runs `allocateLayout` (the solver). This replays the
+// PRODUCTION pass `allocateScenePlans` — the thing RB_ALLOCATE actually runs —
+// re-composing each build's plans exactly as cast-build does
+// (composeSceneLayout + the per-video throughline anchor), then running:
+//   BASELINE  {voidRepair:false, heroGrowth:false}  — the shipped gate, where
+//             text-shrinking was the entry ticket for ALL action;
+//   FIX-1     {heroGrowth:false}                    — decoupled void repair;
+//   FIX-1+2   {}                                    — + capped hero growth.
+// Zero API calls: plans from stored composition.json/script.generated.json,
+// metrics from .data/font-metrics, everything else local pure compute.
+const bundleLeaf = async (rel) => {
+  const b = await esbuild.build({
+    entryPoints: [join(process.cwd(), rel)],
+    bundle: true,
+    platform: "node",
+    format: "esm",
+    target: "node18",
+    packages: "external",
+    write: false,
+    logLevel: "silent",
+  });
+  const f = join(work, rel.replace(/[^a-z0-9]+/gi, "_") + ".mjs");
+  writeFileSync(f, b.outputFiles[0].text);
+  return import(pathToFileURL(f).href);
+};
+const { allocateScenePlans } = await bundleLeaf("lib/agents/allocate-apply.ts");
+const { composeSceneLayout } = await bundleLeaf("lib/agents/layout-composer.ts");
+const { selectThroughlineAnchor } = await bundleLeaf("lib/agents/throughline-anchor.ts");
+
+/** Mirror of cast-build.ownedCopyFields (survivor-resolved ownership) — kept
+ *  tiny here rather than bundling cast-build (which drags the SDK client). */
+const ownedFieldsMirror = (scene, slot) => {
+  const comp = scene?.composition;
+  if (!comp?.elements) return slot.contentFields;
+  const seen = new Set();
+  const surviving = [];
+  for (const e of comp.elements) {
+    if (seen.has(e.role)) continue;
+    seen.add(e.role);
+    surviving.push(e);
+  }
+  const spec = comp.elements.find((e) => e.role === slot.id);
+  const owned = new Set(spec?.ownsCopy ?? []);
+  const claimed = new Set(surviving.flatMap((e) => e.ownsCopy ?? []));
+  for (const f of slot.contentFields) if (!claimed.has(f)) owned.add(f);
+  return [...owned];
+};
+
+const GATE_ARMS = [
+  ["baseline", { voidRepair: false, heroGrowth: false }],
+  ["fix1", { heroGrowth: false }],
+  ["fix12", {}],
+];
+/** The named live targets (the gate bug's own evidence) + the controls. */
+const GATE_TARGETS = [
+  ["alloc-off-1", [0, 3, 4]],
+  ["alloc-on-1", [0, 3, 4]],
+  ["alloc-on-2", [0, 3, 4]],
+];
+const GATE_CONTROLS = [
+  ["flags-notion", 2],
+  ["p3-cycle8-razorpay", 2],
+  ["final-checkr", 2],
+];
+
+const gateScenes = []; // {build, ix, aspect, register, frame, fields, content, plan, metrics, arms: {name: {record, elements}}}
+let gateBuildCount = 0;
+{
+  const silent = { log: console.log, error: console.error, warn: console.warn };
+  for (const dir of builds) {
+    const script = readJson(join(ROOT, dir, "script.generated.json"));
+    if (!Array.isArray(script?.scenes) || script.scenes.length === 0) continue;
+    const aspect = script?.config?.aspect_ratio || "16:9";
+    if (!["16:9", "9:16", "1:1"].includes(aspect)) continue;
+    const comp = readJson(join(ROOT, dir, "composition.json"));
+    const buildInk = metricsForBuild(script);
+    const sceneInputs = script.scenes.map((s, ix) => ({
+      register: s.register,
+      content: s.content,
+      composition:
+        (Array.isArray(comp) ? comp.find((e) => (typeof e.scene === "number" ? e.scene : comp.indexOf(e)) === ix)?.composition : null) ??
+        s.composition ??
+        undefined,
+    }));
+    const hasThroughline = String(script?.narrative?.throughline ?? "").trim().length > 0;
+    let anchor = null;
+    try {
+      anchor = hasThroughline ? selectThroughlineAnchor(sceneInputs, aspect) : null;
+    } catch {
+      anchor = null;
+    }
+    let plans;
+    try {
+      plans = sceneInputs.map((s, i) =>
+        composeSceneLayout({ register: s.register, content: s.content, composition: s.composition }, aspect, {
+          hasThroughline,
+          throughlineAt: anchor?.perScene?.[i],
+        }),
+      );
+    } catch (err) {
+      skipped.push({ build: dir, scene: "—", why: `gate-fix replay: composeSceneLayout threw: ${err instanceof Error ? err.message : err}` });
+      continue;
+    }
+    const ctx = {
+      aspect,
+      scenes: sceneInputs.map((s) => ({ content: s.content, composition: s.composition })),
+      ownedFieldsFor: (i, slot) => ownedFieldsMirror(sceneInputs[i], slot),
+      metricsFor: () => buildInk.metrics,
+    };
+    const armOut = {};
+    // The pass logs one line per applied scene — 3 arms × the corpus would
+    // drown the report, so the replay muffles it.
+    console.log = () => {};
+    console.error = () => {};
+    console.warn = () => {};
+    try {
+      for (const [name, opts] of GATE_ARMS) armOut[name] = allocateScenePlans(plans, ctx, opts);
+    } finally {
+      console.log = silent.log;
+      console.error = silent.error;
+      console.warn = silent.warn;
+    }
+    gateBuildCount++;
+    for (let ix = 0; ix < plans.length; ix++) {
+      const fields = {};
+      for (const el of plans[ix].elements) {
+        if (el.kind !== "text") continue;
+        const owned = ownedFieldsMirror(sceneInputs[ix], el)
+          .filter((f) => COPY_FIELDS.includes(f))
+          .map((name) => ({ name, value: sceneInputs[ix].content?.[name] }))
+          .filter((f) => f.value !== null && f.value !== undefined);
+        if (owned.length > 0) fields[el.id] = owned;
+      }
+      gateScenes.push({
+        build: dir,
+        ix,
+        aspect,
+        register: sceneInputs[ix].register ?? null,
+        frame: existsSync(join(ROOT, dir, "frames", `scene${ix}.png`)) ? `${dir}/frames/scene${ix}.png` : null,
+        fields,
+        metrics: buildInk.metrics,
+        metricsSource: buildInk.source,
+        plan: plans[ix],
+        arms: Object.fromEntries(
+          GATE_ARMS.map(([name]) => [
+            name,
+            { record: armOut[name].records[ix], elements: armOut[name].plans[ix].elements },
+          ]),
+        ),
+      });
+    }
+  }
+}
+
+/** Ink view of a final element list (declared boxes, copy → predicted ink) —
+ *  the same transformation the pass's own guard uses, so the replay's numbers
+ *  and the pass's telemetry agree by construction. */
+const gateInkScore = (s, elements) => {
+  const scored = elements
+    .filter((e) => e.id !== "atmosphere" && e.id !== "chrome")
+    .map((e) => {
+      const f = s.fields[e.id];
+      if (!f) return { id: e.id, role: e.id, bounds: e.bounds };
+      const { rect } = predictInkRect(e.bounds, f, { w: 1920, h: 1080 }, s.metrics);
+      return { id: e.id, role: e.id, bounds: rect };
+    });
+  return scored.length > 0 ? scoreLayout(scored, s.aspect) : null;
+};
+
+// A ≥85% canvas element makes a scene's void an instrument artefact (the
+// scorer excludes the treatment, so the scene is scored on its insets alone)
+// — same held-out rule as every other aggregate in this artifact. The pass
+// itself already refuses to act on these; the AGGREGATE must not count them
+// either, or the fix arms get judged against noise they are forbidden to fix.
+for (const s of gateScenes) {
+  s.artifact = (gateInkScore(s, s.plan.elements) ?? { canvasTreatments: 0 }).canvasTreatments > 0;
+}
+
+const gateAgg = {};
+for (const [name] of GATE_ARMS) {
+  const recs = gateScenes.map((s) => s.arms[name].record);
+  const placeable = gateScenes.filter((s) => !s.artifact);
+  const voids = placeable.map((s) => s.arms[name].record.inkVoidAfter).filter((v) => typeof v === "number" && Number.isFinite(v));
+  const growSkips = {};
+  for (const r of recs) {
+    if (!r.heroGrowthSkipped) continue;
+    const k = r.heroGrowthSkipped.split(":")[0];
+    growSkips[k] = (growSkips[k] ?? 0) + 1;
+  }
+  const reasonCount = (re) => recs.filter((r) => re.test(r.reason ?? "")).length;
+  gateAgg[name] = {
+    scenes: recs.length,
+    placeable: placeable.length,
+    artifacts: recs.length - placeable.length,
+    applied: recs.filter((r) => r.applied).length,
+    kept: recs.filter((r) => !r.applied).length,
+    distributed: recs.filter((r) => r.applied && r.placement === "distributed").length,
+    inPlace: recs.filter((r) => r.applied && r.placement === "in-place").length,
+    grown: recs.filter((r) => !!r.heroGrowth).length,
+    growOnly: recs.filter((r) => r.applied && !r.placement).length,
+    voidMean: mean(voids),
+    voidWorst: voids.length ? Math.max(...voids) : NaN,
+    voidOver25: voids.filter((v) => v > 0.25).length,
+    guardVoidNoImprove: reasonCount(/^void-no-improvement/),
+    guardVoidUnresolved: reasonCount(/^void-unresolved-separation/),
+    guardVoidThrew: reasonCount(/^void-allocate-threw/),
+    guardRegression: reasonCount(/^ink-void-regression/),
+    guardUnresolved: reasonCount(/^unresolved-separation/),
+    guardValidate: reasonCount(/^validate:/),
+    growSkips,
+    neverTried: reasonCount(/^no-text-to-size/),
+  };
+}
+
+// Fidelity cross-check: the live alloc-on runs persisted the REAL pass's
+// allocated.json — the baseline arm re-derivation should reproduce their
+// applied/kept split (metrics tables may differ per weight, so ink numbers
+// can drift a little; the DECISIONS should not).
+const gateFidelity = [];
+for (const runDir of ["alloc-on-1", "alloc-on-2"]) {
+  const stored = readJson(join(ROOT, runDir, "allocated.json"));
+  if (!Array.isArray(stored)) continue;
+  for (const rec of stored) {
+    const mine = gateScenes.find((s) => s.build === runDir && s.ix === rec.scene)?.arms.baseline.record;
+    if (!mine) continue;
+    gateFidelity.push({
+      build: runDir,
+      scene: rec.scene,
+      storedApplied: !!rec.applied,
+      replayApplied: !!mine.applied,
+      storedReason: rec.reason ?? null,
+      replayReason: mine.reason ?? null,
+      match: !!rec.applied === !!mine.applied,
+    });
+  }
+}
+
+const gateControls = GATE_CONTROLS.map(([b, ix]) => {
+  const s = gateScenes.find((x) => x.build === b && x.ix === ix);
+  if (!s) return { build: b, ix, missing: true };
+  const base = s.arms.baseline;
+  const boundsKey = (els) => JSON.stringify(els.map((e) => [e.id, Math.round(e.bounds.x), Math.round(e.bounds.y), Math.round(e.bounds.w), Math.round(e.bounds.h)]));
+  const cmp = (arm) => {
+    const identical = boundsKey(arm.elements) === boundsKey(base.elements);
+    const vBase = base.record.inkVoidAfter;
+    const vArm = arm.record.inkVoidAfter;
+    return {
+      identical,
+      voidDelta: typeof vBase === "number" && typeof vArm === "number" ? vArm - vBase : null,
+      reason: arm.record.reason ?? null,
+      growSkip: arm.record.heroGrowthSkipped ?? null,
+      grown: !!arm.record.heroGrowth,
+    };
+  };
+  return { build: b, ix, register: s.register, fix1: cmp(s.arms.fix1), fix12: cmp(s.arms.fix12), baselineReason: base.record.reason ?? null };
+});
+
+const gateTargets = [];
+for (const [b, ixs] of GATE_TARGETS) {
+  for (const ix of ixs) {
+    const s = gateScenes.find((x) => x.build === b && x.ix === ix);
+    if (!s) continue;
+    gateTargets.push(s);
+  }
+}
+
+// ── Console report for the replay ──────────────────────────────────────────
+console.log(`\n══ GATE-FIX REPLAY — allocateScenePlans over ${gateBuildCount} script-bearing builds / ${gateScenes.length} scenes ══`);
+console.log(`| metric                        | BASELINE | FIX-1    | FIX-1+2  |`);
+console.log(`|-------------------------------|----------|----------|----------|`);
+const gRow = (label, f) =>
+  console.log(`| ${label.padEnd(29)} | ${String(f(gateAgg.baseline)).padEnd(8)} | ${String(f(gateAgg.fix1)).padEnd(8)} | ${String(f(gateAgg.fix12)).padEnd(8)} |`);
+gRow("applied / kept", (a) => `${a.applied}/${a.kept}`);
+gRow("distributed / in-place", (a) => `${a.distributed}/${a.inPlace}`);
+gRow("hero grown (fix 2)", (a) => a.grown);
+console.log(`| — void rows over ${gateAgg.baseline.placeable} placeable scenes (${gateAgg.baseline.artifacts} treatment-artifact held out) —`);
+gRow("ink-void after — mean", (a) => pct(a.voidMean));
+gRow("ink-void after — worst", (a) => pct(a.voidWorst));
+gRow("scenes ink-void > 25%", (a) => a.voidOver25);
+gRow("kept, never tried", (a) => a.neverTried);
+gRow("guard: void-no-improvement", (a) => a.guardVoidNoImprove);
+gRow("guard: void-unresolved/threw", (a) => a.guardVoidUnresolved + a.guardVoidThrew);
+gRow("guard: regression→in-place", (a) => a.guardRegression);
+gRow("guard: unresolved→in-place", (a) => a.guardUnresolved);
+gRow("growth skips (armed, no act)", (a) => Object.entries(a.growSkips).map(([k, v]) => `${k}×${v}`).join(" ") || "—");
+console.log(`\nfidelity vs the live runs' stored allocated.json (baseline arm): ${gateFidelity.filter((f) => f.match).length}/${gateFidelity.length} decisions reproduced`);
+for (const f of gateFidelity.filter((x) => !x.match)) {
+  console.log(`  MISMATCH ${f.build} s${f.scene}: stored ${f.storedApplied ? "applied" : `kept(${f.storedReason})`} vs replay ${f.replayApplied ? "applied" : `kept(${f.replayReason})`}`);
+}
+console.log(`\nnamed targets — the live Notion s0/s3/s4 (the gate bug's own evidence):`);
+for (const s of gateTargets) {
+  const line = (name) => {
+    const r = s.arms[name].record;
+    const what = r.applied
+      ? `${r.placement ?? "grow-only"}${r.heroGrowth ? ` +grew hero ${r.heroGrowth.from.w}×${r.heroGrowth.from.h}→${r.heroGrowth.to.w}×${r.heroGrowth.to.h} (${r.heroGrowth.areaFactor}x)` : ""}${r.moved.length ? ` moved[${r.moved.join(",")}]` : ""}`
+      : `kept (${r.reason ?? "—"})${r.heroGrowthSkipped ? ` growth-skip=${r.heroGrowthSkipped}` : ""}`;
+    return `${name.padEnd(8)} ${what}  ink-void ${pct(r.inkVoidBefore)}→${pct(r.inkVoidAfter)}`;
+  };
+  console.log(`  ${s.build} s${s.ix} [${s.register}]`);
+  for (const [name] of GATE_ARMS) console.log(`      ${line(name)}`);
+}
+console.log(`\ncontrols (must be untouched or provably no-worse):`);
+for (const c of gateControls) {
+  if (c.missing) {
+    console.log(`  ${c.build} s${c.ix}: MISSING from replay corpus`);
+    continue;
+  }
+  const say = (n, x) =>
+    `${n}: ${x.identical ? "UNTOUCHED (bounds byte-identical to baseline)" : `changed (void Δ ${x.voidDelta === null ? "—" : (x.voidDelta * 100).toFixed(1) + "pp"})`}${x.growSkip ? ` growth-skip=${x.growSkip}` : ""}${x.grown ? " GREW" : ""}`;
+  console.log(`  ${c.build} s${c.ix} [${c.register}] baseline=${c.baselineReason ?? "applied/clean"}\n      ${say("fix1 ", c.fix1)}\n      ${say("fix12", c.fix12)}`);
+}
+
 // ── HTML (static, no JavaScript) ────────────────────────────────────────────
 const esc = (s) =>
   String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -1064,6 +1378,98 @@ ${arrow(h?.overlapsExEmbedded, a?.overlapsExEmbedded, (v) => String(v))}
 <td class="muted">${s.skipped ? esc(s.skipped) : s.head?.score ? (s.usedMeasured ? "measured" : "prior") : "no head bounds"}${s.treatment ? ' <b class="bad">artefact</b>' : ""}</td>
 </tr>`;
 };
+
+// ── Gate-fix replay HTML section ────────────────────────────────────────────
+const gateArmLabel = { baseline: "BASELINE — shipped gate", fix1: "FIX-1 — decoupled void repair", fix12: "FIX-1+2 — + capped hero growth" };
+const gatePanelFor = (s, title, elements) => {
+  const boxes = elements
+    .filter((e) => e.id !== "atmosphere" && e.id !== "chrome")
+    .map((e) => ({ ...e.bounds, role: e.id, label: e.id, focal: e.id === "hero" ? 1 : null }));
+  const score = gateInkScore(s, elements);
+  return panel(title, s.aspect, boxes, score);
+};
+const gateTargetBlock = (s) => {
+  const before = gatePanelFor(s, `BEFORE — composed plan (ink view)`, s.plan.elements);
+  const arm = (name) => {
+    const r = s.arms[name].record;
+    const sub = r.applied
+      ? `${r.placement ?? "grow-only"}${r.heroGrowth ? ` · hero ×${r.heroGrowth.areaFactor}` : ""}`
+      : `kept — ${r.reason ?? "—"}`;
+    return gatePanelFor(s, `${gateArmLabel[name]} · ${sub}`, s.arms[name].elements);
+  };
+  const framePanel = s.frame
+    ? `<figure><figcaption>RENDERED FRAME (the live run)</figcaption><img loading="lazy" src="${esc(s.frame)}" alt="rendered frame ${esc(s.build)} scene ${s.ix}"/></figure>`
+    : "";
+  const badges = [
+    `<span class="badge fail">NAMED TARGET</span>`,
+    `<span class="badge muted">${esc(s.register ?? "register unknown")}</span>`,
+    `<span class="badge muted">${esc(s.metricsSource)}</span>`,
+  ];
+  const recLines = GATE_ARMS.map(([name]) => {
+    const r = s.arms[name].record;
+    const what = r.applied
+      ? `<b class="ok">ACTS</b> — ${r.placement ?? "grow-only"}${r.heroGrowth ? `, hero ${r.heroGrowth.from.w}×${r.heroGrowth.from.h}→${r.heroGrowth.to.w}×${r.heroGrowth.to.h} (${r.heroGrowth.areaFactor}×)` : ""}${r.moved.length ? `, moved [${esc(r.moved.join(", "))}]` : ""}`
+      : `kept — <code>${esc(r.reason ?? "—")}</code>${r.heroGrowthSkipped ? ` · growth skip <code>${esc(r.heroGrowthSkipped)}</code>` : ""}`;
+    return `<li><b>${esc(name)}</b>: ${what} · ink-void ${r.inkVoidBefore === null ? "—" : (r.inkVoidBefore * 100).toFixed(1) + "%"} → ${r.inkVoidAfter === null ? "—" : (r.inkVoidAfter * 100).toFixed(1) + "%"}</li>`;
+  }).join("");
+  return `<section class="scene"><h3>${esc(s.build)} · scene ${s.ix} ${badges.join(" ")}</h3>
+<div class="panels">${before}${arm("fix1")}${arm("fix12")}${framePanel}</div>
+<ul class="sub" style="font:12px ui-monospace,monospace">${recLines}</ul></section>`;
+};
+const gateFix1Acted = gateTargets.filter((s) => s.arms.fix1.record.applied).length;
+const gateFix12Acted = gateTargets.filter((s) => s.arms.fix12.record.applied).length;
+const gateFix12Grown = gateTargets.filter((s) => !!s.arms.fix12.record.heroGrowth).length;
+const gateFixHtml = `
+<h2 id="gate-fix">Gate-fix replay — text-shrinking is no longer the entry ticket</h2>
+<p class="sub"><b>The bug.</b> The shipped pass gated EVERY tier behind <code>anyResize</code>
+(<code>allocate-apply.ts</code>: <code>if (!anyResize) return keep("no-text-to-size(…)")</code>) — if no text box needed
+sizing, distribution was never attempted. The three live pinned-script Notion runs recorded
+<code>no-text-to-size(kept=1,no-strings=0)</code> on s0/s3/s4 while occupancy blocked those same scenes at 24–39% void
+in every run: perfectly-sized text AND a giant hole. This replay runs the SHIPPING pass (<code>allocateScenePlans</code>,
+the RB_ALLOCATE entry point — not just the solver) over ${gateBuildCount} script-bearing builds / ${gateScenes.length}
+scenes in three attribution arms: the pre-fix BASELINE, FIX-1 (void repair decoupled from resize — kept-tight text keeps
+its truthful size, its position is freed when the before ink-void is ≥25% of title-safe), FIX-1+2 (adds the hero-growth
+tier: ≤1.3× area, aspect preserved, only into a hero-adjacent catastrophic void, never on a ≥85% canvas-treatment hero,
+revert unless the ink view materially improves). Zero API calls.</p>
+<table><thead><tr><th>metric</th><th>BASELINE (shipped)</th><th>FIX-1 only</th><th>FIX-1+2</th></tr></thead><tbody>
+${[
+  ["applied / kept", (a) => `${a.applied} / ${a.kept}`],
+  ["placement: distributed / in-place", (a) => `${a.distributed} / ${a.inPlace}`],
+  ["hero grown (fix 2's tier)", (a) => String(a.grown)],
+  [`ink-void after — mean <span class="muted">(over the ${gateAgg.baseline.placeable} placeable scenes; ${gateAgg.baseline.artifacts} treatment-artifact scenes held out, same rule as every table above)</span>`, (a) => pct(a.voidMean)],
+  ["ink-void after — worst", (a) => pct(a.voidWorst)],
+  ["scenes with ink-void &gt; 25%", (a) => String(a.voidOver25)],
+  ["kept, never tried (<code>no-text-to-size</code>)", (a) => String(a.neverTried)],
+  ["guard: <code>void-no-improvement</code> (tried, reverted)", (a) => String(a.guardVoidNoImprove)],
+  ["guard: void unresolved / threw", (a) => String(a.guardVoidUnresolved + a.guardVoidThrew)],
+  ["guard: regression → in-place (resize path)", (a) => String(a.guardRegression)],
+  ["growth skips (armed but guarded)", (a) => esc(Object.entries(a.growSkips).map(([k, v]) => `${k}×${v}`).join(" · ") || "—")],
+].map(([label, f]) => `<tr><td>${label}</td><td>${f(gateAgg.baseline)}</td><td>${f(gateAgg.fix1)}</td><td>${f(gateAgg.fix12)}</td></tr>`).join("\n")}
+</tbody></table>
+<p class="sub">Fidelity: the baseline arm re-derives the live runs' stored <code>allocated.json</code> decisions
+${gateFidelity.filter((f) => f.match).length}/${gateFidelity.length}. Reason strings now DISTINGUISH "never tried"
+(<code>no-text-to-size(…,void=P%)</code> — the measured void is recorded even on kept scenes) from "tried and guarded"
+(<code>void-no-improvement:A%→B%</code> …) — the ambiguity that hid this bug.</p>
+
+<h3 style="font-size:16px">The named targets — live Notion s0/s3/s4, all three runs</h3>
+<p class="sub">FIX-1 alone acts on <b>${gateFix1Acted}/${gateTargets.length}</b> of the named targets;
+FIX-1+2 acts on <b>${gateFix12Acted}/${gateTargets.length}</b> (${gateFix12Grown} via hero growth).
+Panels show DECLARED boxes; the red rect is the largest ink-view void (copy scored at predicted ink — same instrument
+as the pass's own guard).</p>
+${gateTargets.map(gateTargetBlock).join("\n")}
+
+<h3 style="font-size:16px">The controls — must be untouched or provably no-worse</h3>
+<table><thead><tr><th>control</th><th>baseline outcome</th><th>FIX-1</th><th>FIX-1+2</th></tr></thead><tbody>
+${gateControls
+  .map((c) => {
+    if (c.missing) return `<tr><td>${esc(c.build)} s${c.ix}</td><td colspan="3" class="bad">missing from replay corpus</td></tr>`;
+    const cell = (x) =>
+      `${x.identical ? '<b class="ok">UNTOUCHED</b> (bounds byte-identical)' : `<b class="bad">changed</b> (void Δ ${x.voidDelta === null ? "—" : (x.voidDelta * 100).toFixed(1) + "pp"})`}${x.growSkip ? `<br><span class="muted">growth skip: <code>${esc(x.growSkip)}</code></span>` : ""}${x.grown ? '<br><b class="bad">GREW</b>' : ""}`;
+    return `<tr><td>${esc(c.build)} s${c.ix}<br><span class="muted">${esc(c.register ?? "")}</span></td><td>${esc(c.baselineReason ?? "applied (resize path)")}</td><td>${cell(c.fix1)}</td><td>${cell(c.fix12)}</td></tr>`;
+  })
+  .join("\n")}
+</tbody></table>
+`;
 
 const byBuild = new Map();
 for (const s of scenes) {
@@ -1291,6 +1697,8 @@ survives. What it establishes is that the real defect is about twice what the de
 which raises the value of a better distribution rather than lowering it. Confirming that would need a render, and no
 render was run.</p>
 
+${gateFixHtml}
+
 <h2>Index — every scene</h2>
 <p class="sub">Ordered failure-cases first, then the must-not-wreck controls, then the rest alphabetically by build.
 Every scene in the corpus has a row here and a panel below, including the ones that could not be scored.</p>
@@ -1351,7 +1759,50 @@ console.log(`\nwrote ${outPath} (${(html.length / 1024).toFixed(0)} KB, ${scenes
 
 writeFileSync(
   join(ROOT, "ALLOCATOR_DRYRUN.json"),
-  JSON.stringify({ summary, ink: inkSummary, gate, calibration: calibAll, shapeCounts, shapesByRegister: Object.fromEntries(Object.entries(shapesByRegister).map(([k, v]) => [k, [...v].sort()])), skipped }, null, 2),
+  JSON.stringify(
+    {
+      summary,
+      ink: inkSummary,
+      gate,
+      calibration: calibAll,
+      shapeCounts,
+      shapesByRegister: Object.fromEntries(Object.entries(shapesByRegister).map(([k, v]) => [k, [...v].sort()])),
+      skipped,
+      gateFixReplay: {
+        builds: gateBuildCount,
+        scenes: gateScenes.length,
+        arms: gateAgg,
+        fidelity: gateFidelity,
+        controls: gateControls,
+        targets: gateTargets.map((s) => ({
+          build: s.build,
+          ix: s.ix,
+          register: s.register,
+          arms: Object.fromEntries(
+            GATE_ARMS.map(([name]) => {
+              const r = s.arms[name].record;
+              return [
+                name,
+                {
+                  applied: r.applied,
+                  reason: r.reason ?? null,
+                  placement: r.placement ?? null,
+                  moved: r.moved,
+                  heroGrowth: r.heroGrowth ?? null,
+                  heroGrowthSkipped: r.heroGrowthSkipped ?? null,
+                  inkVoidBefore: r.inkVoidBefore,
+                  inkVoidAfter: r.inkVoidAfter,
+                  bounds: r.bounds,
+                },
+              ];
+            }),
+          ),
+        })),
+      },
+    },
+    null,
+    2,
+  ),
 );
 
 // ── ALLOCATOR_INK_RESCORE.md — the standalone comparison the gate reads ─────
