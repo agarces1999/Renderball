@@ -9,6 +9,7 @@ import { brandKitStatus } from "../../lib/brand-kit";
 import { checkEntitlement, recordMeteredUsage } from "../../lib/entitlement";
 import { assertZaiAvailable, ZaiUnavailableError } from "../../lib/zai-breaker";
 import { extractBrand } from "../../lib/crawl/extract-brand";
+import { upsertBrandKit } from "../../lib/brand-kits";
 import { withDbRetry } from "../../lib/db";
 import { recordUsage, addUsage, EMPTY_USAGE, type Usage } from "../../lib/usage";
 
@@ -74,6 +75,13 @@ export async function crawlWebsite(url: string): Promise<BrandExtract> {
   });
   for (const [model, usage] of crawlUsage) {
     await recordUsage({ op: "crawl", model, url, usage });
+  }
+  // Canvas pivot (docs/PIVOT.md NEW #5): a successful crawl is worth keeping —
+  // upsert the account's BrandKit for this host so the next document skips the
+  // crawl. Crawl-path upsert refreshes the extract only; the user's locked
+  // overrides (roles/logo) are preserved. Best-effort — never fails the crawl.
+  if (extract.ok) {
+    await upsertBrandKit({ ownerId: user.id, extract });
   }
   return extract;
 }
@@ -216,6 +224,20 @@ export async function submitBrief(
   });
   if (!kit.ready) {
     return { ok: false, error: `Brand kit incomplete — missing: ${kit.missing.join("; ")}.` };
+  }
+
+  // The identity the user just locked (extract + confirmed roles + logo
+  // source) becomes the account's saved BrandKit for this host — the submit
+  // path is the only writer of overrides, and it mirrors them exactly.
+  if (brandExtract?.ok) {
+    await upsertBrandKit({
+      ownerId: user.id,
+      extract: brandExtract,
+      overrides: {
+        palette_roles: briefParsed.palette_roles,
+        logo_source: logoSource,
+      },
+    });
   }
 
   const preallocated = buildPreallocatedAssets(savedFiles, brandExtract);

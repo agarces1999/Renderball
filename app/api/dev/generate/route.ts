@@ -4,6 +4,7 @@ import { saveBrief, saveScript, type StoredBrief } from "../../../../lib/store";
 import { DEV_OWNER_ID } from "../../../../lib/auth";
 import { generateScript, DECK_SECONDS_PER_SLIDE } from "../../../../lib/agents/script-generator";
 import { extractBrand } from "../../../../lib/crawl/extract-brand";
+import { upsertBrandKit } from "../../../../lib/brand-kits";
 import { MODELS } from "../../../../lib/anthropic";
 import { addUsage, EMPTY_USAGE, recordUsage, type Usage } from "../../../../lib/usage";
 import type { BrandExtract } from "../../../new/schema";
@@ -76,6 +77,11 @@ export async function POST(request: Request) {
     }
   }
   const brandExtract = extract?.ok ? extract : undefined;
+  // Canvas pivot: same kit persistence the product crawl gets, on the dev
+  // partition — so saved-kit reuse is exercisable by the headless harness.
+  if (brandExtract) {
+    await upsertBrandKit({ ownerId: DEV_OWNER_ID, extract: brandExtract });
+  }
   const preallocated = buildPreallocatedFromCrawl(brandExtract);
 
   const brief_id = ulid();
