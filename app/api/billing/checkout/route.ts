@@ -1,18 +1,40 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "../../../../lib/auth";
-import { getStripe, isStripeConfigured, appOrigin } from "../../../../lib/stripe";
+import {
+  getStripe,
+  isStripeConfigured,
+  isTokenBillingConfigured,
+  appOrigin,
+} from "../../../../lib/stripe";
 
 /**
- * POST /api/billing/checkout — create a Stripe Checkout Session for the
- * subscription and return its hosted URL. Env-gated: 503 with an honest
- * message until the STRIPE_* keys exist.
+ * POST /api/billing/checkout — create a Stripe Checkout Session and return
+ * its hosted URL. Env-gated: 503 with an honest message until the STRIPE_*
+ * keys exist.
+ *
+ * Body (optional): { plan: "tokens" | "subscription" }. Default stays the
+ * flat subscription. "tokens" starts the usage-based metered subscription
+ * (docs/METERING.md) — a metered line item carries NO quantity; the invoice
+ * total comes from the Billing Meter's overage events.
  */
-export async function POST() {
+export async function POST(request: Request) {
   const user = await getCurrentUser();
   if (!user) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
-  if (!isStripeConfigured()) {
+
+  let plan: "tokens" | "subscription" = "subscription";
+  try {
+    const body = await request.json();
+    if (body && typeof body === "object" && (body as { plan?: string }).plan === "tokens") {
+      plan = "tokens";
+    }
+  } catch {
+    /* empty body → default plan; the route predates the body */
+  }
+
+  const configured = plan === "tokens" ? isTokenBillingConfigured() : isStripeConfigured();
+  if (!configured) {
     return NextResponse.json(
       { error: "Checkout isn't live yet — payments are being wired up." },
       { status: 503 },
@@ -33,7 +55,10 @@ export async function POST() {
     const stripe = getStripe();
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",
-      line_items: [{ price: process.env.STRIPE_PRICE_SUBSCRIPTION as string, quantity: 1 }],
+      line_items:
+        plan === "tokens"
+          ? [{ price: process.env.STRIPE_PRICE_TOKENS as string }]
+          : [{ price: process.env.STRIPE_PRICE_SUBSCRIPTION as string, quantity: 1 }],
       // client_reference_id is how the webhook maps the session back to OUR
       // user — never trust email for identity.
       client_reference_id: user.id,
