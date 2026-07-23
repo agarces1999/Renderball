@@ -27,6 +27,21 @@
  * to degrade to, and that is a head/transport defect, not a taste problem.
  */
 import type { Script, Scene, SceneComposition } from "../../src/schema";
+import {
+  GRID,
+  gridSpatialBlocks,
+  gridOutputBlocks,
+  buildGridWorkedExample,
+  gridSceneToComposition,
+  type GridSceneRaw,
+} from "./grid-intent";
+import {
+  cellSpatialBlocks,
+  cellOutputBlocks,
+  buildCellWorkedExample,
+  cellSceneToComposition,
+  type CellSceneRaw,
+} from "./cell-intent";
 
 // ─── Canvas (frame-authoring) ────────────────────────────────────────────────
 // Mirrors CANVAS in layout-composer.ts / measure-scene.ts — the head authors
@@ -47,7 +62,38 @@ const normalizeAspect = (a: string | undefined): Aspect =>
 
 // ─── Public contract ────────────────────────────────────────────────────────
 
+/**
+ * HOW THE HEAD DECLARES PLACE (spatial P2 bake-off, 2026-07-18).
+ *
+ *   "pixel" — the shipped representation: each element carries raw
+ *             `bounds: {x,y,w,h}` on the aspect canvas.
+ *   "grid"  — a CSS `grid-template-areas` ASCII block on a square-celled
+ *             lattice plus per-element `area` sidecars, converted to the SAME
+ *             pixel bounds deterministically (lib/agents/grid-intent.ts).
+ *   "cells" — the SAME lattice as "grid", stated as four integers per element
+ *             (colStart/colSpan/rowStart/rowSpan) in the JSON schema instead of
+ *             drawn as a picture (lib/agents/cell-intent.ts).
+ *
+ * ARM C EXISTS TO DECONFOUND ARM B. "grid" changed two things at once —
+ * discretization AND ASCII-art encoding — and lost, chiefly by miscounting
+ * characters per row. "cells" keeps the discretization and drops the picture, so
+ * the three arms together separate the two variables: if "cells" parses like
+ * "pixel", the ASCII art was the defect; if it fails like "grid", the lattice
+ * was.
+ *
+ * ONE code path with a switch, deliberately not a fork: everything except the
+ * spatial blocks of the prompt — interior inventories, copy ownership, accent
+ * discipline, the register shapes, the budget, the worked example's non-spatial
+ * content — is byte-identical across all three, so the bake-off changes exactly
+ * one variable. Downstream is identical too: all three produce a
+ * `SceneComposition` carrying pixel bounds, so `composeSceneLayout` /
+ * `validateScenePlan` / `checkSceneComposition` cannot tell them apart.
+ */
+export type HeadIntent = "pixel" | "grid" | "cells";
+
 export interface CompositionPromptOpts {
+  /** How the head declares placement. Default "pixel" — the shipped arm. */
+  intent?: HeadIntent;
   /** The brand the video is for — anchors "authored for THIS brand". */
   brandName?: string;
   /** One line describing the palette (hexes/mood) so interior values can name
@@ -184,13 +230,14 @@ export const buildCompositionPrompt = (
   opts: CompositionPromptOpts = {},
 ): { system: string; user: string } => {
   const aspect = normalizeAspect(opts.aspect);
+  const intent: HeadIntent = opts.intent ?? "pixel";
   const { w: W, h: H } = HEAD_CANVAS[aspect];
   const cx = Math.round(W / 2);
   const cy = Math.round(H / 2);
-  const system = [
-    `You are the COMPOSITION DIRECTOR for an animated brand video — for each scene, you author the complete blueprint the builders will transcribe, AND you COMPOSE THE WHOLE FRAME (every element's place on the canvas).`,
-    `The builders downstream are fast literal transcribers: whatever you do not author, they will not invent well. Every creative decision lands HERE, as concrete values. No one else composes the frame — if you cluster the mass in a corner and leave a dead void, that is exactly what ships.`,
-    ``,
+
+  // The ONE variable under test. Everything outside these three slots is
+  // identical across arms.
+  const pixelSpatial = [
     `FRAME COMPOSITION — the canvas is ${W}×${H}px (origin top-left). Compose it like a senior art director, the way a premium launch frame (Apple, Linear, Stripe) is composed, NOT like a form dumped in a column:`,
     `- ONE DOMINANT FOCAL OBJECT. Exactly one element is the hero the eye lands on first — usually the diegetic hero (a product screen, dashboard, device mock). Give it focalRank 1 and place it LARGE and near the OPTICAL CENTER (around ${cx},${cy} — its center within the central ~64% of the frame width and ~68% of its height, never jammed into a corner). Everything else is subordinate: focalRank 2, 3, … in descending prominence.`,
     `- DELIBERATE NEGATIVE SPACE. The frame must BREATHE — name, in negativeSpace, WHERE the intentional emptiness lives (a quiet band, a margin, the gutter beside the focal object). This is the opposite of the dead-void defect: emptiness is a COMPOSED choice around the focal object, not a corner-clustered accident with a huge blank middle.`,
@@ -200,6 +247,45 @@ export const buildCompositionPrompt = (
     `- THE CORNER LOCKUP IS ALWAYS PROVIDED. The app paints ONE clean brand lockup in the frame's TOP-LEFT corner on every scene automatically — you do NOT author it, and it is the scene's single brand mark by default (set budget.brandMark to "chrome"). Therefore NEVER author a brand logo, wordmark, or brand-name mark in the frame's upper-left, and never name "the [brand] logo upper-left" in any element's interior — it collides with the provided corner lockup and ships as a garbled double wordmark. A brand mark may appear inside a hero ONLY as diegetic product chrome INSIDE a device/app mock (a small logo in the mock's own sidebar or header), placed well clear of the frame's own top-left corner. If you truly need the mark on a role instead of the chrome, that role must place it away from the top-left corner and you must NOT also expect the corner lockup — but "chrome" is the right answer for almost every scene.`,
     ``,
     `PER-ELEMENT PLACEMENT: every non-atmosphere element carries a focalRank AND real pixel bounds { x, y, w, h } inside the ${W}×${H} canvas. Bounds must be DISJOINT (no two content elements overlap) unless the scene is a full-bleed treatment where the hero IS the canvas and copy sits on top. Keep a comfortable margin from every edge (nothing flush to the frame edge). The text (copy) element's w is a MAX width — its height flows. atmosphere is the full-bleed base layer and needs no bounds/focalRank.`,
+  ];
+
+  const spatialBlocks =
+    intent === "grid" ? gridSpatialBlocks(aspect) : intent === "cells" ? cellSpatialBlocks(aspect) : pixelSpatial;
+
+  const pixelPlacementBullet = `   - bounds: { x, y, w, h } in pixels on the ${W}×${H} canvas — where this element sits and how big it is. The focalRank-1 element is LARGE and near center; content elements are pairwise DISJOINT; nothing flush to an edge. (atmosphere carries none — it is full-bleed.)`;
+  const gridPlacementBullet = `   - area: the SINGLE character this element owns in the grid, and sizeClass ("dominant" | "supporting" | "accent"). The focalRank-1 element's area is LARGE and near the lattice centre; every area is a solid rectangle. (atmosphere carries neither — it is full-bleed.)`;
+  const cellPlacementBullet = `   - colStart, colSpan, rowStart, rowSpan: four WHOLE NUMBERS placing this element's block on the ${GRID[aspect].cols}×${GRID[aspect].rows} lattice (colStart 0…${GRID[aspect].cols - 1}, rowStart 0…${GRID[aspect].rows - 1}, colStart + colSpan ≤ ${GRID[aspect].cols}, rowStart + rowSpan ≤ ${GRID[aspect].rows}), plus sizeClass ("dominant" | "supporting" | "accent"). The focalRank-1 element's block is LARGE and near the lattice centre; blocks never overlap unless declared in layers. (atmosphere carries none — it is full-bleed.)`;
+  const placementBullet =
+    intent === "grid" ? gridPlacementBullet : intent === "cells" ? cellPlacementBullet : pixelPlacementBullet;
+
+  const outputBlocks =
+    intent === "grid"
+      ? [
+          ...gridOutputBlocks(aspect),
+          ``,
+          `WORKED EXAMPLE — one scene, for an UNRELATED brand (a fictional coffee-subscription app):`,
+          buildGridWorkedExample(aspect),
+        ]
+      : intent === "cells"
+      ? [
+          ...cellOutputBlocks(aspect),
+          ``,
+          `WORKED EXAMPLE — one scene, for an UNRELATED brand (a fictional coffee-subscription app):`,
+          buildCellWorkedExample(aspect),
+        ]
+      : [
+          `OUTPUT: ONLY JSON — a single array of SceneComposition objects, one per scene, in scene order. No prose, no markdown fences, no keys beyond the contract:`,
+          `[{ "elements": [{ "role", "subject", "focalRank", "bounds": { "x", "y", "w", "h" }, "interior": [...], "ownsCopy": [...], "motion" }], "atmosphere", "negativeSpace", "budget": { "brandMark", "cta" } }]`,
+          ``,
+          `WORKED EXAMPLE — one scene, for an UNRELATED brand (a fictional coffee-subscription app):`,
+          WORKED_EXAMPLE,
+        ];
+
+  const system = [
+    `You are the COMPOSITION DIRECTOR for an animated brand video — for each scene, you author the complete blueprint the builders will transcribe, AND you COMPOSE THE WHOLE FRAME (every element's place on the canvas).`,
+    `The builders downstream are fast literal transcribers: whatever you do not author, they will not invent well. Every creative decision lands HERE, as concrete values. No one else composes the frame — if you cluster the mass in a corner and leave a dead void, that is exactly what ships.`,
+    ``,
+    ...spatialBlocks,
     ``,
     `FOR EVERY SCENE, author:`,
     `1. elements[] — one entry per element the scene needs, each on this contract:`,
@@ -211,7 +297,7 @@ export const buildCompositionPrompt = (
     `     throughline = the recurring cross-scene motif — cast it in EVERY scene when the script's narrative names a throughline. CRITICAL: the throughline is NOT a free-floating pinned layer hovering in empty space. Author its bounds so they sit ON the focal object — INSIDE or overlapping the hero's bounds (a status chip inside the product mock, a marker on the chart, a labeled slot within the hero panel), the way the motif lives as a real element of the scene rather than a sticker in the void. A throughline whose bounds land in the frame's negative space, disconnected from all content, ships as clutter and gets stripped (which can empty the scene). Keep it small, integrated, and on-content.`,
     `   - subject: what the element IS, concretely. Name the artifact ("the Acme billing dashboard in a browser frame"), never a vague gesture ("some UI", "a visual").`,
     `   - focalRank: the element's place in the frame's focal hierarchy — 1 for the single dominant focal object (near optical center), 2, 3, … descending. Exactly ONE element per scene is focalRank 1. (atmosphere carries none.)`,
-    `   - bounds: { x, y, w, h } in pixels on the ${W}×${H} canvas — where this element sits and how big it is. The focalRank-1 element is LARGE and near center; content elements are pairwise DISJOINT; nothing flush to an edge. (atmosphere carries none — it is full-bleed.)`,
+    placementBullet,
     `   - interior: the interior inventory — SHORT concrete items the element must visibly contain. A hero needs AT LEAST 6, and AT LEAST 4 of a hero's items must CARRY TEXT — quoted micro-copy or a concrete value (a chip, timestamp, label, price, metric: 'status chip "Rendering — 5 of 8"'); a text-free logo/glow/CTA-shape inventory renders a hollow scene and is a validation failure. The inventory should imply NESTED structure (rows inside panels, chips inside rows), never six floating fragments. SURFACE CONTRAST: one hero interior item must NAME the hero's dominant surface tone, chosen to CONTRAST with the scene canvas — if the scene canvas is dark, the hero's primary panel must be a light surface or carry high-luminance content ("checkout card on a crisp off-white surface"); if the canvas is light, a dark or richly saturated surface. A hero painted in the canvas's own tone renders as a washout and is a validation failure. EVERY item carries a REAL value authored for THIS brand and THIS scene — a label, number, name, timestamp, or state drawn from (or plausibly extending) this script's content. Plausible diegetic mock values (a price, balance, timestamp inside the product's own UI) are set dressing, not marketing claims — author them concrete and realistic. NEVER sample, masked, or placeholder values ("$XX", "$— — —", "•••", "Item 1", "Company name", lorem) — the builders ship your values verbatim, so a placeholder here ships as a placeholder on screen. Describe the copy widget CONCRETELY — "headline set in display type", "eyebrow line in mono caps" — NEVER with the word "placeholder" (an interior item containing "placeholder" ships that word on screen and is a validation failure). And interior items must NEVER contain the text of any copy field an element ownsCopy — the owning element renders those words exactly once; reference the WIDGET, not the words ("the CTA pill in the accent", never the CTA's text). A validator rejects interiors that retype owned copy.`,
     `   - ownsCopy: the scene content fields (eyebrow, headline, lede, bullets, caption, meta, cta) this element EXCLUSIVELY renders. Be explicit on every element — an empty array means it owns nothing. Ownership is exclusive: no field appears on two elements, and the headline is owned EXACTLY once per scene. An owned field's TEXT lives only in the owner's render — no interior[] item anywhere in the scene may restate it.`,
     `   - motion: ONE sustained motion beat, tied BY NAME to an item in that element's interior list ("the progress bar fills to 62% as the status chip ticks over").`,
@@ -231,11 +317,7 @@ export const buildCompositionPrompt = (
     ``,
     `ADJACENT-SCENE VARIETY: adjacent scenes must not read as the same layout archetype more than 2 in a row — vary the hero's ARTIFACT TYPE (browser mock, phone frame, dashboard, chart panel, terminal, physical-object tableau) and its implied placement side scene to scene, so no three consecutive scenes ship the same split composition.`,
     ``,
-    `OUTPUT: ONLY JSON — a single array of SceneComposition objects, one per scene, in scene order. No prose, no markdown fences, no keys beyond the contract:`,
-    `[{ "elements": [{ "role", "subject", "focalRank", "bounds": { "x", "y", "w", "h" }, "interior": [...], "ownsCopy": [...], "motion" }], "atmosphere", "negativeSpace", "budget": { "brandMark", "cta" } }]`,
-    ``,
-    `WORKED EXAMPLE — one scene, for an UNRELATED brand (a fictional coffee-subscription app):`,
-    WORKED_EXAMPLE,
+    ...outputBlocks,
     `The example is ILLUSTRATIVE — your values must come from this script's content and brand; copying any example value is a validation failure.`,
   ].join("\n");
 
@@ -253,7 +335,11 @@ export const buildCompositionPrompt = (
 
   const n = script.narrative;
   const user = [
-    `Canvas: ${W}×${H}px (aspect ${aspect}) — author every element's bounds { x, y, w, h } on THIS canvas, optical center ~${cx},${cy}.`,
+    intent === "grid"
+      ? `Canvas: ${W}×${H}px (aspect ${aspect}) — compose every scene as a grid-template-areas block on the ${GRID[aspect].cols}×${GRID[aspect].rows} square-cell lattice described above.`
+      : intent === "cells"
+        ? `Canvas: ${W}×${H}px (aspect ${aspect}) — place every element on the ${GRID[aspect].cols}×${GRID[aspect].rows} square-cell lattice described above, as whole-number colStart/colSpan/rowStart/rowSpan.`
+        : `Canvas: ${W}×${H}px (aspect ${aspect}) — author every element's bounds { x, y, w, h } on THIS canvas, optical center ~${cx},${cy}.`,
     opts.brandName ? `Brand: ${opts.brandName}` : "",
     opts.paletteHint ? `Palette: ${opts.paletteHint}` : "",
     opts.designNotes ? `Design notes: ${opts.designNotes}` : "",
@@ -327,6 +413,122 @@ export const parseCompositionJson = (text: string): SceneComposition[] | { error
   return { error: lastError };
 };
 
+/**
+ * Dig the JSON array out of the head's output WITHOUT asserting the pixel-arm
+ * item shape — the grid arm's items carry `grid`/`area` instead of `bounds`, so
+ * the two arms share extraction but not validation. Mirrors
+ * `parseCompositionJson`'s three observed emission shapes exactly (bare JSON, a
+ * fenced block with prose around it, prose-then-array), so neither arm gets a
+ * more forgiving reader than the other.
+ */
+const extractJsonArray = (text: string): unknown[] | { error: string } => {
+  const raw = text.trim();
+  const candidates: string[] = [];
+  const fenceRe = /```[a-z]*[ \t]*\r?\n([\s\S]*?)\r?\n[ \t]*```/gi;
+  let best = "";
+  for (let m = fenceRe.exec(raw); m; m = fenceRe.exec(raw)) {
+    if (m[1].length > best.length) best = m[1];
+  }
+  if (best) candidates.push(best.trim());
+  candidates.push(raw);
+  const a = raw.indexOf("[");
+  const b = raw.lastIndexOf("]");
+  if (a !== -1 && b > a) candidates.push(raw.slice(a, b + 1));
+
+  let lastError = "no JSON array found in output";
+  for (const cand of candidates) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(cand);
+    } catch (err) {
+      lastError = `JSON.parse failed: ${err instanceof Error ? err.message : String(err)}`;
+      continue;
+    }
+    const arr = Array.isArray(parsed)
+      ? parsed
+      : parsed && typeof parsed === "object" && Array.isArray((parsed as { scenes?: unknown }).scenes)
+        ? (parsed as { scenes: unknown[] }).scenes
+        : null;
+    if (!arr) {
+      lastError = "parsed JSON is not an array of scene objects";
+      continue;
+    }
+    return arr;
+  }
+  return { error: lastError };
+};
+
+/**
+ * ARM B's parse: JSON array → per-scene grid ASCII → the SAME
+ * `SceneComposition[]` (pixel bounds and all) the pixel arm returns directly.
+ *
+ * An INVALID DECLARATION — wrong row count, wrong row length, a non-rectangular
+ * named area, an element claiming an area the grid never draws — is a parse
+ * error here, exactly as the bake-off's failure-rate metric requires, and it
+ * routes into the same repair-retry the pixel arm uses for malformed bounds.
+ * Errors are collected across ALL scenes, not just the first: the head re-emits
+ * every scene per round, so surfacing one defect at a time would burn a retry
+ * per defect.
+ */
+export const parseGridCompositionJson = (
+  text: string,
+  aspect: Aspect,
+): SceneComposition[] | { error: string } => {
+  const arr = extractJsonArray(text);
+  if ("error" in arr) return arr;
+
+  const out: SceneComposition[] = [];
+  const errors: string[] = [];
+  arr.forEach((item, i) => {
+    if (!item || typeof item !== "object") {
+      errors.push(`scene ${i}: not an object.`);
+      return;
+    }
+    const { composition, errors: sceneErrors } = gridSceneToComposition(item as GridSceneRaw, aspect);
+    if (composition) out.push(composition);
+    else errors.push(...sceneErrors.map((e) => `scene ${i}: ${e}`));
+  });
+
+  if (errors.length > 0) return { error: errors.join(" ") };
+  return out;
+};
+
+/**
+ * ARM C's parse: JSON array → per-scene integer cell rectangles → the SAME
+ * `SceneComposition[]` (pixel bounds and all) the pixel arm returns directly.
+ *
+ * An INVALID DECLARATION — a missing or non-integer coordinate, a block that
+ * runs off the lattice, an undeclared overlap — is a parse error here, exactly
+ * as the bake-off's failure-rate metric requires, and it routes into the same
+ * repair-retry both other arms use. Errors are collected across ALL scenes for
+ * the same reason arm B collects them: the head re-emits every scene per round.
+ *
+ * Structurally identical to `parseGridCompositionJson` on purpose — the two
+ * discrete arms differ ONLY in how a rectangle is written down.
+ */
+export const parseCellCompositionJson = (
+  text: string,
+  aspect: Aspect,
+): SceneComposition[] | { error: string } => {
+  const arr = extractJsonArray(text);
+  if ("error" in arr) return arr;
+
+  const out: SceneComposition[] = [];
+  const errors: string[] = [];
+  arr.forEach((item, i) => {
+    if (!item || typeof item !== "object") {
+      errors.push(`scene ${i}: not an object.`);
+      return;
+    }
+    const { composition, errors: sceneErrors } = cellSceneToComposition(item as CellSceneRaw, aspect);
+    if (composition) out.push(composition);
+    else errors.push(...sceneErrors.map((e) => `scene ${i}: ${e}`));
+  });
+
+  if (errors.length > 0) return { error: errors.join(" ") };
+  return out;
+};
+
 // ─── The generation loop ────────────────────────────────────────────────────
 
 /** The repair prompt: the FULL original ask + the errors verbatim + the broken
@@ -361,6 +563,14 @@ export const generateComposition = async (
   const { script, caller, validate } = opts;
   const maxAttempts = Math.max(1, opts.maxAttempts ?? 3);
   const { system, user } = buildCompositionPrompt(script, opts);
+  const intent: HeadIntent = opts.intent ?? "pixel";
+  const aspect = normalizeAspect(opts.aspect);
+  const parseAttempt = (text: string): SceneComposition[] | { error: string } =>
+    intent === "grid"
+      ? parseGridCompositionJson(text, aspect)
+      : intent === "cells"
+        ? parseCellCompositionJson(text, aspect)
+        : parseCompositionJson(text);
 
   const errors: string[] = [];
   let lastScenes: Scene[] | null = null;
@@ -371,7 +581,7 @@ export const generateComposition = async (
   while (attempts < maxAttempts) {
     attempts++;
     const res = await caller({ system, user: nextUser, maxTokens: HEAD_MAX_TOKENS, effort: HEAD_EFFORT });
-    const parsed = parseCompositionJson(res.text);
+    const parsed = parseAttempt(res.text);
 
     if ("error" in parsed) {
       lastParseError = parsed.error;

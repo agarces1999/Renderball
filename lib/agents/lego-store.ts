@@ -243,3 +243,189 @@ export const removePieceFromManifest = async (
   await writeManifest(genDir, manifest);
   return { ok: true, file: path.join(genDir, LEGO_DIR, pm.file) };
 };
+
+// ── undo ring ───────────────────────────────────────────────────────────────
+// Every editor mutation is a read-modify-write over manifest.json + the piece
+// files, so ONE snapshot of both restores any op (insert, move, resize, delete,
+// regenerate, text/format) uniformly — no per-op inverse logic. Snapshots are
+// captured BEFORE the mutation but only written AFTER it succeeds, so a failed
+// op never leaves a no-op entry on the stack.
+
+const UNDO_DIR = ".undo";
+const UNDO_CAP = 25;
+
+export interface UndoSnapshot {
+  manifest: Manifest;
+  /** filename (e.g. "s0.copy.tsx") → body. The whole pieces dir, so a snapshot
+   *  restores adds AND deletes without knowing which happened. */
+  pieces: Record<string, string>;
+}
+
+const undoDir = (genDir: string): string => path.join(genDir, LEGO_DIR, UNDO_DIR);
+
+const entryNames = async (genDir: string): Promise<string[]> => {
+  const names = await fs.readdir(undoDir(genDir)).catch(() => [] as string[]);
+  return names.filter((n) => n.endsWith(".json")).sort(); // zero-padded → lexical == chronological
+};
+
+/** Snapshot the current store. Cheap enough to take on every op (piece bodies are
+ *  a few KB each) and taken before mutating so it captures the pre-edit state. */
+export const captureUndo = async (genDir: string): Promise<UndoSnapshot | null> => {
+  try {
+    const manifest = await readManifest(genDir);
+    const dir = path.join(genDir, LEGO_DIR, "pieces");
+    const names = await fs.readdir(dir).catch(() => [] as string[]);
+    const pieces: Record<string, string> = {};
+    for (const n of names) {
+      if (n.endsWith(".tsx")) pieces[n] = await fs.readFile(path.join(dir, n), "utf8");
+    }
+    return { manifest, pieces };
+  } catch {
+    return null; // not decomposed / unreadable — undo simply isn't available
+  }
+};
+
+/** Push a captured snapshot onto the ring (call only after the op succeeded). */
+export const commitUndo = async (
+  genDir: string,
+  snapshot: UndoSnapshot | null,
+  label: string,
+): Promise<void> => {
+  if (!snapshot) return;
+  try {
+    await fs.mkdir(undoDir(genDir), { recursive: true });
+    const names = await entryNames(genDir);
+    const nextIdx = names.length === 0 ? 1 : Number(names[names.length - 1].slice(0, 6)) + 1;
+    const file = `${String(nextIdx).padStart(6, "0")}.json`;
+    await fs.writeFile(
+      path.join(undoDir(genDir), file),
+      JSON.stringify({ label, ...snapshot }),
+      "utf8",
+    );
+    // Prune oldest beyond the cap.
+    const all = await entryNames(genDir);
+    for (const stale of all.slice(0, Math.max(0, all.length - UNDO_CAP))) {
+      await fs.rm(path.join(undoDir(genDir), stale), { force: true });
+    }
+  } catch {
+    /* undo is best-effort — never fail the user's edit because history couldn't be written */
+  }
+};
+
+export const undoDepth = async (genDir: string): Promise<number> => (await entryNames(genDir)).length;
+
+/**
+ * Restore the newest snapshot into the store (manifest + the whole pieces dir) and
+ * pop it. Does NOT write Composition.tsx — the caller commits, so a restore that
+ * somehow fails to compile can be rolled back like any other op.
+ */
+export const undoLast = async (
+  genDir: string,
+): Promise<{ ok: boolean; label?: string; remaining?: number; error?: string }> => {
+  const names = await entryNames(genDir);
+  if (names.length === 0) return { ok: false, error: "nothing to undo" };
+  const file = path.join(undoDir(genDir), names[names.length - 1]);
+  let snap: UndoSnapshot & { label?: string };
+  try {
+    snap = JSON.parse(await fs.readFile(file, "utf8"));
+  } catch {
+    await fs.rm(file, { force: true });
+    return { ok: false, error: "undo history entry was unreadable" };
+  }
+  const piecesDir = path.join(genDir, LEGO_DIR, "pieces");
+  // Rewrite the pieces dir to exactly the snapshot's contents: added files vanish,
+  // deleted files come back, edited bodies revert.
+  await fs.rm(piecesDir, { recursive: true, force: true });
+  await fs.mkdir(piecesDir, { recursive: true });
+  for (const [name, body] of Object.entries(snap.pieces)) {
+    await fs.writeFile(path.join(piecesDir, name), body, "utf8");
+  }
+  await writeManifest(genDir, snap.manifest);
+  await fs.rm(file, { force: true });
+  return { ok: true, label: snap.label, remaining: names.length - 1 };
+};
+
+export interface InsertPieceInput {
+  sceneIndex: number;
+  /** Collision-free id (allocate with `nextPieceId`, never trust a caller). */
+  id: string;
+  kind: string;
+  /** The `<Piece id=".." kind="..">` marker — must match emitPiece's shape. */
+  openTag: string;
+  /** The positioned wrapper div + inner JSX, verbatim (written to pieces/<id>.tsx). */
+  body: string;
+  offset?: PieceOffset;
+}
+
+/**
+ * Splice a fresh `{/*RB:id* /}` slot into a scene template. Placed just BEFORE the
+ * chrome piece's slot so BrandChrome keeps painting last (on top); else after the
+ * last existing slot; else (no slots remain) before the Section's closing `</div>`.
+ * Matches the observed template's blank-line + 6-space slot indentation.
+ */
+const insertSlotIntoTemplate = (template: string, pieces: PieceMeta[], id: string): string => {
+  const newSlot = pieceSlot(id);
+  const pad = "\n\n      ";
+  const chrome = pieces.find((p) => p.kind === "chrome");
+  if (chrome) {
+    const at = template.indexOf(pieceSlot(chrome.id));
+    if (at >= 0) return template.slice(0, at) + newSlot + pad + template.slice(at);
+  }
+  let lastEnd = -1;
+  for (const p of pieces) {
+    const at = template.lastIndexOf(pieceSlot(p.id));
+    if (at >= 0) lastEnd = Math.max(lastEnd, at + pieceSlot(p.id).length);
+  }
+  if (lastEnd >= 0) return template.slice(0, lastEnd) + pad + newSlot + template.slice(lastEnd);
+  // No slots at all — splice before the Section's closing </div>.
+  return template.replace(/<\/div>(\s*\);\s*};?\s*)$/, (m) => `${pad}${newSlot}\n    ${m}`);
+};
+
+/**
+ * Insert a NEW top-level piece into a scene (the add-primitive / marquee-generate
+ * path — the counterpart of removePieceFromManifest). Writes the body file, splices
+ * a slot into the template, appends the PieceMeta. Pure store mutation: the caller's
+ * commit() reassembles + compile-checks. Returns false if the scene is missing or the
+ * id already exists (never double-insert). The reassembler then emits the new piece
+ * exactly like any other; a later regen/move/delete/decompose treats it as native.
+ */
+export const insertPiece = async (genDir: string, input: InsertPieceInput): Promise<boolean> => {
+  const { sceneIndex, id, kind, openTag, body, offset } = input;
+  const legoDir = path.join(genDir, LEGO_DIR);
+  const manifest = await readManifest(genDir);
+  const scene = manifest.scenes.find((s) => s.sceneIndex === sceneIndex);
+  if (!scene) return false;
+  if (scene.pieces.some((p) => p.id === id)) return false;
+
+  const file = path.posix.join("pieces", `${id}.tsx`);
+  await fs.writeFile(path.join(legoDir, file), body, "utf8");
+  scene.template = insertSlotIntoTemplate(scene.template, scene.pieces, id);
+
+  // Insert the meta before chrome (keeps the array in DOM/paint order); else append.
+  const chromeIdx = scene.pieces.findIndex((p) => p.kind === "chrome");
+  const meta: PieceMeta = { id, kind, openTag, file, ...(offset ? { offset } : {}) };
+  if (chromeIdx >= 0) scene.pieces.splice(chromeIdx, 0, meta);
+  else scene.pieces.push(meta);
+  await writeManifest(genDir, manifest);
+  return true;
+};
+
+/**
+ * Allocate a collision-free id for a new piece in a scene: `s<sceneIndex>.add<n>`,
+ * smallest n≥1 free of EVERY id already in use — manifest piece ids AND any `id="…"`
+ * inside a piece body (nested children live in bodies, not the manifest). Always
+ * server-allocated: a duplicate id makes reassemble's slot replace hit the wrong piece.
+ */
+export const nextPieceId = async (genDir: string, sceneIndex: number): Promise<string> => {
+  const d = await readDecomposed(genDir);
+  const used = new Set<string>();
+  for (const s of d.scenes) {
+    for (const p of s.pieces) {
+      used.add(p.id);
+      for (const m of p.body.matchAll(/\bid="([^"]+)"/g)) used.add(m[1]);
+    }
+  }
+  let n = 1;
+  while (used.has(`s${sceneIndex}.add${n}`)) n++;
+  return `s${sceneIndex}.add${n}`;
+};

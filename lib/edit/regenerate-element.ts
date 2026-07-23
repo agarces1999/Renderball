@@ -14,7 +14,7 @@
 //
 import { promises as fs } from "fs";
 import path from "path";
-import { readDecomposed, writePieceBody, reassembleFromDisk } from "../agents/lego-store";
+import { readDecomposed, writePieceBody, reassembleFromDisk, captureUndo, commitUndo } from "../agents/lego-store";
 import { regeneratePiece } from "../agents/regenerate-piece";
 import { finalizeUndefinedRefs } from "../agents/finalize-refs";
 import { verifyCompilable } from "../agents/code-extraction";
@@ -125,8 +125,10 @@ export const regenerateElement = async (
   // Composition.tsx (the render source, with any added imports/stubs). The manifest
   // preamble stays as-authored; finalize re-applies on every reassemble, so it
   // self-heals across subsequent edits.
+  const undo = await captureUndo(genDir);
   await writePieceBody(genDir, writeId, newBody);
   await fs.writeFile(path.join(genDir, "Composition.tsx"), candidate, "utf8");
+  await commitUndo(genDir, undo, "regenerate");
 
   logUsage(regen.usage, false);
   return { ok: true, code: candidate, body: regen.body, usage: regen.usage };
