@@ -128,6 +128,41 @@ try {
     );
   });
 
+  // ── 3b: the 01KY86J312SRPDXY6D58MSXJ81 class — an undefined VALUE identifier
+  // in a piece body (`rows.map(...)`, `rows` declared nowhere). Compiles clean
+  // (esbuild is syntax-only) and throws ReferenceError at render. The cast path
+  // now runs THIS gate after its quality loop (fail closed) — this case locks
+  // that the gate actually catches the class, with per-scene attribution.
+  await check("undefined value identifier (`rows`) fails the gate AT its scene", async () => {
+    const undefValueDir = await makeGenDir(
+      `import React from "react";
+export const Section0: React.FC<{ script: unknown }> = () => <div>fine</div>;
+export const Section1: React.FC<{ script: unknown }> = () => (
+  <div>{rows.map((row: any, i: number) => <span key={i}>{row.title}</span>)}</div>
+);
+`,
+    );
+    const realError = console.error;
+    console.error = () => {};
+    let out: RenderCheck;
+    try {
+      out = await verifyScenesRender(undefValueDir, SCRIPT.scenes.length, SCRIPT);
+    } finally {
+      console.error = realError;
+    }
+    assert(!out.ok, "gate passed a composition whose scene throws ReferenceError at render");
+    assert(
+      !out.errors.some((e) => e.scene === 0 || e.scene === -1),
+      `clean scene blamed: ${JSON.stringify(out.errors)}`,
+    );
+    const sceneOne = out.errors.find((e) => e.scene === 1);
+    assert(!!sceneOne, `scene 1 not identified: ${JSON.stringify(out.errors)}`);
+    assert(
+      /rows is not defined/.test(sceneOne!.error),
+      `expected the ReferenceError text, got: ${sceneOne!.error}`,
+    );
+  });
+
   // ── 4: missing Composition.tsx — whole-file failure, scene -1 ─────────────
   await check("missing Composition.tsx reports scene -1 with a clear message", async () => {
     const emptyDir = await fs.mkdtemp(path.join(os.tmpdir(), "rb-render-gate-"));

@@ -942,23 +942,9 @@ async function runCastPreviewBuild(args: {
       assetManifest: undefined,
     });
 
-    // ── usage + entitlement metering (build-model spend = head + cast + repairs) ──
-    await recordUsage({ op: "build", model, scriptId, url: brief?.brand_kit_url, usage: castUsage });
-    await recordMeteredUsage({
-      ownerId,
-      operation: "build",
-      model,
-      costUsd: costUsd(model, castUsage),
-      inputTokens: castUsage.input_tokens,
-      outputTokens: castUsage.output_tokens,
-    });
-    let visionCostUsd = 0;
-    if (visionRan && (visionUsage.input_tokens || visionUsage.output_tokens)) {
-      visionCostUsd = costUsd(VISION_MODEL, visionUsage);
-      await recordUsage({ op: "vision-qa", model: VISION_MODEL, scriptId, url: brief?.brand_kit_url, usage: visionUsage });
-    }
-
-    // ── gate telemetry (fire-rate is the gate-deletion criterion) ──
+    // ── gate telemetry tallies (fire-rate is the gate-deletion criterion).
+    // Computed BEFORE the SSR gate below so the fail-closed path records the
+    // same ledger rows a shipped build would. ──
     const fires: Record<string, number> = {};
     const residual: Record<string, number> = {};
     const tallyRound = (g: GateRoundReport | undefined, into: Record<string, number>): void => {
@@ -982,6 +968,83 @@ async function runCastPreviewBuild(args: {
     };
     tallyRound(loop.gateRounds[0], fires);
     tallyRound(loop.gateRounds[loop.gateRounds.length - 1], residual);
+    // Repair #4 (undefined-value-ref stubs) lives in the loop's finalize
+    // telemetry, not in GateRoundReport — tally it from there.
+    const valueStubsIn = (key: string): number => {
+      const info = loop.finalize[key] as { valueStubbed?: unknown[] } | undefined;
+      return info?.valueStubbed?.length ?? 0;
+    };
+    if (valueStubsIn("r0") > 0) fires["finalize/undefined-value-ref"] = valueStubsIn("r0");
+    if (valueStubsIn(`r${loop.rounds}`) > 0) residual["finalize/undefined-value-ref"] = valueStubsIn(`r${loop.rounds}`);
+
+    // ── FAIL-CLOSED SSR RENDER GATE — the exact gate the parallel path runs
+    // (run-preview-build ~:240). The quality loop's measure pass surfaces an
+    // unrenderable scene as measure-error and re-casts it, but when the retry
+    // budget is spent the loop ships "with residual findings (honest)" — and a
+    // scene that THROWS at SSR is not a residual advisory, it is a white frame
+    // in the preview and a dead /api/dev/export. The 01KY86J312SRPDXY6D58MSXJ81
+    // build (s2.hero referencing an undefined `rows`) returned ok:true exactly
+    // this way. A build with a scene that cannot render must never be ok:true. ──
+    const renderCheck = await verifyScenesRender(genDir, composedScript.scenes.length, composedScript);
+    timeline.mark(`cast:gate:ssr-render:${renderCheck.ok ? "passed" : "failed"}`);
+    if (!renderCheck.ok) {
+      console.error(
+        "[preview/build:cast] SSR render gate failed:",
+        JSON.stringify(renderCheck.errors),
+      );
+      fires["ssr-render/render-error"] = (fires["ssr-render/render-error"] ?? 0) + renderCheck.errors.length;
+      residual["ssr-render/render-error"] = renderCheck.errors.length;
+      // A failed attempt is not a free attempt — record the full spend, failed.
+      await recordUsage({ op: "build", model, scriptId, url: brief?.brand_kit_url, usage: castUsage, failed: true });
+      await recordMeteredUsage({
+        ownerId,
+        operation: "build",
+        model,
+        costUsd: costUsd(model, castUsage),
+        inputTokens: castUsage.input_tokens,
+        outputTokens: castUsage.output_tokens,
+        failed: true,
+      });
+      if (visionRan && (visionUsage.input_tokens || visionUsage.output_tokens)) {
+        await recordUsage({ op: "vision-qa", model: VISION_MODEL, scriptId, url: brief?.brand_kit_url, usage: visionUsage });
+      }
+      await recordGateTelemetry({
+        scriptId,
+        fires,
+        residual,
+        repairSteps: loop.rounds,
+        firstPassClean: false,
+        buildWallMs: Date.now() - buildT0,
+      });
+      try {
+        await fs.writeFile(path.join(genDir, "build-timeline.json"), JSON.stringify(timeline.toJSON(), null, 2));
+      } catch { /* attribution is never worth failing a build over */ }
+      return {
+        status: 500,
+        body: {
+          error: "one or more scenes failed to render",
+          stage: "render",
+          render_errors: renderCheck.errors,
+        },
+      };
+    }
+
+    // ── usage + entitlement metering (build-model spend = head + cast + repairs) ──
+    await recordUsage({ op: "build", model, scriptId, url: brief?.brand_kit_url, usage: castUsage });
+    await recordMeteredUsage({
+      ownerId,
+      operation: "build",
+      model,
+      costUsd: costUsd(model, castUsage),
+      inputTokens: castUsage.input_tokens,
+      outputTokens: castUsage.output_tokens,
+    });
+    let visionCostUsd = 0;
+    if (visionRan && (visionUsage.input_tokens || visionUsage.output_tokens)) {
+      visionCostUsd = costUsd(VISION_MODEL, visionUsage);
+      await recordUsage({ op: "vision-qa", model: VISION_MODEL, scriptId, url: brief?.brand_kit_url, usage: visionUsage });
+    }
+
     await recordGateTelemetry({
       scriptId,
       fires,

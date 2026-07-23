@@ -32,7 +32,7 @@ import type { Theme } from "../edit/piece-model";
 import type { Script } from "../../src/schema";
 import { stripCodeFence, verifyCompilable } from "../agents/code-extraction";
 import { injectLogoSrc, brandWordmarkText } from "../agents/logo-inject";
-import { finalizeUndefinedRefs, assessInvalidLucideImports } from "../agents/finalize-refs";
+import { finalizeUndefinedRefs, assessInvalidLucideImports, type UndefinedValueStub } from "../agents/finalize-refs";
 import { measureScenes, summarizeBoxOverflow, type SceneMeasurement } from "./measure-scene";
 import {
   findRenderTruthFailures,
@@ -993,6 +993,10 @@ export async function runQualityLoop(
   let round = 0;
   let genDirReady = false;
   let castRoundError: { round: number; error: string } | undefined;
+  // Repair #4 stubs from this round's finalize — routed to a regen of the
+  // owning piece(s) below, so a stubbed (empty-rendering) region converges to
+  // real data instead of quietly shipping.
+  let valueStubbedThisRound: UndefinedValueStub[] = [];
 
   while (true) {
     castRoundLabel = `cast-r${round}`;
@@ -1034,7 +1038,13 @@ export async function runQualityLoop(
       let code = injectLogoSrc(castResult!.code, config.logoSrc, cornerWordmark);
       const fonts = await inlineFontFaces(code, fetchFont);
       code = fonts.code;
-      const fin = await finalizeUndefinedRefs(code);
+      const fin = await finalizeUndefinedRefs(code, { script });
+      valueStubbedThisRound = fin.valueStubbed;
+      if (fin.valueStubbed.length > 0) {
+        warn(
+          `  [finalize] undefined VALUE identifier(s) stubbed: [${fin.valueStubbed.map((v) => `${v.name} (s${v.scenes.join(",s")})`).join(", ")}] — a piece referenced data it never defined (the scene would have thrown at render); stubbed to render empty + routed to a regen of the owning piece`,
+        );
+      }
       const bind = bindLiteralCopyInPlace(fin.code, script.scenes as never);
       for (const b of bind.bound) bindCopyEvents.push({ round, ...b });
       if (bind.bound.length > 0) {
@@ -1042,7 +1052,7 @@ export async function runQualityLoop(
           `  [bind-in-place] ${bind.bound.reduce((n, b) => n + b.count, 0)} literal copy mount(s) → bound refs [${bind.bound.map((b) => `s${b.scene}.${b.field}`).join(", ")}]`,
         );
       }
-      const info = { logoInjected: Boolean(config.logoSrc), fontsInlined: fonts.inlined.length, fontsFailed: fonts.failed, added: fin.added, stubbed: fin.stubbed, neutralized: fin.neutralized, copyBound: bind.bound.reduce((n, b) => n + b.count, 0) };
+      const info = { logoInjected: Boolean(config.logoSrc), fontsInlined: fonts.inlined.length, fontsFailed: fonts.failed, added: fin.added, stubbed: fin.stubbed, neutralized: fin.neutralized, valueStubbed: fin.valueStubbed, copyBound: bind.bound.reduce((n, b) => n + b.count, 0) };
       finalize[`r${round}`] = info;
       hooks.onFinalize?.(round, info);
       return bind.code;
@@ -1669,6 +1679,27 @@ export async function runQualityLoop(
       if (!validPieceIds.has(id)) id = `s${f.scene}.hero`;
       if (!validPieceIds.has(id)) continue;
       targets.set(id, [...(targets.get(id) ?? []), `[text-integrity/${f.kind}] ${f.detail}\n${f.repairInstruction}`]);
+    }
+    // Repair #4 (finalize-refs): an undefined VALUE identifier was stubbed this
+    // round — the scene RENDERS now (empty where the data should be) instead of
+    // throwing, but the stub is a bridge, not a pass. Route a regen to the
+    // piece(s) whose body actually references the identifier (word-boundary
+    // match, restricted to the erroring scenes); fall back to the scene's hero.
+    for (const v of valueStubbedThisRound) {
+      const wordRx = new RegExp(`(?<![\\w$])${v.name.replace(/\$/g, "\\$")}(?![\\w$])`);
+      for (const scene of v.scenes) {
+        if (scene < 0) continue;
+        const owners = [...pieceCache.entries()]
+          .filter(([id, body]) => id.startsWith(`s${scene}.`) && validPieceIds.has(id) && wordRx.test(body))
+          .map(([id]) => id);
+        const routeTo = owners.length > 0 ? owners : validPieceIds.has(`s${scene}.hero`) ? [`s${scene}.hero`] : [];
+        for (const id of routeTo) {
+          targets.set(id, [
+            ...(targets.get(id) ?? []),
+            `[finalize/undefined-value-ref] Your element's JSX references \`${v.name}\`, but \`${v.name}\` is not defined ANYWHERE — not inside your element, not in the provided design-system consts. At render time this threw \`ReferenceError: ${v.name} is not defined\` and blanked the ENTIRE scene; a deterministic pass stubbed \`${v.name}\` to an empty value so the scene renders, leaving the region it should populate EMPTY.\nRe-emit this element defining EVERY array/object it maps or indexes INLINE, inside the element itself, with concrete literal data — e.g. \`{[{...}, {...}].map((row, i) => ...)}\` — never a bare reference to data that is not in scope.`,
+          ]);
+        }
+      }
     }
 
     const gateRound: GateRoundReport = {
