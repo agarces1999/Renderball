@@ -60,8 +60,13 @@ export function PreviewClient({ scriptId, script, initialWarnings }: Props) {
   // Canvas pivot (docs/PIVOT.md): decks are static page documents — no
   // autoplay, pages render settled, and export is PDF/PNG instead of MP4.
   const isDeck = script.config.kind === "deck";
+  // Page ops (add/remove/reorder/duplicate) restructure the scene list —
+  // `doc` is the live document; the server-loaded `script` prop is its seed.
+  const [doc, setDoc] = useState(script);
   const [sceneIndex, setSceneIndex] = useState(0);
   const [playing, setPlaying] = useState(!isDeck);
+  const [pageBusy, setPageBusy] = useState(false);
+  const [pageError, setPageError] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
   const [regenerating, setRegenerating] = useState(false);
@@ -76,23 +81,23 @@ export function PreviewClient({ scriptId, script, initialWarnings }: Props) {
   );
   const iframeRef = useRef<HTMLIFrameElement>(null);
 
-  const dims = useMemo(() => getDimensions(script), [script]);
+  const dims = useMemo(() => getDimensions(doc), [doc]);
 
   // Auto-advance scenes when playing (never while editing elements, never on decks).
   useEffect(() => {
     if (isDeck || !playing || editing) return;
-    const scene = script.scenes[sceneIndex];
+    const scene = doc.scenes[sceneIndex];
     if (!scene) return;
     const startSec = scene.start_seconds ?? 0;
     const endSec = scene.end_seconds ?? 0;
     const durMs = Math.max(0, (endSec - startSec) * 1000);
     if (durMs <= 0) return;
     const t = setTimeout(() => {
-      setSceneIndex((i) => (i + 1) % script.scenes.length);
+      setSceneIndex((i) => (i + 1) % doc.scenes.length);
       setReloadKey((k) => k + 1);
     }, durMs);
     return () => clearTimeout(t);
-  }, [sceneIndex, playing, editing, isDeck, script.scenes, reloadKey]);
+  }, [sceneIndex, playing, editing, isDeck, doc.scenes, reloadKey]);
 
   const replayScene = () => setReloadKey((k) => k + 1);
   const selectScene = (i: number) => {
@@ -159,7 +164,43 @@ export function PreviewClient({ scriptId, script, initialWarnings }: Props) {
     }
   };
 
-  const currentScene = script.scenes[sceneIndex];
+  const currentScene = doc.scenes[sceneIndex];
+
+  // Structural page edit → POST, adopt the returned script, focus the page the
+  // op points at. Deterministic + fast; the iframe reload shows the result.
+  const pageOp = async (
+    op:
+      | { op: "duplicate"; page: number }
+      | { op: "remove"; page: number }
+      | { op: "move"; page: number; to: number }
+      | { op: "add"; after: number },
+  ) => {
+    setPageBusy(true);
+    setPageError(null);
+    try {
+      const res = await fetch("/api/preview/page-op", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scriptId, ...op }),
+      });
+      const json = (await res.json()) as {
+        ok?: true;
+        focus?: number;
+        script?: typeof script;
+        error?: string;
+      };
+      if (!res.ok || !json.script) {
+        throw new Error(json.error ?? `page operation failed (${res.status})`);
+      }
+      setDoc(json.script);
+      setSceneIndex(Math.min(json.focus ?? 0, json.script.scenes.length - 1));
+      setReloadKey((k) => k + 1);
+    } catch (e) {
+      setPageError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPageBusy(false);
+    }
+  };
   // Edit mode renders SETTLED (entry animations at their end state): interactions are
   // instant and rects are stable — you edit a static scene, you WATCH motion in play
   // mode. Toggling edit changes the src, so the browser swaps modes naturally.
@@ -208,7 +249,7 @@ export function PreviewClient({ scriptId, script, initialWarnings }: Props) {
 
       {/* Scene rail */}
       <div className="mb-4 flex flex-wrap items-center gap-1.5">
-        {script.scenes.map((s, i) => (
+        {doc.scenes.map((s, i) => (
           <button
             key={i}
             type="button"
@@ -225,6 +266,59 @@ export function PreviewClient({ scriptId, script, initialWarnings }: Props) {
           </button>
         ))}
       </div>
+
+      {/* Page operations — deck-only structural edits (deterministic, free) */}
+      {isDeck && (
+        <div className="mb-4 flex flex-wrap items-center gap-1.5">
+          <span className="mr-1 font-mono text-[11px] uppercase tracking-[0.14em] text-faint">
+            Page {sceneIndex + 1}
+          </span>
+          <button
+            type="button"
+            onClick={() => void pageOp({ op: "move", page: sceneIndex, to: sceneIndex - 1 })}
+            disabled={pageBusy || sceneIndex === 0}
+            title="Move page left"
+            className="rounded-md border border-hairline-strong bg-surface px-2.5 py-1.5 text-[12px] text-muted transition-colors hover:text-ink disabled:opacity-40"
+          >
+            ←
+          </button>
+          <button
+            type="button"
+            onClick={() => void pageOp({ op: "move", page: sceneIndex, to: sceneIndex + 1 })}
+            disabled={pageBusy || sceneIndex >= doc.scenes.length - 1}
+            title="Move page right"
+            className="rounded-md border border-hairline-strong bg-surface px-2.5 py-1.5 text-[12px] text-muted transition-colors hover:text-ink disabled:opacity-40"
+          >
+            →
+          </button>
+          <button
+            type="button"
+            onClick={() => void pageOp({ op: "duplicate", page: sceneIndex })}
+            disabled={pageBusy}
+            className="rounded-md border border-hairline-strong bg-surface px-3 py-1.5 text-[12px] text-muted transition-colors hover:text-ink disabled:opacity-40"
+          >
+            Duplicate
+          </button>
+          <button
+            type="button"
+            onClick={() => void pageOp({ op: "add", after: sceneIndex })}
+            disabled={pageBusy}
+            className="rounded-md border border-hairline-strong bg-surface px-3 py-1.5 text-[12px] text-muted transition-colors hover:text-ink disabled:opacity-40"
+          >
+            + Blank page
+          </button>
+          <button
+            type="button"
+            onClick={() => void pageOp({ op: "remove", page: sceneIndex })}
+            disabled={pageBusy || doc.scenes.length <= 1}
+            className="rounded-md border border-hairline-strong bg-surface px-3 py-1.5 text-[12px] text-muted transition-colors hover:text-red-500 disabled:opacity-40"
+          >
+            Delete page
+          </button>
+          {pageBusy && <span className="text-[12px] text-faint">Applying…</span>}
+          {pageError && <span className="text-[12px] text-red-500">{pageError}</span>}
+        </div>
+      )}
 
       {/* Playback + actions */}
       <div className="mb-6 flex flex-wrap items-center gap-2">
