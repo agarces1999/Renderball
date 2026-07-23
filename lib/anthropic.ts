@@ -143,22 +143,32 @@ export const MODELS = {
 } as const;
 
 /**
- * Vision model for the QA gate + crawl image reads — Qwen2.5-VL 32B on
- * Fireworks (2026-07-23, z.ai removal: GLM-5V-Turbo went with it). This is
- * the LITERAL wire id (the vision transport sends it as-is), unlike the
- * abstract MODELS.* names above. Override with RB_VISION_MODEL.
+ * Vision model for the QA gate + crawl image reads — Kimi K2.6 on Fireworks.
+ * This is the LITERAL wire id (the vision transport sends it as-is), unlike
+ * the abstract MODELS.* names above. Override with RB_VISION_MODEL.
  *
- * REVALIDATION PENDING: the vision gate's judgment prompts were tuned on
- * GLM-5V (0 false positives on 5 good builds, 2026-06-21). Qwen2.5-VL is a
- * strong document/layout VLM but its judgments on our scene screenshots have
- * not been re-baselined — watch the first builds' vision verdicts.
+ * Why Kimi (verified 2026-07-23, don't re-litigate without re-probing):
+ * - The account's serverless catalog (GET /v1/models) is SMALL (~6 models).
+ *   GLM-4.5V and the Qwen-VL ids exist on Fireworks' marketing pages but
+ *   404 for us ("not deployed") — a catalog-page model is NOT necessarily
+ *   callable. glm-5p1/5p2 are text-only (clean 400 on image input, no
+ *   silent drop). kimi-k2p6 is the account's one live VLM.
+ * - Ground-truth probe passed: it read a real slide and named both the
+ *   headline and a freshly-generated stat chip VERBATIM.
+ * - It is a THINKING model and Fireworks accepts thinking:{type:"disabled"}
+ *   (46 completion tokens with it off vs 294 burned reasoning without) —
+ *   the same terse-extraction quirk as the GLM-5V era, so zai-vision.ts
+ *   sends the off-switch for GLM/Kimi-family ids on disableThinking calls.
+ *
+ * Judgment re-baselining vs the GLM-5V-era gate prompts is still pending —
+ * watch the first vision-gated builds' verdicts.
  *
  * CRITICAL (historical lesson, keep honoring it): all vision goes through
  * lib/render/zai-vision.ts on a wire where images verifiably arrive — never
  * through an Anthropic-compat proxy that silently drops image blocks.
  */
 export const VISION_MODEL =
-  process.env.RB_VISION_MODEL || "accounts/fireworks/models/qwen2p5-vl-32b-instruct";
+  process.env.RB_VISION_MODEL || "accounts/fireworks/models/kimi-k2p6";
 
 /**
  * Reasoning + output config for the build/composition calls on GLM 5.2 (z.ai).

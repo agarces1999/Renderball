@@ -31,9 +31,17 @@ Core rules to internalize:
 **FIREWORKS ONLY (founder call 2026-07-23) — z.ai is out of the stack.** Every
 text/build stage (script generation, build/regen coding agents, QA, logo
 discovery, design-language, tweak) runs GLM-5.2 **served by Fireworks**
-(`accounts/fireworks/routers/glm-5p2-fast`, override RB_BUILD_MODEL). Vision
-(QA gate + crawl image reads) runs Qwen2.5-VL-32B on Fireworks (override
-RB_VISION_MODEL) — its judgments are pending re-baselining vs the GLM-5V era.
+(`accounts/fireworks/routers/glm-5p2-fast`, override RB_BUILD_MODEL; fast
+router bills $2.10/$6.60 per M). Vision (QA gate + crawl image reads) runs
+**Kimi K2.6** (`accounts/fireworks/models/kimi-k2p6`, override
+RB_VISION_MODEL) — the account's ONE live serverless VLM, probe-verified
+reading real slides. GLM-4.5V/Qwen-VL exist on Fireworks' catalog pages but
+404 on this account ("not deployed"); glm-5p2 is text-only (clean 400 on
+images). Before assuming any catalog model is callable, check
+GET /v1/models with the account key. Kimi is a thinking model: terse
+extraction calls must send thinking-disabled (zai-vision.ts does this for
+GLM/Kimi-family ids only). Gate-judgment re-baselining vs the GLM-5V era is
+pending.
 Abstract names live in `lib/anthropic.ts` (`MODELS`, `VISION_MODEL`); the
 transports are `lib/llm/build-client.ts` (Anthropic-shaped shim over the
 OpenAI-wire `castCall`) and `lib/render/zai-vision.ts` (vision; keeps its

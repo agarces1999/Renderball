@@ -129,8 +129,14 @@ export const callZaiVision = async (
       body: JSON.stringify({
         model: VISION_MODEL,
         max_tokens: opts.maxTokens ?? 1200,
-        // opts.disableThinking is inert on Qwen-VL (not a thinking model) —
-        // accepted for call-site compatibility with the GLM-5V era.
+        // GLM and Kimi VLMs are thinking models: on terse extraction tasks
+        // they burn the budget reasoning (Kimi probe: 294 tokens thinking vs
+        // 46 with it off) and can return empty content unless thinking is
+        // explicitly disabled. Sent only for GLM/Kimi-family ids — other
+        // overrides must never receive the (unknown-to-them) param.
+        ...(opts.disableThinking && /glm|kimi/i.test(VISION_MODEL)
+          ? { thinking: { type: "disabled" } }
+          : {}),
         messages: [
           {
             role: "user",
@@ -195,6 +201,9 @@ export const callZaiText = async (
       body: JSON.stringify({
         model: VISION_MODEL,
         max_tokens: opts.maxTokens ?? 600,
+        ...(opts.disableThinking && /glm|kimi/i.test(VISION_MODEL)
+          ? { thinking: { type: "disabled" } }
+          : {}),
         messages: [{ role: "user", content: prompt }],
       }),
       signal: ctrl.signal,

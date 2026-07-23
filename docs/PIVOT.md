@@ -115,12 +115,18 @@ never built (schema placeholders only).
 ## P1 validation (2026-07-23, same day)
 
 First-ever deck build (flarebit.ai, 5 slides, freeform brief): **clean in
-4m37s, ~$0.69** (257k in / 76k out) on the Fireworks-only stack — vs 37-82
-min for video builds. PDF/PNG export proven on stored builds and on the live
-deck. Deck flipped to the DEFAULT document type in BriefForm. Vision gate ran
-Qwen2.5-VL (first sample: sane judgments, minor advisories only — keep
-watching). Model stack: z.ai removed entirely the same day (founder call);
-GLM-5.2 stays, served by Fireworks; see CLAUDE.md model routing.
+4m37s, ~$1.04** (257k in / 76k out at the fast router's real $2.10/$6.60
+rate) on the Fireworks-only stack — vs 37-82 min for video builds. PDF/PNG
+export proven on stored builds and on the live deck; marquee-to-generate
+verified live on a deck slide. Deck flipped to the DEFAULT document type in
+BriefForm. **Honest caveat:** build #1 ran with NO vision-gate coverage —
+the migration's first vision model (Qwen-VL) turned out not to be deployed
+on our Fireworks account and the advisory gate skipped silently; the
+deterministic gate battery did all the passing. Vision is now Kimi K2.6
+(probe-verified reading real slides, incl. a generated element, verbatim);
+the first vision-gated deck build is still ahead. Model stack: z.ai removed
+entirely the same day (founder call); GLM-5.2 stays, served by Fireworks;
+see CLAUDE.md model routing.
 
 ## Build economics note
 

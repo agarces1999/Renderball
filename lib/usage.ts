@@ -76,17 +76,21 @@ const RATES: Record<
   string,
   { input: number; output: number; cacheRead?: number; cacheWrite?: number }
 > = {
-  // GLM 5.2 — the live build substrate. Served by FIREWORKS since 2026-07-23
-  // (z.ai removed); Fireworks lists the same $1.40/$4.40 per M
-  // (fireworks.ai glm-5p2, checked 2026-07-23). No prompt caching on the
-  // OpenAI wire — the ledger records zero cache tokens there, so the cache
-  // multipliers are inert going forward (kept for historical z.ai rows).
-  "glm-5.2": { input: 1.4, output: 4.4, cacheRead: 0.26 / 1.4, cacheWrite: 1 }, // all text/build/QA stages
-  "accounts/fireworks/routers/glm-5p2-fast": { input: 1.4, output: 4.4 }, // same model, wire id
+  // GLM 5.2 — the live build substrate, served by FIREWORKS since 2026-07-23
+  // (z.ai removed). The production default deployment is the FAST router,
+  // which bills $2.10/$6.60 per M with $0.21 cached input
+  // (docs.fireworks.ai/serverless/pricing, checked 2026-07-23) — 1.5× the
+  // standard glm-5p2 tier ($1.40/$4.40); we pay for the serving speed. The
+  // abstract "glm-5.2" row carries the FAST rate because that's what every
+  // recorded stage actually runs on; castCall doesn't surface cached tokens
+  // yet, so cache rows stay zero (ledger errs on overstating, never under).
+  "glm-5.2": { input: 2.1, output: 6.6, cacheRead: 0.21 / 2.1, cacheWrite: 1 }, // all text/build/QA stages (fast router)
+  "accounts/fireworks/routers/glm-5p2-fast": { input: 2.1, output: 6.6, cacheRead: 0.21 / 2.1, cacheWrite: 1 }, // same, wire id
   "glm-5v-turbo": { input: 1.2, output: 4.0, cacheRead: 0.26 / 1.4, cacheWrite: 1 }, // legacy z.ai vision rows
-  // Fireworks vision (Qwen2.5-VL 32B) — size-tier estimate, TODO verify
-  // against the first Fireworks invoice.
-  "accounts/fireworks/models/qwen2p5-vl-32b-instruct": { input: 0.9, output: 0.9 },
+  // Fireworks vision — Kimi K2.6 (the account's one live serverless VLM,
+  // probe-verified 2026-07-23). Rate is the K2-lineage estimate — TODO
+  // verify against the first Fireworks invoice.
+  "accounts/fireworks/models/kimi-k2p6": { input: 0.6, output: 3.0 },
   // Anthropic — reference / fallback
   "claude-fable-5": { input: 10, output: 50 },
   "claude-opus-4-8": { input: 5, output: 25 },
