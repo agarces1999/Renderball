@@ -6,16 +6,17 @@ import { saveScriptEdits } from "./actions";
 import { cn } from "../../../lib/cn";
 
 /**
- * The story screen (fluid v1) — see DESIGN.md.
+ * The story/outline screen (fluid v1) — see DESIGN.md; per docs/PIVOT.md
+ * "story before render" becomes "outline before build" for decks.
  *
- * Story-first: the logline and the scene sequence are the hero. The scene
+ * Narrative-first: the logline and the page/scene sequence are the hero. The
  * lines, read top to bottom, are the story. The visual brief (visual_concept
- * + text strings + assets) lives in a per-scene disclosure so the narrative
+ * + text strings + assets) lives in a per-page disclosure so the narrative
  * stays clean but editable.
  *
- * One loud action: "Build the video" (→ the live preview, where the user
- * iterates per scene and exports the MP4). Export lives on the preview screen,
- * not here — this screen is about approving the story.
+ * One loud action: Build (→ the editor/preview, where the user iterates per
+ * page and exports). Export lives on the preview screen, not here — this
+ * screen is about approving the narrative before any expensive compute.
  */
 export function EditableReview({
   initialScript,
@@ -26,6 +27,7 @@ export function EditableReview({
   const [pendingSave, startSave] = useTransition();
   const [saveError, setSaveError] = useState<string | null>(null);
 
+  const isDeck = script.config.kind === "deck";
   const RENDER_FPS = 30;
   const lastScene = script.scenes[script.scenes.length - 1];
   const totalSeconds =
@@ -84,8 +86,10 @@ export function EditableReview({
       {/* Action bar — sits just under the global header */}
       <div className="sticky top-[53px] z-10 -mx-6 mb-10 flex flex-wrap items-center justify-between gap-4 border-b border-hairline bg-canvas/90 px-6 py-4 backdrop-blur-md">
         <div className="font-mono text-[12px] text-muted">
-          {totalSeconds.toFixed(0)}s · {script.config.aspect_ratio} ·{" "}
-          {script.config.resolution} ·{" "}
+          {isDeck
+            ? `${script.scenes.length} ${script.scenes.length === 1 ? "page" : "pages"}`
+            : `${totalSeconds.toFixed(0)}s`}{" "}
+          · {script.config.aspect_ratio} · {script.config.resolution} ·{" "}
           {pendingSave ? (
             <span className="text-accent-text">saving…</span>
           ) : saveError ? (
@@ -102,16 +106,18 @@ export function EditableReview({
         </a>
       </div>
 
-      {/* Story spine */}
+      {/* Story/outline spine */}
       <header className="mb-10">
         <div className="mb-3 font-mono text-[11px] uppercase tracking-[0.18em] text-accent-text">
-          Your story
+          {isDeck ? "Your outline" : "Your story"}
         </div>
         <h1 className="max-w-[32ch] font-display text-[clamp(24px,3.4vw,34px)] font-medium leading-[1.18] tracking-tight text-ink">
-          {narrative?.logline || script.brief.purpose || "Your story"}
+          {narrative?.logline || script.brief.purpose || (isDeck ? "Your outline" : "Your story")}
         </h1>
         <div className="mt-4 font-mono text-[12px] leading-relaxed text-muted">
-          {script.scenes.length} scenes · {totalSeconds.toFixed(0)}s
+          {isDeck
+            ? `${script.scenes.length} ${script.scenes.length === 1 ? "page" : "pages"}`
+            : `${script.scenes.length} scenes · ${totalSeconds.toFixed(0)}s`}
           {narrative?.arc ? <> · {narrative.arc}</> : null}
           {narrative?.throughline ? (
             <div className="mt-1 text-faint">
@@ -130,8 +136,8 @@ export function EditableReview({
             Before you build — {decisions.length === 1 ? "one quick call" : `${decisions.length} quick calls`}
           </div>
           <p className="mb-4 text-[13px] text-muted">
-            The story already follows the first option in each. Confirm or
-            change it — your answer steers the build.
+            The {isDeck ? "outline" : "story"} already follows the first option
+            in each. Confirm or change it — your answer steers the build.
           </p>
           <div className="space-y-5">
             {decisions.map((d) => (
@@ -145,13 +151,14 @@ export function EditableReview({
         </section>
       )}
 
-      {/* Scene sequence */}
+      {/* Page/scene sequence */}
       <div className="space-y-3">
         {script.scenes.map((scene, i) => (
           <StoryScene
             key={scene.id || i}
             index={i}
             scene={scene}
+            isDeck={isDeck}
             fps={RENDER_FPS}
             assetUrlForId={(id: string) =>
               script.assets.images.find((a) => a.id === id)?.src
@@ -163,7 +170,7 @@ export function EditableReview({
       </div>
 
       <p className="mt-8 text-center font-mono text-[12px] text-faint">
-        Edit any line or visual brief, then build. Nothing renders until you
+        Edit any line or visual brief, then build. Nothing builds until you
         say so.
       </p>
     </div>
@@ -273,6 +280,7 @@ const TURN_RX = /\b(turn|pivot|reveal|shift|but|what if|unlock)\b/i;
 function StoryScene({
   index,
   scene,
+  isDeck,
   fps,
   assetUrlForId,
   onHeadlineBlur,
@@ -280,6 +288,7 @@ function StoryScene({
 }: {
   index: number;
   scene: Scene;
+  isDeck: boolean;
   fps: number;
   assetUrlForId: (id: string) => string | undefined;
   onHeadlineBlur: (v: string) => void;
@@ -300,14 +309,15 @@ function StoryScene({
   const texts = scene.content?.texts ?? [];
   const assetIds = scene.content?.asset_ids ?? [];
 
-  // The scene's primary line is the headline if the agent wrote one; otherwise
-  // fall back to the role/description, then the label, so the spine never reads
-  // "Untitled scene". The green role line only shows when it adds something
+  // The page's primary line is the headline if the agent wrote one; otherwise
+  // fall back to the role/description, then the label, so the spine never
+  // reads untitled. The green role line only shows when it adds something
   // beyond the headline (no duplicate text).
   const headline = scene.content?.headline?.trim() ?? "";
   const desc = scene.description?.trim() ?? "";
   const label = scene.label?.trim() ?? "";
-  const primary = headline || desc || label || `Scene ${index + 1}`;
+  const noun = isDeck ? "Page" : "Scene";
+  const primary = headline || desc || label || `${noun} ${index + 1}`;
   const showRole = Boolean(headline && desc && desc !== headline);
   const isTurn = TURN_RX.test(desc) || TURN_RX.test(label);
 
@@ -320,11 +330,19 @@ function StoryScene({
     >
       <div className="flex items-start gap-5">
         <div className="w-[72px] shrink-0 pt-1 font-mono text-[12px] text-faint">
-          {String(index + 1).padStart(2, "0")} · {start.toFixed(0)}–
-          {end.toFixed(0)}s
+          {String(index + 1).padStart(2, "0")}
+          {isDeck ? null : (
+            <>
+              {" "}· {start.toFixed(0)}–{end.toFixed(0)}s
+            </>
+          )}
         </div>
         <div className="min-w-0 flex-1">
-          <EditableHeadline value={primary} onBlur={onHeadlineBlur} />
+          <EditableHeadline
+            value={primary}
+            placeholder={`Untitled ${noun.toLowerCase()}`}
+            onBlur={onHeadlineBlur}
+          />
           {showRole && (
             <div className="mt-1.5 text-[12.5px] font-medium text-accent-text">
               {desc}
@@ -339,7 +357,9 @@ function StoryScene({
             <div className="mt-3 space-y-4 border-l border-hairline pl-4">
               <div>
                 <div className="mb-1.5 font-mono text-[10px] uppercase tracking-widest text-faint">
-                  How it looks + moves (the brief the build reads)
+                  {isDeck
+                    ? "How it looks (the brief the build reads)"
+                    : "How it looks + moves (the brief the build reads)"}
                 </div>
                 <EditableTextarea
                   value={scene.visual_concept}
@@ -404,9 +424,11 @@ function StoryScene({
 
 function EditableHeadline({
   value,
+  placeholder = "Untitled",
   onBlur,
 }: {
   value: string;
+  placeholder?: string;
   onBlur: (v: string) => void;
 }) {
   const [editing, setEditing] = useState(false);
@@ -422,7 +444,7 @@ function EditableHeadline({
         }}
         className="-mx-1 block rounded px-1 text-left font-display text-[22px] font-semibold leading-[1.15] tracking-tight text-ink transition-colors hover:bg-surface-3"
       >
-        {value || "Untitled scene"}
+        {value || placeholder}
       </button>
     );
   }

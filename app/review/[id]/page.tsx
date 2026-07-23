@@ -5,12 +5,12 @@ import { AppShellServer } from "../../../components/AppShellServer";
 import { EditableReview } from "./EditableReview";
 
 /**
- * The story screen (fluid v1) — see DESIGN.md.
+ * The story/outline screen (fluid v1) — see DESIGN.md.
  *
  * Server component: loads the saved brief + its generated script, then hands
- * off to <EditableReview>, which leads with the story (logline + scene
- * sequence) and the one loud "Build the video" action. MP4 export lives on the
- * preview screen, so it's not duplicated here.
+ * off to <EditableReview>, which leads with the narrative (logline + page/
+ * scene sequence) and the one loud Build action. Export lives on the preview
+ * screen, so it's not duplicated here.
  */
 export const dynamic = "force-dynamic";
 
@@ -42,7 +42,7 @@ export default async function ReviewPage({
         {!script && brief.status !== "failed" && (
           <div className="mt-4 flex items-center gap-3 font-mono text-[13px] text-muted">
             <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-accent" />
-            drafting your story…
+            {brief.kind === "deck" ? "drafting your outline…" : "drafting your story…"}
           </div>
         )}
 

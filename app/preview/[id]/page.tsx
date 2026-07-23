@@ -13,8 +13,8 @@ import { BuildPreviewClient } from "./BuildPreviewClient";
  *
  * The [id] param is the scriptId (matches src/generated/<scriptId>/). If no
  * composition exists yet, the build ceremony runs (BuildPreviewClient);
- * otherwise the live playback surface mounts (PreviewClient). Per DESIGN.md
- * the chrome stays quiet here so the user's brand-colored video is loudest.
+ * otherwise the editor/playback surface mounts (PreviewClient). Per DESIGN.md
+ * the chrome stays quiet here so the user's brand-colored work is loudest.
  */
 export default async function PreviewPage({
   params,
@@ -62,10 +62,11 @@ export default async function PreviewPage({
     }
   }
 
-  // Recover the brief id so "back to story" lands on the right review page
+  // Recover the brief id so the back link lands on the right review page
   // (review is keyed by briefId, not scriptId).
   const brief = await loadBriefByScriptId(params.id, user.id);
   const backHref = brief ? `/review/${brief.id}` : "/documents";
+  const isDeck = script.config.kind === "deck";
 
   return (
     <>
@@ -73,6 +74,7 @@ export default async function PreviewPage({
       {!compositionExists ? (
         <BuildPreviewClient
           scriptId={params.id}
+          kind={isDeck ? "deck" : "video"}
           sceneLabels={script.scenes.map((s) => s.label ?? "")}
         />
       ) : (
@@ -81,17 +83,19 @@ export default async function PreviewPage({
             href={backHref}
             className="font-mono text-[11px] uppercase tracking-[0.18em] text-muted transition-colors hover:text-ink"
           >
-            ← story
+            ← {isDeck ? "outline" : "story"}
           </Link>
           <div className="mb-6 mt-5">
             <div className="mb-2 font-mono text-[11px] uppercase tracking-[0.18em] text-muted">
-              Preview · live playback
+              {isDeck ? "Editor · every element editable" : "Preview · live playback"}
             </div>
             <h1 className="font-display text-[clamp(22px,3vw,30px)] font-semibold tracking-tight text-ink">
               {script.brief?.purpose ?? "Preview"}
             </h1>
             <p className="mt-1.5 text-[14px] leading-relaxed text-muted">
-              Playing live in your browser. Tweak any scene, then export to MP4.
+              {isDeck
+                ? "Move, resize, or rewrite anything — or draw a box to generate an element in place. Then export PDF or PNG."
+                : "Playing live in your browser. Tweak any scene, then export to MP4."}
             </p>
           </div>
           <PreviewClient

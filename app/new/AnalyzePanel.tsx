@@ -31,11 +31,13 @@ const STEP_DURATION_MS = 1500;
 
 export function AnalyzePanel({
   steps,
+  kind = "video",
   isAgentDone,
   agentError,
   onDone,
 }: {
   steps: AnalyzeStep[];
+  kind?: "deck" | "video";
   isAgentDone: boolean;
   agentError: string | null;
   onDone: () => void;
@@ -100,7 +102,7 @@ export function AnalyzePanel({
         <Spinner small />
         <div>
           <h2 className="text-2xl font-semibold tracking-tight text-ink">
-            Drafting your script
+            {kind === "deck" ? "Drafting your outline" : "Drafting your script"}
           </h2>
           <p className="text-sm text-ink-soft mt-0.5">
             We're reading your inputs and shaping the first draft.
@@ -217,15 +219,18 @@ function Spinner({ small }: { small?: boolean }) {
 /**
  * Build the list of steps shown to the user based on what they
  * provided. Order: read prompt → read website → review files →
- * draft script. The LAST step is always "Drafting your script" so
- * the spinner stays on it while the agent runs.
+ * draft. The LAST step is always the drafting one so the spinner
+ * stays on it while the agent runs; its noun follows the document
+ * kind (outline for decks, script for videos).
  */
 export function computeAnalyzeSteps({
   hasWebsite,
   fileCount,
+  kind = "video",
 }: {
   hasWebsite: boolean;
   fileCount: number;
+  kind?: "deck" | "video";
 }): AnalyzeStep[] {
   const steps: AnalyzeStep[] = [
     { id: "read_inputs", label: "Reading your description" },
@@ -240,6 +245,9 @@ export function computeAnalyzeSteps({
       label: `Reviewing your ${fileCount === 1 ? "brand file" : `${fileCount} brand files`}`,
     });
   }
-  steps.push({ id: "draft", label: "Drafting your script" });
+  steps.push({
+    id: "draft",
+    label: kind === "deck" ? "Drafting your outline" : "Drafting your script",
+  });
   return steps;
 }
