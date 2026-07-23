@@ -112,6 +112,16 @@ never built (schema placeholders only).
 7. Copy re-vocabulary (~229 user-facing video nouns) + landing rewrite for
    decks.
 
+## P1 validation (2026-07-23, same day)
+
+First-ever deck build (flarebit.ai, 5 slides, freeform brief): **clean in
+4m37s, ~$0.69** (257k in / 76k out) on the Fireworks-only stack — vs 37-82
+min for video builds. PDF/PNG export proven on stored builds and on the live
+deck. Deck flipped to the DEFAULT document type in BriefForm. Vision gate ran
+Qwen2.5-VL (first sample: sane judgments, minor advisories only — keep
+watching). Model stack: z.ai removed entirely the same day (founder call);
+GLM-5.2 stays, served by Fireworks; see CLAUDE.md model routing.
+
 ## Build economics note
 
 A deck costs ≈ a video build today (the spend is composition + spatial repair,

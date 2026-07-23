@@ -86,9 +86,10 @@ export function BriefForm({
   const [duration, setDuration] = useState(30);
   const [momentCount, setMomentCount] = useState(4);
   // Canvas pivot (docs/PIVOT.md): "deck" generates a static slide document
-  // (PDF/PNG export); "video" keeps the animated pipeline. Video stays the
-  // default until the first deck build validates end-to-end.
-  const [kind, setKind] = useState<"video" | "deck">("video");
+  // (PDF/PNG export); "video" keeps the animated pipeline. Deck is the
+  // default — the wedge product — since the first deck build validated clean
+  // end-to-end (2026-07-23: 5 slides, 4m37s, ~$0.69, Fireworks stack).
+  const [kind, setKind] = useState<"video" | "deck">("deck");
   const [moments, setMoments] = useState<MomentInput[]>([]);
   const [cta] = useState("");
 
@@ -547,8 +548,8 @@ export function BriefForm({
           <div className="flex gap-2">
             {(
               [
+                { value: "deck", label: "Deck", hint: "slides · PDF" },
                 { value: "video", label: "Video", hint: "animated · MP4" },
-                { value: "deck", label: "Deck", hint: "static slides · PDF" },
               ] as const
             ).map((k) => {
               const active = kind === k.value;
