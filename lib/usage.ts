@@ -57,21 +57,23 @@ export const addUsage = (a: Usage, b: Usage): Usage => ({
 /**
  * USD per 1M tokens — base input/output rate per model.
  *
- * GLM rows are z.ai list price (docs.z.ai/guides/overview/pricing, fetched
- * 2026-06-24); Claude rows are Anthropic list price. The live pipeline runs
- * entirely on z.ai GLM — `glm-5.2` for every text/build/QA stage (MODELS.* in
- * lib/anthropic.ts) and `glm-5v-turbo` for the vision gate (VISION_MODEL) — so
- * those two rows price all real spend. Before this they were absent and fell
- * back to the Sonnet rate ($3/$15), which OVERSTATED GLM cost ~2-3x in
- * .data/usage.jsonl and the build report. Claude rows are kept for reference /
- * any future re-route.
+ * GLM/Kimi rows are Fireworks serverless list price (docs.fireworks.ai,
+ * checked 2026-07-23 — the day z.ai left the stack); Claude rows are Anthropic
+ * list price. The live pipeline runs entirely on Fireworks — `glm-5.2` for
+ * every text/build/QA stage (MODELS.* in lib/anthropic.ts) and kimi-k2p6 for
+ * the vision gate (VISION_MODEL) — so those rows price all real spend;
+ * `glm-5v-turbo` remains only to price legacy pre-pivot z.ai ledger rows.
+ * A model absent here falls back to the Sonnet rate ($3/$15), which OVERSTATED
+ * GLM cost ~2-3x in .data/usage.jsonl and the build report when the GLM rows
+ * were missing. Claude rows are kept for reference / any future re-route.
  */
 // Optional per-model cache multipliers (× the base input rate). Defaults are
-// Anthropic-calibrated (write 1.25x, read 0.10x). GLM rows carry z.ai's REAL
-// cached-input price — $0.26/M against $1.40 base = 0.1857x (docs.z.ai pricing,
-// re-verified 2026-07-05 after a live-billing reconciliation showed the 0.10x
-// approximation under-recording) — and no documented cache-WRITE premium
-// (storage currently waived), so GLM write bills at the plain input rate.
+// Anthropic-calibrated (write 1.25x, read 0.10x). GLM rows carry the
+// provider's REAL cached-input price — Fireworks bills $0.21/M on the fast
+// router; the legacy z.ai row keeps $0.26/M against $1.40 base (kept exact
+// after a 2026-07-05 billing reconciliation showed the 0.10x approximation
+// under-recording) — and neither provider documents a cache-WRITE premium,
+// so GLM write bills at the plain input rate.
 const RATES: Record<
   string,
   { input: number; output: number; cacheRead?: number; cacheWrite?: number }

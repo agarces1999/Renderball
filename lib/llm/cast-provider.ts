@@ -1,12 +1,15 @@
 /**
  * Cast provider — the OpenAI-wire transport for the element-cast build path.
  *
- * The production stack speaks the Anthropic SDK to z.ai (lib/anthropic.ts);
- * Cerebras is OpenAI-compat only, so the cast path gets its own thin, typed
- * transport instead of forcing an SDK swap on the whole codebase. FLAG-GATED
- * ADOPTION: nothing routes here unless RB_CAST_KEY is set and the caller
- * explicitly opts in (RB_BUILD_MODE=cast) — z.ai/GLM remains the default
- * engine until the bake-off eyeball approves the switch.
+ * FIREWORKS ONLY (2026-07-23): the default cast model is the same GLM-5.2
+ * fast router the parallel build runs on; the model id selects the wire, and
+ * RB_CAST_MODEL can still target a Cerebras-served model for bake-offs.
+ * OPT-IN ADOPTION: nothing routes here unless the caller picks the cast path
+ * (RB_BUILD_MODE=cast, or runPreviewBuild's per-call buildMode override) and
+ * the default model's wire has its key — RB_FIREWORKS_KEY for the Fireworks
+ * default, RB_CAST_KEY for a Cerebras override; castConfigured() encodes
+ * this. The parallel path remains the default engine (7ba7397: parallel won
+ * the head-to-head; cast stays in the lab).
  *
  * Cerebras specifics this transport encodes (verified against their docs
  * 2026-07-13, see project memory speed-quality-pivot):
