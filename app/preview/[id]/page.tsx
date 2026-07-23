@@ -65,7 +65,7 @@ export default async function PreviewPage({
   // Recover the brief id so "back to story" lands on the right review page
   // (review is keyed by briefId, not scriptId).
   const brief = await loadBriefByScriptId(params.id, user.id);
-  const backHref = brief ? `/review/${brief.id}` : "/videos";
+  const backHref = brief ? `/review/${brief.id}` : "/documents";
 
   return (
     <>

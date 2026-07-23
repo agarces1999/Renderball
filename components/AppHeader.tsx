@@ -4,11 +4,11 @@ import { cn } from "../lib/cn";
 
 /**
  * The app shell header — quiet on purpose (DESIGN.md). A small crystal-ball
- * mark + "Renderball" wordmark (Cabinet Grotesk) on the left, "Your videos"
- * and the one loud "New video" action on the right.
+ * mark + "Renderball" wordmark (Cabinet Grotesk) on the left, "Your documents"
+ * and the one loud "New document" action on the right.
  *
  * Two tones:
- *   - "default" — greyscale chrome for the work surfaces (videos, review,
+ *   - "default" — greyscale chrome for the work surfaces (documents, review,
  *     preview). Sticky, hairline underline, faint canvas wash so it recedes
  *     behind the user's content.
  *   - "light"   — sits on the emerald front-door field; white text, no fill,
@@ -30,7 +30,7 @@ export function AppHeader({
       )}
     >
       <div className="mx-auto flex max-w-5xl items-center justify-between px-6 py-3.5">
-        <Link href="/videos" className="flex items-center gap-2.5">
+        <Link href="/documents" className="flex items-center gap-2.5">
           <span className="orb h-6 w-6 shrink-0" aria-hidden />
           <span
             className={cn(
@@ -43,7 +43,7 @@ export function AppHeader({
         </Link>
         <nav className="flex items-center gap-1">
           <Link
-            href="/videos"
+            href="/documents"
             className={cn(
               "rounded-md px-3 py-1.5 text-[13px] transition-colors",
               light
@@ -51,7 +51,7 @@ export function AppHeader({
                 : "text-muted hover:text-ink",
             )}
           >
-            Your videos
+            Your documents
           </Link>
           <Link
             href="/new"
@@ -62,7 +62,7 @@ export function AppHeader({
                 : "bg-accent text-accent-ink",
             )}
           >
-            New video
+            New document
           </Link>
           <SignedOut>
             <SignInButton mode="modal">

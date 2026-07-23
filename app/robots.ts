@@ -7,7 +7,7 @@ export default function robots(): MetadataRoute.Robots {
     rules: {
       userAgent: "*",
       allow: "/",
-      disallow: ["/api/", "/preview/", "/review/", "/videos", "/account", "/billing", "/new", "/dev/"],
+      disallow: ["/api/", "/preview/", "/review/", "/documents", "/videos", "/account", "/billing", "/new", "/dev/"],
     },
     sitemap: "https://renderball.com/sitemap.xml",
   };
