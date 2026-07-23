@@ -1,7 +1,15 @@
 # Renderball
 
-AI-native video generation. A brief becomes a story-driven, on-brand animated
-frontend, rendered to MP4. Next.js 14 + Remotion + TypeScript + Tailwind.
+AI-native design generation (pivoted 2026-07-23; formerly video-first). A brief
+becomes an on-brand, editable, multi-format design document — wedge format:
+presentation decks. Next.js 14 + Remotion + TypeScript + Tailwind.
+
+## Pivot (2026-07-23) — read first
+Read `docs/PIVOT.md` before any product or engine work. It holds the locked
+decisions (decks-first wedge; video shelved NOT deleted; name stays Renderball;
+usage-based token pricing with 1M free via Stripe meters), the keep/adapt/
+shelve/new reuse map with file anchors, and the phase plan. Do not build
+video-only features; do not delete video code paths.
 
 ## Design System
 Always read `DESIGN.md` before making any visual, UI, or UX-flow decision.
@@ -31,3 +39,12 @@ Vision MUST go through the native paas endpoint (`lib/render/zai-vision.ts` →
 `callZaiVision`), NOT `getAnthropic()` — z.ai's Anthropic-compat endpoint silently
 drops image blocks, so any image sent through the SDK client is invisible to the
 model (it hallucinates). All crawl/QA image reads use `callZaiVision`.
+
+## Spatial quality system
+Before touching layout, allocation, washout/contrast repairs, overlap gates, or
+type scaling, read `docs/SPATIAL_QUALITY.md` — the durable spec: principles
+(ink is the unit of account; occupy, don't redistribute; repairs must never
+manufacture defects), the system map with file anchors, calibration evidence,
+detector ideas already KILLED BY DATA (do not rebuild them), the pending
+RB_DENSITY_FLOOR spec, and the offline validation playbook (stored builds +
+replay scripts). The running lab ledger is `.data/dogfood/SPATIAL_EXEC.md`.
