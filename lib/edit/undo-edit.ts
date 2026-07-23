@@ -18,6 +18,9 @@ export interface UndoResult {
   /** Entries left after this undo — the client hides the control at 0. */
   remaining?: number;
   code?: string;
+  /** Present when the undone op was a scene-structure change (page ops): the
+   *  restored Script the route must persist alongside the store. */
+  script?: unknown;
   error?: string;
 }
 
@@ -41,7 +44,13 @@ export const undoEdit = async (genDir: string): Promise<UndoResult> =>
       }
       return { ok: false, error: res.error };
     }
-    return { ok: true, label: restored.label, remaining: restored.remaining, code: res.code };
+    return {
+      ok: true,
+      label: restored.label,
+      remaining: restored.remaining,
+      code: res.code,
+      script: restored.script,
+    };
   });
 
 /** How many undo steps are available (for enabling the control on load). */

@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import path from "path";
 import { getCurrentUser } from "../../../../lib/auth";
-import { loadScript } from "../../../../lib/store";
+import { loadScript, saveScript } from "../../../../lib/store";
+import type { Script } from "../../../../src/schema";
 import { undoEdit, undoAvailable } from "../../../../lib/edit/undo-edit";
 
 /**
@@ -47,9 +48,14 @@ export async function POST(request: Request) {
   if (!script) return NextResponse.json({ error: "script not found" }, { status: 404 });
 
   const result = await undoEdit(genDirOf(scriptId));
+  // A scene-structure undo (page ops) restores the Script too — persist it so
+  // the rail/scenes and the Section components stay in lockstep.
+  if (result.ok && result.script) {
+    await saveScript(result.script as Script, user.id);
+  }
   return NextResponse.json(
     result.ok
-      ? { ok: true, label: result.label, remaining: result.remaining }
+      ? { ok: true, label: result.label, remaining: result.remaining, script: result.script }
       : { ok: false, error: result.error },
     { status: result.ok ? 200 : /nothing to undo/.test(result.error ?? "") ? 409 : 400 },
   );

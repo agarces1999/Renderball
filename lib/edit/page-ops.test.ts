@@ -5,7 +5,8 @@
 // exports, scenes[K] refs, piece ids/slots/files, deck timing retile, offset
 // carriage, and rollback-safety guards.
 //
-import { decomposeGenDir, readManifest, setPieceOffset } from "../agents/lego-store";
+import { decomposeGenDir, readManifest, setPieceOffset, undoDepth } from "../agents/lego-store";
+import { undoEdit } from "./undo-edit";
 import { applyPageOp, normalizePageOp } from "./page-ops";
 import type { Script } from "../../src/schema";
 import { promises as fs } from "fs";
@@ -154,6 +155,30 @@ await check("move offsets survive the rewrite and follow their piece", async () 
   const m = await readManifest(dir);
   const pm = m.scenes[0].pieces.find((p) => p.id === "s0.copy");
   assert(!!pm?.offset && pm.offset.dx === 12 && pm.offset.dy === -8, `offset lost: ${JSON.stringify(pm?.offset)}`);
+});
+
+await check("page ops are undoable: snapshot carries the script, ring survives ops", async () => {
+  await reset();
+  const dup = await applyPageOp(dir, makeScript(), { op: "duplicate", page: 0 });
+  assert(dup.ok && dup.pages === 4, `dup: ${dup.error}`);
+  assert((await undoDepth(dir)) === 1, "ring should hold the duplicate snapshot");
+  const rem = await applyPageOp(dir, dup.script!, { op: "remove", page: 3 });
+  assert(rem.ok && rem.pages === 3, `remove: ${rem.error}`);
+  assert((await undoDepth(dir)) === 2, "ring must SURVIVE the second op (was cleared before)");
+  // Undo the remove → back to 4 pages, script restored and returned
+  const u1 = await undoEdit(dir);
+  assert(u1.ok && !!u1.script, `undo1: ${u1.error}`);
+  const s1 = u1.script as Script;
+  assert(s1.scenes.length === 4 && s1.scenes[1].label === "A copy", `undo1 script: ${s1.scenes.map((x) => x.label)}`);
+  const m1 = await readManifest(dir);
+  assert(m1.scenes.length === 4, "undo1 store scene count");
+  // Undo the duplicate → original 3 pages
+  const u2 = await undoEdit(dir);
+  assert(u2.ok && !!u2.script, `undo2: ${u2.error}`);
+  const s2 = u2.script as Script;
+  assert(s2.scenes.length === 3 && s2.scenes.map((x) => x.label).join("|") === "A|B|C", "undo2 script");
+  const code = await comp();
+  assert(!code.includes("export const Section3"), "undo2 left a stray Section3");
 });
 
 await check("store/script mismatch is refused", async () => {

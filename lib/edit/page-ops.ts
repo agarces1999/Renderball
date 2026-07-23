@@ -12,11 +12,12 @@
 // rewrite is one primitive: readDecomposed → transform in memory →
 // writeDecomposed → commit.
 //
-// UNDO CONTRACT: page ops rewrite the whole lego dir (writeDecomposed rm -rf's
-// it, .undo ring included). The ring's snapshots don't carry the Script, so
-// replaying one across a scene-count change would desync Section components
-// from scenes — clearing history on structural ops is the safe behavior until
-// snapshots learn to carry the script.
+// UNDO CONTRACT: page ops ARE undoable. writeDecomposed rm -rf's the lego dir
+// (which houses the .undo ring), so the op lifts the ring into memory first
+// and puts it back after, then pushes its own snapshot — one that CARRIES THE
+// SCRIPT (UndoSnapshot.script), because replaying a scene-count change without
+// it would desync Section components from scenes. The undo routes persist the
+// restored script whenever a popped snapshot carries one.
 //
 // Deck-only BY DESIGN (routes enforce config.kind === "deck"): timings are
 // retiled as inert 5s/slide metadata; video timeline semantics are not
@@ -29,6 +30,10 @@ import {
   writeDecomposed,
   readManifest,
   writeManifest,
+  captureUndo,
+  commitUndo,
+  readUndoRing,
+  restoreUndoRing,
   type PieceOffset,
 } from "../agents/lego-store";
 import {
@@ -250,6 +255,11 @@ export const applyPageOp = async (
     }
   });
 
+  // Lift the undo ring + snapshot the pre-op state (WITH the script — scene
+  // structure is changing) before the store rewrite nukes the lego dir.
+  const ring = await readUndoRing(genDir);
+  const snapshot = await captureUndo(genDir, script);
+
   await writeDecomposed(genDir, { preamble: d.preamble, tail: d.tail, scenes: newScenesMeta });
   if (carriedOffsets.length > 0) {
     const m2 = await readManifest(genDir);
@@ -263,12 +273,16 @@ export const applyPageOp = async (
 
   const commit = await commitGenDir(genDir, "page operation");
   if (!commit.ok) {
-    // Roll the store back byte-exact (offsets included) and re-commit it.
+    // Roll the store back byte-exact (offsets included), restore the ring,
+    // and re-commit — a failed op leaves history untouched.
     await writeDecomposed(genDir, d);
     await writeManifest(genDir, manifest);
+    await restoreUndoRing(genDir, ring);
     await commitGenDir(genDir, "page operation rollback");
     return { ok: false, error: commit.error };
   }
+  await restoreUndoRing(genDir, ring);
+  await commitUndo(genDir, snapshot, `page ${op.op}`);
 
   const newScenes = plan.map((e, j) => transformScene(script.scenes[e.src], e.mode, j));
   const isDeck = script.config.kind === "deck";

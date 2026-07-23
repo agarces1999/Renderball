@@ -259,6 +259,14 @@ export interface UndoSnapshot {
   /** filename (e.g. "s0.copy.tsx") → body. The whole pieces dir, so a snapshot
    *  restores adds AND deletes without knowing which happened. */
   pieces: Record<string, string>;
+  /**
+   * The pre-op Script, attached ONLY by ops that mutate the scene list (page
+   * add/remove/move/duplicate — canvas pivot). Restoring a scene-count change
+   * without the script would desync Section components from scenes, so these
+   * snapshots carry it; element-level ops keep omitting it (their undo never
+   * touches the script). Stored as the caller's Script object, JSON-ified.
+   */
+  script?: unknown;
 }
 
 const undoDir = (genDir: string): string => path.join(genDir, LEGO_DIR, UNDO_DIR);
@@ -269,8 +277,12 @@ const entryNames = async (genDir: string): Promise<string[]> => {
 };
 
 /** Snapshot the current store. Cheap enough to take on every op (piece bodies are
- *  a few KB each) and taken before mutating so it captures the pre-edit state. */
-export const captureUndo = async (genDir: string): Promise<UndoSnapshot | null> => {
+ *  a few KB each) and taken before mutating so it captures the pre-edit state.
+ *  Pass `script` ONLY from scene-structure ops (page ops) — see UndoSnapshot. */
+export const captureUndo = async (
+  genDir: string,
+  script?: unknown,
+): Promise<UndoSnapshot | null> => {
   try {
     const manifest = await readManifest(genDir);
     const dir = path.join(genDir, LEGO_DIR, "pieces");
@@ -279,9 +291,39 @@ export const captureUndo = async (genDir: string): Promise<UndoSnapshot | null> 
     for (const n of names) {
       if (n.endsWith(".tsx")) pieces[n] = await fs.readFile(path.join(dir, n), "utf8");
     }
-    return { manifest, pieces };
+    return script === undefined ? { manifest, pieces } : { manifest, pieces, script };
   } catch {
     return null; // not decomposed / unreadable — undo simply isn't available
+  }
+};
+
+/** Read the whole undo ring into memory (filename → raw JSON). Page ops rewrite
+ *  the lego dir (which houses the ring), so they lift it out first and put it
+ *  back after — structural edits stay undoable instead of clearing history. */
+export const readUndoRing = async (genDir: string): Promise<Record<string, string>> => {
+  const out: Record<string, string> = {};
+  for (const name of await entryNames(genDir)) {
+    try {
+      out[name] = await fs.readFile(path.join(undoDir(genDir), name), "utf8");
+    } catch {
+      /* a torn entry is dropped rather than failing the op */
+    }
+  }
+  return out;
+};
+
+/** Restore a ring previously read with readUndoRing (best-effort). */
+export const restoreUndoRing = async (
+  genDir: string,
+  ring: Record<string, string>,
+): Promise<void> => {
+  try {
+    await fs.mkdir(undoDir(genDir), { recursive: true });
+    for (const [name, body] of Object.entries(ring)) {
+      await fs.writeFile(path.join(undoDir(genDir), name), body, "utf8");
+    }
+  } catch {
+    /* history is best-effort — never fail the op over it */
   }
 };
 
@@ -321,7 +363,15 @@ export const undoDepth = async (genDir: string): Promise<number> => (await entry
  */
 export const undoLast = async (
   genDir: string,
-): Promise<{ ok: boolean; label?: string; remaining?: number; error?: string }> => {
+): Promise<{
+  ok: boolean;
+  label?: string;
+  remaining?: number;
+  /** Present when the snapshot carried a Script (page ops) — the caller must
+   *  persist it so scenes and sections stay in lockstep. */
+  script?: unknown;
+  error?: string;
+}> => {
   const names = await entryNames(genDir);
   if (names.length === 0) return { ok: false, error: "nothing to undo" };
   const file = path.join(undoDir(genDir), names[names.length - 1]);
@@ -341,8 +391,15 @@ export const undoLast = async (
     await fs.writeFile(path.join(piecesDir, name), body, "utf8");
   }
   await writeManifest(genDir, snap.manifest);
+  // Scene-structure snapshots (page ops) carry the Script — refresh the genDir
+  // mirror here; the route persists it to the store of record.
+  if (snap.script !== undefined) {
+    await fs
+      .writeFile(path.join(genDir, "script.json"), JSON.stringify(snap.script, null, 2), "utf8")
+      .catch(() => {});
+  }
   await fs.rm(file, { force: true });
-  return { ok: true, label: snap.label, remaining: names.length - 1 };
+  return { ok: true, label: snap.label, remaining: names.length - 1, script: snap.script };
 };
 
 export interface InsertPieceInput {

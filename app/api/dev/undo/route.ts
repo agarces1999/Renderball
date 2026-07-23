@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import path from "path";
 import { undoEdit, undoAvailable } from "../../../../lib/edit/undo-edit";
+import { saveScript, DEV_OWNER_ID } from "../../../../lib/store";
+import type { Script } from "../../../../src/schema";
 
 /**
  * Dev-only undo route — headless counterpart to /api/preview/undo (no Clerk
@@ -38,5 +40,8 @@ export async function POST(request: Request) {
   }
 
   const result = await undoEdit(genDirOf(scriptId));
+  if (result.ok && result.script) {
+    await saveScript(result.script as Script, DEV_OWNER_ID);
+  }
   return NextResponse.json(result, { status: result.ok ? 200 : 400 });
 }
