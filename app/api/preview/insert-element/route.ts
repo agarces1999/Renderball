@@ -5,6 +5,7 @@ import { assertZaiAvailable, ZaiUnavailableError } from "../../../../lib/zai-bre
 import { takeRegenSlot } from "../../../../lib/edit/op-cap";
 import { loadScript } from "../../../../lib/store";
 import { insertElement, parseInsertBody, type InsertMode } from "../../../../lib/edit/insert-element";
+import { checkTokenAllowance, recordTokenUsage } from "../../../../lib/metering";
 
 /**
  * Insert a NEW element into a built scene — the editor "add" path.
@@ -38,7 +39,9 @@ export async function POST(request: Request) {
   }
   const { scriptId, sceneIndex, bounds, spec } = parsed;
 
-  // Generate mode is LLM spend — apply the same breaker + per-owner cap as regen.
+  // Generate mode is LLM spend — apply the same breaker + per-owner cap as
+  // regen, plus the token-allowance gate. Primitive mode stays free/ungated
+  // (deterministic, zero tokens — "editing is free").
   if (spec.mode === "generate") {
     try {
       assertZaiAvailable();
@@ -47,6 +50,10 @@ export async function POST(request: Request) {
         return NextResponse.json({ error: err.friendly }, { status: 503 });
       }
       throw err;
+    }
+    const gate = await checkTokenAllowance(user.id);
+    if (!gate.allowed) {
+      return NextResponse.json({ error: gate.reason ?? "token allowance exhausted" }, { status: 402 });
     }
     const cap = takeRegenSlot(user.id);
     if (!cap.allowed) {
@@ -64,6 +71,9 @@ export async function POST(request: Request) {
 
   const genDir = path.join(process.cwd(), "src", "generated", scriptId);
   const result = await insertElement({ genDir, scriptId, sceneIndex, bounds, spec: spec as InsertMode });
+  // Pivot token counter: only generate-mode inserts produce usage; primitive
+  // inserts never reach here with tokens.
+  if (result.usage) await recordTokenUsage({ ownerId: user.id, usage: result.usage, op: "insert-element" });
   const status = result.ok ? 200 : /not found/.test(result.error ?? "") ? 404 : 400;
   return NextResponse.json(
     result.ok

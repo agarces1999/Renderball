@@ -3,6 +3,7 @@ import { getCurrentUser } from "../../../../lib/auth";
 import { loadBriefByScriptId } from "../../../../lib/store";
 import { brandKitStatus } from "../../../../lib/brand-kit";
 import { checkEntitlement } from "../../../../lib/entitlement";
+import { checkTokenAllowance } from "../../../../lib/metering";
 import { runPreviewBuild } from "../../../../lib/render/run-preview-build";
 import { runBuildLocked } from "../../../../lib/render/build-lock";
 
@@ -69,6 +70,20 @@ export async function POST(request: Request) {
       return {
         status: 402,
         body: { error: ent.reason ?? "plan limit reached", plan: ent.plan, used: ent.used, limit: ent.limit },
+      } as const;
+    }
+    // Token allowance (pivot pricing, RB_METERING): a build is the biggest
+    // single token spend, so it MUST clear the 1M-free / billing-active gate.
+    const gate = await checkTokenAllowance(user.id);
+    if (!gate.allowed) {
+      return {
+        status: 402,
+        body: {
+          error: gate.reason ?? "token allowance exhausted",
+          usedTokens: gate.usedTokens,
+          freeTokens: gate.freeTokens,
+          billingActive: gate.billingActive,
+        },
       } as const;
     }
     return runPreviewBuild(scriptId, user.id);

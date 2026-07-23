@@ -5,6 +5,7 @@ import { assertZaiAvailable, ZaiUnavailableError } from "../../../../lib/zai-bre
 import { takeRegenSlot } from "../../../../lib/edit/op-cap";
 import { loadScript } from "../../../../lib/store";
 import { regenerateElement } from "../../../../lib/edit/regenerate-element";
+import { checkTokenAllowance, recordTokenUsage } from "../../../../lib/metering";
 
 /**
  * M2 element-regenerate endpoint — the ONE LLM op of the visual editor.
@@ -38,6 +39,14 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: err.friendly }, { status: 503 });
     }
     throw err;
+  }
+
+  // Token allowance (pivot pricing, RB_METERING) — checked BEFORE the hourly
+  // cap so an out-of-tokens user gets the actionable upgrade message, not a
+  // confusing rate-limit one.
+  const gate = await checkTokenAllowance(user.id);
+  if (!gate.allowed) {
+    return NextResponse.json({ error: gate.reason ?? "token allowance exhausted" }, { status: 402 });
   }
 
   // Per-owner hourly cap — this route checks auth but not entitlement, so a
@@ -87,6 +96,8 @@ export async function POST(request: Request) {
 
   const genDir = path.join(process.cwd(), "src", "generated", scriptId);
   const result = await regenerateElement({ genDir, sceneIndex, pieceId, instruction });
+  // Pivot token counter: regens spend tokens whether or not they succeed.
+  if (result.usage) await recordTokenUsage({ ownerId: user.id, usage: result.usage, op: "regen-element" });
   const status = result.ok ? 200 : /not found/.test(result.error ?? "") ? 404 : 400;
   return NextResponse.json(
     result.ok
