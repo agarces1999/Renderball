@@ -25,6 +25,11 @@ const pngResponse = () => new Response(PNG_BYTES, { status: 200, headers: { "con
 
 console.log("image-provider (Fireworks image transport)");
 
+// One shared test process — restore whatever this file touches (see run-tests.mjs).
+const SAVED_ENV = {
+  RB_FIREWORKS_KEY: process.env.RB_FIREWORKS_KEY,
+  RB_IMAGE_MODEL: process.env.RB_IMAGE_MODEL,
+};
 process.env.RB_FIREWORKS_KEY = "test-key";
 delete process.env.RB_IMAGE_MODEL;
 
@@ -143,5 +148,9 @@ await check("a 200 that is not a PNG fails instead of landing on disk", async ()
 });
 
 globalThis.fetch = realFetch;
+for (const [k, v] of Object.entries(SAVED_ENV)) {
+  if (v === undefined) delete process.env[k];
+  else process.env[k] = v;
+}
 console.log(`\nimage-provider: ${passed} passed, ${failed} failed`);
 if (failed > 0) process.exitCode = 1;

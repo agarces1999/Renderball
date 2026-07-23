@@ -180,6 +180,9 @@ export const makeUsageRecord = (
 export const recordUsage = async (
   entry: Omit<UsageRecord, "ts" | "cost_usd"> & { ts?: string },
 ): Promise<void> => {
+  // Unit tests drive real orchestrators (insert-element) whose spend paths call
+  // this — let them opt out so test runs never write phantom rows to the ledger.
+  if (process.env.RB_USAGE_DISABLE === "1") return;
   try {
     const rec = makeUsageRecord(entry);
     await fs.mkdir(path.dirname(USAGE_LOG), { recursive: true });

@@ -18,6 +18,20 @@ import { promises as fs } from "fs";
 import path from "path";
 import os from "os";
 
+// The runner imports every test file into ONE process — save/restore anything
+// this file sets, or later files (cast-provider's unconfigured check) see it.
+const SAVED_ENV = {
+  RB_USAGE_DISABLE: process.env.RB_USAGE_DISABLE,
+  RB_FIREWORKS_KEY: process.env.RB_FIREWORKS_KEY,
+};
+const restoreEnv = () => {
+  for (const [k, v] of Object.entries(SAVED_ENV)) {
+    if (v === undefined) delete process.env[k];
+    else process.env[k] = v;
+  }
+};
+process.env.RB_USAGE_DISABLE = "1"; // orchestrator paths must not write real ledger rows
+
 let passed = 0;
 let failed = 0;
 const check = async (name: string, fn: () => void | Promise<void>) => {
@@ -332,6 +346,7 @@ await check("undo with an empty stack → ok:false, nothing to undo", async () =
 });
 
 await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+restoreEnv();
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exitCode = 1;
