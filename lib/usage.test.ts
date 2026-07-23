@@ -194,5 +194,41 @@ check("makeUsageRecord defaults ts when not provided", () => {
   assert(typeof rec.ts === "string" && rec.ts.includes("T"), "ISO ts default");
 });
 
+// ── per-image billing (editor image generation) ────────────────────────
+check("an image-generation record bills per image, zero tokens", () => {
+  const rec = makeUsageRecord({
+    op: "generate-image",
+    model: "accounts/fireworks/models/stable-diffusion-xl-1024-v1-0",
+    scriptId: "S1",
+    usage: U(0, 0),
+    images: 1,
+    ts: "2026-07-23T00:00:00Z",
+  });
+  ok(near(rec.cost_usd, 0.005, 1e-9));
+  assert(rec.images === 1, "images count persisted");
+});
+
+check("unknown image model overstates (highest known rate), never zero", () => {
+  const rec = makeUsageRecord({
+    op: "generate-image",
+    model: "accounts/fireworks/models/some-new-image-model",
+    usage: U(0, 0),
+    images: 2,
+    ts: "2026-07-23T00:00:00Z",
+  });
+  ok(near(rec.cost_usd, 0.01, 1e-9));
+});
+
+check("token records without images keep their exact old shape and cost", () => {
+  const rec = makeUsageRecord({
+    op: "build",
+    model: "claude-opus-4-8",
+    usage: U(1_000, 1_000),
+    ts: "2026-06-10T00:00:00Z",
+  });
+  assert(!("images" in rec), "no images key on token ops");
+  ok(near(rec.cost_usd, (1_000 * 5 + 1_000 * 25) / 1e6, 1e-9));
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exitCode = 1;

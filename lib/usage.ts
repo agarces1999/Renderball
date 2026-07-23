@@ -100,6 +100,25 @@ const RATES: Record<
 const CACHE_WRITE_MULT = 1.25;
 const CACHE_READ_MULT = 0.1;
 
+/**
+ * USD per IMAGE — the editor's image generation (lib/llm/image-provider.ts)
+ * bills per image, not per token. TODO verify both rates against the first
+ * Fireworks invoice: the serverless pricing page dropped its image rows when
+ * image generation was deprecated (2026-06-10), so these are the last
+ * published step rates, rounded UP (ledger errs on overstating, never under).
+ * SDXL ≈ $0.00013/step × 30 steps; flux schnell fp8 ≈ $0.00035/step × 4.
+ */
+const IMAGE_RATES: Record<string, number> = {
+  "accounts/fireworks/models/stable-diffusion-xl-1024-v1-0": 0.005,
+  "accounts/fireworks/models/flux-1-schnell-fp8": 0.0015,
+};
+/** Unknown image model → the highest known rate (overstate, never under). */
+const IMAGE_RATE_FALLBACK = 0.005;
+
+/** Cost in USD for `n` generated images on a given model. */
+export const imageCostUsd = (model: string, n: number): number =>
+  n * (IMAGE_RATES[model] ?? IMAGE_RATE_FALLBACK);
+
 /** Cost in USD for a usage bundle on a given model. Unknown model → Sonnet rate. */
 export const costUsd = (model: string, u: Usage): number => {
   const r = RATES[model] ?? RATES["claude-sonnet-4-5"];
@@ -121,6 +140,8 @@ export type UsageRecord = {
   scriptId?: string;
   url?: string;
   usage: Usage;
+  /** Generated-image count for per-image-billed ops (all token fields 0). */
+  images?: number;
   cost_usd: number;
   /** True when the operation FAILED after spending these tokens (e.g. a build
    *  whose composition didn't compile). Real billed cost — counted in totals,
@@ -143,7 +164,10 @@ export const makeUsageRecord = (
   ...(entry.scriptId ? { scriptId: entry.scriptId } : {}),
   ...(entry.url ? { url: entry.url } : {}),
   usage: entry.usage,
-  cost_usd: Number(costUsd(entry.model, entry.usage).toFixed(6)),
+  ...(entry.images ? { images: entry.images } : {}),
+  cost_usd: Number(
+    (costUsd(entry.model, entry.usage) + imageCostUsd(entry.model, entry.images ?? 0)).toFixed(6),
+  ),
   ...(entry.failed ? { failed: true } : {}),
 });
 
