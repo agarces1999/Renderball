@@ -23,6 +23,7 @@
 //   2. Unit fixtures for the geometry: region union/clamp/degenerate-skip on
 //      hand-built measurements, and the finding contract.
 //
+import { existsSync } from "fs";
 import path from "path";
 import {
   assessHeroWashout,
@@ -48,9 +49,24 @@ import type { MeasuredElement, SceneMeasurement } from "./measure-scene";
 
 let passed = 0;
 let failed = 0;
+let skipped = 0;
 const check = async (name: string, fn: () => void | Promise<void>) => {
   try { await fn(); passed++; console.log(`  ✓ ${name}`); }
   catch (e) { failed++; console.log(`  ✗ ${name}\n      ${e instanceof Error ? e.message : e}`); }
+};
+// REAL-fixture checks sample archived scene PNGs under gitignored .data/
+// paths: present in the long-lived checkout, absent in fresh clones and
+// worktrees. An absent fixture makes the sampling unrunnable, not failed —
+// skip LOUDLY (counted + named) so a green run can't be mistaken for full
+// coverage.
+const checkWithFixtures = async (name: string, fixtures: string[], fn: () => void | Promise<void>) => {
+  const missing = fixtures.filter((f) => !existsSync(f));
+  if (missing.length > 0) {
+    skipped++;
+    console.log(`  ↷ ${name}\n      SKIPPED — gitignored fixture(s) not on disk: ${missing.map((f) => path.relative(process.cwd(), f)).join(", ")}`);
+    return;
+  }
+  await check(name, fn);
 };
 const assert = (c: boolean, m: string) => { if (!c) throw new Error(m); };
 
@@ -144,8 +160,9 @@ const HERO_BOUNDS: { scene: number; pieceId: string; png: string; x: number; y: 
 ];
 
 let real: HeroContrastResult | null = null;
+const REAL_PNGS = HERO_BOUNDS.map((b) => b.png);
 
-await check("real PNGs sample cleanly at the pinned hero bounds (one browser pass)", async () => {
+await checkWithFixtures("real PNGs sample cleanly at the pinned hero bounds (one browser pass)", REAL_PNGS, async () => {
   // Distinct scene keys so each fixture maps to its own measurement (the two
   // scene-3 entries come from different builds/PNGs).
   const ms = HERO_BOUNDS.map((b, i) =>
@@ -156,7 +173,7 @@ await check("real PNGs sample cleanly at the pinned hero bounds (one browser pas
   assert(real.stats.length === HERO_BOUNDS.length, `stats for all ${HERO_BOUNDS.length} regions, got ${real.stats.length}`);
 });
 
-await check("v5 scene-0 hero (pale-on-pale desk tableau) FIRES hero-washout", () => {
+await checkWithFixtures("v5 scene-0 hero (pale-on-pale desk tableau) FIRES hero-washout", REAL_PNGS, () => {
   assert(real !== null, "real fixtures did not sample");
   const f = real!.findings.filter((x) => x.scene === 0);
   assert(f.length === 1, `exactly one finding on the washout hero, got ${f.length}: ${real!.findings.map((x) => `${x.scene}:${x.pieceId}`).join(",")}`);
@@ -167,7 +184,7 @@ await check("v5 scene-0 hero (pale-on-pale desk tableau) FIRES hero-washout", ()
   assert(f[0].repairInstruction.includes("s0.hero"), "repair instruction targets the hero by id");
 });
 
-await check("v5 scene-1 tab cluster + v5 s3/s4 heroes + reference hero all PASS", () => {
+await checkWithFixtures("v5 scene-1 tab cluster + v5 s3/s4 heroes + reference hero all PASS", REAL_PNGS, () => {
   assert(real !== null, "real fixtures did not sample");
   const passing = HERO_BOUNDS.map((b, i) => ({ ...b, key: i })).filter((b) => b.expect === "pass");
   for (const b of passing) {
@@ -179,7 +196,7 @@ await check("v5 scene-1 tab cluster + v5 s3/s4 heroes + reference hero all PASS"
   }
 });
 
-await check("v5 scene-2 hollow hero (lone element in a void) also reads as a washout by pixels", async () => {
+await checkWithFixtures("v5 scene-2 hollow hero (lone element in a void) also reads as a washout by pixels", [path.join(A5_PNGS, "scene2.png")], async () => {
   // Region re-measured 2026-07-16: 782x542 @ 1020,270 — spread 0, stdDev 5.5.
   // The per-hero density floor names this piece too; both sensors agreeing on
   // a void is the intended overlap, not double-counting.
@@ -189,7 +206,7 @@ await check("v5 scene-2 hollow hero (lone element in a void) also reads as a was
   assert(r.findings.length === 1 && r.findings[0].pieceId === "s2.hero", `washout on s2.hero, got ${r.findings.map((f) => f.pieceId).join(",") || "none"}`);
 });
 
-await check("finding contract: kind, scene, pieceId, blocking, measured numbers, actionable repair", () => {
+await checkWithFixtures("finding contract: kind, scene, pieceId, blocking, measured numbers, actionable repair", REAL_PNGS, () => {
   assert(real !== null, "real fixtures did not sample");
   for (const f of real!.findings) {
     assert(f.kind === "hero-washout" && f.blocking === true, "kind + blocking");
@@ -223,7 +240,7 @@ const oatlyMeasurement = (scene: number, pieceId: string, x: number, y: number, 
   screenshotPath: path.join(OATLY_FRAMES, `scene${scene}.png`),
 });
 
-await check("near-miss band: cycle-4 s0/s2 heroes get ADVISORIES (not findings); strong s1 gets neither", async () => {
+await checkWithFixtures("near-miss band: cycle-4 s0/s2 heroes get ADVISORIES (not findings); strong s1 gets neither", [0, 1, 2].map((s) => path.join(OATLY_FRAMES, `scene${s}.png`)), async () => {
   const r = await assessHeroWashout([
     oatlyMeasurement(0, "s0.hero", 240, 640, 601, 280),
     oatlyMeasurement(1, "s1.hero", 560, 260, 444, 561),
@@ -240,7 +257,7 @@ await check("near-miss band: cycle-4 s0/s2 heroes get ADVISORIES (not findings);
   }
 });
 
-await check("near-miss band is EXCLUSIVE of the blocking gate — a true washout is a finding, never an advisory", async () => {
+await checkWithFixtures("near-miss band is EXCLUSIVE of the blocking gate — a true washout is a finding, never an advisory", [path.join(A5_PNGS, "scene0.png")], async () => {
   // v5 scene-0 (spread 30 / std 15.1) breaches BOTH floors.
   const r = await assessHeroWashout([
     measurement(0, [el("s0.hero", 1020, 270, 800, 540)], path.join(A5_PNGS, "scene0.png")),
@@ -427,5 +444,5 @@ await check("readDominantPanel: edge treatment on the panel element propagates",
   assert(r !== null && r!.edgeTreated, "bordered panel reads edge-treated");
 });
 
-console.log(`\n${passed} passed, ${failed} failed`);
+console.log(`\n${passed} passed, ${failed} failed${skipped > 0 ? `, ${skipped} SKIPPED (gitignored fixtures absent — unit coverage only)` : ""}`);
 if (failed > 0) process.exitCode = 1;
