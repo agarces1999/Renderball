@@ -56,7 +56,10 @@ import {
   deriveTypeScale,
   HEADLINE_LINE_HEIGHT,
   BODY_LINE_HEIGHT,
+  HEADLINE_RAMP,
+  BODY_RAMP,
   type ResolvedTypeScale,
+  type TypeScale,
 } from "../render/type-scale";
 
 export interface Box {
@@ -195,8 +198,9 @@ export const predictCopyInk = (
   box: Box,
   canvas: Box,
   metrics: FontMetrics,
+  scaleOverride?: Partial<TypeScale>,
 ): InkPrediction => {
-  const scale = deriveTypeScale({ role: "copy", box: { w: box.w, h: box.h }, canvas });
+  const scale = deriveTypeScale({ role: "copy", box: { w: box.w, h: box.h }, canvas, override: scaleOverride });
   const M = INK_MODEL;
   const wrapW = Math.max(1, box.w);
   let h = 0;
@@ -331,4 +335,67 @@ export const inkSizedBox = (
   }
   const box = { w, h };
   return { box, prediction, freedPx: Math.max(0, bounds.w * bounds.h - box.w * box.h), kept: false };
+};
+
+// ─── Ink-FILLED box (v16 — the "grow the text" direction) ───────────────────
+//
+// The live A/B critique (2026-07-23): sizing text DOWN to its ink parks the
+// freed space as a blank band under the copy — the space must be OCCUPIED, not
+// redistributed. The first occupant is the text itself: when a box is much
+// taller than its ink at the derived scale, walk the type ramp UP — largest
+// step whose predicted ink (plus padding) still fits with headroom — and keep
+// the box. Bounded by the ramp tops; headline and body move in LOCKSTEP (same
+// ramp index) so hierarchy is preserved; never steps DOWN (the copy-overflow
+// repair owns that direction).
+
+/** Only try stepping when ink+padding fills less than this of the box… */
+export const STEP_UP_TRIGGER_FILL = 0.62;
+/** …and accept a step only while ink+padding stays under this (headroom —
+ *  the overflow gate must never fire on a box this pass declared full). */
+export const STEP_UP_MAX_FILL = 0.88;
+
+export interface InkFilledBox {
+  /** The prediction at the CHOSEN scale (stepped when `override` is set). */
+  prediction: InkPrediction;
+  /** Forced ramp px for the emission — null when the derived scale stands. */
+  override: { headlinePx: number; bodyPx: number } | null;
+  /** The headline px the box DERIVES on its own (telemetry: from → to). */
+  baseHeadlinePx: number;
+  /** ink+padding as a fraction of box height, before/after the step. */
+  fillBefore: number;
+  fillAfter: number;
+}
+
+export const inkFilledBox = (
+  bounds: Box,
+  fields: OwnedField[],
+  canvas: Box,
+  metrics: FontMetrics,
+): InkFilledBox => {
+  const base = predictCopyInk(fields, bounds, canvas, metrics);
+  const noStep = (fill: number): InkFilledBox => ({ prediction: base, override: null, baseHeadlinePx: base.scale.headlinePx, fillBefore: fill, fillAfter: fill });
+  if (base.blocks === 0 || base.h <= 0 || bounds.h <= 0) return noStep(0);
+  const fillOf = (p: InkPrediction): number => (p.h + 2 * INK_BOX_PAD_EM * p.scale.bodyPx) / bounds.h;
+  const fillBefore = fillOf(base);
+  if (fillBefore >= STEP_UP_TRIGGER_FILL) return noStep(fillBefore);
+  const i0 = HEADLINE_RAMP.indexOf(base.scale.headlinePx);
+  if (i0 <= 0) return noStep(fillBefore); // off-ramp or already the top step
+  let chosen: { pred: InkPrediction; i: number } | null = null;
+  for (let i = i0 - 1; i >= 0; i--) {
+    const pred = predictCopyInk(fields, bounds, canvas, metrics, {
+      headlinePx: HEADLINE_RAMP[i],
+      bodyPx: BODY_RAMP[i],
+    });
+    if (pred.degraded || pred.h <= 0) break;
+    if (fillOf(pred) > STEP_UP_MAX_FILL) break; // next step would crowd — stop
+    chosen = { pred, i };
+  }
+  if (!chosen) return noStep(fillBefore);
+  return {
+    prediction: chosen.pred,
+    override: { headlinePx: HEADLINE_RAMP[chosen.i], bodyPx: BODY_RAMP[chosen.i] },
+    baseHeadlinePx: base.scale.headlinePx,
+    fillBefore,
+    fillAfter: fillOf(chosen.pred),
+  };
 };

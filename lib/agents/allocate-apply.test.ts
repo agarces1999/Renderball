@@ -72,20 +72,77 @@ const ctxFor = (plans: ScenePlan[]): AllocateApplyCtx => ({
   metricsFor: () => METRICS,
 });
 
+// ── v16 STEP-UP: occupy an underfilled box with larger type ──────────────────
+// Short strings in a tall column: the derived scale's ink fills a small
+// fraction of the box, so the ramp walks UP (lockstep) and the BOX is kept.
+const SHORT_CONTENT: Record<string, unknown> = {
+  eyebrow: "THE PROOF",
+  headline: "Trusted at scale",
+  lede: "98% of the Forbes Cloud 100 run on it.",
+};
+const TALL_COPY_COMPOSITION = {
+  atmosphere: "quiet gradient wash",
+  elements: [
+    { role: "hero", subject: "workspace panel", focalRank: 1, bounds: { x: 60, y: 80, w: 920, h: 920 }, interior: [], ownsCopy: [], motion: "" },
+    { role: "copy", subject: "editorial stack", focalRank: 2, bounds: { x: 1040, y: 140, w: 800, h: 880 }, interior: [], ownsCopy: ["eyebrow", "headline", "lede"], motion: "" },
+  ],
+} as unknown as NonNullable<AllocateApplyCtx["scenes"][number]["composition"]>;
+
+check("STEP-UP: short copy in a tall box grows its TYPE (ramp lockstep), box kept, override on the plan", () => {
+  const plan = composeSceneLayout({ register: "split", content: SHORT_CONTENT, composition: TALL_COPY_COMPOSITION }, "16:9", { hasThroughline: false });
+  const before = JSON.stringify(plan.elements.find((e) => e.id === "copy")!.bounds);
+  const r = allocateScenePlans([plan], {
+    aspect: "16:9",
+    scenes: [{ content: SHORT_CONTENT, composition: TALL_COPY_COMPOSITION }],
+    ownedFieldsFor: (_i, slot) => (slot.id === "copy" ? ["eyebrow", "headline", "lede"] : slot.contentFields),
+    metricsFor: () => METRICS,
+  });
+  const rec = r.records[0];
+  const stepped = rec.steppedUp?.find((s) => s.id === "copy");
+  assert(!!stepped, `copy must step up, record: ${JSON.stringify(rec.steppedUp)} reason=${rec.reason}`);
+  assert(stepped!.headlineTo > stepped!.headlineFrom, `type grows: ${stepped!.headlineFrom}→${stepped!.headlineTo}`);
+  assert(stepped!.fillTo > stepped!.fillFrom && stepped!.fillTo <= 0.88, `fill improves within headroom: ${stepped!.fillFrom}→${stepped!.fillTo}`);
+  const outCopy = r.plans[0].elements.find((e) => e.id === "copy")!;
+  assert(JSON.stringify(outCopy.bounds) === before, "the BOX is kept — occupied, not shrunk");
+  assert(outCopy.typeScaleOverride?.headlinePx === stepped!.headlineTo, "the override rides the returned plan slot");
+  // The override is what the single derivation point consumes — same scale out.
+  const derived = deriveTypeScale({ role: "copy", box: outCopy.bounds, canvas: { w: 1920, h: 1080 }, override: outCopy.typeScaleOverride });
+  assert(derived.headlinePx === stepped!.headlineTo, "deriveTypeScale honours the ridden override");
+  assert(rec.applied, "a type step-up IS a change — the record says applied");
+});
+
+check("STEP-UP determinism + no-step on already-full boxes", () => {
+  const planA = composeSceneLayout({ register: "split", content: SHORT_CONTENT, composition: TALL_COPY_COMPOSITION }, "16:9", { hasThroughline: false });
+  const planB = composeSceneLayout({ register: "split", content: SHORT_CONTENT, composition: TALL_COPY_COMPOSITION }, "16:9", { hasThroughline: false });
+  const ctx = {
+    aspect: "16:9" as const,
+    scenes: [{ content: SHORT_CONTENT, composition: TALL_COPY_COMPOSITION }],
+    ownedFieldsFor: (_i: number, slot: ElementSlot) => (slot.id === "copy" ? ["eyebrow", "headline", "lede"] : slot.contentFields),
+    metricsFor: () => METRICS,
+  };
+  const a = allocateScenePlans([planA], ctx);
+  const b = allocateScenePlans([planB], ctx);
+  assert(JSON.stringify(a.plans) === JSON.stringify(b.plans), "identical input → byte-identical output (step-up included)");
+  // The original fixture's copy (long strings, ~85% full) must NOT step.
+  const full = allocateScenePlans([composedPlan()], ctxFor([composedPlan()]));
+  assert(!full.records[0].steppedUp?.length, `a well-filled box never steps: ${JSON.stringify(full.records[0].steppedUp)}`);
+});
+
 const el = (plan: ScenePlan, id: string): ElementSlot => {
   const found = plan.elements.find((e) => e.id === id);
   if (!found) throw new Error(`fixture plan has no "${id}" slot`);
   return found;
 };
 
-check("flag off (the default): the input ARRAY is returned by reference", () => {
+check("flag OFF (the opt-out): the input ARRAY is returned by reference", () => {
   const plans = [composedPlan()];
-  const r = maybeAllocateScenePlans(plans, ctxFor(plans), {});
+  const r = maybeAllocateScenePlans(plans, ctxFor(plans), { RB_ALLOCATE: "off" });
   assert(r.plans === plans, "flag-off must return the same array object, not a copy");
   assert(r.enabled === false && r.records.length === 0, "flag-off must report disabled with no records");
-  assert(allocateEnabled({}) === false, "empty env must read as disabled");
+  assert(allocateEnabled({}) === true, "empty env must read as ENABLED (default-on since the 2026-07-19 live A/B pass)");
   assert(allocateEnabled({ RB_ALLOCATE: "on" }) === true, "RB_ALLOCATE=on must enable");
-  assert(allocateEnabled({ RB_ALLOCATE: "off" }) === false, "RB_ALLOCATE=off must stay disabled");
+  assert(allocateEnabled({ RB_ALLOCATE: "off" }) === false, "RB_ALLOCATE=off must disable (the opt-out)");
+  assert(allocateEnabled({ RB_ALLOCATE: "0" }) === false, "RB_ALLOCATE=0 must disable");
 });
 
 check("hero passes through byte-identical; throughline keeps its anchor verbatim", () => {

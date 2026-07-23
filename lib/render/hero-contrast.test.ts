@@ -38,6 +38,10 @@ import {
   findHeroUnderscale,
   rectUnionArea,
   isPaintedElement,
+  cssLum255,
+  edgeEvidenceForElement,
+  readDominantPanel,
+  EDGE_BORDER_MIN_ALPHA,
   type HeroContrastResult,
 } from "./hero-contrast";
 import type { MeasuredElement, SceneMeasurement } from "./measure-scene";
@@ -352,6 +356,75 @@ await check("heroPaintedFraction: no hero piece → 0; an errored scene → 1 (n
   assert(heroPaintedFraction(measurement(1, [pel("s1.copy", 0, 0, 400, 400, { bg: "rgb(10,10,10)" })])) === 0, "no hero piece → 0");
   const errored: SceneMeasurement = { ...measurement(2, []), error: "boom" };
   assert(heroPaintedFraction(errored) === 1, "unmeasurable → healthy (1), never furnish blind");
+});
+
+// ── unit: panel reading — sparsity + edge evidence (v16) ─────────────────────
+// The washout×sparse triage that killed the black-slab repair. Live positives:
+// Notion alloc2-on-2 s1.hero (dark inbox, content top-half only) and
+// alloc2-on-1 s3.hero (giant slab, one stat card) — both were white panels the
+// forced ink-lift painted black. Coverage math must read them SPARSE; a
+// bordered white card (notion.com idiom) must read EDGE-TREATED.
+
+await check("cssLum255: hex + rgb() parse to Rec.709 L; garbage is null", () => {
+  const hw = cssLum255("#ffffff");
+  assert(hw !== null && Math.abs(hw - 255) < 0.01, `white hex ≈255, got ${hw}`);
+  const l = cssLum255("rgb(255, 255, 255)");
+  assert(l !== null && Math.abs(l - 255) < 0.01, `white rgb, got ${l}`);
+  assert(cssLum255("transparent") === null && cssLum255("") === null, "unparseable → null");
+});
+
+await check("edge evidence: a Notion-class hairline (1px #E7E5E2 on white) is TREATED", () => {
+  const e = { ...el("s1.hero", 100, 100, 600, 400), borderTopWidth: 1, borderColor: "rgb(231, 229, 226)" };
+  assert(edgeEvidenceForElement(e, "#ffffff").treated, "hairline on white counts");
+});
+
+await check("edge evidence: near-invisible or canvas-toned borders do NOT count", () => {
+  const ghost = { ...el("s1.hero", 0, 0, 600, 400), borderTopWidth: 1, borderColor: `rgba(0,0,0,${EDGE_BORDER_MIN_ALPHA - 0.05})` };
+  assert(!edgeEvidenceForElement(ghost, "#ffffff").treated, "alpha under the floor");
+  const sameTone = { ...el("s1.hero", 0, 0, 600, 400), borderTopWidth: 2, borderColor: "rgb(252, 252, 252)" };
+  assert(!edgeEvidenceForElement(sameTone, "#ffffff").treated, "white-on-white border is no boundary");
+  assert(!edgeEvidenceForElement(el("s1.hero", 0, 0, 600, 400), "#ffffff").treated, "legacy fixture (no fields) → untreated");
+});
+
+await check("edge evidence: a real drop shadow counts; 'none'/zero-alpha do not", () => {
+  const shadowed = { ...el("s1.hero", 0, 0, 600, 400), boxShadow: "rgba(16, 24, 40, 0.08) 0px 12px 24px 0px" };
+  assert(edgeEvidenceForElement(shadowed, "#ffffff").treated, "soft shadow counts");
+  const none = { ...el("s1.hero", 0, 0, 600, 400), boxShadow: "none" };
+  assert(!edgeEvidenceForElement(none, "#ffffff").treated, "'none' is nothing");
+  const ghost = { ...el("s1.hero", 0, 0, 600, 400), boxShadow: "rgba(0, 0, 0, 0.01) 0px 12px 24px 0px" };
+  assert(!edgeEvidenceForElement(ghost, "#ffffff").treated, "invisible shadow is nothing");
+});
+
+await check("readDominantPanel: coverage = interior painted union / panel area (the sparse trigger)", () => {
+  const panel = { ...el("s1.hero", 100, 100, 600, 400), bg: "rgb(255,255,255)" };
+  const rowA = { ...el("s1.hero", 100, 100, 600, 100), text: "Triage product feedback", parentIx: 0 };
+  const rowB = { ...el("s1.hero", 100, 200, 600, 100), text: "Resolve support tickets", parentIx: 0 };
+  const m = measurement(1, [panel, rowA, rowB]);
+  const r = readDominantPanel(m, "s1.hero", "#ffffff");
+  assert(r !== null, "panel found");
+  assert(Math.abs(r!.coverage - 0.5) < 0.01, `two 600×100 rows over 600×400 = 0.5, got ${r?.coverage}`);
+  // The live black-box class: one thin row in a big panel → SPARSE (<0.4).
+  const sparse = measurement(1, [panel, { ...rowA, h: 50 }]);
+  const rs = readDominantPanel(sparse, "s1.hero", "#ffffff");
+  assert(rs !== null && rs!.coverage < 0.4, `one 600×50 row = 0.125, got ${rs?.coverage}`);
+});
+
+await check("readDominantPanel: legacy fixtures (no parentIx anywhere) and panel-less pieces → null", () => {
+  const legacyPanel = { ...el("s1.hero", 100, 100, 600, 400), bg: "rgb(255,255,255)" };
+  assert(readDominantPanel(measurement(1, [legacyPanel]), "s1.hero") === null, "no ancestry → null (never a false 0)");
+  const textOnly = { ...el("s1.copy", 100, 100, 600, 400), text: "words", parentIx: -1 };
+  const withAncestry = { ...el("s1.copy", 100, 100, 100, 40), text: "x", parentIx: 0 };
+  assert(readDominantPanel(measurement(1, [textOnly, withAncestry]), "s1.copy") === null, "no opaque panel-sized surface → null");
+});
+
+await check("readDominantPanel: edge treatment on the panel element propagates", () => {
+  const panel = {
+    ...el("s3.hero", 100, 100, 600, 400),
+    bg: "rgb(255,255,255)", borderTopWidth: 1, borderColor: "rgb(220, 218, 214)",
+  };
+  const row = { ...el("s3.hero", 100, 100, 600, 60), text: "98%", parentIx: 0 };
+  const r = readDominantPanel(measurement(3, [panel, row]), "s3.hero", "#ffffff");
+  assert(r !== null && r!.edgeTreated, "bordered panel reads edge-treated");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

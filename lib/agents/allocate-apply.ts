@@ -92,15 +92,17 @@ import type { ScenePlan, ElementSlot, Aspect } from "./layout-composer";
 import { validateScenePlan, CANVAS } from "./layout-composer";
 import type { SceneComposition } from "../../src/schema";
 import { allocateLayout, contentRect, type AllocElementInput, type Rect } from "./allocate-layout";
-import { inkSizedBox, predictInkRect, type OwnedField } from "./predict-ink";
+import { inkSizedBox, inkFilledBox, predictInkRect, type OwnedField } from "./predict-ink";
 import { scoreLayout, type LayoutScore, type ScoredElement } from "./layout-metrics";
 import type { FontMetrics } from "../render/font-metrics";
 
-const ENABLED = new Set(["on", "1", "true", "yes"]);
+const DISABLED = new Set(["off", "0", "false", "no"]);
 
-/** `RB_ALLOCATE=on|1|true|yes`. Off by default, everywhere. */
+/** ON by default since 2026-07-19 (live A/B passed its pre-registered gate:
+ *  Notion s0/s3 holes shrank, controls byte-identical — see SPATIAL_EXEC.md).
+ *  `RB_ALLOCATE=off` is the opt-out. */
 export const allocateEnabled = (env: Record<string, string | undefined> = process.env): boolean =>
-  ENABLED.has(String(env.RB_ALLOCATE ?? "").trim().toLowerCase());
+  !DISABLED.has(String(env.RB_ALLOCATE ?? "").trim().toLowerCase());
 
 /** One scene's outcome — persisted as `allocated.json` next to composition.json
  *  so future dry runs can diff the allocator's plan against what shipped. */
@@ -131,6 +133,9 @@ export interface SceneAllocationRecord {
   moved: string[];
   /** Text elements sized to ink. */
   resized: { id: string; from: Rect; to: Rect; freedPx: number }[];
+  /** v16 — text elements whose TYPE stepped UP to fill an underfilled box
+   *  (the occupy-don't-redistribute direction; box untouched, ramp lockstep). */
+  steppedUp?: { id: string; headlineFrom: number; headlineTo: number; fillFrom: number; fillTo: number }[];
   /** Largest ink-void (fraction of title-safe) before → after, scored on the
    *  same predicted-ink view the re-score used. */
   inkVoidBefore: number | null;
@@ -414,17 +419,40 @@ export const allocateScenePlans = (plans: ScenePlan[], ctx: AllocateApplyCtx, op
       bounds: {},
     };
     records.push(record);
+    // v16 — type step-ups this scene decided. They survive EVERY exit path,
+    // reverts included: a type override changes no geometry, so no geometric
+    // guard has authority over it, and losing it on a bounds revert would
+    // silently discard the occupy decision.
+    const stepUps = new Map<string, { headlinePx: number; bodyPx: number }>();
+    const withOverrides = (p: ScenePlan): ScenePlan =>
+      stepUps.size === 0
+        ? p
+        : {
+            ...p,
+            elements: p.elements.map((el) =>
+              stepUps.has(el.id) ? { ...el, typeScaleOverride: stepUps.get(el.id)! } : el,
+            ),
+          };
     const keep = (reason: string): ScenePlan => {
-      record.reason = reason;
-      // The scene ships untouched — a non-empty resized[] on a reverted scene
-      // would read as a change that never happened. Same for a tentatively
-      // recorded hero growth; heroGrowthSkipped stays (a why-not is still true).
+      record.reason = stepUps.size > 0 ? `type-step-up-only(${reason})` : reason;
+      if (stepUps.size > 0) {
+        console.log(
+          `[allocate] s${i} type-step-up-only stepped ${record.steppedUp?.length ?? 0} [${(record.steppedUp ?? [])
+            .map((s) => `${s.id} ${s.headlineFrom}→${s.headlineTo}px fill ${(s.fillFrom * 100).toFixed(0)}%→${(s.fillTo * 100).toFixed(0)}%`)
+            .join(", ")}] (${reason})`,
+        );
+      }
+      // The scene's BOUNDS ship untouched — a non-empty resized[] on a
+      // reverted scene would read as a change that never happened. Same for a
+      // tentatively recorded hero growth; heroGrowthSkipped stays (a why-not
+      // is still true). Type step-ups are NOT geometry and DO ship.
+      record.applied = stepUps.size > 0;
       record.resized = [];
       record.moved = [];
       record.freedPxTotal = 0;
       delete record.heroGrowth;
       for (const el of plan.elements) record.bounds[el.id] = round(el.bounds);
-      return plan;
+      return withOverrides(plan);
     };
 
     try {
@@ -465,6 +493,28 @@ export const allocateScenePlans = (plans: ScenePlan[], ctx: AllocateApplyCtx, op
           fieldsById.set(el.id, fields);
           metricsById.set(el.id, metrics);
           const chars = fields.reduce((n, f) => n + (typeof f.value === "string" ? f.value.length : JSON.stringify(f.value ?? "").length), 0);
+          // v16 STEP-UP — the OCCUPY direction runs first: when the box is
+          // much taller than its ink at the derived scale, grow the TYPE to
+          // fill it (ramp lockstep, capped) and keep the box, instead of
+          // shrinking the box and parking the freed space as a blank band
+          // (the live A/B critique). The stepped box is truthful by
+          // construction, so downstream it behaves exactly like kept-tight
+          // text: pinned in place, position negotiable under void repair.
+          const filled = inkFilledBox(el.bounds, fields, { w: W, h: H }, metrics);
+          if (filled.override) {
+            stepUps.set(el.id, filled.override);
+            (record.steppedUp ??= []).push({
+              id: el.id,
+              headlineFrom: filled.baseHeadlinePx,
+              headlineTo: filled.override.headlinePx,
+              fillFrom: filled.fillBefore,
+              fillTo: filled.fillAfter,
+            });
+            keptTight++;
+            keptTightFree.set(el.id, { size: { w: el.bounds.w, h: el.bounds.h }, chars });
+            inputs.push({ ...base, pinnedBounds: el.bounds });
+            continue;
+          }
           const sized = inkSizedBox(el.bounds, fields, { w: W, h: H }, metrics);
           if (sized.kept) {
             // The declared box already tells the truth (ink+padding fills it).
@@ -721,10 +771,13 @@ export const allocateScenePlans = (plans: ScenePlan[], ctx: AllocateApplyCtx, op
       const growNote = record.heroGrowth
         ? ` grew hero ${record.heroGrowth.from.w}×${record.heroGrowth.from.h}→${record.heroGrowth.to.w}×${record.heroGrowth.to.h} (${record.heroGrowth.areaFactor}x, void ${pct(record.heroGrowth.inkVoidBefore)}→${pct(record.heroGrowth.inkVoidAfter)})`
         : "";
+      const stepNote = record.steppedUp?.length
+        ? ` stepped ${record.steppedUp.length} [${record.steppedUp.map((s) => `${s.id} ${s.headlineFrom}→${s.headlineTo}px fill ${(s.fillFrom * 100).toFixed(0)}%→${(s.fillTo * 100).toFixed(0)}%`).join(", ")}]`
+        : "";
       console.log(
-        `[allocate] s${i} ${record.placement ?? "grow-only"}${shape ? ` shape=${shape}` : ""} resized ${record.resized.length} [${record.resized.map((r) => `${r.id} ${r.from.w}×${r.from.h}→${r.to.w}×${r.to.h}`).join(", ")}] moved ${record.moved.length} [${record.moved.join(", ")}]${growNote} ink-void ${pct(record.inkVoidBefore)}→${pct(record.inkVoidAfter)} freed ${(record.freedPxTotal / 1000).toFixed(0)}kpx→${record.freedTo ?? "—"}`,
+        `[allocate] s${i} ${record.placement ?? "grow-only"}${shape ? ` shape=${shape}` : ""} resized ${record.resized.length} [${record.resized.map((r) => `${r.id} ${r.from.w}×${r.from.h}→${r.to.w}×${r.to.h}`).join(", ")}]${stepNote} moved ${record.moved.length} [${record.moved.join(", ")}]${growNote} ink-void ${pct(record.inkVoidBefore)}→${pct(record.inkVoidAfter)} freed ${(record.freedPxTotal / 1000).toFixed(0)}kpx→${record.freedTo ?? "—"}`,
       );
-      return nextPlan;
+      return withOverrides(nextPlan);
     } catch (err) {
       // The pass must never break a build.
       console.warn(`[allocate] scene ${i} skipped — ${err instanceof Error ? err.message : err}`);

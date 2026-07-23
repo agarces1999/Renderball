@@ -39,6 +39,7 @@ import {
   substituteImgAssetIds,
   ensureHeroSurfaceContrast,
   forceHeroSurfaceLift,
+  subtleSurfaceLift,
   repaintInteriorTextForSurface,
   themeFontFamilyNames,
   stripMaskedValueRuns,
@@ -98,6 +99,12 @@ console.log("cast-build (element-cast orchestrator)");
 delete process.env.RB_CAST_MODEL;
 delete process.env.RB_CAST_MODEL_HERO;
 delete process.env.RB_CAST_MODEL_LEAVES;
+// These fixtures pin EXACT call/repair/placeholder counters for the cast
+// mechanics, authored with the allocator post-pass off. Since RB_ALLOCATE
+// went default-ON (2026-07-19 live A/B), pin it off here — allocator behavior
+// has its own suite (allocate-apply.test.ts); letting it resize these
+// fixtures' boxes just perturbs the counters this file actually tests.
+process.env.RB_ALLOCATE = "off";
 
 // ─── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -2019,6 +2026,62 @@ await check("cornerLogoVisible NO-MARK-ANYWHERE GUARD: never strips the only bra
   // "none" declares the scene carries no mark — but honouring that literally
   // guarantees a brand-less frame with no way back, so the lockup stays.
   assert(cornerLogoVisible({ brandMark: "none", roles, enabled: true }), '"none" ⇒ show (unrecoverable otherwise)');
+});
+
+// ── (v16) SUBTLE surface lift — the sparse-washout terminal ──────────────────
+// Live Notion alloc2 A/B evidence: the forced ink-lift on a mostly-EMPTY white
+// panel manufactured a black filler slab (run2-s1.hero, run1-s3.hero), and the
+// spread re-measure then rewarded it. The terminal for the sparse class is a
+// visible BOUNDARY — hairline border + soft shadow + a few-percent tint —
+// never a polarity flip.
+
+const lightWashTheme: Theme = {
+  ...theme,
+  palette: { CANVAS: "#ffffff", INK: "#191919", ACCENT: "#0a85d1", CARD: "#f6f5f4" },
+};
+
+await check("subtle lift: canvas-toned root gains border + shadow + few-% tint — NEVER the ink coat", () => {
+  const body = `<div style={{ width: 900, height: 700, background: "#ffffff" }}><span>3 tasks waiting</span></div>`;
+  const r = subtleSurfaceLift(body, lightWashTheme, { canvasColor: "#ffffff" });
+  assert(r.lifted && r.via === "root-override", `lifts via root-override, got ${String(r.via)}`);
+  assert(r.code.includes("border:") && r.code.includes("boxShadow:"), `boundary appended: ${r.code}`);
+  assert(!!r.targetHex && r.targetHex.toLowerCase() !== "#191919", `tint is NOT the ink token: ${r.targetHex}`);
+  const tintL = Number.parseInt((r.targetHex ?? "#000000").slice(1, 3), 16);
+  assert(tintL > 235, `tint stays within a few % of the white canvas, got ${r.targetHex}`);
+});
+
+await check("subtle lift: an existing border is respected — only the missing keys are added", () => {
+  const body = `<div style={{ border: "1px solid #eeeeee", background: "#ffffff" }} />`;
+  const r = subtleSurfaceLift(body, lightWashTheme, { canvasColor: "#ffffff" });
+  assert(r.lifted, "still lifts (shadow + tint remain to add)");
+  assert((r.code.match(/\bborder:/g) ?? []).length === 1, `no duplicate border key: ${r.code}`);
+  assert(r.code.includes("boxShadow:"), `shadow still added: ${r.code}`);
+});
+
+await check("subtle lift: a genuinely CONTRASTING surface keeps its color — boundary joins it, no tint", () => {
+  const body = `<div style={{ width: 600, height: 400, background: "#111111" }} />`;
+  const r = subtleSurfaceLift(body, lightWashTheme, { canvasColor: "#ffffff" });
+  assert(r.lifted, "border/shadow still apply");
+  assert(r.code.includes('"#111111"'), `the real surface color survives: ${r.code}`);
+  assert(!/background:[^,}]*"#f[0-9a-f]{5}"/.test(r.code), `no near-canvas tint appended over it: ${r.code}`);
+});
+
+await check("subtle lift: bare palette const that CONTRASTS also blocks the tint (last-wins protection)", () => {
+  const darkRoot = `<div style={{ width: 600, background: INK }} />`;
+  const r = subtleSurfaceLift(darkRoot, lightWashTheme, { canvasColor: "#ffffff" });
+  assert(r.lifted, "boundary still applies");
+  assert(!/background: "#f/.test(r.code), `INK resolves via the palette and blocks the tint: ${r.code}`);
+});
+
+await check("subtle lift: no style object → noop (never fabricates structure it can't anchor)", () => {
+  const r = subtleSurfaceLift(`<section><span>bare</span></section>`, lightWashTheme, { canvasColor: "#ffffff" });
+  assert(!r.lifted, "noop without a style span");
+});
+
+await check("subtle lift: dark canvas tints LIGHTER, still never the polar token", () => {
+  const r = subtleSurfaceLift(`<div style={{ width: 700 }} />`, washTheme, { canvasColor: "#101018" });
+  assert(r.lifted, "lifts on the dark canvas too");
+  assert(!!r.targetHex && r.targetHex.toLowerCase() !== "#ffffff", `tint is not the polar white: ${r.targetHex}`);
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

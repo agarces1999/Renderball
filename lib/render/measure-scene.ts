@@ -119,6 +119,16 @@ export interface MeasuredElement {
   vy?: number;
   vw?: number;
   vh?: number;
+  /** v16 — boundary treatment. A panel can be VISIBLE against a same-tone
+   *  canvas through its edge (hairline border / drop shadow) with no interior
+   *  tonal spread at all — the standard light-SaaS card idiom. The washout
+   *  detector's edge-evidence arm keys on these. Optional: older fixtures
+   *  predate them. */
+  borderTopWidth?: number;
+  /** Computed border-top-color, rgb()/rgba() string. */
+  borderColor?: string;
+  /** Computed box-shadow ("none" when absent). */
+  boxShadow?: string;
 }
 
 /** A rect in canvas px. */
@@ -317,6 +327,9 @@ const PAGE_WALK = `(() => {
       hasBgImage: !!(cs.backgroundImage && cs.backgroundImage !== "none"),
       vx: Math.round(vx0), vy: Math.round(vy0),
       vw: Math.round(Math.max(0, vx1 - vx0)), vh: Math.round(Math.max(0, vy1 - vy0)),
+      borderTopWidth: parseFloat(cs.borderTopWidth) || 0,
+      borderColor: cs.borderTopColor,
+      boxShadow: cs.boxShadow,
     });
   }
   return out;

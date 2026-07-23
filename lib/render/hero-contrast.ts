@@ -394,6 +394,24 @@ const secondaryFindingFor = (stats: HeroLuminanceStats): HeroWashoutFinding => (
   stats,
 });
 
+/** v16: a would-be washout whose panel carries a real border/shadow — visible
+ *  through its EDGE, not its interior tones. Advisory by contract. */
+const edgeTreatedNearMiss = (stats: HeroLuminanceStats, edgeDetail: string): HeroWashoutNearMiss => ({
+  kind: "washout-near-miss",
+  scene: stats.scene,
+  pieceId: stats.pieceId,
+  blocking: false,
+  detail:
+    `scene ${stats.scene}: hero piece "${stats.pieceId}" is tonally flat (spread ${round1(stats.spread)}/` +
+    `std ${round1(stats.stdDev)}) but its panel carries a measured boundary treatment (${edgeDetail}) — ` +
+    `visible through its edge, the light-SaaS card idiom. Not a washout; not lifted.`,
+  advisory:
+    `ADVISORY (non-blocking) — this panel separates from the canvas via its edge (${edgeDetail}) rather ` +
+    `than tone. Acceptable. While regenerating for other reasons, prefer adding interior tonal interest ` +
+    `(ink text, accent chips, real content) over darkening the surface.`,
+  stats,
+});
+
 const nearMissFor = (stats: HeroLuminanceStats): HeroWashoutNearMiss => ({
   kind: "washout-near-miss",
   scene: stats.scene,
@@ -514,8 +532,19 @@ export const assessHeroWashout = async (
         }
         result.stats.push(stats);
         if (stats.spread < WASHOUT_SPREAD_FLOOR && stats.stdDev < WASHOUT_STDDEV_FLOOR) {
-          result.findings.push(findingFor(stats));
-          primaryFailed.add(stats.pieceId);
+          // v16: EDGE-EVIDENCE arm — a same-tone panel with a measured border
+          // or real shadow is visible through its boundary (the light-SaaS
+          // card idiom); interior tonal spread is the wrong ruler for it.
+          // Downgrade to advisory so (a) a bordered white card never triggers
+          // the forced ink-lift, and (b) a furnish-regen may legitimately
+          // return one without re-firing the gate.
+          const panel = readDominantPanel(m, stats.pieceId, opts?.canvasBackground);
+          if (panel?.edgeTreated) {
+            result.advisories.push(edgeTreatedNearMiss(stats, panel.edgeDetail));
+          } else {
+            result.findings.push(findingFor(stats));
+            primaryFailed.add(stats.pieceId);
+          }
         } else if (
           stats.spread < WASHOUT_SPREAD_FLOOR &&
           stats.stdDev < WASHOUT_STDDEV_FLOOR + WASHOUT_NEAR_MISS_STD_MARGIN
@@ -529,6 +558,17 @@ export const assessHeroWashout = async (
       const emittedSecondary = new Set<string>();
       for (const s of secondaryCandidates.sort((a, b) => a.mean - b.mean)) {
         if (primaryFailed.has(s.pieceId) || emittedSecondary.has(s.pieceId)) continue;
+        // v16: the same edge-evidence downgrade for card-sized sub-panels —
+        // match the sub-panel's element by rect to read ITS border/shadow.
+        const subEl = m.elements.find(
+          (e) =>
+            e.piece === s.pieceId &&
+            Math.abs(e.x - s.region.x) <= 2 &&
+            Math.abs(e.y - s.region.y) <= 2 &&
+            Math.abs(e.w - s.region.w) <= 4 &&
+            Math.abs(e.h - s.region.h) <= 4,
+        );
+        if (subEl && edgeEvidenceForElement(subEl, opts?.canvasBackground).treated) continue;
         emittedSecondary.add(s.pieceId);
         result.stats.push(s);
         result.findings.push(secondaryFindingFor(s));
@@ -663,6 +703,146 @@ export const isPaintedElement = (e: MeasuredElement): boolean =>
   e.w > 0 &&
   e.h > 0 &&
   (e.isImg || e.text !== "" || cssAlphaOfBg(e.bg) >= 0.5 || !!e.hasBgImage);
+
+// ── panel reading: sparsity + edge evidence (v16) ────────────────────────────
+//
+// Live evidence (2026-07-23, Notion alloc2 A/B): the washout gate fired on
+// white panels whose real defect was EMPTINESS — content in the top half, dead
+// panel below — and the forced ink-lift then converted invisible emptiness
+// into a black monolith the founder read as "a black box built to fill space"
+// (alloc2-on-2 s1.hero, alloc2-on-1 s3.hero — both carry the FORCED-lift log
+// signature). Two readings fix the two halves:
+//   • SPARSITY — interior coverage of the piece's dominant panel: a washout
+//     whose panel is mostly empty must be FILLED by a regen, never repainted
+//     dark (painting emptiness ink maximizes the void's visibility).
+//   • EDGE EVIDENCE — a same-tone panel with a measured hairline border or a
+//     real drop shadow IS visible (the standard light-SaaS card idiom; it is
+//     literally how notion.com separates white cards from a white page).
+//     Interior tonal spread is the wrong ruler for it, so the washout
+//     downgrades to a near-miss advisory instead of blocking — which also
+//     lets a furnish-regen legitimately RETURN a bordered light panel
+//     without re-firing the gate (convergence).
+
+/** Minimum panel area worth a sparsity/edge reading (mirrors occupancy's
+ *  CARD_MIN_AREA_PX; kept local — occupancy imports this module). */
+const PANEL_MIN_AREA_PX = 60_000;
+/** Border evidence: at least this wide… */
+export const EDGE_BORDER_MIN_PX = 1;
+/** …at least this opaque… */
+export const EDGE_BORDER_MIN_ALPHA = 0.15;
+/** …and at least this far (0–255 Rec.709 L) from the canvas tone, when the
+ *  canvas is known (Notion's #E7E5E2 hairline on white measures ~26). */
+export const EDGE_BORDER_MIN_DELTA_L = 10;
+/** Shadow evidence: any px geometry with at least this much alpha. */
+export const EDGE_SHADOW_MIN_ALPHA = 0.05;
+
+/** Rec.709 luminance (0–255) of a CSS color (hex or rgb()/rgba()), else null. */
+export const cssLum255 = (c: string): number | null => {
+  const hex = hexLum255(c);
+  if (hex !== null) return hex;
+  const m = /rgba?\(([^)]+)\)/.exec(c || "");
+  if (!m) return null;
+  const p = m[1].split(",").map((v) => parseFloat(v.trim()));
+  if (p.length < 3 || p.slice(0, 3).some((v) => Number.isNaN(v))) return null;
+  return 0.2126 * p[0] + 0.7152 * p[1] + 0.0722 * p[2];
+};
+
+/** Visible boundary treatment on ONE measured element (border or shadow). */
+export const edgeEvidenceForElement = (
+  e: MeasuredElement,
+  canvasBackground?: string,
+): { treated: boolean; detail: string } => {
+  const canvasL = canvasBackground ? cssLum255(canvasBackground) : null;
+  const bw = e.borderTopWidth ?? 0;
+  if (bw >= EDGE_BORDER_MIN_PX && e.borderColor) {
+    const alpha = /^#/.test(e.borderColor.trim()) ? 1 : cssAlphaOfBg(e.borderColor);
+    const bl = cssLum255(e.borderColor);
+    const deltaOk = canvasL === null || bl === null || Math.abs(bl - canvasL) >= EDGE_BORDER_MIN_DELTA_L;
+    if (alpha >= EDGE_BORDER_MIN_ALPHA && deltaOk) {
+      return { treated: true, detail: `${bw}px border ${e.borderColor}` };
+    }
+  }
+  const shadow = e.boxShadow ?? "none";
+  if (shadow !== "none" && shadow.trim() !== "") {
+    const sm = /rgba?\(([^)]+)\)/.exec(shadow);
+    const sp = sm ? sm[1].split(",").map((v) => parseFloat(v.trim())) : null;
+    const alpha = sp ? (sp.length >= 4 ? sp[3] : 1) : 0;
+    const hasGeometry = /[1-9][\d.]*px/.test(shadow);
+    if (alpha >= EDGE_SHADOW_MIN_ALPHA && hasGeometry) {
+      return { treated: true, detail: `box-shadow ${shadow.slice(0, 60)}` };
+    }
+  }
+  return { treated: false, detail: "no border/shadow evidence" };
+};
+
+export interface PanelReading {
+  /** The piece's dominant opaque/gradient surface (largest visible area). */
+  panel: { x: number; y: number; w: number; h: number };
+  /** Interior painted+text coverage of that panel, 0..1 (visible-rect union). */
+  coverage: number;
+  /** Panel area, px². */
+  area: number;
+  /** Visible boundary treatment on the panel itself. */
+  edgeTreated: boolean;
+  edgeDetail: string;
+}
+
+/**
+ * The dominant panel of a piece + its interior coverage + edge evidence.
+ * Returns null when the piece has no panel-sized surface, or when the fixture
+ * predates parentIx (no ancestry → coverage would read a false 0 everywhere).
+ */
+export const readDominantPanel = (
+  m: SceneMeasurement,
+  pieceId: string,
+  canvasBackground?: string,
+): PanelReading | null => {
+  if (m.error) return null;
+  const hasAncestry = m.elements.some((e) => typeof e.parentIx === "number" && e.parentIx >= 0);
+  if (!hasAncestry) return null;
+  const vis = (e: MeasuredElement) =>
+    typeof e.vw === "number" && typeof e.vh === "number"
+      ? { x: e.vx ?? e.x, y: e.vy ?? e.y, w: e.vw, h: e.vh }
+      : { x: e.x, y: e.y, w: e.w, h: e.h };
+  let panelIx = -1;
+  let bestArea = 0;
+  for (const [i, e] of m.elements.entries()) {
+    if (e.piece !== pieceId || e.opacity <= 0.1) continue;
+    if (cssAlphaOfBg(e.bg) < 0.5 && !e.hasBgImage) continue;
+    const r = vis(e);
+    const area = r.w * r.h;
+    if (area >= PANEL_MIN_AREA_PX && area > bestArea) {
+      bestArea = area;
+      panelIx = i;
+    }
+  }
+  if (panelIx < 0) return null;
+  const panelEl = m.elements[panelIx];
+  const panel = vis(panelEl);
+  const childIx = new Map<number, number[]>();
+  m.elements.forEach((e, i) => {
+    if (typeof e.parentIx === "number" && e.parentIx >= 0) {
+      childIx.set(e.parentIx, [...(childIx.get(e.parentIx) ?? []), i]);
+    }
+  });
+  const interior: { x: number; y: number; w: number; h: number }[] = [];
+  const stack = [...(childIx.get(panelIx) ?? [])];
+  while (stack.length > 0) {
+    const i = stack.pop()!;
+    stack.push(...(childIx.get(i) ?? []));
+    const k = m.elements[i];
+    if (!isPaintedElement(k)) continue;
+    const r = vis(k);
+    const x0 = Math.max(r.x, panel.x);
+    const y0 = Math.max(r.y, panel.y);
+    const x1 = Math.min(r.x + r.w, panel.x + panel.w);
+    const y1 = Math.min(r.y + r.h, panel.y + panel.h);
+    if (x1 > x0 && y1 > y0) interior.push({ x: x0, y: y0, w: x1 - x0, h: y1 - y0 });
+  }
+  const coverage = bestArea > 0 ? rectUnionArea(interior) / bestArea : 0;
+  const edge = edgeEvidenceForElement(panelEl, canvasBackground);
+  return { panel, coverage, area: bestArea, edgeTreated: edge.treated, edgeDetail: edge.detail };
+};
 
 /**
  * Blocking hero-underscale findings for measured scenes. `registers` is the

@@ -33,6 +33,7 @@ export type RenderTruthKind =
   | "stray-card"
   | "mock-occlusion"
   | "stranded-hero"
+  | "covered-text-cluster"
   | "measure-error";
 
 export interface RenderTruthFinding {
@@ -53,7 +54,7 @@ export interface RenderTruthFinding {
 export const BLOCKING_RENDER_TRUTH_KINDS: RenderTruthKind[] = [
   "overflow", "measure-error", "barbell", "cross-piece-overlap", "canvas-brightness", "stranded-hero",
   "canvas-coherence", "corner-mark-collision", "hollow-cta", "intra-piece-overlap", "ghost-fragment", "stray-card",
-  "mock-occlusion",
+  "mock-occlusion", "covered-text-cluster",
 ];
 
 // px tolerance so sub-pixel rounding / intentional full-bleed don't false-fire.
@@ -2067,9 +2068,21 @@ const isIntraText = (e: MeasuredElement): boolean =>
   e.pieceKind !== "chrome" &&
   e.pieceKind !== "atmosphere";
 
+/** v16: recalibration knobs for the intra-piece collision gate. Defaults are
+ *  the original arm; the wired thresholds live at the call site so the
+ *  calibration sweep (offline, real stored measurements) can drive them. */
+export interface IntraOverlapOpts {
+  /** Fire threshold: intersection as a fraction of the smaller box. */
+  minFrac?: number;
+  /** Require ≥1 solid control in the pair (the original Brex-s0 arm). */
+  requireControl?: boolean;
+}
+
 /** SAME-piece severe collisions where at least one side is a solid control. */
-export const findIntraPieceOverlap = (m: SceneMeasurement): RenderTruthFinding[] => {
+export const findIntraPieceOverlap = (m: SceneMeasurement, opts: IntraOverlapOpts = {}): RenderTruthFinding[] => {
   if (m.error) return [];
+  const minFrac = opts.minFrac ?? INTRA_OVERLAP_FRAC;
+  const requireControl = opts.requireControl ?? true;
   const cands = m.elements.filter((e) => e.w > 0 && e.h > 0 && !!e.piece && (isIntraControl(e) || isIntraText(e)));
   const out: RenderTruthFinding[] = [];
   const seenPiece = new Set<string>();
@@ -2080,7 +2093,7 @@ export const findIntraPieceOverlap = (m: SceneMeasurement): RenderTruthFinding[]
       if (a.piece !== b.piece) continue; // SAME piece only (cross-piece is another gate)
       if (seenPiece.has(a.piece)) continue;
       // At least one side must be a solid control — the defect shape isOverlapText misses.
-      if (!(isIntraControl(a) || isIntraControl(b))) continue;
+      if (requireControl && !(isIntraControl(a) || isIntraControl(b))) continue;
       const at = a.text.trim();
       const bt = b.text.trim();
       if (at === bt || at.includes(bt) || bt.includes(at)) continue; // label/child/repeat
@@ -2095,7 +2108,7 @@ export const findIntraPieceOverlap = (m: SceneMeasurement): RenderTruthFinding[]
       // Full containment = a parent/child by design (a label on its own surface).
       if (inter >= 0.92 * minArea) continue;
       const frac = inter / minArea;
-      if (frac < INTRA_OVERLAP_FRAC) continue;
+      if (frac < minFrac) continue;
       seenPiece.add(a.piece);
       out.push({
         scene: m.scene,
@@ -2108,6 +2121,63 @@ export const findIntraPieceOverlap = (m: SceneMeasurement): RenderTruthFinding[]
           `helper line, and label owns its own row with real spacing — nothing overlapping.`,
       });
     }
+  }
+  return out;
+};
+
+// ── covered-text cluster (v16: the founder's "overlapping elements in the ────
+// center") — calibrated 2026-07-23 on all 40 stored scenes. The s0 collision
+// class is a card stacked OVER another surface's rows: the buried rows' centers
+// hit-test to the covering element (coveredAtCenter), while every box-pair
+// geometry sweep measured ZERO signal (the under-card often paints no panel of
+// its own). One covered node is noise (wide left-aligned eyebrow boxes whose
+// empty center sits under a transparent overlay measure "covered" ~1×/scene);
+// a CLUSTER of ≥2 within one piece is real occlusion every time it appears:
+//   MUST FIRE  — alloc2-on-2 s0.hero (task-card footer buried: "Unassigned",
+//                "3 collaborators notified"), flags-notion s4.hero (CTA buried
+//                under the dark bullet card), alloc-off-1 s0.hero (23 nodes).
+//   MUST PASS  — every other reviewed alloc2/flags scene (max 1 node, the
+//                eyebrow artifact). flags-on-rappi: zero anywhere.
+// NOT covered (documented, not faked): the run-1 s0 card-BEHIND-card, whose
+// occluded region records no text nodes at all — that class is only visible
+// to pixels (vision judge) or fixed structurally by sub-element planning.
+export interface CoveredClusterOpts {
+  /** Covered content-text nodes within ONE piece needed to fire. */
+  minNodes?: number;
+}
+
+export const findCoveredTextCluster = (
+  m: SceneMeasurement,
+  opts: CoveredClusterOpts = {},
+): RenderTruthFinding[] => {
+  if (m.error) return [];
+  const minNodes = opts.minNodes ?? 2;
+  const byPiece = new Map<string, MeasuredElement[]>();
+  for (const e of m.elements) {
+    if (!e.piece || e.pieceKind === "chrome" || e.pieceKind === "atmosphere") continue;
+    if (e.coveredAtCenter !== true) continue;
+    if ((e.opacity ?? 1) <= 0.3) continue;
+    if (e.text.trim().length < 3) continue;
+    if (e.w <= 0 || e.h <= 0) continue;
+    byPiece.set(e.piece, [...(byPiece.get(e.piece) ?? []), e]);
+  }
+  const out: RenderTruthFinding[] = [];
+  for (const [pieceId, nodes] of byPiece) {
+    if (nodes.length < minNodes) continue;
+    const names = nodes
+      .slice(0, 4)
+      .map((n) => `"${n.text.trim().slice(0, 30)}" @${Math.round(n.x)},${Math.round(n.y)}`)
+      .join(", ");
+    out.push({
+      scene: m.scene,
+      kind: "covered-text-cluster",
+      detail:
+        `scene ${m.scene}: inside piece ${pieceId}, ${nodes.length} text node(s) have their centers COVERED by ` +
+        `other elements — ${names}${nodes.length > 4 ? `, +${nodes.length - 4} more` : ""}. Real rows are hidden ` +
+        `behind overlapping surfaces (a card stacked over a table's rows, a panel over the CTA). Rebuild ${pieceId} ` +
+        `so every row, label, and card owns its own band — nothing may sit on top of another element's content. ` +
+        `If two surfaces say the same thing (duplicate status strips), keep ONE and remove the other instead of layering them.`,
+    });
   }
   return out;
 };
@@ -2415,6 +2485,7 @@ export const findRenderTruthFailures = async (
     findings.push(...findStrayFullBleedCard(m, opts.registers?.[m.scene]));
     findings.push(...findCenteredMockOcclusion(m, opts.registers?.[m.scene]));
     findings.push(...findIntraPieceOverlap(m));
+    findings.push(...findCoveredTextCluster(m));
     findings.push(...findGhostFragment(m));
     findings.push(...(await findEmptyBand(m)));
   }

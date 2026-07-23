@@ -24,7 +24,7 @@
  */
 import { promises as fs } from "fs";
 import path from "path";
-import { castBuild, forceHeroSurfaceLift, type CastBuildResult } from "../agents/cast-build";
+import { castBuild, forceHeroSurfaceLift, subtleSurfaceLift, type CastBuildResult } from "../agents/cast-build";
 import { findBrokenRenderedImages, swapBrokenImagesForWordmark } from "./image-integrity";
 import { castCall, type CastResult, type CastCall } from "../llm/cast-provider";
 import type { CastEffort } from "../llm/cast-provider";
@@ -51,6 +51,7 @@ import {
 } from "./render-truth-gates";
 import {
   assessOccupancy,
+  CARD_INTERIOR_FLOOR,
   type OccupancyVoidFinding,
   type OccupancySceneStat,
   type CardOccupancyAdvisory,
@@ -105,6 +106,7 @@ import {
   HERO_HEALTHY_FRAC,
   heroPaintedFraction,
   findHeroUnderscale,
+  readDominantPanel,
   type HeroContrastResult,
   type HeroLuminanceStats,
   type HeroWashoutFinding,
@@ -219,13 +221,21 @@ export interface EdgeCropEvent {
 export interface WashoutLiftEvent {
   round: number;
   pieceId: string;
-  action: "forced-lift" | "lift-noop-regen-routed";
+  /** v16: "sparse-furnish-routed" = paint-lift REFUSED because the panel's
+   *  interior is mostly empty (a dark coat on emptiness is a black filler box,
+   *  the live-measured Notion defect) — routed to an AI furnish regen instead.
+   *  "subtle-terminal" = post-loop floor: border+tint+shadow, never ink. */
+  action: "forced-lift" | "lift-noop-regen-routed" | "sparse-furnish-routed" | "subtle-terminal";
   via: "paint-rewrite" | "root-override" | null;
   targetToken: string | null;
   interiorTextRepaints: number;
   before: { spread: number; std: number };
   after: { spread: number; std: number } | null;
   cleared: boolean | null;
+  /** v16: a forced lift that manufactured blocking text-contrast inside the
+   *  piece is rolled back (the invariant the lift claims, now enforced). */
+  reverted?: boolean;
+  revertReason?: string;
 }
 
 /** v12 (#4): broken rendered images swapped to the text wordmark. */
@@ -1337,10 +1347,51 @@ export async function runQualityLoop(
 
     // v12 (#2): GATE→BACKSTOP CLOSURE — force the surface lift with MEASURED colors.
     let contrast = contrastRaw;
+    /** v16: pieces whose washout routed to a furnish regen — they carry a
+     *  complete instruction and must NOT receive the "repaint DARKER" append
+     *  (the two would contradict; the founder's rule-contradiction class). */
+    const sparseFurnishRouted = new Set<string>();
+    /** v16: pre-lift state for the revert guard (span text + cached body). */
+    const preLiftState = new Map<string, { span: string; cached: string | undefined }>();
     if (contrastRaw.findings.length > 0) {
       let anyLifted = false;
       for (const f of contrastRaw.findings) {
         const m = measurements.find((mm) => mm.scene === f.scene);
+        // v16 SPARSITY TRIAGE — live evidence (Notion alloc2 A/B): the forced
+        // ink-lift on a mostly-EMPTY white panel converts invisible emptiness
+        // into a black monolith, and the spread re-measure then REWARDS it.
+        // A sparse panel's washout is an emptiness defect: only the model can
+        // fill it, so route it to a furnish regen and refuse the paint.
+        const panelReading = m ? readDominantPanel(m, f.pieceId, canvasBackground) : null;
+        if (panelReading && panelReading.coverage < CARD_INTERIOR_FLOOR) {
+          sparseFurnishRouted.add(f.pieceId);
+          washoutLiftEvents.push({
+            round,
+            pieceId: f.pieceId,
+            action: "sparse-furnish-routed",
+            via: null,
+            targetToken: null,
+            interiorTextRepaints: 0,
+            before: { spread: f.stats.spread, std: f.stats.stdDev },
+            after: null,
+            cleared: null,
+          });
+          warn(
+            `  [washout-lift] ${f.pieceId}: panel interior only ${(panelReading.coverage * 100).toFixed(0)}% furnished — ` +
+              `paint-lift REFUSED (a dark coat on an empty panel is a black filler box, not a repair); routing to a FURNISH regen`,
+          );
+          f.repairInstruction =
+            `This panel is washed out AND its interior is only ${(panelReading.coverage * 100).toFixed(0)}% furnished — ` +
+            `the real defect is EMPTINESS. A dark repaint is FORBIDDEN here: it would manufacture a black filler box. ` +
+            `Regenerate so the panel EARNS its ${panelReading.panel.w}×${panelReading.panel.h} footprint, one of: ` +
+            `(a) FILL the interior with real content in this scene's world — rows with concrete values, meta lines, chips, ` +
+            `a chart strip; real micro-copy, comfortably covering >${Math.round(CARD_INTERIOR_FLOOR * 100)}% of the panel; ` +
+            `(b) SHRINK the panel to hug the content it actually has (a small clean card beats a big empty slab); or ` +
+            `(c) REMOVE the backdrop panel and let the content sit directly on the canvas. ` +
+            `Make the surface visible the light-UI way — a hairline border, a soft shadow, a subtle tint — ` +
+            `never a giant dark slab.`;
+          continue;
+        }
         let panelColor: string | undefined;
         let bestArea = 0;
         for (const e of m?.elements ?? []) {
@@ -1356,6 +1407,7 @@ export async function runQualityLoop(
         const span = pieceSpanInCode(finalCode, f.pieceId);
         const spanLift = span ? forceHeroSurfaceLift(finalCode.slice(span.start, span.end), theme, liftCtx) : null;
         if (span && spanLift?.lifted) {
+          preLiftState.set(f.pieceId, { span: finalCode.slice(span.start, span.end), cached: pieceCache.get(f.pieceId) });
           finalCode = finalCode.slice(0, span.start) + spanLift.code + finalCode.slice(span.end);
           anyLifted = true;
           washoutLiftEvents.push({
@@ -1404,10 +1456,62 @@ export async function runQualityLoop(
           ev.cleared = !contrast.findings.some((ff) => ff.pieceId === ev.pieceId);
           log(`  [washout-lift] ${ev.pieceId}: re-measured spread ${st?.spread ?? "?"}/std ${st?.stdDev ?? "?"} — ${ev.cleared ? "CLEARED (zero tokens)" : "residual → regen"}`);
         }
+        // v16 REVERT GUARD — enforce the invariant the lift's own comments
+        // claim ("a lift never creates a text-contrast finding"; live run2-s1
+        // shipped 1.04:1 labels three rounds straight because repaint can't
+        // reach template-literal/class/inherited colors). A lifted piece that
+        // now carries blocking text-contrast rolls back; the washout then
+        // routes to a regen with the explicit direction instead of shipping
+        // "accepted and flagged".
+        let anyReverted = false;
+        for (const ev of washoutLiftEvents.filter((e) => e.round === round && e.action === "forced-lift")) {
+          const pre = preLiftState.get(ev.pieceId);
+          const fnd = contrastRaw.findings.find((ff) => ff.pieceId === ev.pieceId);
+          const m2 = fnd ? measurements.find((mm) => mm.scene === fnd.scene) : undefined;
+          if (!pre || !m2) continue;
+          let scoped: TextContrastFinding[] = [];
+          try {
+            const tc = await assessTextNodeContrast([m2]);
+            scoped = tc.findings.filter((x) => x.pieceId === ev.pieceId && x.blocking);
+          } catch {
+            continue;
+          }
+          if (scoped.length === 0) continue;
+          const span2 = pieceSpanInCode(finalCode, ev.pieceId);
+          if (!span2) continue;
+          finalCode = finalCode.slice(0, span2.start) + pre.span + finalCode.slice(span2.end);
+          if (pre.cached !== undefined) pieceCache.set(ev.pieceId, pre.cached);
+          else pieceCache.delete(ev.pieceId);
+          const worst = Math.min(...scoped.map((x) => x.ratio));
+          ev.reverted = true;
+          ev.cleared = false;
+          ev.revertReason = `lift left ${scoped.length} blocking text-contrast node(s) (worst ${worst}:1) inside the piece`;
+          anyReverted = true;
+          warn(
+            `  [washout-lift] ${ev.pieceId}: REVERTED — ${ev.revertReason}; the washout routes to a regen with the explicit direction instead`,
+          );
+        }
+        if (anyReverted) {
+          await hooks.writeComposition(finalCode);
+          measurements = await phase(`measure-washout-revert-r${round}`, () => measureScenes(genDir, script, genDir));
+          finalMeasurements = measurements;
+          contrast = await phase(`hero-contrast-rerevert-r${round}`, () => assessHeroWashout(measurements, { canvasBackground }));
+        }
+      }
+      // v16: sparse-routed pieces keep their furnish instruction across
+      // re-assessments (fresh finding objects) and are EXCLUDED from the
+      // DARKER append below — a dark repaint is exactly what their
+      // instruction forbids, and two contradicting directions in one prompt
+      // is the failure class this fix exists to close.
+      for (const ff of contrast.findings) {
+        if (!sparseFurnishRouted.has(ff.pieceId)) continue;
+        const orig = contrastRaw.findings.find((x) => x.pieceId === ff.pieceId);
+        if (orig) ff.repairInstruction = orig.repairInstruction;
       }
       const canvasLum = hexLuminance(canvasBackground);
       const lightCanvas = canvasLum !== null && canvasLum > 0.5;
       for (const f of contrast.findings) {
+        if (sparseFurnishRouted.has(f.pieceId)) continue;
         f.repairInstruction +=
           ` EXPLICIT DIRECTION: the scene canvas ${canvasBackground} is ${lightCanvas ? "LIGHT" : "DARK"} — repaint your primary panel/surface decisively ${lightCanvas ? "DARKER" : "LIGHTER"} than the canvas (a flat, opaque, high-|ΔL| surface), never another near-canvas tone.`;
       }
@@ -1647,7 +1751,7 @@ export async function runQualityLoop(
     await hooks.onRoundComplete?.({ gateRound, round, measurements, finalCode, round0: round === 0 ? round0 : null });
 
     log(
-      `  round ${round}: density ${density.length} · washout ${contrastRaw.findings.length}→${contrast.findings.length} residual (${washoutLiftEvents.filter((e) => e.round === round && e.action === "forced-lift").length} forced lift(s)) · near-miss ${contrast.advisories.length} · ` +
+      `  round ${round}: density ${density.length} · washout ${contrastRaw.findings.length}→${contrast.findings.length} residual (${washoutLiftEvents.filter((e) => e.round === round && e.action === "forced-lift").length} forced lift(s), ${washoutLiftEvents.filter((e) => e.round === round && e.action === "sparse-furnish-routed").length} sparse→furnish, ${washoutLiftEvents.filter((e) => e.round === round && e.reverted).length} reverted) · near-miss ${contrast.advisories.length} · ` +
         `underscale ${underscale.length} · skeleton ${skeletonBars.length} · accent-fill ${accentFill.findings.length} · ` +
         `occupancy ${occupancyBlocking.length} block/${occupancy.findings.filter((f) => !f.blocking).length} adv/${occupancy.cardAdvisories.length} card · ` +
         `text-contrast ${textContrast.findings.length} block/${textContrast.advisories.length} adv · stray ${strayThisRound.length} · ` +
@@ -1849,6 +1953,52 @@ export async function runQualityLoop(
       await hooks.writeComposition(finalCode);
       log(`  motif-clutter [final pass]: excised ${excised} — re-measuring`);
       finalMeasurements = await measureScenes(genDir, script, genDir);
+    }
+
+    // v16 SUBTLE TERMINAL — the floor under the furnish-regen path: a piece
+    // whose washout is STILL unresolved after the loop AND whose panel is
+    // still sparse ships with a visible boundary (hairline border + soft
+    // shadow + a few-percent tint) — NEVER the ink paint-over (that terminal
+    // manufactured the live "black box built to fill space" class). Zero
+    // tokens; honest-small beats big-and-black. Skipped entirely when the
+    // last round ended washout-clean.
+    if (finalContrast && finalContrast.findings.length > 0) {
+      const termContrast = await assessHeroWashout(finalMeasurements, { canvasBackground });
+      let subtleLifted = 0;
+      for (const f of termContrast.findings) {
+        const m3 = finalMeasurements.find((mm) => mm.scene === f.scene);
+        const reading = m3 ? readDominantPanel(m3, f.pieceId, canvasBackground) : null;
+        if (!reading || reading.coverage >= CARD_INTERIOR_FLOOR) continue;
+        const span = pieceSpanInCode(finalCode, f.pieceId);
+        if (!span) continue;
+        const lift = subtleSurfaceLift(finalCode.slice(span.start, span.end), theme, { canvasColor: canvasBackground });
+        if (!lift.lifted) continue;
+        finalCode = finalCode.slice(0, span.start) + lift.code + finalCode.slice(span.end);
+        if (pieceCache.has(f.pieceId)) {
+          const cachedLift = subtleSurfaceLift(pieceCache.get(f.pieceId)!, theme, { canvasColor: canvasBackground });
+          if (cachedLift.lifted) pieceCache.set(f.pieceId, cachedLift.code);
+        }
+        subtleLifted += 1;
+        washoutLiftEvents.push({
+          round: round + 1,
+          pieceId: f.pieceId,
+          action: "subtle-terminal",
+          via: lift.via,
+          targetToken: null,
+          interiorTextRepaints: 0,
+          before: { spread: f.stats.spread, std: f.stats.stdDev },
+          after: null,
+          cleared: null,
+        });
+        warn(
+          `  [washout-lift] ${f.pieceId} [final pass]: residual SPARSE washout — subtle boundary applied (border+tint+shadow, ${lift.targetHex}); never the ink paint-over`,
+        );
+      }
+      if (subtleLifted > 0) {
+        await hooks.writeComposition(finalCode);
+        log(`  washout [final pass]: ${subtleLifted} subtle terminal(s) — re-measuring`);
+        finalMeasurements = await measureScenes(genDir, script, genDir);
+      }
     }
 
     // DETERMINISTIC VOID FURNISH — a best-effort NET, not a guarantee (audit-3:

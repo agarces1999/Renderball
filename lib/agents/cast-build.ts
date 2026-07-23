@@ -1459,6 +1459,97 @@ export const forceHeroSurfaceLift = (
   return noop;
 };
 
+/**
+ * v16 — SUBTLE surface lift: the terminal floor for a SPARSE washed-out panel.
+ *
+ * The forced ink-lift is the wrong repair for a panel that is mostly empty:
+ * painting emptiness with the most canvas-distant tone manufactures the
+ * founder's "black box built to fill space" (measured live, Notion alloc2 A/B
+ * — see quality-loop's washout block). When the furnish-regen budget is spent
+ * and the panel is STILL sparse + washed out, this lift makes its boundary
+ * visible the way light-SaaS design does — hairline border + soft shadow +
+ * a few-percent tint — never a polarity flip. Zero tokens, root-level,
+ * last-wins semantics like the root-override arm of forceHeroSurfaceLift.
+ */
+const cssRgbOf = (c: string): [number, number, number] | null => {
+  const hex = /^#?([0-9a-fA-F]{6})$/.exec((c ?? "").trim());
+  if (hex) {
+    const n = parseInt(hex[1], 16);
+    return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+  }
+  const m = /rgba?\(([^)]+)\)/.exec(c || "");
+  if (!m) return null;
+  const p = m[1].split(",").map((v) => parseFloat(v.trim()));
+  if (p.length < 3 || p.slice(0, 3).some((v) => Number.isNaN(v))) return null;
+  return [p[0], p[1], p[2]];
+};
+const mixCss = (a: string, b: string, t: number): string | null => {
+  const ra = cssRgbOf(a);
+  const rb = cssRgbOf(b);
+  if (!ra || !rb) return null;
+  const ch = (i: number) => Math.round(ra[i] + (rb[i] - ra[i]) * t);
+  return `#${[ch(0), ch(1), ch(2)].map((v) => v.toString(16).padStart(2, "0")).join("")}`;
+};
+
+export const subtleSurfaceLift = (
+  body: string,
+  theme: Theme,
+  ctx: ForcedLiftContext = {},
+): ForcedLiftResult => {
+  const noop: ForcedLiftResult = { code: body, lifted: false, via: null, targetHex: null, targetToken: null, interiorTextRepaints: 0 };
+  const canvasRaw = ctx.canvasColor ?? theme.palette[tokenForRole(theme, "canvas")];
+  const canvasLRaw = canvasRaw ? cssLuminance709(canvasRaw) : null;
+  const canvasL = canvasLRaw === "dilute" ? null : canvasLRaw;
+  if (canvasL === null || !canvasRaw) return noop;
+  // Ink = most canvas-distant token (mixing target only — never the surface).
+  let ink: string | null = null;
+  let inkDelta = -1;
+  for (const hex of Object.values(theme.palette)) {
+    const l = cssLuminance709(hex);
+    if (l === null || l === "dilute") continue;
+    const delta = Math.abs(l - canvasL);
+    if (delta > inkDelta) {
+      inkDelta = delta;
+      ink = hex;
+    }
+  }
+  if (!ink || inkDelta < HERO_SURFACE_MIN_DELTA_L) return noop;
+  const tint = mixCss(canvasRaw, ink, 0.04);
+  const hairline = mixCss(canvasRaw, ink, 0.22);
+  if (!tint || !hairline) return noop;
+
+  const styleAt = body.search(/\bstyle\s*=\s*\{\{/);
+  if (styleAt === -1) return noop;
+  const open = body.indexOf("{{", styleAt);
+  const span = balancedStyleSpan(body, open);
+  if (!span) return noop;
+  const spanText = body.slice(span.start, span.end);
+  const additions: string[] = [];
+  if (!/\bborder\s*:/.test(spanText)) additions.push(`border: ${JSON.stringify(`1px solid ${hairline}`)}`);
+  if (!/\bboxShadow\s*:/.test(spanText)) additions.push(`boxShadow: ${JSON.stringify("0 12px 32px rgba(0,0,0,0.10)")}`);
+  // Tint only when the root's own paint is canvas-toned/absent — a real
+  // contrasting surface keeps its color (border/shadow alone join it).
+  // Quoted values and bare palette consts both resolve; a foreign const
+  // resolves to nothing and reads as canvas-toned (the lift is only reached
+  // on a measured washout, so the measured truth backs that default).
+  const bgM = /\b(?:background|backgroundColor)\s*:\s*("([^"]*)"|'([^']*)'|([A-Z][A-Z0-9_]{2,}))/.exec(spanText);
+  const bgRaw = bgM ? (bgM[4] ? theme.palette[bgM[4]] ?? null : bgM[2] ?? bgM[3] ?? "") : null;
+  const bgL = bgRaw ? cssLuminance709(bgRaw) : null;
+  const bgContrasts = typeof bgL === "number" && Math.abs(bgL - canvasL) >= HERO_SURFACE_MIN_DELTA_L;
+  if (!bgContrasts) additions.push(`background: ${JSON.stringify(tint)}`);
+  if (additions.length === 0) return noop;
+  const inner = body.slice(span.start + 2, span.end - 2).trim().replace(/,\s*$/, "");
+  const rebuilt = `{{ ${inner}${inner ? ", " : ""}${additions.join(", ")} }}`;
+  return {
+    code: body.slice(0, span.start) + rebuilt + body.slice(span.end),
+    lifted: true,
+    via: "root-override",
+    targetHex: tint,
+    targetToken: null,
+    interiorTextRepaints: 0,
+  };
+};
+
 /** Parseable px area of the style object surrounding a paint at `at` — bare
  *  numeric width/height inside the nearest `{{ … }}` span (mirrors
  *  ensureHeroSurfaceContrast's areaOfStyleSpan). */
@@ -2763,8 +2854,12 @@ export const castBuild = async (
     slot.id === "copy" ? displayMetrics : bodyMetrics;
 
   const canvas = CANVAS[aspect];
+  // v16: the allocator's step-up override rides on the slot (occupy an
+  // underfilled box with larger type). Threading it HERE — the single
+  // scale-derivation point — means briefs, capacity budgets, fit and the
+  // copy-overflow gate all see the same stepped scale; none can disagree.
   const typeScaleForSlot = (slot: ElementSlot): ResolvedTypeScale =>
-    deriveTypeScale({ role: slot.id, box: slot.bounds, canvas });
+    deriveTypeScale({ role: slot.id, box: slot.bounds, canvas, override: slot.typeScaleOverride });
 
   // ── 1b2. RB_ALLOCATE — ink-based allocator post-pass (default OFF) ────────
   // Runs AFTER the plan is composed + validated (plan-validate fired at author

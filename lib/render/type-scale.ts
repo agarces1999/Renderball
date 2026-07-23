@@ -111,6 +111,8 @@ export interface Box {
   h: number;
 }
 
+export type { TypeScale };
+
 export interface ResolvedTypeScale extends TypeScale {
   headlinePx: number;
   bodyPx: number;

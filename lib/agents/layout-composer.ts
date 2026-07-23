@@ -58,6 +58,16 @@ export interface ElementSlot {
    * overlappable by all); everything else must be earned explicitly.
    */
   allowedOverlaps: string[];
+  /**
+   * v16 (RB_ALLOCATE step-up) — forced ramp px for this slot's type scale.
+   * Written by the allocator when a text box is much taller than its predicted
+   * ink: instead of shrinking the box, the TYPE grows to fill it (the founder's
+   * "occupy the space" directive). Consumed at the single scale-derivation
+   * point in castBuild (`typeScaleForSlot` → deriveTypeScale's additive
+   * `override` hook), so briefs, capacity budgets, fit and the overflow gate
+   * all see the same stepped scale. Absent everywhere else.
+   */
+  typeScaleOverride?: { headlinePx: number; bodyPx: number };
 }
 
 export interface ScenePlan {

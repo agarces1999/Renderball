@@ -24,6 +24,7 @@ import {
   findStrayFullBleedCard,
   findCenteredMockOcclusion,
   findIntraPieceOverlap,
+  findCoveredTextCluster,
   findGhostFragment,
   CANVAS_COHERENCE_RGB_DELTA,
   findStrayFragments,
@@ -1099,9 +1100,12 @@ if (existsSync(path.join(FUSE_FRAMES, "scene3.png"))) {
 }
 
 // ── R2 (audit-3): the ONE canonical blocking set every harness imports ──
-await check("BLOCKING_RENDER_TRUTH_KINDS (R2): the canonical 13-kind prod set, incl. mock-occlusion", () => {
-  assert(BLOCKING_RENDER_TRUTH_KINDS.length === 13, `expected 13 blocking kinds, got ${BLOCKING_RENDER_TRUTH_KINDS.length}`);
-  for (const k of ["overflow", "measure-error", "barbell", "cross-piece-overlap", "canvas-brightness", "stranded-hero", "canvas-coherence", "corner-mark-collision", "hollow-cta", "intra-piece-overlap", "ghost-fragment", "stray-card", "mock-occlusion"] as const) {
+// 14th kind added 2026-07-23 with the evidence the frozen-list rule demands:
+// covered-text-cluster, calibrated on all 40 stored scenes (fires on the
+// founder-flagged alloc2-on-2 s0 + flags-notion s4; zero approved-scene fires).
+await check("BLOCKING_RENDER_TRUTH_KINDS (R2): the canonical 14-kind prod set, incl. covered-text-cluster", () => {
+  assert(BLOCKING_RENDER_TRUTH_KINDS.length === 14, `expected 14 blocking kinds, got ${BLOCKING_RENDER_TRUTH_KINDS.length}`);
+  for (const k of ["overflow", "measure-error", "barbell", "cross-piece-overlap", "canvas-brightness", "stranded-hero", "canvas-coherence", "corner-mark-collision", "hollow-cta", "intra-piece-overlap", "ghost-fragment", "stray-card", "mock-occlusion", "covered-text-cluster"] as const) {
     assert(BLOCKING_RENDER_TRUTH_KINDS.includes(k), `canonical set must include ${k}`);
   }
   assert(new Set(BLOCKING_RENDER_TRUTH_KINDS).size === BLOCKING_RENDER_TRUTH_KINDS.length, "no duplicate kinds");
@@ -1115,6 +1119,59 @@ await check("BLOCKING_RENDER_TRUTH_KINDS (R2): a real overflow defect lands in `
   const gate = await findRenderTruthFailures([m], { blockingKinds: BLOCKING_RENDER_TRUTH_KINDS });
   assert(gate.blocking.some((f) => f.kind === "overflow"), "the overflow defect must block under the canonical set");
   for (const f of gate.blocking) assert(BLOCKING_RENDER_TRUTH_KINDS.includes(f.kind), `blocking kind ${f.kind} must be in the canonical set`);
+});
+
+// ── covered-text cluster (v16 — the s0 "card stacked over rows" class) ───────
+// Calibrated on all 40 stored scenes (see the finder's header): fires on
+// alloc2-on-2 s0 (2 buried footer rows) and flags-notion s4 (CTA buried under
+// the dark card); ZERO fires on founder-approved scenes, where at most ONE
+// wide-eyebrow artifact node measures covered.
+
+await check("covered cluster: ≥2 covered content-text nodes in ONE piece FIRES and names them", () => {
+  const m = scene(0, [
+    el({ piece: "s0.hero", pieceKind: "diegetic", text: "Unassigned", coveredAtCenter: true, x: 712, y: 693, w: 76, h: 14 }),
+    el({ piece: "s0.hero", pieceKind: "diegetic", text: "3 collaborators notified", coveredAtCenter: true, x: 914, y: 694, w: 170, h: 13 }),
+  ]);
+  const r = findCoveredTextCluster(m);
+  assert(r.length === 1 && r[0].kind === "covered-text-cluster", `fires once, got ${JSON.stringify(r.map((x) => x.kind))}`);
+  assert(/inside piece s0\.hero/.test(r[0].detail), `routes to the piece: ${r[0].detail}`);
+  assert(/Unassigned/.test(r[0].detail) && /3 collaborators/.test(r[0].detail), `names the buried rows: ${r[0].detail}`);
+  assert(BLOCKING_RENDER_TRUTH_KINDS.includes("covered-text-cluster"), "the kind blocks");
+});
+
+await check("covered cluster: ONE covered node is the eyebrow artifact — never fires", () => {
+  const m = scene(1, [
+    el({ piece: "s1.copy", pieceKind: "text", text: "THE COST", coveredAtCenter: true, x: 1077, y: 255, w: 706, h: 16 }),
+  ]);
+  assert(findCoveredTextCluster(m).length === 0, "a single covered node stays quiet");
+});
+
+await check("covered cluster: chrome/atmosphere, transparent, and textless nodes never count", () => {
+  const m = scene(2, [
+    el({ piece: "s2.chrome", pieceKind: "chrome", text: "Notion", coveredAtCenter: true }),
+    el({ piece: "s2.atmosphere", pieceKind: "atmosphere", text: "grid line", coveredAtCenter: true }),
+    el({ piece: "s2.hero", pieceKind: "diegetic", text: "ghost", coveredAtCenter: true, opacity: 0.2 }),
+    el({ piece: "s2.hero", pieceKind: "diegetic", text: "", coveredAtCenter: true }),
+    el({ piece: "s2.hero", pieceKind: "diegetic", text: "ok", coveredAtCenter: true }),
+  ]);
+  assert(findCoveredTextCluster(m).length === 0, "filters hold (kind, opacity, text length)");
+});
+
+await check("covered cluster: two covered nodes in DIFFERENT pieces do not pool", () => {
+  const m = scene(3, [
+    el({ piece: "s3.hero", pieceKind: "diegetic", text: "row one", coveredAtCenter: true }),
+    el({ piece: "s3.copy", pieceKind: "text", text: "THE PROOF", coveredAtCenter: true }),
+  ]);
+  assert(findCoveredTextCluster(m).length === 0, "cluster is per-piece — cross-piece singles stay quiet");
+});
+
+await check("intra-piece overlap: opts widen the gate without changing wired defaults", () => {
+  // 30% overlap pair (under the 0.5 default, over a 0.25 sweep value).
+  const a = el({ piece: "s9.hero", pieceKind: "diegetic", tag: "div", text: "Submit for Approval", bg: "rgb(20,20,20)", x: 100, y: 100, w: 200, h: 100 });
+  const b = el({ piece: "s9.hero", pieceKind: "diegetic", tag: "div", text: "helper line about the field", fontSize: 18, x: 100, y: 170, w: 200, h: 100 });
+  const m = scene(9, [a, b]);
+  assert(findIntraPieceOverlap(m).length === 0, "default 0.5 floor unchanged");
+  assert(findIntraPieceOverlap(m, { minFrac: 0.25 }).length === 1, "opts.minFrac widens");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);
