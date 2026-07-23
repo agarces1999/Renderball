@@ -42,8 +42,11 @@ export async function POST(request: Request) {
   // wrongly rejected as "owner busy". The owner guard only exists to close the
   // entitlement TOCTOU, and metering no-ops for DEV_OWNER_ID, so it protects
   // nothing in dev. Per-script attach + the global semaphore still apply.
+  // Optional per-request build-mode override (headless cast validation).
+  const buildMode =
+    (body as { mode?: string }).mode === "cast" ? ("cast" as const) : undefined;
   const locked = await runBuildLocked(scriptId, `${DEV_OWNER_ID}:${scriptId}`, () =>
-    runPreviewBuild(scriptId, DEV_OWNER_ID),
+    runPreviewBuild(scriptId, DEV_OWNER_ID, buildMode ? { buildMode } : undefined),
   );
   if (locked.kind === "owner-busy") {
     // Unreachable with the per-script owner key above, but keep the shape.

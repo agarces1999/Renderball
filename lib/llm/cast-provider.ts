@@ -74,11 +74,15 @@ export class CastProviderError extends Error {
 }
 
 const BASE_URL = () => process.env.RB_CAST_BASE_URL || "https://api.cerebras.ai/v1";
-const MODEL = () => process.env.RB_CAST_MODEL || "gpt-oss-120b";
+// FIREWORKS ONLY (2026-07-23): the cast default is the same GLM-5.2 fast
+// router the rest of the build runs on. RB_CAST_MODEL can still point at a
+// Cerebras-served model (the id selects the wire) for bake-off experiments.
+const MODEL = () => process.env.RB_CAST_MODEL || "accounts/fireworks/routers/glm-5p2-fast";
 const KEY = () => process.env.RB_CAST_KEY || "";
 
-/** The cast path is available only when explicitly configured. */
-export const castConfigured = (): boolean => KEY().length > 0;
+/** The cast path is available when the DEFAULT model's wire has a key. */
+export const castConfigured = (): boolean =>
+  isFireworksModel(MODEL()) ? (process.env.RB_FIREWORKS_KEY || "").length > 0 : KEY().length > 0;
 
 // ── multi-provider resolution ────────────────────────────────────────────────
 // Fireworks models are namespaced ("accounts/fireworks/models/…"), so the

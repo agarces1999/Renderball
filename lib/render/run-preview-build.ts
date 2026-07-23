@@ -79,6 +79,11 @@ export type BuildRouteResult = {
 export async function runPreviewBuild(
   scriptId: string,
   ownerId: string,
+  opts?: {
+    /** Per-call build-mode override (canvas pivot: lets the deck path pick
+     *  cast without touching the process env). Falls back to RB_BUILD_MODE. */
+    buildMode?: "cast" | "parallel" | "monolithic";
+  },
 ): Promise<BuildRouteResult> {
   // Balance circuit breaker (the twice-proven [1113] outage): while the z.ai
   // account is dry, fail fast with a friendly message BEFORE any spend or
@@ -161,7 +166,7 @@ export async function runPreviewBuild(
   // production behavior UNCHANGED (the monolithic path stays default until the
   // cast path is validated). Task #205 (cycle 8) — the entire piece-level gate
   // battery the dogfood loop built lives ONLY in the cast path.
-  if (process.env.RB_BUILD_MODE === "cast") {
+  if ((opts?.buildMode ?? process.env.RB_BUILD_MODE) === "cast") {
     return runCastPreviewBuild({
       script,
       brief,
