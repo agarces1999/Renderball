@@ -219,11 +219,29 @@ export function ElementEditor({
     const vh = doc?.documentElement?.clientHeight || iframeRef.current?.clientHeight || 0;
     const isFullBleed = (r: DOMRect): boolean =>
       vw > 0 && vh > 0 && r.width >= vw * 0.92 && r.height >= vh * 0.92;
+    // A persisted MOVE renders as an anti-symmetric inset frame around the piece
+    // (lego-store wrapOffset: left:dx, top:dy, right:-dx, bottom:-dy). It's a
+    // coordinate frame, not content — its own rect is canvas-sized and shifted,
+    // which used to inflate the union after any large move (the selection box
+    // hung off the piece). Skip the frame itself; its children still measure.
+    const isOffsetFrame = (c: Element): boolean => {
+      const s = (c as HTMLElement).style;
+      if (!s || s.position !== "absolute") return false;
+      const l = parseFloat(s.left);
+      const t = parseFloat(s.top);
+      const r = parseFloat(s.right);
+      const b = parseFloat(s.bottom);
+      return (
+        Number.isFinite(l) && Number.isFinite(t) && Number.isFinite(r) && Number.isFinite(b) &&
+        l === -r && t === -b && (l !== 0 || t !== 0)
+      );
+    };
     const collect = (dropFullBleed: boolean): DOMRect[] => {
       const rects: DOMRect[] = [];
       const own = el.getBoundingClientRect();
       if (own.width > 0 && own.height > 0 && !(dropFullBleed && isFullBleed(own))) rects.push(own);
       el.querySelectorAll("*").forEach((c) => {
+        if (isOffsetFrame(c)) return;
         const r = c.getBoundingClientRect();
         if (r.width > 0 && r.height > 0 && !(dropFullBleed && isFullBleed(r))) rects.push(r);
       });
