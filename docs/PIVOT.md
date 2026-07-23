@@ -128,6 +128,22 @@ the first vision-gated deck build is still ahead. Model stack: z.ai removed
 entirely the same day (founder call); GLM-5.2 stays, served by Fireworks;
 see CLAUDE.md model routing.
 
+## Deck build-path decision (2026-07-23, head-to-head)
+
+Same-day comparison on 5-slide decks: **parallel path** (flarebit.ai): 4m37s,
+~$1.04, clean output, minor advisories. **Cast path** (linear.app, Fireworks
+GLM leaves + full spatial battery + Kimi vision): 9m0s, $2.31, round-0 flagged
+9 pieces, 5 pieces escalated with no progress, residual washout/void/contrast
+defects VISIBLE in the export — and scene 3 fails SSR ("rows is not defined")
+yet the build returned ok:true (measure-error is not fail-closed on the cast
+path — bug filed). **Decks default to the PARALLEL path.** Cast stays in the
+spatial lab until its repair loop beats parallel on decks; do not flip it on
+product traffic. Kimi vision confirmed live end-to-end (crawl reads + 49k-token
+scene QA billed) — the re-baseline dataset accrues on parallel builds' advisory
+gate. Note: Linear's achromatic palette triggered the honest
+"no brand accent recoverable" degradation; grayscale brands need a
+brand-color decision UI eventually.
+
 ## Build economics note
 
 A deck costs ≈ a video build today (the spend is composition + spatial repair,
