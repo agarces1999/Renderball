@@ -35,10 +35,14 @@ five-track codebase survey run on 2026-07-23.
    (Billing Meters / meter events; free allowance = $0 first tier or granted
    credits). Deterministic edits (move/resize/text/delete/undo) cost 0 tokens →
    the product story is "editing is free, generating is metered."
-   At today's burn, 1M tokens ≈ 2–4 full deck builds ($0.77–1.86 COGS each);
-   a marquee-generate is a few k tokens. Open: user-facing framing (raw tokens
-   vs "credits"), markup %, per-model rates. Supersedes the subscription-first
-   plan in docs/LAUNCH.md.
+   At today's burn, 1M tokens ≈ 3 full deck builds (~$1.04 COGS each at the
+   fast-router rates); a marquee-generate is a few k tokens.
+   **Markup locked (founder, 2026-07-23): 3× token cost** — blended COGS ≈
+   $3.10/1M tokens → list price ≈ **$9.30 per 1M tokens** (a deck ≈ $3.10 to
+   the user; re-derive the blend if the in/out mix or router rates change).
+   Still open: user-facing framing (raw tokens vs "credits"). Supersedes the
+   subscription-first plan in docs/LAUNCH.md. Domain renderball.com purchased
+   on Cloudflare 2026-07-23.
 
 ## The two video seams (why this pivot is small)
 
