@@ -150,11 +150,11 @@ not yet migrated (needs `DATABASE_URL`).
    for launch; Lambda is the scale-out path.
 8. **Legal + email + observability + rate limiting** (can parallelize with 5–7): ToS,
    Privacy live on renderball.com (2026-07-23). Email Routing live on Cloudflare:
-   `support@` + `alfonso@` (founder contact) forward to the founder's inbox;
-   send-as wiring comes with Resend. **DMCA agent + takedown alias: DEFERRED by
-   founder call 2026-07-23** — downgraded from hard gate to OPEN RISK (unshielded
-   from user-content copyright claims until registered; ~$6 + 10 min at
-   dmca.copyright.gov whenever, ideally before real traffic). Resend for receipts;
+   `support@`, `legal@` (takedown contact), and `alfonso@` (founder contact) all
+   forward to the founder's inbox; send-as wiring comes with Resend. **DMCA
+   agent REGISTRATION: still deferred** (the last open sliver — ~$6 + 10 min at
+   dmca.copyright.gov, list `legal@renderball.com` as the agent contact; do
+   before real traffic to activate the safe harbor). Resend for receipts;
    Sentry + PostHog; Upstash rate limits on expensive routes.
 
 ## What I need from you (accesses)
