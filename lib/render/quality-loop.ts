@@ -904,11 +904,14 @@ export async function runQualityLoop(
 
   // ── caching + feedback caller for castBuild ───────────────────────────────
   const cachingCaller: typeof castCall = async (call) => {
-    const pieceId = /piece id "([^"]+)"/.exec(call.user)?.[1] ?? "?";
+    // The cast path always sends a single-turn `user` prompt (the optional
+    // multi-turn `messages` form is the build-client shim's, never used here).
+    const userText = call.user ?? "";
+    const pieceId = /piece id "([^"]+)"/.exec(userText)?.[1] ?? "?";
     const feedback = pieceTargets.get(pieceId);
     let cached = pieceCache.get(pieceId);
-    const isRepair = call.user.includes("Your previous attempt failed");
-    const isTransportRepair = isRepair && call.user.includes("(the call itself failed)");
+    const isRepair = userText.includes("Your previous attempt failed");
+    const isTransportRepair = isRepair && userText.includes("(the call itself failed)");
     if (isTransportRepair && cached !== undefined) {
       hooks.onCacheReplay?.({ label: `${castRoundLabel}:${pieceId}:transport-repair-replayed-cache`, kind: "cached-replay" });
       warn(`  [cache] ${pieceId}: repair caused by a failed CALL, not a failed body — cached emission replayed, entry kept`);
@@ -928,7 +931,7 @@ export async function runQualityLoop(
     const user = feedback
       ? escalated
         ? [
-            call.user,
+            userText,
             ``,
             `════ NO-PROGRESS ESCALATION ════`,
             ...feedback,
@@ -938,7 +941,7 @@ export async function runQualityLoop(
             `Output ONLY component code — NEVER narrate your reasoning, plan, or these findings as rendered text nodes (a deterministic gate rejects any element whose text nodes speak about wrappers, QA findings, or px coordinates).`,
           ].join("\n")
         : [
-            call.user,
+            userText,
             ``,
             `════ YOUR PREVIOUS VERSION FAILED PRODUCTION QA ════`,
             `The production gates measured your previous version of THIS element on the rendered frame and found these defects. Rebuild the element fixing EVERY finding while honoring the brief above:`,
@@ -951,7 +954,7 @@ export async function runQualityLoop(
             `Emit ONLY the corrected JSX for this element.`,
             `Output ONLY component code — NEVER narrate your reasoning, plan, or these findings as rendered text nodes (a deterministic gate rejects any element whose text nodes speak about wrappers, QA findings, or px coordinates).`,
           ].join("\n")
-      : call.user;
+      : userText;
     try {
       const label = `${castRoundLabel}:${pieceId}${feedback ? (escalated ? ":escalation" : ":regen") : ""}${isRepair ? ":repair" : ""}`;
       const res = await hooks.transport({

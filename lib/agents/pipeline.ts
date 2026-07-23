@@ -1,4 +1,5 @@
-import { getAnthropic, MODELS, BUILD_REASONING, BUILD_MAX_TOKENS } from "../anthropic";
+import { MODELS, BUILD_REASONING, BUILD_MAX_TOKENS } from "../anthropic";
+import { getBuildClient, type BuildClient } from "../llm/build-client";
 import { DESIGN_AGENT_SYSTEM_PROMPT } from "./prompts/design-agent";
 import { ANIMATION_AGENT_SYSTEM_PROMPT } from "./prompts/animation-agent";
 import { stripCodeFence, verifyCompilable, repairCompile, elideDataUrisOutsideSection } from "./code-extraction";
@@ -514,7 +515,7 @@ async function streamBuildCall<T>(
  * (code-extraction.ts), which owns the verify→fix→re-verify loop + attempt cap.
  */
 const surgicalCompileFix = async (
-  client: ReturnType<typeof getAnthropic>,
+  client: BuildClient,
   model: string,
   code: string,
   error: string,
@@ -574,7 +575,7 @@ const surgicalCompileFix = async (
  * the rest of the composition is byte-preserved.
  */
 const surgicalRenderFix = async (
-  client: ReturnType<typeof getAnthropic>,
+  client: BuildClient,
   model: string,
   sectionCode: string,
   sceneIndex: number,
@@ -642,9 +643,9 @@ export const repairSceneRenderErrors = async (
   fullCode: string,
   errors: { scene: number; error: string }[],
 ): Promise<{ code: string; repaired: number[]; usage: Usage }> => {
-  let client: ReturnType<typeof getAnthropic>;
+  let client: BuildClient;
   try {
-    client = getAnthropic();
+    client = getBuildClient();
   } catch {
     return { code: fullCode, repaired: [], usage: EMPTY_USAGE };
   }
@@ -686,7 +687,7 @@ export const repairSceneRenderErrors = async (
  * recovered — the caller falls back to a whole-composition retry.
  */
 const regenerateSectionBlock = async (
-  client: ReturnType<typeof getAnthropic>,
+  client: BuildClient,
   model: string,
   input: BuildInput,
   baseCode: string,
@@ -812,9 +813,9 @@ export const regenerateScene = async (
     ...rawInput,
     brand_extract: sanitizeBrandExtract(rawInput.brand_extract),
   };
-  let client: ReturnType<typeof getAnthropic>;
+  let client: BuildClient;
   try {
-    client = getAnthropic();
+    client = getBuildClient();
   } catch (err) {
     return {
       ok: false,
@@ -1137,9 +1138,9 @@ export const buildAnimatedSections = async (
     ...rawInput,
     brand_extract: sanitizeBrandExtract(rawInput.brand_extract),
   };
-  let client: ReturnType<typeof getAnthropic>;
+  let client: BuildClient;
   try {
-    client = getAnthropic();
+    client = getBuildClient();
   } catch (err) {
     return {
       ok: false,
@@ -2971,7 +2972,7 @@ const layoutContractLines = (
 // fill reuses its module consts; the fill declares every new local INSIDE the
 // Section body (anything above `export const Section{N}` is dropped on splice).
 const fillSectionBlock = async (
-  client: ReturnType<typeof getAnthropic>,
+  client: BuildClient,
   model: string,
   input: BuildInput,
   scaffoldCode: string,

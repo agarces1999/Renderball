@@ -76,9 +76,17 @@ const RATES: Record<
   string,
   { input: number; output: number; cacheRead?: number; cacheWrite?: number }
 > = {
-  // z.ai GLM — the live build substrate
+  // GLM 5.2 — the live build substrate. Served by FIREWORKS since 2026-07-23
+  // (z.ai removed); Fireworks lists the same $1.40/$4.40 per M
+  // (fireworks.ai glm-5p2, checked 2026-07-23). No prompt caching on the
+  // OpenAI wire — the ledger records zero cache tokens there, so the cache
+  // multipliers are inert going forward (kept for historical z.ai rows).
   "glm-5.2": { input: 1.4, output: 4.4, cacheRead: 0.26 / 1.4, cacheWrite: 1 }, // all text/build/QA stages
-  "glm-5v-turbo": { input: 1.2, output: 4.0, cacheRead: 0.26 / 1.4, cacheWrite: 1 }, // vision gate
+  "accounts/fireworks/routers/glm-5p2-fast": { input: 1.4, output: 4.4 }, // same model, wire id
+  "glm-5v-turbo": { input: 1.2, output: 4.0, cacheRead: 0.26 / 1.4, cacheWrite: 1 }, // legacy z.ai vision rows
+  // Fireworks vision (Qwen2.5-VL 32B) — size-tier estimate, TODO verify
+  // against the first Fireworks invoice.
+  "accounts/fireworks/models/qwen2p5-vl-32b-instruct": { input: 0.9, output: 0.9 },
   // Anthropic — reference / fallback
   "claude-fable-5": { input: 10, output: 50 },
   "claude-opus-4-8": { input: 5, output: 25 },

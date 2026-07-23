@@ -1,18 +1,17 @@
 /**
- * z.ai NATIVE vision call (GLM-5V-Turbo).
+ * Vision call — Fireworks (Qwen2.5-VL) on the OpenAI wire.
  *
- * CRITICAL endpoint distinction: z.ai's Anthropic-compatibility endpoint
- * (`/api/anthropic`, what `getAnthropic()` uses) SILENTLY DROPS image blocks —
- * any screenshot sent through the SDK client is invisible to the model, so it
- * hallucinates (verified 2026-06-21: GLM called a vivid green frame "Blue", and
- * GLM-4.5V invented a "THE NEW YORK TIMES" headline). The NATIVE paas endpoint
- * (`/api/paas/v4/chat/completions`, OpenAI `image_url` format) passes images
- * correctly — GLM-5V-Turbo then reads scenes accurately. So all real vision MUST
- * go through THIS helper, not the SDK client.
+ * 2026-07-23: z.ai is out of the stack (founder call, Fireworks only). This
+ * module keeps its historical name and export signatures (callZaiVision /
+ * callZaiText) because six call sites route through it — the QA vision gate,
+ * the crawl's color/design-language/logo reads — and the wire format is
+ * unchanged (OpenAI `image_url` chat completions, which the z.ai native
+ * endpoint also spoke). Only the host, key, and model moved.
  *
- * Self-contained env reading (does NOT touch getAnthropic's hot path): the loop
- * builds depend on getAnthropic(), so this duplicates the small key/base-url
- * resolution rather than refactoring it.
+ * History worth keeping: vision must NEVER go through an Anthropic-compat
+ * proxy endpoint that drops image blocks (the original z.ai lesson — the
+ * model hallucinated entire frames). This module is the single vision
+ * transport; keep it on a wire where images verifiably arrive.
  */
 import { readFileSync } from "fs";
 import path from "path";
@@ -31,21 +30,13 @@ const readEnvLocal = (key: string): string | undefined => {
   }
 };
 
-const zaiKey = (): string => {
-  const k = process.env.ANTHROPIC_API_KEY?.trim() || readEnvLocal("ANTHROPIC_API_KEY");
-  if (!k) throw new Error("ANTHROPIC_API_KEY not set (z.ai vision)");
+const fireworksKey = (): string => {
+  const k = process.env.RB_FIREWORKS_KEY?.trim() || readEnvLocal("RB_FIREWORKS_KEY");
+  if (!k) throw new Error("RB_FIREWORKS_KEY not set (Fireworks vision)");
   return k;
 };
 
-/** Derive the native chat/completions URL from the configured z.ai host. */
-const zaiNativeUrl = (): string => {
-  const base = readEnvLocal("ANTHROPIC_BASE_URL") || process.env.ANTHROPIC_BASE_URL?.trim();
-  if (base) {
-    const host = base.replace(/\/api\/anthropic\/?$/, "").replace(/\/$/, "");
-    return `${host}/api/paas/v4/chat/completions`;
-  }
-  return "https://api.z.ai/api/paas/v4/chat/completions";
-};
+const visionUrl = (): string => "https://api.fireworks.ai/inference/v1/chat/completions";
 
 export interface ZaiVisionResult {
   text: string;
@@ -129,16 +120,17 @@ export const callZaiVision = async (
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), opts.timeoutMs ?? 60_000);
   try {
-    const resp = await fetch(zaiNativeUrl(), {
+    const resp = await fetch(visionUrl(), {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${zaiKey()}`,
+        Authorization: `Bearer ${fireworksKey()}`,
         "content-type": "application/json",
       },
       body: JSON.stringify({
         model: VISION_MODEL,
         max_tokens: opts.maxTokens ?? 1200,
-        ...(opts.disableThinking ? { thinking: { type: "disabled" } } : {}),
+        // opts.disableThinking is inert on Qwen-VL (not a thinking model) —
+        // accepted for call-site compatibility with the GLM-5V era.
         messages: [
           {
             role: "user",
@@ -153,7 +145,7 @@ export const callZaiVision = async (
     });
     if (!resp.ok) {
       const body = await resp.text().catch(() => "");
-      throw new Error(`z.ai vision ${resp.status}: ${body.slice(0, 200)}`);
+      throw new Error(`fireworks vision ${resp.status}: ${body.slice(0, 200)}`);
     }
     const json = (await resp.json()) as {
       choices?: { message?: { content?: string; reasoning_content?: string } }[];
@@ -194,23 +186,22 @@ export const callZaiText = async (
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 60_000);
   try {
-    const resp = await fetch(zaiNativeUrl(), {
+    const resp = await fetch(visionUrl(), {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${zaiKey()}`,
+        Authorization: `Bearer ${fireworksKey()}`,
         "content-type": "application/json",
       },
       body: JSON.stringify({
         model: VISION_MODEL,
         max_tokens: opts.maxTokens ?? 600,
-        ...(opts.disableThinking ? { thinking: { type: "disabled" } } : {}),
         messages: [{ role: "user", content: prompt }],
       }),
       signal: ctrl.signal,
     });
     if (!resp.ok) {
       const body = await resp.text().catch(() => "");
-      throw new Error(`z.ai text ${resp.status}: ${body.slice(0, 200)}`);
+      throw new Error(`fireworks text ${resp.status}: ${body.slice(0, 200)}`);
     }
     const json = (await resp.json()) as {
       choices?: { message?: { content?: string } }[];

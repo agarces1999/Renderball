@@ -10,7 +10,8 @@
 // absolutely-positioned box at the marquee bounds. So the element can never escape
 // or mis-size the drawn area regardless of what the model emits.
 //
-import { getAnthropic, MODELS } from "../anthropic";
+import { MODELS } from "../anthropic";
+import { getBuildClient } from "../llm/build-client";
 import { withTransientRetry } from "./transient-retry";
 import { stripCodeFence, elideDataUris } from "./code-extraction";
 import { usageOf, type Usage } from "../usage";
@@ -57,7 +58,7 @@ export interface GenPieceResult {
 export const generatePiece = async (input: GenPieceInput): Promise<GenPieceResult> => {
   const { preamble, siblings, sceneIndex, bounds, prompt } = input;
   const model = input.model || MODELS.codingAgentBuild;
-  const client = getAnthropic();
+  const client = getBuildClient();
 
   const user = [
     `CREATE a new element for scene ${sceneIndex}. It will be placed in an absolutely-positioned box of EXACTLY ${Math.round(bounds.w)}px wide × ${Math.round(bounds.h)}px tall. Size your element to fill that box.`,

@@ -9,7 +9,8 @@
 // original in that one body and nothing else — the zero-neighbor guarantee as a
 // filesystem fact, not a prompt request.
 //
-import { getAnthropic, MODELS } from "../anthropic";
+import { MODELS } from "../anthropic";
+import { getBuildClient } from "../llm/build-client";
 import { withTransientRetry } from "./transient-retry";
 import { stripCodeFence, elideDataUris } from "./code-extraction";
 import { usageOf, type Usage } from "../usage";
@@ -57,7 +58,7 @@ export const regeneratePiece = async (
 ): Promise<RegenPieceResult> => {
   const { preamble, piece, siblings, sceneIndex, instruction } = input;
   const model = input.model || MODELS.codingAgentBuild;
-  const client = getAnthropic();
+  const client = getBuildClient();
 
   const user = [
     `THIS ELEMENT to regenerate — scene ${sceneIndex}, id "${piece.id}", kind "${piece.kind}". Current JSX:`,

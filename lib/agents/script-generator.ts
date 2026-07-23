@@ -1,6 +1,4 @@
-import { getAnthropic, MODELS } from "../anthropic";
 import { castCall } from "../llm/cast-provider";
-import { withTransientRetry } from "./transient-retry";
 import { SCRIPT_GENERATOR_SYSTEM_PROMPT } from "./prompts/script-generator";
 import {
   validateScript,
@@ -13,10 +11,9 @@ import {
 import { signatureWithLogoFallback, resolveCanvasPlan, brandShortName } from "../crawl/brand-identity";
 import { formatDesignLanguage } from "../crawl/design-language";
 import { ulid } from "../ulid";
-import { type Usage, EMPTY_USAGE, usageOf, addUsage } from "../usage";
+import { type Usage, EMPTY_USAGE, addUsage } from "../usage";
 import type { Script } from "../../src/schema";
 import type { DesignLanguage } from "../../app/new/schema";
-import { noteZaiError, noteZaiSuccess } from "../zai-breaker";
 
 /**
  * The agent-facing brief. Mirrors actions.ts BriefInput but doesn't
@@ -267,13 +264,11 @@ const MAX_ATTEMPTS = 3; // 1 initial + 2 retries
 // the SCRIPT_GENERATOR_SYSTEM_PROMPT, buildUserMessage, the richness/grounding/
 // cold-open validators, or the MAX_ATTEMPTS feedback loop.
 //
-// DEFAULT = fireworks: production script generation runs on GLM-5.2 via
-// castCall (the funded, faster provider the frame-authoring cast already uses),
-// OFF the z.ai single-point-of-failure that took the fusefinance build down at
-// script-gen (z.ai [1113] "insufficient balance"). `RB_SCRIPT_PROVIDER=zai`
-// keeps the original Anthropic-SDK → z.ai path reachable (streaming + the
-// balance breaker + transient-retry) so nothing hard-breaks. Vision is a
-// SEPARATE dependency and stays on z.ai (callZaiVision / GLM-4.5V) — untouched.
+// FIREWORKS ONLY (founder call, 2026-07-23): script generation runs on
+// GLM-5.2 via castCall against Fireworks — same model family as the whole
+// build stack, faster serving, same list price. The legacy z.ai path (the
+// [1113] balance single-point-of-failure) was removed outright; there is no
+// provider switch anymore.
 
 /** One repair-loop turn's message. */
 export type ScriptMsg = { role: "user" | "assistant"; content: string };
@@ -284,14 +279,11 @@ export type ScriptTransport = (
   history: ScriptMsg[],
 ) => Promise<{ text: string; usage: Usage }>;
 
-export type ScriptProvider = "fireworks" | "zai";
+export type ScriptProvider = "fireworks";
 
-/** Which provider generates the script. Default fireworks; only an explicit
- *  `RB_SCRIPT_PROVIDER=zai` selects the legacy z.ai path (case-insensitive). */
-export const resolveScriptProvider = (): ScriptProvider =>
-  (process.env.RB_SCRIPT_PROVIDER || "").trim().toLowerCase() === "zai"
-    ? "zai"
-    : "fireworks";
+/** Which provider generates the script. Always fireworks — the z.ai path was
+ *  removed 2026-07-23 (RB_SCRIPT_PROVIDER is ignored). */
+export const resolveScriptProvider = (): ScriptProvider => "fireworks";
 
 /** Fireworks model for script generation — the same GLM-5.2 Fast router the
  *  cast runs on. Override with RB_SCRIPT_MODEL. */
@@ -366,63 +358,11 @@ export const generateScript = async (
   briefId: string,
   opts?: ScriptGenOptions,
 ): Promise<ScriptGenerationResult> => {
-  const provider = resolveScriptProvider();
-
-  // Resolve the transport ONCE. Fireworks (default) generates via castCall;
-  // zai builds the Anthropic-SDK stream (+ balance breaker + transient-retry).
-  // Tests inject `opts.transport` to drive the loop without a live provider.
-  let transport: ScriptTransport;
-  if (opts?.transport) {
-    transport = opts.transport;
-  } else if (provider === "zai") {
-    let client;
-    try {
-      client = getAnthropic();
-    } catch (err) {
-      return {
-        ok: false,
-        error: err instanceof Error ? err.message : "Anthropic client init failed.",
-      };
-    }
-    const c = client;
-    transport = async (history) => {
-      // Streaming, not messages.create: a 16k-token non-streaming call exceeds
-      // the SDK request timeout under load ("Request timed out" — the exact
-      // reason the design/animation calls were moved to streaming). Richer brand
-      // context (e.g. liquiddeath.com's 8 headlines + body excerpts) makes the
-      // generation long enough to trip it. .finalMessage() returns the same
-      // Message shape, so downstream parsing is unchanged. A dropped stream
-      // ("terminated") is transient — re-run the WHOLE call a bounded few times
-      // rather than failing the entire script step on one blip (which cascaded
-      // into the worker re-attempting the brand for hours). Only the transport
-      // drop retries here; content/validation retries are the outer MAX_ATTEMPTS
-      // loop, and a real API error (400/auth) still fails fast.
-      const response = await withTransientRetry("script-gen", () =>
-        c.messages
-          .stream({
-            model: MODELS.scriptGenerator,
-            max_tokens: 16000,
-            system: [
-              {
-                type: "text",
-                text: SCRIPT_GENERATOR_SYSTEM_PROMPT,
-                cache_control: { type: "ephemeral" },
-              },
-            ],
-            messages: history,
-          })
-          .finalMessage(),
-      );
-      noteZaiSuccess(); // closes a half-open balance breaker on success
-      const textBlock = response.content.find((cb) => cb.type === "text");
-      return {
-        text: textBlock && textBlock.type === "text" ? textBlock.text : "",
-        usage: usageOf(response.usage),
-      };
-    };
-  } else {
-    transport = fireworksScriptTransport;
-  }
+  // Resolve the transport ONCE. Production generates via castCall on
+  // Fireworks; tests inject `opts.transport` to drive the loop without a live
+  // provider. (The legacy z.ai Anthropic-SDK path was removed 2026-07-23 —
+  // the stack is Fireworks-only, founder call.)
+  const transport: ScriptTransport = opts?.transport ?? fireworksScriptTransport;
 
   const initialUserMessage = buildUserMessage(brief);
   const history: ScriptMsg[] = [{ role: "user", content: initialUserMessage }];
@@ -435,12 +375,11 @@ export const generateScript = async (
     try {
       result = await transport(history);
     } catch (err) {
-      // The z.ai balance breaker only makes sense on the zai path (the [1113]
-      // account state). The fireworks path relies on castCall's own retry ladder.
-      if (provider === "zai") noteZaiError(err);
+      // castCall owns the 429/5xx/network retry ladder; anything surfacing
+      // here is terminal for this attempt.
       return {
         ok: false,
-        error: `${provider === "zai" ? "Anthropic API error" : "Fireworks script-gen error"}: ${err instanceof Error ? err.message : String(err)}`,
+        error: `Fireworks script-gen error: ${err instanceof Error ? err.message : String(err)}`,
       };
     }
 

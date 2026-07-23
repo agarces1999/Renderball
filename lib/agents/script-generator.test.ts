@@ -54,15 +54,11 @@ await check("provider defaults to fireworks (off the z.ai SPOF)", () => {
   assert(resolveScriptProvider() === "fireworks", "unset must default to fireworks");
 });
 
-await check("RB_SCRIPT_PROVIDER=zai selects the legacy path; case-insensitive; unknown → fireworks", () => {
+await check("provider is ALWAYS fireworks — the z.ai path is gone (2026-07-23)", () => {
   process.env.RB_SCRIPT_PROVIDER = "zai";
-  assert(resolveScriptProvider() === "zai", "'zai' → zai");
-  process.env.RB_SCRIPT_PROVIDER = "  ZAI ";
-  assert(resolveScriptProvider() === "zai", "whitespace/case-insensitive 'ZAI' → zai");
-  process.env.RB_SCRIPT_PROVIDER = "fireworks";
-  assert(resolveScriptProvider() === "fireworks", "'fireworks' → fireworks");
+  assert(resolveScriptProvider() === "fireworks", "'zai' no longer selects anything — fireworks only");
   process.env.RB_SCRIPT_PROVIDER = "openai";
-  assert(resolveScriptProvider() === "fireworks", "unknown value falls back to fireworks (never silently zai)");
+  assert(resolveScriptProvider() === "fireworks", "unknown value → fireworks");
   delete process.env.RB_SCRIPT_PROVIDER;
 });
 

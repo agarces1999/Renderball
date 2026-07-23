@@ -25,7 +25,15 @@ export type CastEffort = "none" | "low" | "medium" | "high";
 
 export interface CastCall {
   system: string;
-  user: string;
+  /** Single-turn prompt. Ignored when `messages` is provided. */
+  user?: string;
+  /**
+   * Multi-turn history (Fireworks-only migration, 2026-07-23): the build
+   * pipeline's repair loops feed prior output + error back as turns. When
+   * present, these are sent verbatim after the system message and `user`
+   * is ignored.
+   */
+  messages?: { role: "user" | "assistant"; content: string }[];
   /** Honest output ceiling — pre-debited against TPM. Size per workload. */
   maxTokens: number;
   effort?: CastEffort;
@@ -39,6 +47,9 @@ export interface CastCall {
    *  class at the decoder instead of burning a ~50s repair round on it. */
   json?: boolean;
   signal?: AbortSignal;
+  /** Request timeout override (default 120s). The whole-composition build
+   *  passes emit tens of k tokens and need more headroom. */
+  timeoutMs?: number;
 }
 
 export interface CastResult {
@@ -166,10 +177,10 @@ export const castCall = async (call: CastCall): Promise<CastResult> => {
           ...wire.body(call, model),
           messages: [
             ...(call.system ? [{ role: "system", content: call.system }] : []),
-            { role: "user", content: call.user },
+            ...(call.messages ?? [{ role: "user", content: call.user ?? "" }]),
           ],
         }),
-        signal: call.signal ?? AbortSignal.timeout(120_000),
+        signal: call.signal ?? AbortSignal.timeout(call.timeoutMs ?? 120_000),
       });
     } catch (err) {
       // Network-level failure (reset, DNS, timeout): retryable within budget.

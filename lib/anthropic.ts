@@ -124,13 +124,14 @@ export const getAnthropic = (): Anthropic => {
  * Model registry per stage, per PRODUCT.md §1038.
  * Swap-friendly: model choice is one constant per role.
  */
-// EVERY STAGE ON GLM 5.2 via z.ai's Anthropic-compatible endpoint
-// (ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic, key in .env.local). This
-// is the production build model: Fable 5 won the 2026-06-11 taste A/B but its
-// access was revoked (404), and Opus is no longer used for builds — GLM 5.2 is
-// the model, full stop (revisit only if Fable access returns). GLM is reached
-// through the same SDK client; the call contract differs from Anthropic's and
-// is captured in BUILD_REASONING / BUILD_MAX_TOKENS below.
+// EVERY TEXT STAGE ON GLM 5.2 — served by FIREWORKS (founder call 2026-07-23:
+// z.ai is out of the stack entirely; its [1113] balance failures took builds
+// down twice). These entries stay the ABSTRACT model name: the usage ledger
+// keys pricing off it (same $1.40/$4.40 list on Fireworks), and the transport
+// (lib/llm/build-client.ts) maps it to the Fireworks deployment
+// (accounts/fireworks/routers/glm-5p2-fast — override with RB_BUILD_MODEL).
+// getAnthropic() below is DORMANT: no build path calls the Anthropic SDK
+// client anymore.
 export const MODELS = {
   scriptGenerator: "glm-5.2",
   codingAgentBuild: "glm-5.2",
@@ -142,19 +143,22 @@ export const MODELS = {
 } as const;
 
 /**
- * Vision model for the QA gate (and, as a follow-up, the crawl's logo/palette
- * vision). GLM-5V-Turbo is z.ai's multimodal model built to "examine rendered
- * output and identify discrepancies" — validated 2026-06-21 to read our scene
- * screenshots accurately (0 false positives on 5 good builds, and it correctly
- * caught a deliberate color mismatch). The text GLM models (glm-5.2 etc.) are
- * NOT vision-capable.
+ * Vision model for the QA gate + crawl image reads — Qwen2.5-VL 32B on
+ * Fireworks (2026-07-23, z.ai removal: GLM-5V-Turbo went with it). This is
+ * the LITERAL wire id (the vision transport sends it as-is), unlike the
+ * abstract MODELS.* names above. Override with RB_VISION_MODEL.
  *
- * CRITICAL: vision calls MUST go through z.ai's NATIVE endpoint via
- * lib/render/zai-vision.ts — the Anthropic-compatible endpoint that
- * getAnthropic() targets silently DROPS image blocks, so images sent through the
- * SDK client are invisible to the model.
+ * REVALIDATION PENDING: the vision gate's judgment prompts were tuned on
+ * GLM-5V (0 false positives on 5 good builds, 2026-06-21). Qwen2.5-VL is a
+ * strong document/layout VLM but its judgments on our scene screenshots have
+ * not been re-baselined — watch the first builds' vision verdicts.
+ *
+ * CRITICAL (historical lesson, keep honoring it): all vision goes through
+ * lib/render/zai-vision.ts on a wire where images verifiably arrive — never
+ * through an Anthropic-compat proxy that silently drops image blocks.
  */
-export const VISION_MODEL = "glm-5v-turbo";
+export const VISION_MODEL =
+  process.env.RB_VISION_MODEL || "accounts/fireworks/models/qwen2p5-vl-32b-instruct";
 
 /**
  * Reasoning + output config for the build/composition calls on GLM 5.2 (z.ai).

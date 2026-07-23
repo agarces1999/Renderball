@@ -28,17 +28,23 @@ Core rules to internalize:
   Geist Mono for timings and technical text.
 
 ## Model routing
-Model choice per stage lives in `lib/anthropic.ts` (`MODELS` + `VISION_MODEL`).
-The stack is **GLM-only** (z.ai) — this is the final call: every text/build stage
-(script generation, build/regen coding agents, QA, logo discovery, design-language,
-tweak) runs on `glm-5.2`, and all vision (the QA gate + crawl image reads) runs on
-`glm-5v-turbo` via z.ai's NATIVE endpoint. Do not propose Opus/Sonnet as a build or
-validation substrate. Change models there, not inline.
+**FIREWORKS ONLY (founder call 2026-07-23) — z.ai is out of the stack.** Every
+text/build stage (script generation, build/regen coding agents, QA, logo
+discovery, design-language, tweak) runs GLM-5.2 **served by Fireworks**
+(`accounts/fireworks/routers/glm-5p2-fast`, override RB_BUILD_MODEL). Vision
+(QA gate + crawl image reads) runs Qwen2.5-VL-32B on Fireworks (override
+RB_VISION_MODEL) — its judgments are pending re-baselining vs the GLM-5V era.
+Abstract names live in `lib/anthropic.ts` (`MODELS`, `VISION_MODEL`); the
+transports are `lib/llm/build-client.ts` (Anthropic-shaped shim over the
+OpenAI-wire `castCall`) and `lib/render/zai-vision.ts` (vision; keeps its
+historical name). `getAnthropic()` is dormant — do not add new call sites to
+it, and do not propose Opus/Sonnet as a build or validation substrate. Change
+models in those files, not inline.
 
-Vision MUST go through the native paas endpoint (`lib/render/zai-vision.ts` →
-`callZaiVision`), NOT `getAnthropic()` — z.ai's Anthropic-compat endpoint silently
-drops image blocks, so any image sent through the SDK client is invisible to the
-model (it hallucinates). All crawl/QA image reads use `callZaiVision`.
+Vision lesson that must survive the provider change: images go ONLY through
+the single vision transport (`callZaiVision`) on a wire where images
+verifiably arrive — an Anthropic-compat proxy that silently drops image
+blocks blinded the whole vision layer once already.
 
 ## Spatial quality system
 Before touching layout, allocation, washout/contrast repairs, overlap gates, or
