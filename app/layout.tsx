@@ -4,13 +4,13 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   metadataBase: new URL(process.env.NEXT_PUBLIC_APP_URL || "https://renderball.com"),
-  title: "Renderball — render your business story",
+  title: "Renderball — on-brand decks, designed by AI",
   description:
-    "AI-native video generation. A brief becomes a story-driven, on-brand animated video. Render your business story.",
+    "AI-native design documents. A brief becomes an on-brand, fully editable deck — outline first, your logo and colors, every element movable. Editing is free; pay only for generation.",
   openGraph: {
-    title: "Renderball — render your business story",
+    title: "Renderball — on-brand decks, designed by AI",
     description:
-      "AI-native video generation. A brief becomes a story-driven, on-brand animated video.",
+      "AI-native design documents. A brief becomes an on-brand, fully editable deck.",
     siteName: "Renderball",
     type: "website",
   },

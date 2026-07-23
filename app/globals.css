@@ -294,6 +294,12 @@
   78% { transform: scale(0.94); }
   100% { transform: scale(1); }
 }
+/* Marquee-to-generate: the selection rectangle "draws" from its corner. */
+@keyframes rb-draw {
+  from { opacity: 0; transform: scale(0.05); }
+  30% { opacity: 1; }
+  to { opacity: 1; transform: scale(1); }
+}
 @media (prefers-reduced-motion: reduce) {
   [data-rb-anim] { animation: none !important; }
 }
