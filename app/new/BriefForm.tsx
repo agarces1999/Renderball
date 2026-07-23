@@ -85,6 +85,10 @@ export function BriefForm({
     useState<DistributionFormat>("landscape");
   const [duration, setDuration] = useState(30);
   const [momentCount, setMomentCount] = useState(4);
+  // Canvas pivot (docs/PIVOT.md): "deck" generates a static slide document
+  // (PDF/PNG export); "video" keeps the animated pipeline. Video stays the
+  // default until the first deck build validates end-to-end.
+  const [kind, setKind] = useState<"video" | "deck">("video");
   const [moments, setMoments] = useState<MomentInput[]>([]);
   const [cta] = useState("");
 
@@ -109,9 +113,12 @@ export function BriefForm({
   }, [momentCount]);
 
   useEffect(() => {
+    // Deck slides aren't time-budgeted — the 5s-per-moment floor is a video
+    // pacing rule, so the cap only applies to videos.
+    if (kind === "deck") return;
     const cap = maxMomentsForDuration(duration);
     if (momentCount > cap) setMomentCount(cap);
-  }, [duration, momentCount]);
+  }, [duration, momentCount, kind]);
 
   // ─── Crawl trigger ───────────────────────────────────────────────
   const ensureCrawl = (): Promise<BrandExtract> | null => {
@@ -153,6 +160,7 @@ export function BriefForm({
         JSON.stringify({
           duration_seconds: duration,
           distribution_format: distributionFormat,
+          kind,
           moment_count: momentCount,
           freeform_prompt: introPrompt,
           brand_kit_url: brandKitUrl.trim() || undefined,
@@ -167,6 +175,7 @@ export function BriefForm({
         JSON.stringify({
           duration_seconds: duration,
           distribution_format: distributionFormat,
+          kind,
           purpose: introPrompt.trim() || undefined,
           moments: moments.map((m) => ({
             title: m.title.trim(),
@@ -527,6 +536,47 @@ export function BriefForm({
                 </span>
               )}
             </div>
+          </div>
+        </div>
+
+        {/* Document type (canvas pivot): deck = static slides, video = animated */}
+        <div className="mt-4">
+          <div className="mb-2 font-mono text-[11px] uppercase tracking-[0.14em] text-muted">
+            Type
+          </div>
+          <div className="flex gap-2">
+            {(
+              [
+                { value: "video", label: "Video", hint: "animated · MP4" },
+                { value: "deck", label: "Deck", hint: "static slides · PDF" },
+              ] as const
+            ).map((k) => {
+              const active = kind === k.value;
+              return (
+                <button
+                  key={k.value}
+                  type="button"
+                  onClick={() => setKind(k.value)}
+                  aria-pressed={active}
+                  className={cn(
+                    "flex flex-1 flex-col items-center gap-1 rounded-md border px-3 py-3 transition-all",
+                    active
+                      ? "border-accent-line bg-accent-soft"
+                      : "border-hairline-strong bg-white/40 hover:bg-white/60",
+                  )}
+                >
+                  <div
+                    className={cn(
+                      "font-mono text-[12px]",
+                      active ? "text-accent-text" : "text-ink-soft",
+                    )}
+                  >
+                    {k.label}
+                  </div>
+                  <div className="text-[11px] text-muted">{k.hint}</div>
+                </button>
+              );
+            })}
           </div>
         </div>
 

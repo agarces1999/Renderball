@@ -522,7 +522,10 @@ export interface RichnessSceneInput {
  * repair-retry loop verbatim. Non-string / missing visual_concepts are
  * skipped (structural validation owns those errors).
  */
-export const checkScriptRichness = (scenes: RichnessSceneInput[]): string[] => {
+export const checkScriptRichness = (
+  scenes: RichnessSceneInput[],
+  opts: { deck?: boolean } = {},
+): string[] => {
   const errors: string[] = [];
   const gramScenes = new Map<string, number[]>();
 
@@ -532,11 +535,12 @@ export const checkScriptRichness = (scenes: RichnessSceneInput[]): string[] => {
 
     // 1) Beat coverage — the latest explicit beat must reach ≥50% of the
     //    scene. This is where the thin failure mode lives (beats at 8-33%).
+    //    Skipped for decks: a static page has no timed beats (canvas pivot).
     const dur =
       typeof sc.start_seconds === "number" && typeof sc.end_seconds === "number"
         ? sc.end_seconds - sc.start_seconds
         : 0;
-    if (dur >= BEAT_COVERAGE_MIN_SCENE_SECONDS) {
+    if (!opts.deck && dur >= BEAT_COVERAGE_MIN_SCENE_SECONDS) {
       const latest = latestExplicitBeat(vc);
       if (latest < dur * BEAT_COVERAGE_MIN_FRACTION) {
         const pct = Math.round((latest / dur) * 100);
@@ -1795,6 +1799,14 @@ export interface ValidateScriptOptions {
    * consulted on the richness (generation) path.
    */
   brandName?: string;
+  /**
+   * Deck mode (config.kind === "deck", canvas pivot): scenes are static
+   * pages, so the beat-coverage arm of the richness contract is skipped —
+   * a still slide has no timed beats. Every other richness check
+   * (visual_concept floor, interior furnishing, atmosphere anti-copy)
+   * still applies: slides live or die on composition richness too.
+   */
+  deck?: boolean;
 }
 
 export const validateScript = (
@@ -2134,7 +2146,7 @@ export const validateScript = (
         };
       }
     }
-    const richness = checkScriptRichness(scenes as RichnessSceneInput[]);
+    const richness = checkScriptRichness(scenes as RichnessSceneInput[], { deck: opts.deck });
     if (richness.length > 0) {
       return { ok: false, error: richness.join(" | ") };
     }

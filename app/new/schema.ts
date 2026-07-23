@@ -106,6 +106,11 @@ export interface BriefInput {
    * back-compat with cached briefs — new submissions always set it.
    */
   distribution_format?: DistributionFormat;
+  /**
+   * Document kind (canvas pivot, docs/PIVOT.md). "deck" = static multi-page
+   * presentation (PDF/PNG export); absent/"video" = animated video (MP4).
+   */
+  kind?: "video" | "deck";
   brand_kit_url?: string;
   brand_files?: UploadedFileRef[]; // resolved server-side
   /**

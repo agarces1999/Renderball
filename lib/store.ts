@@ -88,6 +88,12 @@ export interface StoredBrief {
    * persisted before this field existed.
    */
   distribution_format?: "mobile-feed" | "square" | "landscape";
+  /**
+   * Document kind (canvas pivot, docs/PIVOT.md): "deck" generates a static
+   * multi-page design document (choreography skipped, PDF/PNG export).
+   * Absent = "video" — legacy briefs keep their behavior unchanged.
+   */
+  kind?: "video" | "deck";
   moments: StoredMoment[];
   cta: string;
   brand_kit_url?: string;

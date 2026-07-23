@@ -292,6 +292,10 @@ export const applyChoreography = (
   script: Script,
   signal: MotionSignal = "medium",
 ): string => {
+  // Canvas pivot (docs/PIVOT.md): decks are static documents — pages, not
+  // timeline scenes. No entrance/exit choreography, no ambient motion; the
+  // assembled static composition IS the final artifact.
+  if (script.config.kind === "deck") return code;
   try {
     // 1. Build the full CHOREO_CSS from the SCRIPT (no code parsing for discovery).
     //    Every scene except the LAST gets exit choreography — its elements leave

@@ -57,8 +57,11 @@ interface PreviewWarnings {
 }
 
 export function PreviewClient({ scriptId, script, initialWarnings }: Props) {
+  // Canvas pivot (docs/PIVOT.md): decks are static page documents — no
+  // autoplay, pages render settled, and export is PDF/PNG instead of MP4.
+  const isDeck = script.config.kind === "deck";
   const [sceneIndex, setSceneIndex] = useState(0);
-  const [playing, setPlaying] = useState(true);
+  const [playing, setPlaying] = useState(!isDeck);
   const [editing, setEditing] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
   const [regenerating, setRegenerating] = useState(false);
@@ -75,9 +78,9 @@ export function PreviewClient({ scriptId, script, initialWarnings }: Props) {
 
   const dims = useMemo(() => getDimensions(script), [script]);
 
-  // Auto-advance scenes when playing (never while editing elements).
+  // Auto-advance scenes when playing (never while editing elements, never on decks).
   useEffect(() => {
-    if (!playing || editing) return;
+    if (isDeck || !playing || editing) return;
     const scene = script.scenes[sceneIndex];
     if (!scene) return;
     const startSec = scene.start_seconds ?? 0;
@@ -89,7 +92,7 @@ export function PreviewClient({ scriptId, script, initialWarnings }: Props) {
       setReloadKey((k) => k + 1);
     }, durMs);
     return () => clearTimeout(t);
-  }, [sceneIndex, playing, editing, script.scenes, reloadKey]);
+  }, [sceneIndex, playing, editing, isDeck, script.scenes, reloadKey]);
 
   const replayScene = () => setReloadKey((k) => k + 1);
   const selectScene = (i: number) => {
@@ -160,7 +163,7 @@ export function PreviewClient({ scriptId, script, initialWarnings }: Props) {
   // Edit mode renders SETTLED (entry animations at their end state): interactions are
   // instant and rects are stable — you edit a static scene, you WATCH motion in play
   // mode. Toggling edit changes the src, so the browser swaps modes naturally.
-  const iframeSrc = `/api/preview/${scriptId}/iframe?scene=${sceneIndex}&v=${reloadKey}${editing ? "&settle=1" : ""}`;
+  const iframeSrc = `/api/preview/${scriptId}/iframe?scene=${sceneIndex}&v=${reloadKey}${editing || isDeck ? "&settle=1" : ""}`;
 
   const hasWarnings =
     warnings &&
@@ -244,21 +247,25 @@ export function PreviewClient({ scriptId, script, initialWarnings }: Props) {
         >
           {editing ? "Done editing" : "Edit elements"}
         </button>
-        <button
-          type="button"
-          onClick={() => setPlaying((p) => !p)}
-          disabled={editing}
-          className="rounded-md border border-hairline-strong bg-surface px-4 py-2 text-[13px] text-ink transition-colors hover:bg-surface-2 disabled:opacity-40"
-        >
-          {playing ? "Pause" : "Play"}
-        </button>
-        <button
-          type="button"
-          onClick={replayScene}
-          className="rounded-md border border-hairline-strong bg-surface px-4 py-2 text-[13px] text-ink transition-colors hover:bg-surface-2"
-        >
-          Replay scene
-        </button>
+        {!isDeck && (
+          <>
+            <button
+              type="button"
+              onClick={() => setPlaying((p) => !p)}
+              disabled={editing}
+              className="rounded-md border border-hairline-strong bg-surface px-4 py-2 text-[13px] text-ink transition-colors hover:bg-surface-2 disabled:opacity-40"
+            >
+              {playing ? "Pause" : "Play"}
+            </button>
+            <button
+              type="button"
+              onClick={replayScene}
+              className="rounded-md border border-hairline-strong bg-surface px-4 py-2 text-[13px] text-ink transition-colors hover:bg-surface-2"
+            >
+              Replay scene
+            </button>
+          </>
+        )}
         <button
           type="button"
           onClick={() => setRegenAsk((a) => !a)}
@@ -272,7 +279,7 @@ export function PreviewClient({ scriptId, script, initialWarnings }: Props) {
         >
           {regenerating
             ? "Regenerating…"
-            : `Regenerate scene ${sceneIndex + 1}`}
+            : `Regenerate ${isDeck ? "slide" : "scene"} ${sceneIndex + 1}`}
         </button>
         {regenAsk && !regenerating && (
           <form
@@ -302,8 +309,23 @@ export function PreviewClient({ scriptId, script, initialWarnings }: Props) {
           </form>
         )}
 
-        <div className="ml-auto">
-          {mp4State.kind === "done" ? (
+        <div className="ml-auto flex items-center gap-2">
+          {isDeck ? (
+            <>
+              <a
+                href={`/api/preview/${scriptId}/export?format=png&scene=${sceneIndex}`}
+                className="rounded-md border border-hairline-strong bg-surface px-4 py-2 text-[13px] text-ink transition-colors hover:bg-surface-2"
+              >
+                Slide {sceneIndex + 1} PNG
+              </a>
+              <a
+                href={`/api/preview/${scriptId}/export?format=pdf`}
+                className="inline-flex items-center gap-2 rounded-md bg-accent px-5 py-2 text-[13px] font-semibold text-accent-ink transition-all hover:brightness-110"
+              >
+                Export PDF →
+              </a>
+            </>
+          ) : mp4State.kind === "done" ? (
             <a
               href={mp4State.url}
               target="_blank"

@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { ulid } from "../../../../lib/ulid";
 import { saveBrief, saveScript, type StoredBrief } from "../../../../lib/store";
 import { DEV_OWNER_ID } from "../../../../lib/auth";
-import { generateScript } from "../../../../lib/agents/script-generator";
+import { generateScript, DECK_SECONDS_PER_SLIDE } from "../../../../lib/agents/script-generator";
 import { extractBrand } from "../../../../lib/crawl/extract-brand";
 import { MODELS } from "../../../../lib/anthropic";
 import { addUsage, EMPTY_USAGE, recordUsage, type Usage } from "../../../../lib/usage";
@@ -36,6 +36,8 @@ export async function POST(request: Request) {
     duration_seconds?: number;
     moment_count?: number;
     verified_claims?: string;
+    /** Canvas pivot: "deck" generates a static slide document. */
+    kind?: string;
   };
   try {
     body = await request.json();
@@ -48,8 +50,12 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: false, error: "prompt required" }, { status: 400 });
   }
 
-  const duration = body.duration_seconds ?? 30;
   const momentCount = body.moment_count ?? 5;
+  const kind = body.kind === "deck" ? ("deck" as const) : undefined;
+  // Decks: duration is inert metadata tiled at 5s/slide (canvas pivot).
+  const duration = kind
+    ? momentCount * DECK_SECONDS_PER_SLIDE
+    : (body.duration_seconds ?? 30);
   const distribution_format = body.distribution_format ?? "landscape";
 
   // Best-effort crawl. Failure degrades to prompt-only (same as the wizard).
@@ -79,6 +85,7 @@ export async function POST(request: Request) {
     purpose: "",
     duration_seconds: duration,
     distribution_format,
+    kind,
     moments: [],
     cta: "",
     brand_kit_url: body.url?.trim() || undefined,
@@ -93,6 +100,7 @@ export async function POST(request: Request) {
     {
       duration_seconds: duration,
       distribution_format,
+      kind,
       moment_count: momentCount,
       brand_kit_url: baseBrief.brand_kit_url,
       verified_claims: baseBrief.verified_claims,

@@ -123,6 +123,13 @@ export interface AgentBrief {
    * agent skips its keyword-guessing path and uses the user's pick.
    */
   distribution_format?: "mobile-feed" | "square" | "landscape";
+  /**
+   * Document kind (canvas pivot, docs/PIVOT.md). "deck" = static multi-page
+   * presentation: the prompt drops all timing/motion asks, scene timings are
+   * tiled as inert 5s stubs, and voiceover becomes presenter notes. Absent =
+   * "video" (legacy behavior, unchanged).
+   */
+  kind?: "video" | "deck";
   moment_count: number;
   brand_kit_url?: string;
   brand_files?: AgentFileRef[];
@@ -477,7 +484,13 @@ export const generateScript = async (
     // backfill any missing scene registers (GLM omits them sporadically, and
     // exemplar selection + the Design Agent's layout archetypes key on them).
     const normalized = backfillSceneRegisters(normalizeScriptContent(withAssets));
-    const validation = validateScript(normalized, { brandName: brandShortName(brief.brand_extract) }); // Audit-1 P0 #1 (SSOT — was raw title)
+    // Canvas pivot: the document kind is the BRIEF's choice — stamp it before
+    // validation so deck-aware checks (and everything downstream) see it.
+    stampDocumentKind(normalized, brief.kind);
+    const validation = validateScript(normalized, {
+      brandName: brandShortName(brief.brand_extract), // Audit-1 P0 #1 (SSOT — was raw title)
+      deck: brief.kind === "deck",
+    });
     if (validation.ok) {
       // Duration guard: the requested duration is authoritative. If the
       // agent collapsed the video (sizing scenes like ~1s animation beats),
@@ -676,9 +689,26 @@ export const beatFloorLines = (durationSeconds: number, momentCount: number): st
   return lines;
 };
 
+/** Inert per-slide timing stub for decks (canvas pivot): timings must exist
+ *  for schema compatibility but are never shown or animated. 5s/slide keeps
+ *  any deck of ≤12 slides under the validator's 60s duration cap. */
+export const DECK_SECONDS_PER_SLIDE = 5;
+
+/** Deterministically stamp config.kind from the BRIEF (canvas pivot) — the
+ *  document kind is the caller's choice, never trusted from model output. */
+const stampDocumentKind = (input: unknown, kind?: "video" | "deck"): void => {
+  if (!input || typeof input !== "object") return;
+  const cfg = (input as { config?: unknown }).config;
+  if (cfg && typeof cfg === "object") {
+    (cfg as Record<string, unknown>).kind = kind ?? "video";
+  }
+};
+
 export const buildUserMessage = (brief: AgentBrief): string => {
   const momentCount = brief.moment_count;
   const isFreeform = !!brief.freeform_prompt && !brief.moments;
+  const isDeck = brief.kind === "deck";
+  const deckDuration = momentCount * DECK_SECONDS_PER_SLIDE;
   const userAspect = formatToAspect(brief.distribution_format);
   const userViewing = formatToViewingContext(brief.distribution_format);
 
@@ -688,28 +718,47 @@ export const buildUserMessage = (brief: AgentBrief): string => {
       : "Generate a Script JSON from this PRE-STRUCTURED brief.",
     "",
     "Hard constraints you MUST honor:",
-    `- Total duration: EXACTLY ${brief.duration_seconds} seconds — AUTHORITATIVE. SET config.duration_seconds = ${brief.duration_seconds} and tile every scene across 0→${brief.duration_seconds}. Do NOT pick a shorter total. Do NOT collapse the video into a few seconds. "Per beat" pacing is motion density INSIDE a scene, not scene length.`,
+    ...(isDeck
+      ? [
+          "- This is a STATIC PRESENTATION DECK: each scene is one still SLIDE (a designed page), not an animated video. Nothing on a slide moves.",
+          `- Timing fields are INERT schema metadata on a deck: SET config.duration_seconds = ${deckDuration} and tile the scenes exactly ${DECK_SECONDS_PER_SLIDE}s each — scenes[i].start_seconds = i×${DECK_SECONDS_PER_SLIDE}, scenes[i].end_seconds = (i+1)×${DECK_SECONDS_PER_SLIDE}. These numbers are never shown; write no OTHER timing anywhere.`,
+        ]
+      : [
+          `- Total duration: EXACTLY ${brief.duration_seconds} seconds — AUTHORITATIVE. SET config.duration_seconds = ${brief.duration_seconds} and tile every scene across 0→${brief.duration_seconds}. Do NOT pick a shorter total. Do NOT collapse the video into a few seconds. "Per beat" pacing is motion density INSIDE a scene, not scene length.`,
+        ]),
     ...(userAspect
       ? [
           `- Aspect ratio: ${userAspect}. The user picked this in the wizard. SET config.aspect_ratio = "${userAspect}". Do NOT override based on prompt keywords — the wizard is authoritative.`,
           `- Viewing context: ${userViewing}. ${userViewing === "mobile" ? "Viewers watch on phone screens; the Design Agent will use a larger body-text floor." : "Viewers watch on desktop; the Design Agent uses tighter typography."}`,
         ]
       : []),
-    `- Section count: EXACTLY ${momentCount} sections — one per moment, in narrative order.`,
-    `- Section boundaries: scenes[0].start_seconds === 0, scenes[N-1].end_seconds === ${brief.duration_seconds}, and scenes[i].end_seconds === scenes[i+1].start_seconds for all i. Times are in seconds (decimals allowed: 2.5, 3.2, etc.).`,
+    `- Section count: EXACTLY ${momentCount} ${isDeck ? "slides" : "sections"} — one per moment, in narrative order.`,
+    ...(isDeck
+      ? []
+      : [
+          `- Section boundaries: scenes[0].start_seconds === 0, scenes[N-1].end_seconds === ${brief.duration_seconds}, and scenes[i].end_seconds === scenes[i+1].start_seconds for all i. Times are in seconds (decimals allowed: 2.5, 3.2, etc.).`,
+        ]),
     "",
-    "Time allocation (your job — don't split evenly):",
-    `- Distribute the ${brief.duration_seconds} seconds across the ${momentCount} sections by weight — that averages ~${(brief.duration_seconds / momentCount).toFixed(1)}s per section. Sections are MOMENTS that must land an idea, not 1-second flashes.`,
-    `- WEIGHT signals: longer descriptions, more animation cues, bolder creativity, more on-screen content → more time. Intros, transitions, simple holds → less time.`,
-    `- Floor: every section gets at least ${Math.min(3, Math.max(1, Math.floor(brief.duration_seconds / momentCount)))} seconds (a moment needs time to land). Ceiling: no section exceeds ${Math.floor(brief.duration_seconds * 0.5)} seconds (50% of total).`,
-    `- ALL TIMING IN VISUAL_CONCEPT PROSE MUST BE IN SECONDS. Write "From Xs to Ys:" or "at 2.4s". Never reference frame counts.`,
-    "",
-    // Retry audit class 6: the beat-coverage rule lived in the prompt but the
-    // model flubbed the per-scene arithmetic on every first attempt — so the
-    // COMPUTED floor is injected here, worked per scene at the even split,
-    // with the recompute rule for uneven boundaries.
-    ...beatFloorLines(brief.duration_seconds, momentCount),
-    "",
+    ...(isDeck
+      ? [
+          "Slide composition (static pages):",
+          '- visual_concept = COMPOSITION ONLY: what is on the slide and how it is arranged — layout, hierarchy, the diegetic element and its interior specifics. Do NOT write an Animations list, motion verbs, or timed beats ("at 2.4s"). This is a still page; motion language is dead weight that degrades the design.',
+          "",
+        ]
+      : [
+          "Time allocation (your job — don't split evenly):",
+          `- Distribute the ${brief.duration_seconds} seconds across the ${momentCount} sections by weight — that averages ~${(brief.duration_seconds / momentCount).toFixed(1)}s per section. Sections are MOMENTS that must land an idea, not 1-second flashes.`,
+          `- WEIGHT signals: longer descriptions, more animation cues, bolder creativity, more on-screen content → more time. Intros, transitions, simple holds → less time.`,
+          `- Floor: every section gets at least ${Math.min(3, Math.max(1, Math.floor(brief.duration_seconds / momentCount)))} seconds (a moment needs time to land). Ceiling: no section exceeds ${Math.floor(brief.duration_seconds * 0.5)} seconds (50% of total).`,
+          `- ALL TIMING IN VISUAL_CONCEPT PROSE MUST BE IN SECONDS. Write "From Xs to Ys:" or "at 2.4s". Never reference frame counts.`,
+          "",
+          // Retry audit class 6: the beat-coverage rule lived in the prompt but the
+          // model flubbed the per-scene arithmetic on every first attempt — so the
+          // COMPUTED floor is injected here, worked per scene at the even split,
+          // with the recompute rule for uneven boundaries.
+          ...beatFloorLines(brief.duration_seconds, momentCount),
+          "",
+        ]),
   ];
 
   // Storyline-first directive (both modes). The single biggest lever on
@@ -723,7 +772,9 @@ export const buildUserMessage = (brief: AgentBrief): string => {
       : "- The user wrote the moments; your job is to find the STORY across them — the arc connecting them and a throughline that makes them read as one narrative, not a list.",
     "- HEADLINE-READ TEST: the sections' headlines, read top to bottom in order, must progress like a story (each advancing toward the CTA), not enumerate features. Rewrite them until they do.",
     "- Each scene.description names that section's ROLE in the arc and its hand-off to the next section.",
-    "- This is an animated FRONTEND (a story-driven web experience), never a video — no camera / shot / footage language.",
+    isDeck
+      ? "- This is a story-driven PRESENTATION DECK — a sequence of still designed slides that read as ONE narrative. No motion, no camera / shot / footage language."
+      : "- This is an animated FRONTEND (a story-driven web experience), never a video — no camera / shot / footage language.",
     "",
   );
 
@@ -975,19 +1026,25 @@ export const buildUserMessage = (brief: AgentBrief): string => {
   lines.push("");
   lines.push("Your job:");
   lines.push(
-    "- For each scene, write visual_concept (1-3 sentences specifying composition + motion + atmosphere), a `register` (one of stat | quote | full-bleed | split | list | centered), and the structured content fields. VARY the register across scenes — no two adjacent scenes share one, ≥3 distinct across the video (see the system prompt's rule 10); this is what stops every scene looking like the same template.",
+    isDeck
+      ? "- For each scene, write visual_concept (1-3 sentences specifying composition + atmosphere — static, NO motion), a `register` (one of stat | quote | full-bleed | split | list | centered), and the structured content fields. VARY the register across scenes — no two adjacent scenes share one, ≥3 distinct across the deck (see the system prompt's rule 10); this is what stops every slide looking like the same template."
+      : "- For each scene, write visual_concept (1-3 sentences specifying composition + motion + atmosphere), a `register` (one of stat | quote | full-bleed | split | list | centered), and the structured content fields. VARY the register across scenes — no two adjacent scenes share one, ≥3 distinct across the video (see the system prompt's rule 10); this is what stops every scene looking like the same template.",
   );
   lines.push(
     "- Brainstorm 3-5 DISTINCT visual concepts per scene internally; pick the strongest; write it as visual_concept. Different metaphors, different compositions — not variations of the same idea.",
   );
-  lines.push(
-    "- Decide per-scene duration so heavier moments get more screen time. Do not split evenly.",
-  );
+  if (!isDeck) {
+    lines.push(
+      "- Decide per-scene duration so heavier moments get more screen time. Do not split evenly.",
+    );
+  }
   lines.push(
     "- The FINAL scene contains the CTA. Other scenes never repeat it.",
   );
   lines.push(
-    "- Audio.voiceover.script: one concise sentence per scene, joined with spaces, paced for natural speech at the scene's duration.",
+    isDeck
+      ? "- Audio.voiceover.script: one concise PRESENTER NOTE per slide (what the presenter says while this slide is up), joined with spaces."
+      : "- Audio.voiceover.script: one concise sentence per scene, joined with spaces, paced for natural speech at the scene's duration.",
   );
   lines.push(
     "- content.texts must contain READABLE strings (min 2 letters/digits). No emoji-only, no symbol-only, no single-char.",

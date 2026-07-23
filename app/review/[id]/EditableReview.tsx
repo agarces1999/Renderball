@@ -98,7 +98,7 @@ export function EditableReview({
           href={`/preview/${script.id}`}
           className="rounded-md bg-accent px-5 py-2.5 text-[14px] font-semibold text-accent-ink transition-all hover:brightness-110"
         >
-          Build the video →
+          Build the {script.config.kind === "deck" ? "deck" : "video"} →
         </a>
       </div>
 

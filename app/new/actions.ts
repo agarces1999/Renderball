@@ -3,7 +3,7 @@
 import { ulid } from "../../lib/ulid";
 import { getCurrentUser } from "../../lib/auth";
 import { saveBrief, saveScript, type StoredBrief } from "../../lib/store";
-import { generateScript } from "../../lib/agents/script-generator";
+import { generateScript, DECK_SECONDS_PER_SLIDE } from "../../lib/agents/script-generator";
 import { saveBriefFiles } from "../../lib/uploads";
 import { brandKitStatus } from "../../lib/brand-kit";
 import { checkEntitlement, recordMeteredUsage } from "../../lib/entitlement";
@@ -230,12 +230,19 @@ export async function submitBrief(
 
   // Persist the brief with placeholder moments in auto mode — the
   // moments will be populated from Agent 1's output after the agent runs.
+  // Canvas pivot: normalize the document kind (never trust arbitrary client
+  // strings) and make deck durations inert 5s-per-slide metadata.
+  const briefKind = briefParsed.kind === "deck" ? ("deck" as const) : undefined;
+
   const baseBrief: StoredBrief = {
     id: brief_id,
     owner_id: user.id,
     purpose: briefParsed.purpose?.trim() ?? "",
-    duration_seconds: briefParsed.duration_seconds,
+    duration_seconds: briefKind
+      ? Math.max(1, momentCount) * DECK_SECONDS_PER_SLIDE
+      : briefParsed.duration_seconds,
     distribution_format: briefParsed.distribution_format,
+    kind: briefKind,
     moments: isAuto
       ? []
       : (briefParsed.moments ?? []).map((m) => ({
@@ -262,6 +269,7 @@ export async function submitBrief(
     {
       duration_seconds: baseBrief.duration_seconds,
       distribution_format: baseBrief.distribution_format,
+      kind: baseBrief.kind,
       moment_count: momentCount,
       brand_kit_url: baseBrief.brand_kit_url,
       brand_files: baseBrief.brand_files,

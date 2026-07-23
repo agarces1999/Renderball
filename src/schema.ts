@@ -86,6 +86,13 @@ export interface Script {
     pacing: "fast" | "medium" | "slow";
     /** @deprecated kept transiently for migration; not used. */
     fps?: 30;
+    /**
+     * Document kind (canvas pivot, docs/PIVOT.md). "deck" = a static
+     * multi-page design document: scenes are pages, choreography is skipped
+     * at build time, scene timings are inert metadata, export is PDF/PNG.
+     * Absent or "video" = the legacy animated pipeline, unchanged.
+     */
+    kind?: "video" | "deck";
   };
 
   /**
