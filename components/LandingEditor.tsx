@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import {
   CaptureRegion,
   Handles,
@@ -43,12 +43,12 @@ const typed = (text: string, t: number): string =>
 /**
  * Scroll distance per section, in viewport heights.
  *
- * Each section plays a five-beat choreography (settle → travel → drag →
- * type → assemble), so this is effectively the playback speed: at 100 the
- * whole cycle flew past in a single screen-height and read as a blur.
- * 220 gives each beat room to be seen without the page feeling endless.
+ * Each section now authors the slide's own elements one at a time and then
+ * generates one extra artifact — 2 to 4 full travel → drag → type → assemble
+ * cycles rather than one. This is the playback speed: at 220 (one cycle) the
+ * beats were already tight, so more cycles need proportionally more room.
  */
-const SECTION_VH = 220;
+const SECTION_VH = 320;
 
 /** Sections of the page, each anchored to a slide in the canvas. The rail
  *  renders one thumbnail per entry. */
@@ -63,17 +63,30 @@ type Section = {
   deck: number;
   slide: number;
   /**
-   * The cursor's work on THIS slide. `box` is in canvas %, chosen to sit in
-   * that slide's genuinely empty region — generated things never cover the
-   * slide's own content. `dark` matches the card to the slide it lands on.
+   * What the cursor types inside each marquee as it authors the slide's OWN
+   * elements, in reading order. This ALSO caps how many pieces get authored,
+   * so a re-snapshot that changes a slide's element count can never desync
+   * the copy from the boxes — extra pieces just start visible.
    */
-  demo: {
+  intents: string[];
+  /**
+   * The one EXTRA element the cursor generates after the slide is composed.
+   * `box` is in stage %, chosen to sit in that slide's genuinely empty
+   * region. `kind` picks the artifact — a chart, a UI, or a stat tile.
+   * Omitted where the slide's own last element is the better closing beat.
+   */
+  demo?: {
+    kind: "chart" | "ui" | "stat";
     box: { left: string; top: string; width: string; height: string };
     intent: string;
     eyebrow: string;
     value: string;
     note: string;
-    dark?: boolean;
+    /** kind: "chart" — the bars, in order */
+    series?: number[];
+    /** kind: "ui" — the rows inside the mock window */
+    rows?: string[];
+    /** kind: "stat" — colour chips under the value */
     swatches?: string[];
   };
 };
@@ -86,12 +99,15 @@ const SECTIONS: Section[] = [
     body: "The category ships a text box: you type a paragraph, you get a flattened picture, and you start over every time. Renderball gives you a canvas instead.",
     deck: 0,
     slide: 0,
+    intents: ["the headline", "a prompt box, greyed out"],
     demo: {
-      box: { left: "7%", top: "44%", width: "23%", height: "24%" },
-      intent: "a stat tile — 3 of 5 regions live",
-      eyebrow: "rollout",
-      value: "3 of 5",
-      note: "regions live",
+      kind: "chart",
+      box: { left: "5.5%", top: "40%", width: "26%", height: "30%" },
+      intent: "a chart — weekly active, 8 weeks",
+      eyebrow: "weekly active",
+      value: "+38%",
+      note: "last 8 weeks",
+      series: [32, 38, 34, 47, 52, 48, 63, 74],
     },
   },
   {
@@ -101,12 +117,15 @@ const SECTIONS: Section[] = [
     body: "Marquee any area of a slide and describe what goes there. A real element is generated inside exactly those bounds — the model writes the element, it never moves your box.",
     deck: 0,
     slide: 2,
+    intents: ["the method, in three steps", "a canvas mockup — draw, then real"],
     demo: {
-      box: { left: "7%", top: "61%", width: "26%", height: "20%" },
-      intent: "a KPI tile — 4.6 min to first draft",
-      eyebrow: "first draft",
-      value: "4.6 min",
-      note: "from one URL",
+      kind: "ui",
+      box: { left: "5.5%", top: "58%", width: "27%", height: "27%" },
+      intent: "a plan picker — three tiers",
+      eyebrow: "choose a plan",
+      value: "3 tiers",
+      note: "free · pro · team",
+      rows: ["Free — 1M tokens", "Pro — pay as you go", "Team — shared brand kit"],
     },
   },
   {
@@ -116,8 +135,14 @@ const SECTIONS: Section[] = [
     body: "Drag it, resize it, retype it, delete it, export it to PDF at any scale. What the model made is the same material you edit — there is no flattened image step.",
     deck: 0,
     slide: 3,
+    intents: [
+      "the proof, stated plainly",
+      "a layers panel with four elements",
+      "the pricing line",
+    ],
     demo: {
-      box: { left: "60%", top: "74%", width: "27%", height: "17%" },
+      kind: "stat",
+      box: { left: "60%", top: "73%", width: "27%", height: "19%" },
       intent: "the extracted brand — swatches",
       eyebrow: "brand kit",
       value: "4 colors",
@@ -132,13 +157,9 @@ const SECTIONS: Section[] = [
     body: "Drag, resize, retype, reorder, undo — unmetered, forever. Generation is pay as you go, priced per token, and your first million are on us.",
     deck: 0,
     slide: 4,
-    demo: {
-      box: { left: "6%", top: "56%", width: "23%", height: "20%" },
-      intent: "a ledger chip — this session",
-      eyebrow: "this session",
-      value: "0 tokens",
-      note: "editing is free",
-    },
+    // No extra artifact here: the last thing the cursor draws on the page is
+    // the call to action itself, which is a better closing beat than a tile.
+    intents: ["the closing line", "the call to action"],
   },
 ];
 
@@ -403,7 +424,67 @@ function Toolbar({ armed, clock }: { armed: boolean; clock: number }) {
   );
 }
 
-/* ─── canvas: a REAL generated slide, cross-faded per section ────────── */
+/* ─── canvas: a REAL generated slide, AUTHORED element by element ────── */
+
+/** A rectangle in stage percentages — what a person would drag around a
+ *  thing on the canvas. */
+type PieceBox = { left: number; top: number; width: number; height: number };
+
+/**
+ * The union of a piece's INK: the rects of descendants that actually draw
+ * something (text, media, a filled or bordered box), not the piece's layout
+ * wrapper. Slides are composed of absolutely-positioned pieces, and several
+ * of those wrappers are full-bleed flex centerers — measuring the wrapper
+ * would put a marquee around the whole canvas when the thing a person sees
+ * is a headline in the middle of it.
+ */
+function inkBox(piece: Element, root: DOMRect): PieceBox | null {
+  let l = Infinity;
+  let t = Infinity;
+  let r = -Infinity;
+  let b = -Infinity;
+
+  const walk = (el: Element) => {
+    const cs = getComputedStyle(el);
+    if (cs.visibility === "hidden" || cs.display === "none" || cs.opacity === "0") return;
+    const hasText = Array.from(el.childNodes).some(
+      (n) => n.nodeType === 3 && (n.textContent ?? "").trim().length > 0,
+    );
+    const painted =
+      /^(IMG|SVG|CANVAS|VIDEO)$/.test(el.tagName) ||
+      (cs.backgroundColor !== "rgba(0, 0, 0, 0)" && cs.backgroundColor !== "transparent") ||
+      cs.backgroundImage !== "none" ||
+      parseFloat(cs.borderTopWidth) > 0 ||
+      parseFloat(cs.borderRightWidth) > 0 ||
+      parseFloat(cs.borderBottomWidth) > 0 ||
+      parseFloat(cs.borderLeftWidth) > 0;
+    if (hasText || painted) {
+      const rect = el.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) {
+        l = Math.min(l, rect.left);
+        t = Math.min(t, rect.top);
+        r = Math.max(r, rect.right);
+        b = Math.max(b, rect.bottom);
+      }
+    }
+    Array.from(el.children).forEach(walk);
+  };
+  // Deliberately skip the piece's own root: it is the positioning wrapper.
+  Array.from(piece.children).forEach(walk);
+
+  if (l === Infinity || root.width === 0 || root.height === 0) return null;
+  return {
+    left: ((l - root.left) / root.width) * 100,
+    top: ((t - root.top) / root.height) * 100,
+    width: ((r - l) / root.width) * 100,
+    height: ((b - t) / root.height) * 100,
+  };
+}
+
+/** Smallest ink a marquee is worth drawing around, as a share of the canvas.
+ *  Below this are brand lockups and one-line footnotes: real elements, but
+ *  authoring them is a beat about nothing. They start visible. */
+const MIN_PIECE_AREA = 1.8;
 
 function Canvas({
   section,
@@ -416,57 +497,97 @@ function Canvas({
 }) {
   const deck = DEMO_DECKS[section.deck];
   const slide = deck?.slides[section.slide];
+  // Measurements are tagged with the section they came from: the slide swaps
+  // under this component, and stale boxes would draw marquees in mid-air.
+  const [measured, setMeasured] = useState<{ id: string; boxes: PieceBox[] }>({
+    id: "",
+    boxes: [],
+  });
+  const boxes = measured.id === section.id ? measured.boxes : [];
   if (!slide) return null;
-  const d = section.demo;
 
-  // One repeatable choreography, run on EVERY slide: settle → the cursor
-  // travels in → drags the marquee open → types the intent inside it →
-  // the element assembles and stays selected.
-  // The fade-in exists to hide the slide SWAP between sections. The first
-  // section is entered from nothing, so fading it would just serve a blank
-  // canvas as the hero — the one frame every visitor is guaranteed to see.
-  const enter = first ? 1 : seg(local, 0.02, 0.14);
-  const travel = seg(local, 0.14, 0.24);
-  const drag = seg(local, 0.24, 0.38);
-  const type = seg(local, 0.4, 0.54);
-  const made = seg(local, 0.56, 0.74);
+  // The hero must not open on an empty canvas, so the first section starts
+  // with its headline already placed and authors everything after it.
+  const baseShown = first ? 1 : 0;
+  const authorable = Math.min(boxes.length, section.intents.length);
+  const authorSteps = Math.max(0, authorable - baseShown);
+  const steps = authorSteps + (section.demo ? 1 : 0);
+
+  // Before the first measurement lands there is nothing to choreograph —
+  // show the finished slide rather than a half-built one.
+  const ready = steps > 0;
+  const LEAD = 0.05;
+  const TAIL = 0.94;
+  const span = (TAIL - LEAD) / Math.max(1, steps);
+  const raw = (local - LEAD) / span;
+  const stepIdx = Math.max(0, Math.min(steps - 1, Math.floor(raw)));
+  const u = ready ? Math.max(0, Math.min(1, raw - stepIdx)) : 1;
+
+  // One cycle, identical whether the cursor is authoring a piece of the slide
+  // or the extra artifact: travel → drag the box → type the intent → assemble.
+  const travel = seg(u, 0.02, 0.24);
+  const drag = seg(u, 0.24, 0.52);
+  const type = seg(u, 0.54, 0.74);
+  const made = seg(u, 0.76, 0.98);
+
+  const onDemoStep = ready && stepIdx >= authorSteps && !!section.demo;
+  const box: PieceBox | null = onDemoStep
+    ? {
+        left: parseFloat(section.demo!.box.left),
+        top: parseFloat(section.demo!.box.top),
+        width: parseFloat(section.demo!.box.width),
+        height: parseFloat(section.demo!.box.height),
+      }
+    : (boxes[baseShown + stepIdx] ?? null);
+  const intent = onDemoStep
+    ? section.demo!.intent
+    : (section.intents[baseShown + stepIdx] ?? "");
+
+  // A piece lands as its own cycle assembles, and stays for the rest of the
+  // section — the slide accumulates rather than flickering.
+  const authored = ready
+    ? Math.min(authorable, baseShown + stepIdx + (made > 0.25 ? 1 : 0))
+    : authorable;
 
   return (
     <div className="pointer-events-none absolute inset-0">
-      <div
-        className="absolute inset-0 transition-opacity duration-500"
-        style={{ opacity: enter }}
-      >
-        <SlideFrame slide={slide} />
-      </div>
+      <SlideFrame
+        key={`${section.deck}-${section.slide}`}
+        slide={slide}
+        authored={authored}
+        limit={section.intents.length}
+        onMeasure={(b) => setMeasured({ id: section.id, boxes: b })}
+      />
 
-      {travel > 0 && (
-        <div className="absolute" style={d.box}>
+      {ready && box && travel > 0 && (
+        <div
+          className="absolute"
+          style={{
+            left: `${box.left}%`,
+            top: `${box.top}%`,
+            width: `${box.width}%`,
+            height: `${box.height}%`,
+          }}
+        >
           {/* the marquee, growing with the cursor's drag */}
           <div
-            className="absolute left-0 top-0 rounded-[4px] border-[1.5px] border-dashed"
+            className="absolute left-0 top-0 rounded-[4px] border-[1.5px] border-dashed border-accent-line"
             style={{
-              width: `${Math.max(10, ease(drag) * 100)}%`,
-              height: `${Math.max(12, ease(drag) * 100)}%`,
-              borderColor: d.dark ? "rgba(52,211,153,0.75)" : "var(--accent-line)",
-              background: d.dark ? "rgba(52,211,153,0.10)" : "rgba(0,194,138,0.10)",
+              width: `${Math.max(8, ease(drag) * 100)}%`,
+              height: `${Math.max(10, ease(drag) * 100)}%`,
+              background: "rgba(0,194,138,0.10)",
               opacity: drag <= 0 ? 0 : made > 0.3 ? 0 : 1,
+              transition: "opacity 260ms ease",
             }}
             aria-hidden
           />
 
           {/* the intent, typed INSIDE the drawn box */}
-          {drag >= 1 && made < 0.12 && (
-            <p
-              className="absolute left-3 top-3 font-mono text-[12px]"
-              style={{ color: d.dark ? "#6ee7b7" : "var(--accent-text)" }}
-            >
-              {typed(d.intent, type)}
+          {drag >= 1 && made < 0.15 && (
+            <p className="absolute left-2.5 top-2.5 font-mono text-[11.5px] text-accent-text">
+              {typed(intent, type)}
               {type < 1 ? (
-                <span
-                  className="ml-0.5 inline-block h-[13px] w-[1.5px] animate-pulse align-middle"
-                  style={{ background: d.dark ? "#6ee7b7" : "var(--accent-text)" }}
-                />
+                <span className="ml-0.5 inline-block h-[12px] w-[1.5px] animate-pulse bg-accent-text align-middle" />
               ) : (
                 <span className="ml-2 rounded-sm bg-accent px-1.5 py-0.5 text-[10px] font-semibold text-accent-ink">
                   ⏎
@@ -475,108 +596,157 @@ function Canvas({
             </p>
           )}
 
-          <GeneratedCard demo={d} t={made} />
+          {onDemoStep && <GeneratedArtifact demo={section.demo!} t={made} />}
         </div>
       )}
 
-      <Cursor demo={d} travel={travel} drag={drag} type={type} made={made} />
+      {ready && box && (
+        <Cursor box={box} travel={travel} drag={drag} type={type} made={made} />
+      )}
     </div>
   );
 }
 
-/** The element the cursor makes — assembled in stages, dressed for the slide
- *  it lands on (a light card on a dark slide would read as a sticker). */
-function GeneratedCard({
+/* ─── the extra element the cursor makes ─────────────────────────────── */
+
+/** Slides carry headlines, UIs and numbers, so the thing the cursor generates
+ *  is one of those three — a tile that only ever says "a box appeared" is not
+ *  evidence that the engine can build anything. */
+function GeneratedArtifact({
   demo: d,
   t,
 }: {
-  demo: Section["demo"];
+  demo: NonNullable<Section["demo"]>;
   t: number;
 }) {
   if (t <= 0) return null;
   const frame = seg(t, 0, 0.2);
   const head = seg(t, 0.15, 0.4);
-  const val = seg(t, 0.35, 0.7);
+  const body = seg(t, 0.35, 0.75);
   const rest = seg(t, 0.7, 1);
+
   return (
     <div
-      className="absolute inset-0 rounded-lg border p-4 transition-all duration-500"
-      style={{
-        opacity: frame,
-        transform: `translateY(${(1 - frame) * 8}px)`,
-        background: d.dark ? "rgba(10,16,22,0.92)" : "var(--surface)",
-        borderColor: d.dark ? "rgba(148,163,184,0.25)" : "var(--hairline)",
-        boxShadow: d.dark
-          ? "0 18px 44px -26px rgba(0,0,0,0.8)"
-          : "0 18px 44px -26px rgba(18,26,43,0.45)",
-      }}
+      className="absolute inset-0 overflow-hidden rounded-lg border border-hairline bg-surface p-3.5 shadow-[0_18px_44px_-26px_rgba(18,26,43,0.45)] transition-all duration-500"
+      style={{ opacity: frame, transform: `translateY(${(1 - frame) * 8}px)` }}
     >
-      <p
-        className="font-mono text-[10px] uppercase tracking-[0.16em]"
-        style={{ opacity: head, color: d.dark ? "#94a3b8" : "var(--muted)" }}
-      >
-        {d.eyebrow}
-      </p>
-      <p
-        className="mt-1.5 font-display text-[30px] font-bold leading-none tracking-tight tabular-nums"
-        style={{
-          opacity: val,
-          color: d.dark ? "#6ee7b7" : "var(--accent-text)",
-        }}
-      >
-        {d.value}
-      </p>
-      <p
-        className="mt-1.5 text-[12.5px]"
-        style={{ opacity: rest, color: d.dark ? "#cbd5e1" : "var(--ink-soft)" }}
-      >
+      <div className="flex items-baseline justify-between gap-2" style={{ opacity: head }}>
+        <p className="font-mono text-[9.5px] uppercase tracking-[0.16em] text-muted">
+          {d.eyebrow}
+        </p>
+        <p className="font-display text-[15px] font-bold leading-none tracking-tight text-accent-text tabular-nums">
+          {d.value}
+        </p>
+      </div>
+
+      {d.kind === "chart" && <ChartBody series={d.series ?? []} t={body} />}
+      {d.kind === "ui" && <UiBody rows={d.rows ?? []} t={body} />}
+      {d.kind === "stat" && <StatBody swatches={d.swatches} t={body} />}
+
+      <p className="mt-2 text-[11.5px] text-ink-soft" style={{ opacity: rest }}>
         {d.note}
       </p>
-      {d.swatches && (
-        <div className="mt-2.5 flex gap-1.5" style={{ opacity: rest }}>
-          {d.swatches.map((c, i) => (
-            <span
-              key={c}
-              className="h-4 w-4 rounded-[3px] border border-hairline transition-all duration-300"
-              style={{
-                background: c,
-                opacity: rest > i * 0.22 ? 1 : 0,
-              }}
-            />
-          ))}
-        </div>
-      )}
       {t >= 1 && <Handles />}
     </div>
   );
 }
 
-/** The authoring cursor, present on EVERY slide: it travels to the box, drags
- *  it open (the rectangle's corner is glued to it — same easing on both),
- *  perches while the intent types, then steps aside once the element lands. */
+/** Bars draw from the baseline up, left to right, as the element assembles —
+ *  the same way the engine's chart elements enter. */
+function ChartBody({ series, t }: { series: number[]; t: number }) {
+  const max = Math.max(1, ...series);
+  return (
+    <div className="mt-2.5 flex h-[52%] items-end gap-[3px] border-b border-hairline pb-px">
+      {series.map((v, i) => {
+        const grown = seg(t, i / (series.length + 2), (i + 2.5) / (series.length + 2));
+        const last = i === series.length - 1;
+        return (
+          <span
+            key={i}
+            className="flex-1 rounded-t-[2px]"
+            style={{
+              height: `${(v / max) * 100 * grown}%`,
+              background: last ? "var(--accent)" : "var(--accent-soft-strong, #b6ead6)",
+              transition: "height 240ms ease",
+            }}
+          />
+        );
+      })}
+    </div>
+  );
+}
+
+/** A miniature interface: window chrome, rows, and a real button — the kind
+ *  of element people actually ask a deck for. */
+function UiBody({ rows, t }: { rows: string[]; t: number }) {
+  return (
+    <div className="mt-2 overflow-hidden rounded-md border border-hairline">
+      <div className="flex items-center gap-1 border-b border-hairline bg-surface-2 px-2 py-1">
+        <span className="h-1.5 w-1.5 rounded-full bg-faint" />
+        <span className="h-1.5 w-1.5 rounded-full bg-faint" />
+        <span className="h-1.5 w-1.5 rounded-full bg-faint" />
+      </div>
+      <div className="divide-y divide-hairline">
+        {rows.map((r, i) => {
+          const on = seg(t, i / (rows.length + 1), (i + 1.5) / (rows.length + 1));
+          return (
+            <div
+              key={r}
+              className="flex items-center justify-between gap-2 px-2 py-1.5 text-[10.5px] text-ink"
+              style={{ opacity: on }}
+            >
+              <span className="truncate">{r}</span>
+              {i === rows.length - 1 && (
+                <span className="shrink-0 rounded-[3px] bg-accent px-1.5 py-0.5 text-[9px] font-semibold text-accent-ink">
+                  Pick
+                </span>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/** Colour chips, landing one at a time. */
+function StatBody({ swatches, t }: { swatches?: string[]; t: number }) {
+  if (!swatches?.length) return null;
+  return (
+    <div className="mt-3 flex gap-1.5">
+      {swatches.map((c, i) => (
+        <span
+          key={c}
+          className="h-5 w-5 rounded-[3px] border border-hairline transition-all duration-300"
+          style={{ background: c, opacity: t > i * 0.22 ? 1 : 0 }}
+        />
+      ))}
+    </div>
+  );
+}
+
+/** The authoring cursor: it travels to the box, drags it open (the
+ *  rectangle's corner is glued to it — same easing on both), perches while
+ *  the intent types, then steps aside once the element lands. */
 function Cursor({
-  demo: d,
+  box,
   travel,
   drag,
   type,
   made,
 }: {
-  demo: Section["demo"];
+  box: PieceBox;
   travel: number;
   drag: number;
   type: number;
   made: number;
 }) {
-  if (travel <= 0 || made >= 1) return null;
-  const L = parseFloat(d.box.left);
-  const T = parseFloat(d.box.top);
-  const W = parseFloat(d.box.width);
-  const H = parseFloat(d.box.height);
+  if (travel <= 0) return null;
+  const { left: L, top: T, width: W, height: H } = box;
 
   let x: number;
   let y: number;
   if (drag <= 0) {
-    // travelling in from just outside the box's corner
     const e = ease(travel);
     x = L - 9 + 9 * e;
     y = T - 7 + 7 * e;
@@ -585,11 +755,9 @@ function Cursor({
     x = L + W * e;
     y = T + H * e;
   } else if (type < 1 || made <= 0) {
-    // perched under the typing line, out of the text's way
     x = L + 2.2;
-    y = T + H * 0.42;
+    y = T + Math.min(H * 0.42, 6);
   } else {
-    // steps aside as the element assembles
     x = L + W + 2.5;
     y = T + H * 0.7;
   }
@@ -605,16 +773,46 @@ function Cursor({
   );
 }
 
-/** One real slide, rendered as the DOM it actually is.
+/** One real slide, rendered as the DOM it actually is, and revealed piece by
+ *  piece as the cursor authors it.
  *
  *  Slides are authored on a fixed 1920×1080 canvas with absolutely-positioned
  *  elements, so they can't reflow — they SCALE, exactly like the editor's own
  *  viewport and the PDF export. Measuring the host and applying a transform
  *  keeps every element's real geometry intact (no re-layout, no reflow bugs)
- *  at any container size. */
-function SlideFrame({ slide }: { slide: DemoSlide }) {
+ *  at any container size.
+ *
+ *  `authored` hides the pieces the cursor has not drawn yet. Only opacity is
+ *  touched: these are the engine's own nodes, and several position themselves
+ *  with `transform`, which we must not clobber. */
+function SlideFrame({
+  slide,
+  authored = 0,
+  // limit 0 = author nothing: the static branch just wants the finished slide.
+  limit = 0,
+  onMeasure = () => {},
+}: {
+  slide: DemoSlide;
+  authored?: number;
+  limit?: number;
+  onMeasure?: (boxes: PieceBox[]) => void;
+}) {
   const hostRef = useRef<HTMLDivElement>(null);
+  const innerRef = useRef<HTMLDivElement>(null);
   const [scale, setScale] = useState(0);
+  /**
+   * The authorable pieces, as CHILD INDICES in reading order (index matches
+   * `onMeasure`). Indices, not element references, and hidden with a CSS rule
+   * rather than inline styles: React re-creates the injected subtree on
+   * re-render, which both detaches any node we held AND wipes every inline
+   * style we wrote — the whole slide flashed into view on each recreation.
+   * A rule in the stylesheet survives it.
+   */
+  const [order, setOrder] = useState<number[]>([]);
+  const measureRef = useRef(onMeasure);
+  measureRef.current = onMeasure;
+  const uid = `rbslide${useId().replace(/[^a-zA-Z0-9]/g, "")}`;
+  const html = useMemo(() => ({ __html: slide.html }), [slide.html]);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -629,13 +827,56 @@ function SlideFrame({ slide }: { slide: DemoSlide }) {
     return () => ro.disconnect();
   }, []);
 
+  // Measure once the slide is laid out and scaled. Percentages are taken
+  // against the rendered root, so the transform cancels out.
+  useEffect(() => {
+    const host = innerRef.current;
+    if (!host || scale <= 0) return;
+    // The snapshot is ONE root element (the scene's canvas div) whose
+    // children are the pieces — enumerate inside it, not around it.
+    const root = host.firstElementChild ?? host;
+    const rootRect = root.getBoundingClientRect();
+    const found: { idx: number; box: PieceBox }[] = [];
+    Array.from(root.children).forEach((piece, idx) => {
+      if (piece.tagName === "STYLE") return;
+      // Pure decoration (gradients, blurs) is never authored — it is the
+      // canvas plan's background, not an element anyone would draw.
+      const hasContent =
+        (piece.textContent ?? "").trim().length > 0 || !!piece.querySelector("img,svg");
+      if (!hasContent) return;
+      const box = inkBox(piece, rootRect);
+      if (!box) return;
+      if (box.width * box.height < MIN_PIECE_AREA * 100) return;
+      if (box.width > 97 && box.height > 97) return;
+      found.push({ idx, box });
+    });
+    found.sort((a, b) => a.box.top - b.box.top || a.box.left - b.box.left);
+    const picked = found.slice(0, limit);
+    setOrder(picked.map((f) => f.idx));
+    measureRef.current(picked.map((f) => f.box));
+  }, [slide, scale, limit]);
+
+  // `!important` because several pieces carry their own entry animations,
+  // and an animation beats a plain declaration.
+  const hideCss = order
+    .map(
+      (childIdx, i) =>
+        `#${uid}>*>:nth-child(${childIdx + 1}){opacity:${
+          i < authored ? 1 : 0
+        }!important;transition:opacity 420ms ease}`,
+    )
+    .join("");
+
   return (
     <div
       ref={hostRef}
       className="absolute inset-0 flex items-center justify-center overflow-hidden"
       style={{ background: slide.bg }}
     >
+      {hideCss && <style>{hideCss}</style>}
       <div
+        id={uid}
+        ref={innerRef}
         className="relative shrink-0"
         style={{
           width: 1920,
@@ -645,7 +886,7 @@ function SlideFrame({ slide }: { slide: DemoSlide }) {
           // Until measured, stay invisible rather than flashing a 1920px slab.
           opacity: scale > 0 ? 1 : 0,
         }}
-        dangerouslySetInnerHTML={{ __html: slide.html }}
+        dangerouslySetInnerHTML={html}
       />
     </div>
   );
