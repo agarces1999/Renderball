@@ -230,7 +230,7 @@ export function LandingEditor() {
               onPointerCancel={sb.onPointerCancel}
             >
               <CaptureRegion top={0} armed={armed && !sb.pending} />
-              <Canvas section={section} local={local} />
+              <Canvas section={section} local={local} first={idx === 0} />
               <SandboxLayer sb={sb} interactive={idx === 0} tabbable={armed}>
                 <SandboxHint
                   show={armed && sb.elements.length === 0 && !sb.marquee && !sb.pending}
@@ -239,7 +239,7 @@ export function LandingEditor() {
               </SandboxLayer>
             </div>
 
-            <ClaimBar section={section} local={local} />
+            <ClaimBar section={section} local={local} first={idx === 0} />
           </main>
         </div>
       </div>
@@ -408,9 +408,11 @@ function Toolbar({ armed, clock }: { armed: boolean; clock: number }) {
 function Canvas({
   section,
   local,
+  first,
 }: {
   section: Section;
   local: number;
+  first: boolean;
 }) {
   const deck = DEMO_DECKS[section.deck];
   const slide = deck?.slides[section.slide];
@@ -420,7 +422,10 @@ function Canvas({
   // One repeatable choreography, run on EVERY slide: settle → the cursor
   // travels in → drags the marquee open → types the intent inside it →
   // the element assembles and stays selected.
-  const enter = seg(local, 0.02, 0.14);
+  // The fade-in exists to hide the slide SWAP between sections. The first
+  // section is entered from nothing, so fading it would just serve a blank
+  // canvas as the hero — the one frame every visitor is guaranteed to see.
+  const enter = first ? 1 : seg(local, 0.02, 0.14);
   const travel = seg(local, 0.14, 0.24);
   const drag = seg(local, 0.24, 0.38);
   const type = seg(local, 0.4, 0.54);
@@ -648,8 +653,19 @@ function SlideFrame({ slide }: { slide: DemoSlide }) {
 
 /* ─── claim bar under the canvas (faces puts the words after the proof) ─ */
 
-function ClaimBar({ section, local }: { section: Section; local: number }) {
-  const t = seg(local, 0.05, 0.25);
+function ClaimBar({
+  section,
+  local,
+  first,
+}: {
+  section: Section;
+  local: number;
+  first: boolean;
+}) {
+  // Same reason as Canvas's fade: the rise-in covers the swap BETWEEN
+  // sections. On the first one it would only hide the headline from the
+  // visitor's first frame — and from anything reading the page statically.
+  const t = first ? 1 : seg(local, 0.05, 0.25);
   return (
     <div className="flex items-start gap-6 px-1 pb-1">
       <div className="min-w-0 flex-1">

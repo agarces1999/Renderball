@@ -1,17 +1,21 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { auth } from "@clerk/nextjs/server";
-import { LandingCanvas } from "../components/LandingCanvas";
+import { LandingEditor } from "../components/LandingEditor";
 
 /**
- * Public landing (the only fully public surface) — canvas-pivot edition, per
- * DESIGN.md "Landing — the canvas performs" (2026-07-24).
+ * Public landing (the only fully public surface) — per DESIGN.md
+ * "Landing — the canvas performs" (2026-07-24).
  *
- * The hero IS a Renderball canvas performing the product story: the
- * prompt-box funeral, marquee-draw → element, brand-from-URL, real-elements
- * manipulation, the deck rail with the real 4:37 receipt, and a final drawn
- * marquee that generates the CTA. NO prompt box exists on this page — the
+ * The page IS the editor: slide rail, toolbar, and a canvas holding REAL
+ * slides the pipeline generated (components/demo-decks.ts — snapshotted DOM,
+ * not screenshots). On every slide an authoring cursor draws a marquee,
+ * types the intent inside it, and an element assembles. Visitors can draw
+ * their own on the first slide. NO prompt box exists on this page — the
  * category's convention is the thing being refused.
+ *
+ * The previous scroll-performance landing (components/LandingCanvas.tsx) is
+ * kept for one cycle as the rollback; it is no longer mounted.
  *
  * Below the fold stays quiet and server-rendered: claims, usage-based
  * pricing (editing free · generation metered · first 1M tokens free — never
@@ -30,7 +34,7 @@ export default async function LandingPage() {
   return (
     <div className="min-h-screen bg-canvas">
       <LandingHeader />
-      <LandingCanvas />
+      <LandingEditor />
       <Pricing />
       <Faq />
       <FooterCta />
@@ -41,7 +45,7 @@ export default async function LandingPage() {
 
 function LandingHeader() {
   return (
-    <header className="sticky top-0 z-20 w-full border-b border-hairline chrome-veil backdrop-blur-md">
+    <header className="sticky top-0 z-20 w-full border-b border-hairline chrome-veil backdrop-blur-md lg:motion-safe:hidden">
       <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-3.5">
         <Link href="/" className="flex items-center gap-2.5">
           <span className="orb h-6 w-6 shrink-0" aria-hidden />
