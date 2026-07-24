@@ -572,7 +572,7 @@ function SandboxElementContent({ el }: { el: SandboxElement }) {
           </p>
           {w >= 210 && (
             <span className="shrink-0 rounded-full bg-[rgba(18,26,43,0.05)] px-2 py-0.5 font-mono text-[10px] text-accent-text">
-              +18% QoQ
+              {c.delta}
             </span>
           )}
         </div>

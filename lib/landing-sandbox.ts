@@ -48,13 +48,13 @@ export type LandingSandboxState = {
 
 export const SANDBOX_CONTENT = {
   kpi: [
-    { eyebrow: "Pipeline", value: "3.2×", note: "faster close" },
-    { eyebrow: "Retention", value: "128%", note: "net revenue retained" },
-    { eyebrow: "Onboarding", value: "−41%", note: "time to first value" },
+    { eyebrow: "First draft", value: "4.6 min", note: "from one URL", delta: "−41 min" },
+    { eyebrow: "Edits", value: "214", note: "drag, resize, retype", delta: "0 tokens" },
+    { eyebrow: "Slides", value: "12", note: "every one editable", delta: "PDF ready" },
   ],
   chart: [
-    { label: "last 6 quarters", bars: [34, 48, 42, 61, 74, 92] },
-    { label: "signups per week", bars: [22, 30, 55, 48, 70, 88] },
+    { label: "minutes per deck", bars: [52, 44, 38, 22, 11, 5] },
+    { label: "slides per document", bars: [4, 6, 5, 9, 12, 14] },
   ],
   quote: [
     { text: "Your box is law — I just fill it.", by: "the model" },

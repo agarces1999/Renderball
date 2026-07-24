@@ -168,8 +168,8 @@ await check("composeBriefFromSandbox names each element's real content", () => {
     elements: [el(), el({ id: "sb-2", intent: "chart", variant: 0 })],
   });
   const brief = composeBriefFromSandbox(s);
-  assert(brief.includes("a KPI tile (Pipeline — 3.2× faster close)"), brief);
-  assert(brief.includes("a bar chart (last 6 quarters)"), brief);
+  assert(brief.includes("a KPI tile (First draft — 4.6 min from one URL)"), brief);
+  assert(brief.includes("a bar chart (minutes per deck)"), brief);
   assert(brief.includes("landing canvas"), brief);
   assert(brief.includes("Build the opening slide around them."), brief);
 });

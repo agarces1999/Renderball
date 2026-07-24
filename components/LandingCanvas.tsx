@@ -69,9 +69,9 @@ const SANDBOX_ARM = [0.26, 0.64] as const;
 
 /** The three marquee slots (bigger, per founder review). */
 const SLOTS = {
-  kpi: { x: 56, y: BAND + 8, w: 384, h: 248 },
-  title: { x: 486, y: BAND + 26, w: 300, h: 212 },
-  chart: { x: 832, y: BAND + 2, w: 300, h: 266 },
+  kpi: { x: 44, y: BAND + 6, w: 400, h: 250 },
+  title: { x: 484, y: BAND + 24, w: 284, h: 230 },
+  chart: { x: 808, y: BAND + 0, w: 328, h: 260 },
 } as const;
 
 /** Per-artifact windows on the master progress: cursor drags the marquee
@@ -96,10 +96,6 @@ export function LandingCanvas() {
     armed,
     interactive: p < SANDBOX_ARM[1],
     regionTop: BAND,
-    // The scripted tile is already showing kpi[0] and the scripted chart
-    // chart[0] — start the visitor a variant along so their first draw
-    // reads as a new element, not a copy.
-    startVariants: { kpi: 1, chart: 1 },
   });
 
   useEffect(() => {
@@ -399,32 +395,39 @@ function Marquee({
   );
 }
 
-/** The three artifacts — each ASSEMBLES in stages under buildT. */
+/**
+ * The three artifacts. Each ASSEMBLES in stages under buildT, and each is a
+ * DIFFERENT KIND of thing — a diegetic product UI, a typographic lockup, and
+ * an information graphic — because three variations of one card prove
+ * nothing (founder review 2026-07-24, round 3). Content is specific and
+ * survives scrutiny: units cohere, axes are labeled, and nothing is app
+ * metadata cosplaying as slide content.
+ */
 
-function KpiTile({
+/** 1 — A believable product interface: nesting, states, live meta. The class
+ *  of element chat-output tools can't produce, and the engine's real edge. */
+function ReleasePanel({
   b,
   dx,
   grow,
-  caret,
+  title,
   selected,
 }: {
   b: number;
   dx: number;
   grow: number;
-  caret: string | null;
+  title: string | null;
   selected: boolean;
 }) {
   if (b <= 0) return null;
-  const frame = seg(b, 0, 0.15);
-  const eyebrow = typed("PIPELINE", seg(b, 0.08, 0.22));
-  const num = (3.2 * seg(b, 0.2, 0.5)).toFixed(1);
-  const sparkT = seg(b, 0.5, 0.85);
-  const chip = seg(b, 0.85, 1);
-  const spark = [12, 16, 14, 20, 24, 22, 30, 34];
-  const max = Math.max(...spark);
-  const pts = spark
-    .map((v, i) => `${(i / (spark.length - 1)) * 96 + 2},${40 - (v / max) * 34}`)
-    .join(" ");
+  const frame = seg(b, 0, 0.12);
+  const head = seg(b, 0.1, 0.24);
+  const rows: [string, string, "done" | "live"][] = [
+    ["eu-central", "12:04", "done"],
+    ["us-east", "12:41", "done"],
+    ["ap-southeast", "deploying", "live"],
+  ];
+  const bar = seg(b, 0.74, 0.96);
   return (
     <div
       className="relative transition-transform duration-500"
@@ -436,144 +439,276 @@ function KpiTile({
         </div>
       )}
       <div
-        className="relative h-[248px] rounded-lg border border-hairline bg-surface p-6 shadow-[0_20px_50px_-28px_rgba(18,26,43,0.4)] transition-all duration-500"
+        className="relative h-[250px] overflow-hidden rounded-lg border border-hairline bg-surface shadow-[0_20px_50px_-28px_rgba(18,26,43,0.4)] transition-all duration-500"
         style={{
-          width: 384 + grow,
+          width: 400 + grow,
           opacity: frame,
           transform: `translateY(${(1 - frame) * 10}px)`,
         }}
       >
-        <div className="flex items-center justify-between">
-          <p className="font-mono text-[10.5px] uppercase tracking-[0.16em] text-muted">
-            {eyebrow}
-            {eyebrow.length > 0 && eyebrow.length < 8 && (
-              <span className="ml-0.5 inline-block h-[11px] w-[1.5px] animate-pulse bg-muted align-middle" />
+        {/* window chrome */}
+        <div
+          className="flex items-center justify-between border-b border-hairline px-4 py-2.5"
+          style={{ opacity: head }}
+        >
+          <div className="flex items-center gap-2">
+            <span className="inline-block h-1.5 w-1.5 rounded-full bg-accent" />
+            <span className="font-mono text-[10.5px] uppercase tracking-[0.14em] text-muted">
+              {typed("release 4.2", seg(b, 0.12, 0.26))}
+            </span>
+          </div>
+          <span className="font-mono text-[10px] text-faint">live</span>
+        </div>
+
+        <div className="px-4 pb-4 pt-3">
+          <p className="text-[15px] font-semibold leading-tight text-ink" style={{ opacity: head }}>
+            {title ?? "Payments rollout"}
+            {title !== null && title.length < 17 && (
+              <span className="ml-0.5 inline-block h-[14px] w-[1.5px] animate-pulse bg-ink align-middle" />
             )}
           </p>
-          <span
-            className="rounded-full bg-accent-soft px-2.5 py-0.5 font-mono text-[10.5px] text-accent-text transition-all duration-300"
-            style={{ opacity: chip, transform: `scale(${0.8 + chip * 0.2})` }}
-          >
-            +18% QoQ
-          </span>
+
+          <div className="mt-3 space-y-1.5">
+            {rows.map(([region, meta, state], i) => {
+              const t = seg(b, 0.3 + i * 0.12, 0.44 + i * 0.12);
+              return (
+                <div
+                  key={region}
+                  className="flex items-center gap-2.5 rounded-md border border-hairline bg-surface-2 px-2.5 py-1.5 transition-all duration-300"
+                  style={{ opacity: t, transform: `translateX(${(1 - t) * -6}px)` }}
+                >
+                  <span
+                    className={`inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-[3px] ${
+                      state === "done" ? "bg-accent" : "border border-hairline-strong bg-surface"
+                    }`}
+                  >
+                    {state === "done" && (
+                      <svg viewBox="0 0 10 10" className="h-2 w-2" aria-hidden>
+                        <path
+                          d="M1.5 5.2 L4 7.5 L8.5 2.5"
+                          fill="none"
+                          stroke="var(--accent-ink, #032018)"
+                          strokeWidth="1.8"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                      </svg>
+                    )}
+                  </span>
+                  <span className="flex-1 font-mono text-[11.5px] text-ink-soft">{region}</span>
+                  <span
+                    className={`font-mono text-[10.5px] tabular-nums ${
+                      state === "live" ? "text-accent-text" : "text-faint"
+                    }`}
+                  >
+                    {meta}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="mt-3.5 flex items-center gap-2.5">
+            <div className="h-1 flex-1 overflow-hidden rounded-full bg-surface-3">
+              <div
+                className="h-full rounded-full bg-accent transition-[width] duration-500"
+                style={{ width: `${bar * 66}%` }}
+              />
+            </div>
+            <span className="font-mono text-[10px] tabular-nums text-muted" style={{ opacity: bar }}>
+              2 of 3
+            </span>
+          </div>
         </div>
-        <p className="mt-3 font-display text-[68px] font-bold leading-none tracking-tight text-accent-text tabular-nums">
-          {num}×
-        </p>
-        <p
-          className="mt-2 text-[13.5px] text-ink-soft"
-          style={{ opacity: seg(b, 0.45, 0.6) }}
-        >
-          {caret !== null ? caret : "faster close"}
-          {caret !== null && caret.length < 20 && (
-            <span className="ml-0.5 inline-block h-[13px] w-[1.5px] animate-pulse bg-ink align-middle" />
-          )}
-        </p>
-        <svg viewBox="0 0 100 42" className="mt-4 h-11 w-full overflow-visible" aria-hidden>
-          <polyline
-            points={pts}
-            fill="none"
-            stroke="#047857"
-            strokeWidth="2.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            pathLength={1}
-            strokeDasharray="1"
-            strokeDashoffset={1 - sparkT}
-          />
-          {sparkT >= 1 && <circle cx="98" cy="6" r="3" fill="#047857" />}
-        </svg>
       </div>
     </div>
   );
 }
 
-function TitleBlock({ b }: { b: number }) {
+/** 2 — A typographic lockup: scale contrast, an oversized quote mark used as
+ *  a graphic, a real ragged break. No attribution invented for a person who
+ *  doesn't exist — the meta line names the deck slot instead. */
+function QuoteBlock({ b }: { b: number }) {
   if (b <= 0) return null;
-  const frame = seg(b, 0, 0.15);
-  const words = ["Revenue,", "up", "and", "to", "the", "right."];
-  const shown = Math.round(seg(b, 0.15, 0.6) * words.length);
-  const rule = seg(b, 0.6, 0.8);
-  const meta = seg(b, 0.8, 1);
+  const frame = seg(b, 0, 0.12);
+  const mark = seg(b, 0.1, 0.3);
+  const words = ["Nobody", "remembers", "the", "deck.", "They", "remember", "the", "one", "slide."];
+  const shown = Math.round(seg(b, 0.28, 0.78) * words.length);
+  const rule = seg(b, 0.78, 0.9);
+  const meta = seg(b, 0.9, 1);
   return (
     <div
-      className="flex h-[212px] flex-col justify-center rounded-lg border border-hairline bg-surface p-6 shadow-[0_20px_50px_-28px_rgba(18,26,43,0.4)] transition-all duration-500"
+      className="relative h-[230px] overflow-hidden rounded-lg border border-hairline bg-surface px-6 pb-5 pt-4 shadow-[0_20px_50px_-28px_rgba(18,26,43,0.4)] transition-all duration-500"
       style={{ opacity: frame, transform: `translateY(${(1 - frame) * 10}px)` }}
     >
-      <p className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-muted">
-        {typed("Q3 REVIEW", seg(b, 0.05, 0.18))}
-      </p>
-      <p className="mt-2.5 min-h-[68px] font-display text-[27px] font-bold leading-[1.12] tracking-tight text-ink">
+      <span
+        className="pointer-events-none absolute -top-2 left-3 select-none font-display text-[86px] leading-none text-ink/[0.07] transition-all duration-500"
+        style={{ opacity: mark, transform: `scale(${0.85 + mark * 0.15})` }}
+        aria-hidden
+      >
+        &ldquo;
+      </span>
+      <p className="relative mt-5 font-display text-[21px] font-bold leading-[1.22] tracking-[-0.015em] text-ink">
         {words.slice(0, shown).map((w, i) => (
-          <span key={i} className="mr-[7px] inline-block">
+          <span key={i} className="mr-[5px] inline-block">
             {w}
           </span>
         ))}
       </p>
       <div
-        className="mt-3 h-[3px] rounded-full bg-accent"
-        style={{ width: `${rule * 56}px`, opacity: rule > 0 ? 1 : 0 }}
+        className="mt-4 h-[2px] rounded-full bg-accent"
+        style={{ width: `${rule * 40}px`, opacity: rule > 0 ? 1 : 0 }}
       />
-      <p className="mt-3 font-mono text-[10.5px] text-faint" style={{ opacity: meta }}>
-        12 slides · exported to PDF
+      <p
+        className="absolute bottom-4 left-6 font-mono text-[10px] uppercase tracking-[0.16em] text-faint"
+        style={{ opacity: meta }}
+      >
+        pull-quote · slide 07
       </p>
     </div>
   );
 }
 
-function BarChart({ b, lift }: { b: number; lift: boolean }) {
+/** 3 — An information graphic that survives scrutiny: labeled axis with a
+ *  unit, a dashed reference line, and an annotated endpoint. A shape that
+ *  states something, not a chart-shaped decoration. */
+function TrendChart({ b }: { b: number }) {
   if (b <= 0) return null;
   const frame = seg(b, 0, 0.12);
-  const data = [
-    ["Q1", 42],
-    ["Q2", 58],
-    ["Q3", 49],
-    ["Q4", 66],
-    ["Q5", 78],
-    ["Q6", 94],
-  ] as const;
+  const axis = seg(b, 0.12, 0.3);
+  const line = seg(b, 0.32, 0.76);
+  const ref = seg(b, 0.72, 0.86);
+  const note = seg(b, 0.86, 1);
+  // minutes to first draft, jan→jun; y maps 0..60 over a 46-unit box
+  const data = [52, 44, 38, 22, 11, 5];
+  const y = (v: number) => 46 - (v / 60) * 46;
+  const x = (i: number) => (i / (data.length - 1)) * 96 + 2;
+  // Draw the line by COMPUTING the partial polyline rather than animating a
+  // stroke-dash: with preserveAspectRatio="none" + non-scaling-stroke, a
+  // pathLength/dasharray reveal rendered the series in two disjoint pieces.
+  const drawn = (() => {
+    const segs = data.length - 1;
+    const at = Math.max(0, Math.min(segs, line * segs));
+    const whole = Math.floor(at);
+    const frac = at - whole;
+    const pts: string[] = [];
+    for (let i = 0; i <= whole; i++) pts.push(`${x(i)},${y(data[i])}`);
+    if (whole < segs && frac > 0) {
+      const px = x(whole) + (x(whole + 1) - x(whole)) * frac;
+      const py = y(data[whole]) + (y(data[whole + 1]) - y(data[whole])) * frac;
+      pts.push(`${px},${py}`);
+    }
+    return pts.join(" ");
+  })();
   return (
     <div
-      className="flex h-[266px] flex-col rounded-lg border border-hairline bg-surface p-5 shadow-[0_20px_50px_-28px_rgba(18,26,43,0.4)] transition-all duration-500"
+      className="flex h-[260px] flex-col rounded-lg border border-hairline bg-surface p-5 shadow-[0_20px_50px_-28px_rgba(18,26,43,0.4)] transition-all duration-500"
       style={{ opacity: frame, transform: `translateY(${(1 - frame) * 10}px)` }}
     >
       <p className="font-mono text-[10.5px] uppercase tracking-[0.16em] text-muted">
-        {typed("CLOSED-WON · SIX QUARTERS", seg(b, 0.05, 0.2))}
+        {typed("time to first draft", seg(b, 0.06, 0.22))}
       </p>
-      <div className="mt-3 flex flex-1 items-end gap-3 border-b border-hairline pb-0.5">
-        {data.map(([q, v], i) => {
-          const barT = seg(b, 0.18 + i * 0.11, 0.32 + i * 0.11);
-          const last = i === data.length - 1;
-          const target = lift && last ? Math.min(100, v * 1.1) : v;
-          const h = target * barT;
-          return (
-            <div key={q} className="flex h-full flex-1 flex-col items-center justify-end gap-1.5">
-              <span
-                className="font-mono text-[10px] tabular-nums transition-opacity"
-                style={{
-                  color: last ? "#047857" : "#69707E",
-                  opacity: barT > 0.6 ? 1 : 0,
-                }}
-              >
-                {Math.round(target * Math.min(1, barT * 1.2))}
-              </span>
-              <div
-                className="w-full rounded-[3px]"
-                style={{
-                  height: `${h * 0.66}%`,
-                  backgroundColor: last ? "#047857" : "#E1E5EB",
-                  boxShadow:
-                    last && barT >= 1 ? "0 8px 24px -8px rgba(4,120,87,0.5)" : "none",
-                }}
+      <p className="mt-0.5 font-mono text-[9.5px] uppercase tracking-[0.14em] text-faint">
+        minutes
+      </p>
+
+      <div className="relative mt-4 flex flex-1 gap-2">
+        <div
+          className="flex w-5 flex-col justify-between py-[1px] text-right font-mono text-[9px] tabular-nums text-faint transition-opacity duration-300"
+          style={{ opacity: axis }}
+        >
+          <span>60</span>
+          <span>30</span>
+          <span>0</span>
+        </div>
+
+        <div className="relative flex-1">
+          <svg viewBox="0 0 100 46" preserveAspectRatio="none" className="h-full w-full" aria-hidden>
+            {[0, 23, 46].map((gy) => (
+              <line
+                key={gy}
+                x1="0"
+                x2="100"
+                y1={gy}
+                y2={gy}
+                stroke="rgba(18,26,43,0.08)"
+                strokeWidth="0.4"
+                vectorEffect="non-scaling-stroke"
+                style={{ opacity: axis }}
               />
-            </div>
-          );
-        })}
+            ))}
+            <line
+              x1="0"
+              x2="100"
+              y1={y(45)}
+              y2={y(45)}
+              stroke="rgba(18,26,43,0.3)"
+              strokeWidth="1"
+              strokeDasharray="4 3"
+              vectorEffect="non-scaling-stroke"
+              style={{ opacity: ref }}
+            />
+            {drawn.includes(" ") && (
+              <polyline
+                points={drawn}
+                fill="none"
+                stroke="#047857"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                vectorEffect="non-scaling-stroke"
+              />
+            )}
+          </svg>
+
+          {/* The endpoint marker is HTML, not <circle>: preserveAspectRatio
+              ="none" scales the viewBox non-uniformly, which squashes an SVG
+              circle into an oval (vectorEffect only rescues strokes). */}
+          <span
+            className="absolute block h-[7px] w-[7px] rounded-full bg-[#047857] transition-opacity duration-200"
+            style={{
+              left: `${x(5)}%`,
+              top: `${(y(5) / 46) * 100}%`,
+              transform: "translate(-50%, -50%)",
+              opacity: line >= 1 ? 1 : 0,
+            }}
+            aria-hidden
+          />
+
+          {/* Labels sit clear of the geometry: the reference is named at its
+              LEFT end, the endpoint annotation floats above-left of the dot. */}
+          <span
+            className="absolute font-mono text-[9px] uppercase tracking-[0.12em] text-muted transition-opacity duration-300"
+            /* Under the dashed line at its RIGHT end: the series is above the
+               baseline on the left and far below it on the right, so this is
+               the one pocket where the label touches no geometry. */
+            style={{ right: 2, top: `${(y(45) / 46) * 100}%`, marginTop: 3, opacity: ref }}
+          >
+            baseline
+          </span>
+          <span
+            className="absolute rounded-sm bg-accent-soft px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-accent-text transition-all duration-300"
+            style={{
+              right: 6,
+              top: `${(y(5) / 46) * 100}%`,
+              marginTop: -30,
+              opacity: note,
+              transform: `translateY(${(1 - note) * 4}px)`,
+            }}
+          >
+            4.6 min
+          </span>
+        </div>
       </div>
-      <div className="mt-1.5 flex gap-3">
-        {data.map(([q]) => (
-          <span key={q} className="flex-1 text-center font-mono text-[9.5px] text-faint">
-            {q}
+
+      <div className="mt-2 flex gap-2 pl-7">
+        {["jan", "feb", "mar", "apr", "may", "jun"].map((m) => (
+          <span
+            key={m}
+            className="flex-1 text-center font-mono text-[9px] uppercase text-faint transition-opacity duration-300"
+            style={{ opacity: axis }}
+          >
+            {m}
           </span>
         ))}
       </div>
@@ -587,10 +722,11 @@ function DrawBeat({ p }: { p: number }) {
   const real = seg(p, T.real[0], T.real[1]);
   if (p >= T.deck[0] + 0.06) return null;
 
-  const dx = real > 0.3 ? 44 : 0;
-  const grow = real > 0.55 ? 40 : 0;
-  const caret =
-    real > 0.72 ? typed("Pipeline velocity, Q3", seg(real, 0.72, 0.95)) : null;
+  const dx = real > 0.3 ? 40 : 0;
+  const grow = real > 0.55 ? 36 : 0;
+  // The "real elements" beat retypes the panel's title in place.
+  const title =
+    real > 0.72 ? typed("Payments rollout, EU", seg(real, 0.72, 0.95)) : null;
 
   return (
     <div
@@ -605,13 +741,13 @@ function DrawBeat({ p }: { p: number }) {
         drawT={seg(p, W.kpi.drag[0], W.kpi.drag[1])}
         typeT={seg(p, W.kpi.type[0], W.kpi.type[1])}
         buildT={seg(p, W.kpi.build[0], W.kpi.build[1])}
-        intent="a KPI tile — 3.2× faster close"
+        intent="a release panel — payments rollout"
       >
-        <KpiTile
+        <ReleasePanel
           b={seg(p, W.kpi.build[0], W.kpi.build[1])}
           dx={dx}
           grow={grow}
-          caret={caret}
+          title={title}
           selected={real > 0.12}
         />
         {real > 0.25 && (
@@ -626,9 +762,9 @@ function DrawBeat({ p }: { p: number }) {
         drawT={seg(p, W.title.drag[0], W.title.drag[1])}
         typeT={seg(p, W.title.type[0], W.title.type[1])}
         buildT={seg(p, W.title.build[0], W.title.build[1])}
-        intent="a title block — Q3 review"
+        intent="a pull-quote for the opening"
       >
-        <TitleBlock b={seg(p, W.title.build[0], W.title.build[1])} />
+        <QuoteBlock b={seg(p, W.title.build[0], W.title.build[1])} />
       </Marquee>
 
       <Marquee
@@ -636,9 +772,9 @@ function DrawBeat({ p }: { p: number }) {
         drawT={seg(p, W.chart.drag[0], W.chart.drag[1])}
         typeT={seg(p, W.chart.type[0], W.chart.type[1])}
         buildT={seg(p, W.chart.build[0], W.chart.build[1])}
-        intent="a bar chart — six quarters"
+        intent="a chart — time to first draft"
       >
-        <BarChart b={seg(p, W.chart.build[0], W.chart.build[1])} lift={real > 0.4} />
+        <TrendChart b={seg(p, W.chart.build[0], W.chart.build[1])} />
       </Marquee>
       <p
         className="absolute font-mono text-[10px] tracking-[0.1em] text-faint transition-opacity duration-300"
@@ -873,10 +1009,10 @@ function StaticStory() {
         still={
           <>
             <p className="mb-2 font-mono text-[11px] text-accent-text">
-              a KPI tile — 3.2× faster close
+              a release panel — payments rollout
             </p>
             <div className="rounded-md border-[1.5px] border-dashed border-accent-line p-3">
-              <KpiTile b={1} dx={0} grow={-64} caret={null} selected={false} />
+              <ReleasePanel b={1} dx={0} grow={-96} title={null} selected={false} />
             </div>
           </>
         }
