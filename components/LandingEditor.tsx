@@ -446,7 +446,10 @@ function inkBox(piece: Element, root: DOMRect): PieceBox | null {
 
   const walk = (el: Element) => {
     const cs = getComputedStyle(el);
-    if (cs.visibility === "hidden" || cs.display === "none" || cs.opacity === "0") return;
+    // Deliberately does NOT skip opacity:0 — that is how this component hides
+    // unauthored pieces, so honouring it here would make any re-measure find
+    // nothing, drop the piece from the mask, and flash the whole slide.
+    if (cs.visibility === "hidden" || cs.display === "none") return;
     const hasText = Array.from(el.childNodes).some(
       (n) => n.nodeType === 3 && (n.textContent ?? "").trim().length > 0,
     );
@@ -506,20 +509,27 @@ function Canvas({
   const boxes = measured.id === section.id ? measured.boxes : [];
   if (!slide) return null;
 
-  // The hero must not open on an empty canvas, so the first section starts
-  // with its headline already placed and authors everything after it.
-  const baseShown = first ? 1 : 0;
   const authorable = Math.min(boxes.length, section.intents.length);
-  const authorSteps = Math.max(0, authorable - baseShown);
-  const steps = authorSteps + (section.demo ? 1 : 0);
+  const steps = authorable + (section.demo ? 1 : 0);
+
+  /**
+   * The hero cannot open on a dead canvas — but the answer is NOT to place an
+   * element for free (that put the headline, the paragraph and three cards on
+   * screen without the cursor ever drawing them). Instead the first section
+   * opens part-way into its first cycle: at scroll 0 the cursor is already
+   * mid-drag on an empty canvas, which is the product working rather than a
+   * page waiting. The span is shortened to match, so the section still ends
+   * exactly on its last beat.
+   */
+  const headStart = first ? 0.55 : 0;
 
   // Before the first measurement lands there is nothing to choreograph —
   // show the finished slide rather than a half-built one.
   const ready = steps > 0;
   const LEAD = 0.05;
   const TAIL = 0.94;
-  const span = (TAIL - LEAD) / Math.max(1, steps);
-  const raw = (local - LEAD) / span;
+  const span = (TAIL - LEAD) / Math.max(0.5, steps - headStart);
+  const raw = (local - LEAD) / span + headStart;
   const stepIdx = Math.max(0, Math.min(steps - 1, Math.floor(raw)));
   const u = ready ? Math.max(0, Math.min(1, raw - stepIdx)) : 1;
 
@@ -530,7 +540,7 @@ function Canvas({
   const type = seg(u, 0.54, 0.74);
   const made = seg(u, 0.76, 0.98);
 
-  const onDemoStep = ready && stepIdx >= authorSteps && !!section.demo;
+  const onDemoStep = ready && stepIdx >= authorable && !!section.demo;
   const box: PieceBox | null = onDemoStep
     ? {
         left: parseFloat(section.demo!.box.left),
@@ -538,10 +548,10 @@ function Canvas({
         width: parseFloat(section.demo!.box.width),
         height: parseFloat(section.demo!.box.height),
       }
-    : (boxes[baseShown + stepIdx] ?? null);
+    : (boxes[stepIdx] ?? null);
   const intent = onDemoStep
     ? section.demo!.intent
-    : (section.intents[baseShown + stepIdx] ?? "");
+    : (section.intents[stepIdx] ?? "");
 
   // A piece lands as its own cycle assembles and stays for the rest of the
   // section — the slide accumulates rather than flickering.
@@ -550,7 +560,7 @@ function Canvas({
   // rather than a threshold plus a CSS transition. With a transition, a fast
   // scroll could leave the marquee's fade-out and the element's fade-in in
   // flight at the same time, so the element appeared inside its own marquee.
-  const current = baseShown + stepIdx;
+  const current = stepIdx;
   const reveal = Array.from({ length: authorable }, (_, i) => {
     if (!ready) return 1;
     if (i < current) return 1;
@@ -877,10 +887,17 @@ function SlideFrame({
   // an animation beats a plain declaration. No CSS transition: the caller
   // already drives these from scroll position, and adding one would reinstate
   // the in-flight overlap it was written to remove.
+  // Targets the wrapper's CHILDREN, not the wrapper. The engine emits each
+  // piece as a `display: contents` wrapper, which generates no box at all —
+  // so `opacity` on it is silently ignored by the renderer while
+  // getComputedStyle still reports the value we set. Every mask written to
+  // the wrapper read as applied and drew nothing. The children are real
+  // boxes, and inkBox only ever measures children, so this is exactly the
+  // set of nodes that carries the piece's ink.
   const hideCss = order
     .map(
       (childIdx, i) =>
-        `#${uid}>*>:nth-child(${childIdx + 1}){opacity:${reveal[i] ?? 1}!important}`,
+        `#${uid}>*>:nth-child(${childIdx + 1})>*{opacity:${reveal[i] ?? 1}!important}`,
     )
     .join("");
 
