@@ -48,11 +48,6 @@ process.env.RB_CAST_KEY = "test-key";
 process.env.RB_FIREWORKS_KEY = "fw-test-key";
 delete process.env.RB_CAST_BASE_URL;
 delete process.env.RB_CAST_MODEL;
-delete process.env.RB_FIREWORKS_KEY;
-// The DEFAULT model is the Fireworks GLM router (2026-07-23 flip); the Cerebras
-// wire mechanics below pin gpt-oss-120b explicitly so each test keeps exercising
-// the wire it was written for.
-const CEREBRAS_MODEL = "gpt-oss-120b";
 
 await check("unconfigured provider fails fast and loud; castConfigured is wire-aware", async () => {
   // Fireworks default → RB_FIREWORKS_KEY decides; RB_CAST_KEY alone must not
