@@ -161,11 +161,11 @@ not yet migrated (needs `DATABASE_URL`).
 
 Fill in [.env.example](../.env.example) → `.env.local`. Create these accounts; I wire them:
 
-- [x] **Clerk** app — Google + Email enabled; publishable + secret keys wired (`@clerk/nextjs@6`, middleware + ClerkProvider + header controls). Remaining: **production instance + domain**, and the **webhook signing secret** (`CLERK_WEBHOOK_SIGNING_SECRET` — the sync webhook itself is built and waiting).
+- [x] **Clerk** app — DONE INCLUDING PRODUCTION (2026-07-23): prod instance on renderball.com (5 CNAMEs verified, certs issued), custom Google OAuth credentials, user.* webhook live with signing secret in Railway; first production user signed up 2026-07-24T00:06Z through the full chain.
 - [x] **Postgres** — Neon connected; Prisma schema migrated (6 tables live), client singleton in `lib/db.ts`.
 - [ ] **Stripe** (test mode) — secret + webhook secret + Price id (`STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` / `STRIPE_PRICE_SUBSCRIPTION`); one Product at **$49.99/mo**. All code is live-on-config.
 - [ ] ~~AWS (Remotion Lambda)~~ — not needed for launch (container render decision).
-- [ ] **Cloudflare R2** (or S3) — bucket + API token (`STORAGE_*` env). All code is live-on-config; without it, renders/uploads fall back to container-local disk (lost on redeploy).
+- [x] **Cloudflare R2** — DONE (2026-07-23): prod bucket + token, all five `STORAGE_*` vars set in Railway.
 - [ ] **Resend** — API key + verified sending domain.
 - [ ] **Upstash Redis** — REST url + token.
 - [ ] **Sentry + PostHog** — DSN + project key.
