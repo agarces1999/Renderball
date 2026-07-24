@@ -165,6 +165,16 @@ consultation; needs real pointer plumbing + a state-seeding path.
   out, straight in when logged in. Signed-in visitors hitting / redirect to
   /new, not the gallery. Editor companies drop you in the tool.
 
+**Layout contract (founder review 2026-07-24, supersedes the outside
+voice's left-placed hero):** hero text is CENTERED in the upper region;
+the performance runs in a dedicated canvas band BELOW it (BAND const in
+LandingCanvas.tsx). Text and generations never overlap — the band edge is
+a hard line. The brand-extraction chip row renders as a status line under
+the band, not between text and canvas. Generated artifacts must be worth
+generating: the KPI tile carries a delta chip + sparkline, the chart has
+an axis, value and quarter labels, the title block is a real typographic
+lockup. Plain grey boxes are not proof of taste.
+
 **Scroll narrative (sticky stage, ~5 beats):**
 1. SEED — blank dot-grid canvas, orb pulsing; tagline stages itself; the
    second line generates inside a drawn marquee.
