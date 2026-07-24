@@ -31,7 +31,6 @@ export default async function LandingPage() {
     <div className="min-h-screen bg-canvas">
       <LandingHeader />
       <LandingCanvas />
-      <Claims />
       <Pricing />
       <Faq />
       <FooterCta />
@@ -75,43 +74,6 @@ function LandingHeader() {
   );
 }
 
-function Claims() {
-  const claims = [
-    {
-      n: "01",
-      title: "Draw a box. Say what lives in it.",
-      body: "Marquee any area of the canvas and describe what belongs there — a KPI tile, a chart, a pull-quote. A real element is generated inside exactly those bounds. The model writes the element; it never controls your box.",
-    },
-    {
-      n: "02",
-      title: "Paste a URL. It's already on-brand.",
-      body: "Renderball crawls the site, extracts the logo, palette, and fonts, and reads the design language. Every slide it generates is set in your brand before you touch anything.",
-    },
-    {
-      n: "03",
-      title: "Real elements. Never images.",
-      body: "Everything generated is a live, positioned element — draggable, resizable, retypable, exportable to crisp PDF at any scale. Not a screenshot of a design. The design.",
-    },
-  ];
-  return (
-    <section className="border-t border-hairline bg-surface">
-      <div className="mx-auto max-w-6xl px-6 py-20">
-        <div className="grid gap-10 md:grid-cols-3">
-          {claims.map((c) => (
-            <div key={c.n}>
-              <div className="mb-4 font-mono text-[12px] tracking-[0.14em] text-accent-text">
-                {c.n}
-              </div>
-              <h3 className="mb-2 text-[17px] font-semibold text-ink">{c.title}</h3>
-              <p className="text-[14.5px] leading-relaxed text-ink-soft">{c.body}</p>
-            </div>
-          ))}
-        </div>
-      </div>
-    </section>
-  );
-}
-
 function Pricing() {
   return (
     <section id="pricing" className="border-t border-hairline bg-surface">
@@ -147,8 +109,8 @@ function Pricing() {
             <ul className="mb-7 flex-1 space-y-2.5">
               {[
                 "Every edit free: drag, resize, retype, reorder, undo",
-                "Generation metered per token — $9.30 per 1M tokens",
-                "A full deck ≈ 330k tokens (about $3)",
+                "Pay as you go — priced per token, billed for generation only",
+                "A full deck runs about $3 of generation",
                 "On-brand from your URL, editable to the last element",
                 "Export to PDF and per-slide PNG",
                 "No subscription, no seats, no watermark",
@@ -194,7 +156,7 @@ function Faq() {
     },
     {
       q: "What does it cost?",
-      a: "Editing is free and unmetered. Generation is billed per token: your first 1,000,000 tokens are free (about three decks), then $9.30 per 1M tokens. A typical deck runs about $3 of generation.",
+      a: "Editing is free and unmetered. Generation is pay as you go, priced per token: your first 1,000,000 tokens are free (about three decks), and a typical deck runs about $3 of generation.",
     },
     {
       q: "What about video?",

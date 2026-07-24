@@ -5,17 +5,20 @@ import { useEffect, useRef, useState } from "react";
 
 /**
  * The landing hero IS a Renderball canvas performing (DESIGN.md "Landing —
- * the canvas performs"). v2 layout (founder review 2026-07-24): the hero text
- * is CENTERED in the upper region and the performance runs in a dedicated
- * canvas band BELOW it — text and generations never overlap. The generated
- * artifacts are real designed elements (KPI tile with delta chip + sparkline,
- * bar chart with axis + value labels, a typographic title block), because
- * they are the proof of taste, not set dressing.
+ * the canvas performs"). v3 (founder review 2026-07-24, round 2):
+ *
+ * THE EDITOR IS THE MAIN CHARACTER. A glass-orb cursor authors the whole
+ * page: it selects and deletes the category's prompt box, then for each
+ * generation it DRAGS the marquee open (the rectangle follows the cursor),
+ * TYPES the intent inside the drawn area — the real marquee-to-generate
+ * flow — and the element assembles in stages: the KPI number counts up, the
+ * sparkline draws itself, chart bars rise with their values, the title
+ * lockup reveals word by word. No URL chip, no URL instructions — the brand
+ * story lives in the receipt stamps and the FAQ, not the hero.
  *
  * All motion is a pure function of scroll progress (scrubs both ways). Demo
- * generations carry a mono `sandbox` label; the timeline stamps are the real
- * 4:37 flarebit build. Mobile + reduced-motion get the static composed story
- * (CSS-gated).
+ * generations carry a mono `sandbox` label; the receipt stamps are the real
+ * 4:37 build. Mobile + reduced-motion get the static composed story.
  */
 
 const seg = (p: number, a: number, b: number): number =>
@@ -24,27 +27,47 @@ const seg = (p: number, a: number, b: number): number =>
 const typed = (text: string, t: number): string =>
   text.slice(0, Math.round(Math.max(0, Math.min(1, t)) * text.length));
 
+const lerp = (a: number, b: number, t: number): number => a + (b - a) * t;
+
+/** Shared ease-in-out — the cursor's travel AND the marquee growth use the
+ *  same curve, so the rectangle's corner stays glued to the orb mid-drag. */
+const ease = (t: number): number =>
+  t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+
+/** Beat windows (5 beats — the URL/brand beat was cut by founder call). */
 const T = {
-  funeral: [0.0, 0.12],
-  draw: [0.12, 0.34],
-  brand: [0.34, 0.52],
-  real: [0.52, 0.68],
-  deck: [0.68, 0.85],
-  door: [0.85, 1.0],
+  funeral: [0.0, 0.1],
+  draw: [0.1, 0.46],
+  real: [0.46, 0.64],
+  deck: [0.64, 0.83],
+  door: [0.83, 1.0],
 } as const;
 
 const CAPTIONS = [
-  { n: "00", text: "The category ships a text box. We don't.", from: 0.0, to: 0.12 },
-  { n: "01", text: "Draw a box. Say what lives in it. It exists.", from: 0.12, to: 0.34 },
-  { n: "02", text: "Paste a URL. It reads the brand like a designer.", from: 0.34, to: 0.52 },
-  { n: "03", text: "Real elements. Not a screenshot of a design.", from: 0.52, to: 0.68 },
-  { n: "04", text: "A full deck from one URL. Watched, not promised.", from: 0.68, to: 0.85 },
-  { n: "05", text: "Editing is free. You only pay when it creates.", from: 0.85, to: 1.0 },
+  { n: "00", text: "The category ships a text box. We don't.", from: 0.0, to: 0.1 },
+  { n: "01", text: "Draw a box. Type what lives in it. It exists.", from: 0.1, to: 0.46 },
+  { n: "02", text: "Real elements. Not a screenshot of a design.", from: 0.46, to: 0.64 },
+  { n: "03", text: "A full deck, watched — not promised.", from: 0.64, to: 0.83 },
+  { n: "04", text: "Editing is free. You only pay when it creates.", from: 0.83, to: 1.0 },
 ] as const;
 
-/** The performance band's top edge (px from stage top) — hero text lives
- *  above this line, generations below it. The no-overlap contract. */
+/** Hero text lives above this line; the performance below. Hard contract. */
 const BAND = 500;
+
+/** The three marquee slots (bigger, per founder review). */
+const SLOTS = {
+  kpi: { x: 56, y: BAND + 8, w: 384, h: 248 },
+  title: { x: 486, y: BAND + 26, w: 300, h: 212 },
+  chart: { x: 832, y: BAND + 2, w: 300, h: 266 },
+} as const;
+
+/** Per-artifact windows on the master progress: cursor drags the marquee
+ *  open, the intent types INSIDE the box, then the element assembles. */
+const W = {
+  kpi: { drag: [0.105, 0.145], type: [0.15, 0.19], build: [0.195, 0.26] },
+  title: { drag: [0.225, 0.26], type: [0.265, 0.3], build: [0.305, 0.36] },
+  chart: { drag: [0.325, 0.36], type: [0.365, 0.4], build: [0.405, 0.455] },
+} as const;
 
 export function LandingCanvas() {
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -86,14 +109,15 @@ export function LandingCanvas() {
       <div
         ref={wrapRef}
         className="relative hidden lg:motion-safe:block"
-        style={{ height: "560vh" }}
+        style={{ height: "620vh" }}
         aria-hidden
       >
         <div className="sticky top-0 h-screen overflow-hidden">
           <DotGrid />
           <div className="relative mx-auto h-full max-w-[1180px] px-6">
-            <HeroBlock doorT={seg(p, T.door[0], 0.89)} />
+            <HeroBlock doorT={seg(p, T.door[0], 0.87)} />
             <Stage p={p} />
+            <Cursor p={p} />
             <CaptionRail p={p} />
             <div className="absolute bottom-5 right-6 font-mono text-[11px] tabular-nums text-faint">
               {String(Math.floor(clock / 60)).padStart(2, "0")}:
@@ -127,7 +151,7 @@ function DotGrid() {
   );
 }
 
-/** Centered hero (founder call: text centered, generations never touch it). */
+/** Centered hero. Editor-first copy — no URL instructions (founder call). */
 function HeroBlock({ doorT }: { doorT: number }) {
   return (
     <div
@@ -153,10 +177,10 @@ function HeroBlock({ doorT }: { doorT: number }) {
           </span>
         </span>
       </h1>
-      <p className="mx-auto mt-7 max-w-[52ch] text-[15px] leading-relaxed text-ink-soft">
-        Paste a URL and a sentence; get a fully editable, on-brand deck in
-        about five minutes. Then draw a box anywhere and say what belongs
-        inside it. It appears. Real elements — never images.
+      <p className="mx-auto mt-7 max-w-[54ch] text-[15px] leading-relaxed text-ink-soft">
+        An editor where you draw a box, type what belongs inside it, and a
+        real element appears — on your brand, editable to the last pixel,
+        never an image.
       </p>
       <div className="mt-5 flex items-center justify-center gap-4">
         <Link
@@ -197,6 +221,72 @@ function Handles() {
   );
 }
 
+/* ─── the authoring cursor ───────────────────────────────────────────── */
+
+/** Waypoints: [progress, x, y]. The orb-cursor authors the whole page —
+ *  it deletes the prompt box, drags every marquee open (the rectangles
+ *  follow it), sits at the typing spot, drags the KPI card, sweeps the
+ *  deck rail, and draws the final door marquee. */
+const PATH: [number, number, number][] = [
+  [0.015, 566, BAND + 160],
+  [0.035, 700, BAND + 78],
+  [0.075, 700, BAND + 78],
+  [0.105, SLOTS.kpi.x, SLOTS.kpi.y],
+  [0.145, SLOTS.kpi.x + SLOTS.kpi.w, SLOTS.kpi.y + SLOTS.kpi.h],
+  [0.155, SLOTS.kpi.x + 18, SLOTS.kpi.y + 66],
+  [0.19, SLOTS.kpi.x + 18, SLOTS.kpi.y + 66],
+  [0.225, SLOTS.title.x, SLOTS.title.y],
+  [0.26, SLOTS.title.x + SLOTS.title.w, SLOTS.title.y + SLOTS.title.h],
+  [0.27, SLOTS.title.x + 18, SLOTS.title.y + 70],
+  [0.3, SLOTS.title.x + 18, SLOTS.title.y + 70],
+  [0.325, SLOTS.chart.x, SLOTS.chart.y],
+  [0.36, SLOTS.chart.x + SLOTS.chart.w, SLOTS.chart.y + SLOTS.chart.h],
+  [0.37, SLOTS.chart.x + 18, SLOTS.chart.y + 66],
+  [0.4, SLOTS.chart.x + 18, SLOTS.chart.y + 66],
+  [0.48, SLOTS.kpi.x + 190, SLOTS.kpi.y + 120],
+  [0.5, SLOTS.kpi.x + 190, SLOTS.kpi.y + 120],
+  [0.56, SLOTS.kpi.x + 234, SLOTS.kpi.y + 120],
+  [0.6, SLOTS.kpi.x + 130, SLOTS.kpi.y + 172],
+  [0.66, 220, BAND + 60],
+  [0.8, 950, BAND + 60],
+  [0.86, 566, 330],
+  [0.9, 400, 372],
+  [0.94, 780, 500],
+];
+
+function Cursor({ p }: { p: number }) {
+  if (p < 0.015 || p > 0.955) return null;
+  let x = PATH[0][1];
+  let y = PATH[0][2];
+  for (let i = 0; i < PATH.length - 1; i++) {
+    const [pa, xa, ya] = PATH[i];
+    const [pb, xb, yb] = PATH[i + 1];
+    if (p >= pa && p <= pb) {
+      const t = seg(p, pa, pb);
+      // ease-in-out per leg so travel reads as intent, not interpolation
+      const e = ease(t);
+      x = lerp(xa, xb, e);
+      y = lerp(ya, yb, e);
+      break;
+    }
+    if (p > pb) {
+      x = xb;
+      y = yb;
+    }
+  }
+  const fade = p > 0.94 ? 1 - seg(p, 0.94, 0.955) : 1;
+  return (
+    <div
+      className="pointer-events-none absolute z-30"
+      style={{ left: x - 9, top: y - 9, opacity: fade }}
+      aria-hidden
+    >
+      <span className="orb block h-[18px] w-[18px]" />
+      <span className="absolute -inset-1.5 rounded-full border border-accent-line opacity-40" />
+    </div>
+  );
+}
+
 /* ─── beats ──────────────────────────────────────────────────────────── */
 
 function Stage({ p }: { p: number }) {
@@ -204,24 +294,23 @@ function Stage({ p }: { p: number }) {
     <div className="absolute inset-0">
       <Funeral p={p} />
       <DrawBeat p={p} />
-      <BrandBeat p={p} />
       <DeckBeat p={p} />
       <DoorBeat p={p} />
     </div>
   );
 }
 
-/** Beat 00 — the prompt-box funeral, centered in the performance band. */
+/** Beat 00 — the prompt-box funeral. The cursor arrives, selects, deletes. */
 function Funeral({ p }: { p: number }) {
   const t = seg(p, T.funeral[0], T.funeral[1]);
   if (p > T.funeral[1] + 0.04) return null;
   const selected = t > 0.35;
-  const dissolving = t > 0.7;
+  const dissolving = t > 0.75;
   return (
     <div
       className="absolute left-1/2 w-[440px] -translate-x-1/2 transition-all duration-500"
       style={{
-        top: BAND + 60,
+        top: BAND + 52,
         opacity: dissolving ? 0 : 1,
         transform: `translateX(-50%) scale(${dissolving ? 0.92 : 1})`,
         filter: dissolving ? "blur(6px)" : "none",
@@ -246,48 +335,55 @@ function Funeral({ p }: { p: number }) {
   );
 }
 
+/** A marquee the CURSOR drags open; then the intent types INSIDE it; then
+ *  the content assembles. drawT is synced to the cursor's drag leg. */
 function Marquee({
-  x,
-  y,
-  w,
-  h,
+  slot,
   drawT,
+  typeT,
+  buildT,
+  intent,
   children,
-  contentT,
-  label,
 }: {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
+  slot: { x: number; y: number; w: number; h: number };
   drawT: number;
-  contentT: number;
-  label?: string;
+  typeT: number;
+  buildT: number;
+  intent: string;
   children: React.ReactNode;
 }) {
   if (drawT <= 0) return null;
+  const typing = drawT >= 1 && buildT < 0.12;
   return (
-    <div className="absolute" style={{ left: x, top: y, width: w, height: h }}>
+    <div
+      className="absolute"
+      style={{ left: slot.x, top: slot.y, width: slot.w, height: slot.h }}
+    >
       <div
-        className="absolute left-0 top-0 rounded-[3px] border border-dashed border-accent-line transition-opacity duration-300"
+        className="absolute left-0 top-0 rounded-[4px] border-[1.5px] border-dashed border-accent-line bg-accent-soft/30 transition-opacity duration-300"
         style={{
-          width: Math.max(18, drawT * w),
-          height: Math.max(18, drawT * h),
-          opacity: contentT >= 1 ? 0 : 1,
+          width: Math.max(20, ease(drawT) * slot.w),
+          height: Math.max(20, ease(drawT) * slot.h),
+          opacity: buildT >= 0.3 ? 0 : 1,
         }}
         aria-hidden
       />
-      {label && contentT < 1 && drawT >= 1 && (
-        <p className="absolute -top-6 left-0 whitespace-nowrap font-mono text-[11px] text-accent-text">
-          {label}
+      {typing && (
+        <p className="absolute left-6 top-8 z-10 font-mono text-[13px] text-accent-text">
+          {typed(intent, typeT)}
+          {typeT < 1 && (
+            <span className="ml-0.5 inline-block h-[14px] w-[1.5px] animate-pulse bg-accent-text align-middle" />
+          )}
+          {typeT >= 1 && (
+            <span className="ml-2 rounded-sm bg-accent px-1.5 py-0.5 font-mono text-[10px] font-semibold text-accent-ink">
+              ⏎ generate
+            </span>
+          )}
         </p>
       )}
       <div
-        className="absolute inset-0 transition-all duration-500 ease-out"
-        style={{
-          opacity: contentT > 0.15 ? 1 : 0,
-          transform: contentT > 0.15 ? "translateY(0)" : "translateY(8px)",
-        }}
+        className="absolute inset-0 transition-opacity duration-300"
+        style={{ opacity: buildT > 0 ? 1 : 0 }}
       >
         {children}
       </div>
@@ -295,57 +391,131 @@ function Marquee({
   );
 }
 
-/** The three generated artifacts — designed to be worth generating. */
+/** The three artifacts — each ASSEMBLES in stages under buildT. */
 
-function KpiTile({ demo, wide, caret }: { demo: string; wide: number; caret: string | null }) {
+function KpiTile({
+  b,
+  dx,
+  grow,
+  caret,
+  selected,
+}: {
+  b: number;
+  dx: number;
+  grow: number;
+  caret: string | null;
+  selected: boolean;
+}) {
+  if (b <= 0) return null;
+  const frame = seg(b, 0, 0.15);
+  const eyebrow = typed("PIPELINE", seg(b, 0.08, 0.22));
+  const num = (3.2 * seg(b, 0.2, 0.5)).toFixed(1);
+  const sparkT = seg(b, 0.5, 0.85);
+  const chip = seg(b, 0.85, 1);
   const spark = [12, 16, 14, 20, 24, 22, 30, 34];
   const max = Math.max(...spark);
   const pts = spark
-    .map((v, i) => `${(i / (spark.length - 1)) * 96 + 2},${34 - (v / max) * 30}`)
+    .map((v, i) => `${(i / (spark.length - 1)) * 96 + 2},${40 - (v / max) * 34}`)
     .join(" ");
   return (
     <div
-      className="relative h-full rounded-lg border border-hairline bg-surface p-5 shadow-[0_16px_40px_-24px_rgba(18,26,43,0.35)] transition-all duration-500"
-      style={{ width: 320 + wide }}
+      className="relative transition-transform duration-500"
+      style={{ transform: `translateX(${dx}px)` }}
     >
-      <div className="flex items-center justify-between">
-        <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-muted">
-          Pipeline
-        </p>
-        <span
-          className="rounded-full px-2 py-0.5 font-mono text-[10px]"
-          style={{ color: demo, backgroundColor: "rgba(18,26,43,0.05)" }}
-        >
-          +18% QoQ
-        </span>
-      </div>
-      <p
-        className="mt-2 font-display text-[52px] font-bold leading-none tracking-tight transition-colors duration-500"
-        style={{ color: demo }}
+      {selected && (
+        <div className="absolute -inset-px z-10 rounded-lg border border-accent-line" aria-hidden>
+          <Handles />
+        </div>
+      )}
+      <div
+        className="relative h-[248px] rounded-lg border border-hairline bg-surface p-6 shadow-[0_20px_50px_-28px_rgba(18,26,43,0.4)] transition-all duration-500"
+        style={{
+          width: 384 + grow,
+          opacity: frame,
+          transform: `translateY(${(1 - frame) * 10}px)`,
+        }}
       >
-        3.2×
-      </p>
-      <p className="mt-1.5 text-[13px] text-ink-soft">
-        {caret !== null ? caret : "faster close"}
-        {caret !== null && caret.length < 20 && (
-          <span className="ml-0.5 inline-block h-[13px] w-[1.5px] animate-pulse bg-ink align-middle" />
-        )}
-      </p>
-      <svg viewBox="0 0 100 36" className="mt-3 h-9 w-full" aria-hidden>
-        <polyline
-          points={pts}
-          fill="none"
-          stroke={demo}
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-      </svg>
+        <div className="flex items-center justify-between">
+          <p className="font-mono text-[10.5px] uppercase tracking-[0.16em] text-muted">
+            {eyebrow}
+            {eyebrow.length > 0 && eyebrow.length < 8 && (
+              <span className="ml-0.5 inline-block h-[11px] w-[1.5px] animate-pulse bg-muted align-middle" />
+            )}
+          </p>
+          <span
+            className="rounded-full bg-accent-soft px-2.5 py-0.5 font-mono text-[10.5px] text-accent-text transition-all duration-300"
+            style={{ opacity: chip, transform: `scale(${0.8 + chip * 0.2})` }}
+          >
+            +18% QoQ
+          </span>
+        </div>
+        <p className="mt-3 font-display text-[68px] font-bold leading-none tracking-tight text-accent-text tabular-nums">
+          {num}×
+        </p>
+        <p
+          className="mt-2 text-[13.5px] text-ink-soft"
+          style={{ opacity: seg(b, 0.45, 0.6) }}
+        >
+          {caret !== null ? caret : "faster close"}
+          {caret !== null && caret.length < 20 && (
+            <span className="ml-0.5 inline-block h-[13px] w-[1.5px] animate-pulse bg-ink align-middle" />
+          )}
+        </p>
+        <svg viewBox="0 0 100 42" className="mt-4 h-11 w-full overflow-visible" aria-hidden>
+          <polyline
+            points={pts}
+            fill="none"
+            stroke="#047857"
+            strokeWidth="2.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            pathLength={1}
+            strokeDasharray="1"
+            strokeDashoffset={1 - sparkT}
+          />
+          {sparkT >= 1 && <circle cx="98" cy="6" r="3" fill="#047857" />}
+        </svg>
+      </div>
     </div>
   );
 }
 
-function BarChart({ demo, lift }: { demo: string; lift: boolean }) {
+function TitleBlock({ b }: { b: number }) {
+  if (b <= 0) return null;
+  const frame = seg(b, 0, 0.15);
+  const words = ["Revenue,", "up", "and", "to", "the", "right."];
+  const shown = Math.round(seg(b, 0.15, 0.6) * words.length);
+  const rule = seg(b, 0.6, 0.8);
+  const meta = seg(b, 0.8, 1);
+  return (
+    <div
+      className="flex h-[212px] flex-col justify-center rounded-lg border border-hairline bg-surface p-6 shadow-[0_20px_50px_-28px_rgba(18,26,43,0.4)] transition-all duration-500"
+      style={{ opacity: frame, transform: `translateY(${(1 - frame) * 10}px)` }}
+    >
+      <p className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-muted">
+        {typed("Q3 REVIEW", seg(b, 0.05, 0.18))}
+      </p>
+      <p className="mt-2.5 min-h-[68px] font-display text-[27px] font-bold leading-[1.12] tracking-tight text-ink">
+        {words.slice(0, shown).map((w, i) => (
+          <span key={i} className="mr-[7px] inline-block">
+            {w}
+          </span>
+        ))}
+      </p>
+      <div
+        className="mt-3 h-[3px] rounded-full bg-accent"
+        style={{ width: `${rule * 56}px`, opacity: rule > 0 ? 1 : 0 }}
+      />
+      <p className="mt-3 font-mono text-[10.5px] text-faint" style={{ opacity: meta }}>
+        12 slides · exported to PDF
+      </p>
+    </div>
+  );
+}
+
+function BarChart({ b, lift }: { b: number; lift: boolean }) {
+  if (b <= 0) return null;
+  const frame = seg(b, 0, 0.12);
   const data = [
     ["Q1", 42],
     ["Q2", 58],
@@ -355,36 +525,46 @@ function BarChart({ demo, lift }: { demo: string; lift: boolean }) {
     ["Q6", 94],
   ] as const;
   return (
-    <div className="flex h-full flex-col rounded-lg border border-hairline bg-surface p-4 shadow-[0_16px_40px_-24px_rgba(18,26,43,0.35)]">
-      <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-muted">
-        Closed-won · six quarters
+    <div
+      className="flex h-[266px] flex-col rounded-lg border border-hairline bg-surface p-5 shadow-[0_20px_50px_-28px_rgba(18,26,43,0.4)] transition-all duration-500"
+      style={{ opacity: frame, transform: `translateY(${(1 - frame) * 10}px)` }}
+    >
+      <p className="font-mono text-[10.5px] uppercase tracking-[0.16em] text-muted">
+        {typed("CLOSED-WON · SIX QUARTERS", seg(b, 0.05, 0.2))}
       </p>
-      <div className="mt-3 flex flex-1 items-end gap-2.5 border-b border-hairline pb-0.5">
+      <div className="mt-3 flex flex-1 items-end gap-3 border-b border-hairline pb-0.5">
         {data.map(([q, v], i) => {
+          const barT = seg(b, 0.18 + i * 0.11, 0.32 + i * 0.11);
           const last = i === data.length - 1;
-          const h = lift && last ? Math.min(100, v * 1.1) : v;
+          const target = lift && last ? Math.min(100, v * 1.1) : v;
+          const h = target * barT;
           return (
-            <div key={q} className="flex h-full flex-1 flex-col items-center justify-end gap-1">
+            <div key={q} className="flex h-full flex-1 flex-col items-center justify-end gap-1.5">
               <span
-                className="font-mono text-[9px] tabular-nums"
-                style={{ color: last ? demo : "var(--muted, #69707E)" }}
+                className="font-mono text-[10px] tabular-nums transition-opacity"
+                style={{
+                  color: last ? "#047857" : "#69707E",
+                  opacity: barT > 0.6 ? 1 : 0,
+                }}
               >
-                {Math.round(h)}
+                {Math.round(target * Math.min(1, barT * 1.2))}
               </span>
               <div
-                className="w-full rounded-[3px] transition-all duration-700"
+                className="w-full rounded-[3px]"
                 style={{
-                  height: `${h * 0.72}%`,
-                  backgroundColor: last ? demo : "#E1E5EB",
+                  height: `${h * 0.66}%`,
+                  backgroundColor: last ? "#047857" : "#E1E5EB",
+                  boxShadow:
+                    last && barT >= 1 ? "0 8px 24px -8px rgba(4,120,87,0.5)" : "none",
                 }}
               />
             </div>
           );
         })}
       </div>
-      <div className="mt-1 flex gap-2.5">
+      <div className="mt-1.5 flex gap-3">
         {data.map(([q]) => (
-          <span key={q} className="flex-1 text-center font-mono text-[9px] text-faint">
+          <span key={q} className="flex-1 text-center font-mono text-[9.5px] text-faint">
             {q}
           </span>
         ))}
@@ -393,102 +573,72 @@ function BarChart({ demo, lift }: { demo: string; lift: boolean }) {
   );
 }
 
-function TitleBlock({ demo }: { demo: string }) {
-  return (
-    <div className="flex h-full flex-col justify-center rounded-lg border border-hairline bg-surface p-5 shadow-[0_16px_40px_-24px_rgba(18,26,43,0.35)]">
-      <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted">
-        Q3 review
-      </p>
-      <p className="mt-2 font-display text-[24px] font-bold leading-[1.1] tracking-tight text-ink">
-        Revenue, up and
-        <br />
-        to the right.
-      </p>
-      <div className="mt-3 h-[3px] w-12 rounded-full transition-colors duration-500" style={{ backgroundColor: demo }} />
-      <p className="mt-3 font-mono text-[10px] text-faint">12 slides · exported to PDF</p>
-    </div>
-  );
-}
-
-/** Beats 01–03 — three staggered generations, then brand retint, then the
- *  real-elements manipulation. All inside the performance band. */
+/** Beats 01 + 02 — three cursor-drawn generations, then real manipulation. */
 function DrawBeat({ p }: { p: number }) {
-  const draw = seg(p, T.draw[0], T.draw[1]);
-  const brand = seg(p, T.brand[0], T.brand[1]);
-  const real = seg(p, T.real[0], T.real[1]);
   const deck = seg(p, T.deck[0], T.deck[1]);
+  const real = seg(p, T.real[0], T.real[1]);
   if (p >= T.deck[0] + 0.06) return null;
 
-  const demo = brand > 0.55 ? "#8A5A33" : "#047857";
-  const dx = real > 0.25 ? 40 : 0;
-  const grow = real > 0.5 ? 36 : 0;
+  const dx = real > 0.3 ? 44 : 0;
+  const grow = real > 0.55 ? 40 : 0;
   const caret =
-    real > 0.6 ? typed("Pipeline velocity, Q3", seg(real, 0.6, 0.9)) : null;
+    real > 0.72 ? typed("Pipeline velocity, Q3", seg(real, 0.72, 0.95)) : null;
 
   return (
     <div
       className="transition-all duration-700 ease-in-out"
       style={{
         opacity: deck > 0 ? 0 : 1,
-        transform: deck > 0 ? "scale(0.9)" : "scale(1)",
+        transform: deck > 0 ? "scale(0.92)" : "scale(1)",
       }}
     >
-      {/* 1 — KPI tile, left slot */}
       <Marquee
-        x={92}
-        y={BAND + 24}
-        w={320}
-        h={210}
-        drawT={seg(draw, 0.02, 0.24)}
-        contentT={seg(draw, 0.26, 0.4)}
-        label={typed("a KPI tile — 3.2× faster close", seg(draw, 0.2, 0.28))}
+        slot={SLOTS.kpi}
+        drawT={seg(p, W.kpi.drag[0], W.kpi.drag[1])}
+        typeT={seg(p, W.kpi.type[0], W.kpi.type[1])}
+        buildT={seg(p, W.kpi.build[0], W.kpi.build[1])}
+        intent="a KPI tile — 3.2× faster close"
       >
-        <div
-          className="relative h-full transition-transform duration-500"
-          style={{ transform: `translateX(${dx}px)` }}
-        >
-          {real > 0.1 && (
-            <div className="absolute -inset-px z-10 rounded-lg border border-accent-line" aria-hidden>
-              <Handles />
-            </div>
-          )}
-          <KpiTile demo={demo} wide={grow} caret={caret} />
-          {real > 0.2 && (
-            <p className="absolute -bottom-6 left-0 font-mono text-[10px] tabular-nums text-faint">
-              x {92 + dx} · y {BAND + 24} · w {320 + grow}
-            </p>
-          )}
-        </div>
+        <KpiTile
+          b={seg(p, W.kpi.build[0], W.kpi.build[1])}
+          dx={dx}
+          grow={grow}
+          caret={caret}
+          selected={real > 0.12}
+        />
+        {real > 0.25 && (
+          <p className="absolute -bottom-6 left-0 font-mono text-[10px] tabular-nums text-faint">
+            x {SLOTS.kpi.x + dx} · y {SLOTS.kpi.y} · w {SLOTS.kpi.w + grow}
+          </p>
+        )}
       </Marquee>
 
-      {/* 2 — title block, center slot */}
       <Marquee
-        x={470}
-        y={BAND + 44}
-        w={250}
-        h={180}
-        drawT={seg(draw, 0.34, 0.52)}
-        contentT={seg(draw, 0.54, 0.66)}
-        label={typed("a title block — Q3 review", seg(draw, 0.48, 0.56))}
+        slot={SLOTS.title}
+        drawT={seg(p, W.title.drag[0], W.title.drag[1])}
+        typeT={seg(p, W.title.type[0], W.title.type[1])}
+        buildT={seg(p, W.title.build[0], W.title.build[1])}
+        intent="a title block — Q3 review"
       >
-        <TitleBlock demo={demo} />
+        <TitleBlock b={seg(p, W.title.build[0], W.title.build[1])} />
       </Marquee>
 
-      {/* 3 — bar chart, right slot */}
       <Marquee
-        x={778}
-        y={BAND + 12}
-        w={310}
-        h={240}
-        drawT={seg(draw, 0.6, 0.8)}
-        contentT={seg(draw, 0.82, 0.95)}
-        label={typed("a bar chart — six quarters", seg(draw, 0.74, 0.82))}
+        slot={SLOTS.chart}
+        drawT={seg(p, W.chart.drag[0], W.chart.drag[1])}
+        typeT={seg(p, W.chart.type[0], W.chart.type[1])}
+        buildT={seg(p, W.chart.build[0], W.chart.build[1])}
+        intent="a bar chart — six quarters"
       >
-        <BarChart demo={demo} lift={real > 0.35} />
+        <BarChart b={seg(p, W.chart.build[0], W.chart.build[1])} lift={real > 0.4} />
       </Marquee>
       <p
         className="absolute font-mono text-[10px] tracking-[0.1em] text-faint transition-opacity duration-300"
-        style={{ left: 778, top: BAND + 262, opacity: draw >= 1 ? 1 : 0 }}
+        style={{
+          left: SLOTS.chart.x,
+          top: SLOTS.chart.y + SLOTS.chart.h + 10,
+          opacity: p > W.chart.build[1] ? 1 : 0,
+        }}
       >
         sandbox
       </p>
@@ -496,58 +646,12 @@ function DrawBeat({ p }: { p: number }) {
   );
 }
 
-/** Beat 02 — the URL chip + extraction, centered above the band. */
-function BrandBeat({ p }: { p: number }) {
-  const t = seg(p, T.brand[0], T.brand[1]);
-  if (t <= 0 || p >= T.deck[0] + 0.02) return null;
-  const swatches = ["#8A5A33", "#E8D9C3", "#2A1E14"];
-  return (
-    <div
-      className="absolute left-1/2 -translate-x-1/2 transition-all duration-500"
-      style={{
-        top: BAND + 272,
-        opacity: t > 0.05 && p < T.real[1] ? 1 : 0,
-        transform: `translateX(-50%) translateY(${t > 0.05 ? 0 : -10}px)`,
-      }}
-    >
-      <div className="flex items-center gap-2.5">
-        <span className="rounded-full border border-hairline-strong bg-surface px-3.5 py-1.5 font-mono text-[12px] text-ink">
-          loop.coffee
-        </span>
-        <span
-          className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted transition-opacity duration-300"
-          style={{ opacity: t > 0.3 ? 1 : 0 }}
-        >
-          brand extracted →
-        </span>
-        {swatches.map((c, i) => (
-          <span
-            key={c}
-            className="inline-block h-5 w-5 rounded-[4px] border border-hairline transition-all duration-500"
-            style={{
-              background: c,
-              opacity: t > 0.35 + i * 0.08 ? 1 : 0,
-              transform: t > 0.35 + i * 0.08 ? "translateX(0)" : "translateX(-8px)",
-            }}
-          />
-        ))}
-        <span
-          className="rounded-[4px] border border-hairline bg-surface px-2 py-0.5 font-mono text-[10px] text-ink-soft transition-opacity duration-500"
-          style={{ opacity: t > 0.62 ? 1 : 0 }}
-        >
-          Fraunces · 700
-        </span>
-      </div>
-    </div>
-  );
-}
-
-/** Beat 04 — the deck rail + the real 4:37 receipt, centered in the band. */
+/** Beat 03 — the deck rail + the real 4:37 receipt. */
 function DeckBeat({ p }: { p: number }) {
   const t = seg(p, T.deck[0], T.deck[1]);
   if (t <= 0 || p > T.door[0] + 0.05) return null;
   const stamps = [
-    "0:00 url pasted",
+    "0:00 session start",
     "0:41 brand extracted",
     "1:58 outline approved",
     "4:37 deck exported",
@@ -599,10 +703,10 @@ function DeckBeat({ p }: { p: number }) {
   };
   return (
     <div
-      className="absolute left-1/2 w-[760px] -translate-x-1/2 transition-opacity duration-500"
-      style={{ top: BAND + 20, opacity: p > T.door[0] ? 0 : 1 }}
+      className="absolute left-1/2 w-[820px] -translate-x-1/2 transition-opacity duration-500"
+      style={{ top: BAND + 16, opacity: p > T.door[0] ? 0 : 1 }}
     >
-      <div className="flex gap-3.5">
+      <div className="flex gap-4">
         {[0, 1, 2, 3, 4].map((i) => {
           const on = t > 0.12 + i * 0.14;
           return (
@@ -630,13 +734,13 @@ function DeckBeat({ p }: { p: number }) {
         className="mt-1 text-center font-mono text-[10px] tracking-[0.1em] text-faint transition-opacity"
         style={{ opacity: t > 0.9 ? 1 : 0 }}
       >
-        real session — flarebit.ai, 5 slides, 2026-07-23
+        real session — 5 slides, 2026-07-23
       </p>
     </div>
   );
 }
 
-/** Beat 05 — the meter ledger + the final marquee that generates the CTA. */
+/** Beat 04 — the meter receipt, then the cursor draws the door. */
 function DoorBeat({ p }: { p: number }) {
   const t = seg(p, T.door[0], T.door[1]);
   if (t <= 0) return null;
@@ -650,6 +754,7 @@ function DoorBeat({ p }: { p: number }) {
     ["first 1,000,000 tokens", "free", true],
   ];
   const shown = Math.round(seg(t, 0.3, 0.55) * rows.length);
+  const doorDraw = seg(t, 0.42, 0.66);
   return (
     <div className="absolute left-1/2 top-[10vh] w-[520px] -translate-x-1/2">
       <div className="rounded-lg border border-hairline bg-surface p-5 shadow-[0_16px_40px_-24px_rgba(18,26,43,0.35)]">
@@ -668,11 +773,11 @@ function DoorBeat({ p }: { p: number }) {
 
       <div className="relative mx-auto mt-10 h-[128px] w-[380px]">
         <div
-          className="absolute left-0 top-0 rounded-[3px] border border-dashed border-accent-line"
+          className="absolute left-0 top-0 rounded-[3px] border-[1.5px] border-dashed border-accent-line"
           style={{
-            width: `${Math.max(6, seg(t, 0.6, 0.76) * 100)}%`,
-            height: `${Math.max(14, seg(t, 0.6, 0.76) * 100)}%`,
-            opacity: seg(t, 0.6, 0.76) <= 0 ? 0 : seg(t, 0.6, 0.76) >= 1 ? 0.55 : 1,
+            width: `${Math.max(6, doorDraw * 100)}%`,
+            height: `${Math.max(14, doorDraw * 100)}%`,
+            opacity: doorDraw <= 0 ? 0 : doorDraw >= 1 ? 0.55 : 1,
           }}
           aria-hidden
         />
@@ -740,9 +845,9 @@ function StaticStory() {
         </span>
       </h1>
       <p className="mx-auto mt-6 max-w-[48ch] text-[15.5px] leading-relaxed text-ink-soft">
-        Paste a URL and a sentence; get a fully editable, on-brand deck in
-        about five minutes. Then draw a box anywhere and say what belongs
-        inside it. It appears. Real elements — never images.
+        An editor where you draw a box, type what belongs inside it, and a
+        real element appears — on your brand, editable to the last pixel,
+        never an image.
       </p>
       <div className="mt-7 flex flex-wrap items-center justify-center gap-4">
         <Link
@@ -756,15 +861,18 @@ function StaticStory() {
         </span>
       </div>
 
-      <div className="relative mx-auto mt-14 max-w-[380px] overflow-hidden rounded-lg border border-hairline bg-canvas p-5 text-left">
-        <div className="relative rounded-md border border-dashed border-accent-line p-3">
-          <KpiTile demo="#047857" wide={0} caret={null} />
-          <p className="absolute -top-2.5 left-3 bg-canvas px-1.5 font-mono text-[10px] text-accent-text">
-            a KPI tile — 3.2× faster close
-          </p>
+      <div className="relative mx-auto mt-14 max-w-[440px] overflow-hidden rounded-lg border border-hairline bg-canvas p-5 text-left">
+        <p className="mb-2 font-mono text-[12px] text-accent-text">
+          a KPI tile — 3.2× faster close
+          <span className="ml-2 rounded-sm bg-accent px-1.5 py-0.5 font-mono text-[10px] font-semibold text-accent-ink">
+            ⏎ generate
+          </span>
+        </p>
+        <div className="rounded-md border-[1.5px] border-dashed border-accent-line p-3">
+          <KpiTile b={1} dx={0} grow={-40} caret={null} selected={false} />
         </div>
         <p className="mt-3 font-mono text-[10px] tracking-[0.1em] text-faint">
-          drawn as a box · generated as a real element · sandbox
+          drawn as a box · typed inside it · generated as a real element · sandbox
         </p>
       </div>
 
