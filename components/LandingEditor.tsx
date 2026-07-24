@@ -93,28 +93,12 @@ type Section = {
 
 const SECTIONS: Section[] = [
   {
-    id: "problem",
-    label: "The box",
-    headline: "Design should not be prompted. It should be drawn.",
-    body: "The category ships a text box: you type a paragraph, you get a flattened picture, and you start over every time. Renderball gives you a canvas instead.",
-    deck: 0,
-    slide: 0,
-    intents: ["the headline", "a prompt box, greyed out"],
-    demo: {
-      kind: "chart",
-      box: { left: "5.5%", top: "40%", width: "26%", height: "30%" },
-      intent: "a chart — weekly active, 8 weeks",
-      eyebrow: "weekly active",
-      value: "+38%",
-      note: "last 8 weeks",
-      series: [32, 38, 34, 47, 52, 48, 63, 74],
-    },
-  },
-  {
+    // Opens on the PRODUCT, not a competitor: what Renderball is and the one
+    // gesture the whole thing is built on.
     id: "draw",
     label: "Draw",
-    headline: "Draw a box. Say what belongs inside it.",
-    body: "Marquee any area of a slide and describe what goes there. A real element is generated inside exactly those bounds — the model writes the element, it never moves your box.",
+    headline: "You draw. Renderball designs.",
+    body: "Renderball is an AI-native design editor. Draw an area on the canvas, say what belongs there, and a real, editable element appears — on your brand. Presentation decks first.",
     deck: 0,
     slide: 2,
     intents: ["the method, in three steps", "a canvas mockup — draw, then real"],
@@ -131,8 +115,8 @@ const SECTIONS: Section[] = [
   {
     id: "real",
     label: "Real",
-    headline: "Every element is real. None of it is a picture.",
-    body: "Drag it, resize it, retype it, delete it, export it to PDF at any scale. What the model made is the same material you edit — there is no flattened image step.",
+    headline: "Everything it makes is real.",
+    body: "Every element is a real object — drag it, resize it, retype it, export it to PDF. Never a flattened image. On your brand, pulled from a single URL.",
     deck: 0,
     slide: 3,
     intents: [
@@ -151,10 +135,30 @@ const SECTIONS: Section[] = [
     },
   },
   {
+    // The competitor contrast — now that the visitor knows what Renderball is,
+    // "everyone else ships a text box" lands instead of confusing.
+    id: "problem",
+    label: "Old way",
+    headline: "The old way is prompt-and-pray.",
+    body: "Type a paragraph, get a flat picture, start over every time. Renderball gives you a canvas you draw on instead — with elements you can actually edit.",
+    deck: 0,
+    slide: 0,
+    intents: ["the headline", "a prompt box, greyed out"],
+    demo: {
+      kind: "chart",
+      box: { left: "5.5%", top: "40%", width: "26%", height: "30%" },
+      intent: "a chart — weekly active, 8 weeks",
+      eyebrow: "weekly active",
+      value: "+38%",
+      note: "last 8 weeks",
+      series: [32, 38, 34, 47, 52, 48, 63, 74],
+    },
+  },
+  {
     id: "free",
-    label: "Free to edit",
-    headline: "Editing is free. You only pay when it creates.",
-    body: "Drag, resize, retype, reorder, undo — unmetered, forever. Generation is pay as you go, priced per token, and your first million are on us.",
+    label: "Free",
+    headline: "Your first million tokens are free.",
+    body: "Editing is always free — you only pay when Renderball generates, priced per token. Your first million (about three decks) are on us.",
     deck: 0,
     slide: 4,
     // No extra artifact here: the last thing the cursor draws on the page is
