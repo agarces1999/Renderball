@@ -43,7 +43,11 @@ export default clerkMiddleware(async (auth, req) => {
   }
   if (isProtectedPage(req)) {
     const signIn = new URL("/sign-in", req.url);
-    signIn.searchParams.set("redirect_url", req.url);
+    // Relative, deliberately. `req.url` inside the container is the internal
+    // bind address (https://0.0.0.0:8080/...), so passing it whole sent
+    // post-sign-in traffic to an unreachable origin. A path is origin-correct
+    // wherever this runs, and cannot be pointed off-site.
+    signIn.searchParams.set("redirect_url", req.nextUrl.pathname + req.nextUrl.search);
     await auth.protect({ unauthenticatedUrl: signIn.toString() });
   }
 });
