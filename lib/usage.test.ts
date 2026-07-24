@@ -113,26 +113,42 @@ check("Haiku base rate: 1M in = $1, 1M out = $5", () => {
   ok(near(costUsd("claude-haiku-4-5", U(0, 1_000_000)), 5));
 });
 
-// GLM — the models the live pipeline actually runs on, served by Fireworks
-// (FIREWORKS ONLY pivot, 2026-07-23). These must NOT fall through to the
-// Sonnet fallback (the bug this locks against): MODELS.* build/QA stages bill
-// on glm-5.2 at the fast-router rate — we pay for serving speed, not the
-// standard glm-5p2 tier.
-check("GLM-5.2 bills the Fireworks fast-router rate: 1M in = $2.1, 1M out = $6.6 (not Sonnet fallback)", () => {
+// GLM/Kimi — the models the live pipeline actually runs on, served by
+// FIREWORKS since 2026-07-23 (z.ai removed). These must NOT fall through to
+// the Sonnet fallback (the bug this locks against): MODELS.* build/QA stages
+// bill on the abstract "glm-5.2" id, castCall records on the fast-router wire
+// id, the vision gate on kimi-k2p6. The GLM rate is the FAST router's real
+// billing ($2.10/$6.60 — 1.5× the standard glm-5p2 tier; reconciled against
+// deck build #1, 2026-07-23), because that's the deployment all recorded
+// spend actually runs on.
+check("GLM-5.2 base rate (Fireworks fast router): 1M in = $2.1, 1M out = $6.6 (not Sonnet fallback)", () => {
   ok(near(costUsd("glm-5.2", U(1_000_000, 0)), 2.1));
   ok(near(costUsd("glm-5.2", U(0, 1_000_000)), 6.6));
 });
 
-check("GLM-5V-Turbo base rate: 1M in = $1.2, 1M out = $4.0 (not Sonnet fallback)", () => {
+check("fast-router wire id prices identically to the abstract glm-5.2 row", () => {
+  ok(near(costUsd("accounts/fireworks/routers/glm-5p2-fast", U(1_000_000, 0)), 2.1));
+  ok(near(costUsd("accounts/fireworks/routers/glm-5p2-fast", U(0, 1_000_000)), 6.6));
+});
+
+check("Kimi K2.6 (live Fireworks vision) base rate: 1M in = $0.6, 1M out = $3.0 (not Sonnet fallback)", () => {
+  ok(near(costUsd("accounts/fireworks/models/kimi-k2p6", U(1_000_000, 0)), 0.6));
+  ok(near(costUsd("accounts/fireworks/models/kimi-k2p6", U(0, 1_000_000)), 3.0));
+});
+
+check("GLM-5V-Turbo keeps z.ai list price — it only prices legacy pre-pivot ledger rows", () => {
   ok(near(costUsd("glm-5v-turbo", U(1_000_000, 0)), 1.2));
   ok(near(costUsd("glm-5v-turbo", U(0, 1_000_000)), 4.0));
 });
 
-check("GLM cache READ bills at Fireworks' cached-input price ($0.21/M), not the Anthropic 10%", () => {
+check("GLM cache READ bills at Fireworks' real cached-input price ($0.21/M)", () => {
+  // 1M cache-read tokens on glm-5.2 → $0.21 (docs.fireworks.ai fast-router
+  // cached-input price). castCall doesn't surface cached tokens yet — the
+  // multiplier is pinned so wiring them up later bills correctly on day one.
   ok(near(costUsd("glm-5.2", { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 1_000_000 }), 0.21));
 });
 
-check("GLM cache WRITE bills at plain input rate (no documented premium)", () => {
+check("GLM cache WRITE bills at plain input rate (no documented Fireworks write premium)", () => {
   ok(near(costUsd("glm-5.2", { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 1_000_000, cache_read_input_tokens: 0 }), 2.1));
 });
 

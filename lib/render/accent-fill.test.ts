@@ -17,6 +17,7 @@
 //   2. Unit fixtures: accent-spec filtering (neutral accents skipped, bad hex
 //      dropped), empty-input postures, and the finding contract.
 //
+import { existsSync } from "fs";
 import path from "path";
 import {
   assessAccentFill,
@@ -29,9 +30,24 @@ import type { MeasuredElement, SceneMeasurement } from "./measure-scene";
 
 let passed = 0;
 let failed = 0;
+let skipped = 0;
 const check = async (name: string, fn: () => void | Promise<void>) => {
   try { await fn(); passed++; console.log(`  ✓ ${name}`); }
   catch (e) { failed++; console.log(`  ✗ ${name}\n      ${e instanceof Error ? e.message : e}`); }
+};
+// REAL-fixture checks sample archived scene PNGs under gitignored .data/
+// paths: present in the long-lived checkout, absent in fresh clones and
+// worktrees. An absent fixture makes the sampling unrunnable, not failed —
+// skip LOUDLY (counted + named) so a green run can't be mistaken for full
+// coverage.
+const checkWithFixtures = async (name: string, fixtures: string[], fn: () => void | Promise<void>) => {
+  const missing = fixtures.filter((f) => !existsSync(f));
+  if (missing.length > 0) {
+    skipped++;
+    console.log(`  ↷ ${name}\n      SKIPPED — gitignored fixture(s) not on disk: ${missing.map((f) => path.relative(process.cwd(), f)).join(", ")}`);
+    return;
+  }
+  await check(name, fn);
 };
 const assert = (c: boolean, m: string) => { if (!c) throw new Error(m); };
 
@@ -91,8 +107,9 @@ const FIXTURES: {
 ];
 
 const results = new Map<number, AccentFillResult>();
+const ALL_PNGS = FIXTURES.map((f) => f.png);
 
-await check("real PNGs sample cleanly at the pinned hero bounds", async () => {
+await checkWithFixtures("real PNGs sample cleanly at the pinned hero bounds", ALL_PNGS, async () => {
   for (const f of FIXTURES) {
     const m = measurement(f.key, [el(f.pieceId, f.x, f.y, f.w, f.h)], f.png);
     const r = await assessAccentFill([m], [f.accent]);
@@ -102,7 +119,7 @@ await check("real PNGs sample cleanly at the pinned hero bounds", async () => {
   }
 });
 
-await check("cycle-1 Liquid Death s3.hero (the flat #00ff00 slab) FIRES accent-as-fill", () => {
+await checkWithFixtures("cycle-1 Liquid Death s3.hero (the flat #00ff00 slab) FIRES accent-as-fill", ALL_PNGS, () => {
   const r = results.get(0);
   assert(!!r, "fixture did not sample");
   assert(r!.findings.length === 1, `exactly one finding, got ${r!.findings.length}`);
@@ -116,7 +133,7 @@ await check("cycle-1 Liquid Death s3.hero (the flat #00ff00 slab) FIRES accent-a
   assert(/punctuation/i.test(f.repairInstruction) && f.repairInstruction.includes("s3.hero"), "repair instruction: accent is punctuation, targets the piece");
 });
 
-await check("cycle-1 s1.hero + all four v8 Klarna heroes PASS (accent stays punctuation)", () => {
+await checkWithFixtures("cycle-1 s1.hero + all four v8 Klarna heroes PASS (accent stays punctuation)", ALL_PNGS, () => {
   for (const f of FIXTURES.filter((x) => x.expect === "pass")) {
     const r = results.get(f.key)!;
     assert(r.findings.length === 0, `${f.png.split("/").slice(-2).join("/")} ${f.pieceId} must pass, fired: ${r.findings[0]?.detail}`);
@@ -126,7 +143,7 @@ await check("cycle-1 s1.hero + all four v8 Klarna heroes PASS (accent stays punc
   }
 });
 
-await check("finding contract: measured numbers + region + rect geometry are reported", () => {
+await checkWithFixtures("finding contract: measured numbers + region + rect geometry are reported", ALL_PNGS, () => {
   const r = results.get(0)!;
   const s = r.findings[0].stats;
   assert(s.region.w === 864 && s.region.h === 640, "region carried through");
@@ -136,5 +153,5 @@ await check("finding contract: measured numbers + region + rect geometry are rep
   assert(/\d/.test(r.findings[0].detail) && r.findings[0].detail.includes("%"), "humanized detail with measured percentages");
 });
 
-console.log(`\n${passed} passed, ${failed} failed`);
+console.log(`\n${passed} passed, ${failed} failed${skipped > 0 ? `, ${skipped} SKIPPED (gitignored fixtures absent — unit coverage only)` : ""}`);
 if (failed > 0) process.exitCode = 1;

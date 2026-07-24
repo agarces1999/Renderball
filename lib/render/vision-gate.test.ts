@@ -2,7 +2,7 @@
  * Tests for the vision gate. The judge is injected, so the aggregation logic +
  * tolerant verdict parsing are verified without any real vision-model spend.
  */
-import { readFileSync } from "fs";
+import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 import sharp from "sharp";
 import {
@@ -25,9 +25,24 @@ import {
 
 let passed = 0;
 let failed = 0;
+let skipped = 0;
 const check = async (name: string, fn: () => void | Promise<void>) => {
   try { await fn(); passed++; console.log(`  ✓ ${name}`); }
   catch (e) { failed++; console.log(`  ✗ ${name}\n      ${e instanceof Error ? e.message : e}`); }
+};
+// One check replays a REAL script from a gitignored reference build
+// (src/generated/*): present in the long-lived checkout, absent in fresh
+// clones/worktrees. An absent fixture makes the replay unrunnable, not
+// failed — skip LOUDLY (counted + named) so a green run can't be mistaken
+// for full coverage.
+const checkWithFixtures = async (name: string, fixtures: string[], fn: () => void | Promise<void>) => {
+  const missing = fixtures.filter((f) => !existsSync(f));
+  if (missing.length > 0) {
+    skipped++;
+    console.log(`  ↷ ${name}\n      SKIPPED — gitignored fixture(s) not on disk: ${missing.join(", ")}`);
+    return;
+  }
+  await check(name, fn);
 };
 const assert = (c: boolean, m: string) => { if (!c) throw new Error(m); };
 
@@ -194,10 +209,9 @@ await check("buildRubric: no concept → no fidelity block (back-compat)", () =>
   assert(!/Plan fidelity/.test(r) && !/Planned elements/.test(r), "fidelity only with a concept");
 });
 
-await check("extractPlannedElements: quoted labels + nouns from the real reference concept", () => {
-  const script = JSON.parse(
-    readFileSync(join(process.cwd(), "src", "generated", "01KXEAF0SNT0RR079Z1SJZ1KWZ", "script.json"), "utf8"),
-  ) as { scenes: { visual_concept: string }[] };
+const REF_SCRIPT = join(process.cwd(), "src", "generated", "01KXEAF0SNT0RR079Z1SJZ1KWZ", "script.json");
+await checkWithFixtures("extractPlannedElements: quoted labels + nouns from the real reference concept", [REF_SCRIPT], () => {
+  const script = JSON.parse(readFileSync(REF_SCRIPT, "utf8")) as { scenes: { visual_concept: string }[] };
   const els = extractPlannedElements(script.scenes[1].visual_concept);
   assert(els.includes("Email Tool") && els.includes("CRM"), `quoted tab labels extracted, got ${JSON.stringify(els)}`);
   assert(els.includes("Your tools are everywhere"), "quoted headline extracted");
@@ -347,5 +361,5 @@ await check("stampSceneIndexBadge: a non-PNG buffer degrades to the original (ne
   assert(out.equals(junk), "unreadable input returns unchanged");
 });
 
-console.log(`\n${passed} passed, ${failed} failed`);
+console.log(`\n${passed} passed, ${failed} failed${skipped > 0 ? `, ${skipped} SKIPPED (gitignored fixture absent)` : ""}`);
 if (failed > 0) process.exitCode = 1;

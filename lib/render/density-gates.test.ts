@@ -21,7 +21,7 @@
 //      borderline 14-descendant mock fails clause (a), data: URIs pass the
 //      whitelist, and the parser/signature helpers behave on hand-built HTML.
 //
-import { promises as fs } from "fs";
+import { existsSync, promises as fs } from "fs";
 import path from "path";
 import {
   assessDensity,
@@ -54,9 +54,24 @@ import { reassemble } from "../agents/lego-decompose";
 
 let passed = 0;
 let failed = 0;
+let skipped = 0;
 const check = async (name: string, fn: () => void | Promise<void>) => {
   try { await fn(); passed++; console.log(`  ✓ ${name}`); }
   catch (e) { failed++; console.log(`  ✗ ${name}\n      ${e instanceof Error ? e.message : e}`); }
+};
+// REAL-fixture checks replay archived builds under gitignored dirs
+// (src/generated/*): present in the long-lived checkout, absent in fresh
+// clones/worktrees. An absent fixture makes the replay unrunnable, not
+// failed — skip LOUDLY (counted + named) so a green run can't be mistaken
+// for full coverage.
+const checkWithFixtures = async (name: string, fixtures: string[], fn: () => void | Promise<void>) => {
+  const missing = fixtures.filter((f) => !existsSync(f));
+  if (missing.length > 0) {
+    skipped++;
+    console.log(`  ↷ ${name}\n      SKIPPED — gitignored fixture(s) not on disk: ${missing.map((f) => path.relative(process.cwd(), f)).join(", ")}`);
+    return;
+  }
+  await check(name, fn);
 };
 const assert = (c: boolean, m: string) => { if (!c) throw new Error(m); };
 
@@ -332,14 +347,14 @@ const SPIKE_DIR = path.join(process.cwd(), "src/generated/CAST_SPIKE_FULL_HUBSPO
 let refFindings: DensityFinding[] | null = null;
 let spikeFindings: DensityFinding[] | null = null;
 
-await check("reference build reassembles from lego and SSRs on all 5 scenes", async () => {
+await checkWithFixtures("reference build reassembles from lego and SSRs on all 5 scenes", [REF_DIR], async () => {
   const script = JSON.parse(await fs.readFile(path.join(REF_DIR, "script.json"), "utf8"));
   const code = reassemble(await readDecomposed(REF_DIR));
   refFindings = assessDensity(code, script);
   assert(ofKind(refFindings, "density-measure-error").length === 0, `measure errors: ${ofKind(refFindings, "density-measure-error").map((f) => f.detail)}`);
 });
 
-await check("reference: 0 findings on diegetic-interior, depth, and atmosphere clauses", () => {
+await checkWithFixtures("reference: 0 findings on diegetic-interior, depth, and atmosphere clauses", [REF_DIR], () => {
   assert(refFindings !== null, "reference did not load");
   for (const kind of ["thin-diegetic", "shallow-dom", "atmosphere-monotony"] as const) {
     const fs_ = ofKind(refFindings!, kind);
@@ -347,7 +362,7 @@ await check("reference: 0 findings on diegetic-interior, depth, and atmosphere c
   }
 });
 
-await check("reference: img-src catches ONLY the known latent scene-3 [object Object] defect", () => {
+await checkWithFixtures("reference: img-src catches ONLY the known latent scene-3 [object Object] defect", [REF_DIR], () => {
   // A true positive, not a false one: scene 3's texture layer does
   // `<Img src={siteImg}>` with siteImg = script.assets.images[0] — an OBJECT.
   // It ships as src="[object Object]" at opacity 0.03 (why no eyeball caught
@@ -358,28 +373,28 @@ await check("reference: img-src catches ONLY the known latent scene-3 [object Ob
   assert(imgs[0].scene === 3 && imgs[0].detail.includes("[object Object]"), `scene 3 [object Object], got: ${imgs[0].detail}`);
 });
 
-await check("spike build loads and SSRs on all 5 scenes", async () => {
+await checkWithFixtures("spike build loads and SSRs on all 5 scenes", [SPIKE_DIR], async () => {
   const script = JSON.parse(await fs.readFile(path.join(SPIKE_DIR, "script.json"), "utf8"));
   const code = await fs.readFile(path.join(SPIKE_DIR, "Composition.tsx"), "utf8");
   spikeFindings = assessDensity(code, script);
   assert(ofKind(spikeFindings, "density-measure-error").length === 0, `measure errors: ${ofKind(spikeFindings, "density-measure-error").map((f) => f.detail)}`);
 });
 
-await check("spike: clause (a) thin-diegetic fires on EVERY scene (best interior 13el/3tx < 15/4)", () => {
+await checkWithFixtures("spike: clause (a) thin-diegetic fires on EVERY scene (best interior 13el/3tx < 15/4)", [SPIKE_DIR], () => {
   assert(spikeFindings !== null, "spike did not load");
   const thin = ofKind(spikeFindings!, "thin-diegetic");
   assert(scenesOf(thin).join(",") === "0,1,2,3,4", `all 5 scenes expected, got scenes ${scenesOf(thin).join(",")}`);
   assert(thin.every((f) => f.blocking), "all blocking");
 });
 
-await check(`spike: clause (b) shallow-dom fires on EVERY scene (flat depth 5 < ${DEPTH_FLOOR})`, () => {
+await checkWithFixtures(`spike: clause (b) shallow-dom fires on EVERY scene (flat depth 5 < ${DEPTH_FLOOR})`, [SPIKE_DIR], () => {
   assert(spikeFindings !== null, "spike did not load");
   const shallow = ofKind(spikeFindings!, "shallow-dom");
   assert(scenesOf(shallow).join(",") === "0,1,2,3,4", `all 5 scenes expected, got scenes ${scenesOf(shallow).join(",")}`);
   assert(shallow.every((f) => f.detail.includes("depth is 5")), `spike is flat 5 everywhere: ${shallow.map((f) => f.detail)}`);
 });
 
-await check("spike: clause (c) atmosphere-monotony — 3 distinct signatures, one verbatim in 4 scenes", () => {
+await checkWithFixtures("spike: clause (c) atmosphere-monotony — 3 distinct signatures, one verbatim in 4 scenes", [SPIKE_DIR], () => {
   assert(spikeFindings !== null, "spike did not load");
   const atmos = ofKind(spikeFindings!, "atmosphere-monotony");
   assert(atmos.length === 2, `both variety findings expected, got ${atmos.length}: ${atmos.map((f) => f.detail)}`);
@@ -388,7 +403,7 @@ await check("spike: clause (c) atmosphere-monotony — 3 distinct signatures, on
   assert(atmos.every((f) => f.scene === -1), "video-level");
 });
 
-await check("spike: clause (d) img-src fires on scenes 1 and 3 (raw site_img_* asset ids)", () => {
+await checkWithFixtures("spike: clause (d) img-src fires on scenes 1 and 3 (raw site_img_* asset ids)", [SPIKE_DIR], () => {
   assert(spikeFindings !== null, "spike did not load");
   const imgs = ofKind(spikeFindings!, "img-src");
   assert(scenesOf(imgs).join(",") === "1,3", `scenes 1,3 expected, got ${scenesOf(imgs).join(",")}`);
@@ -402,7 +417,7 @@ await check("spike: clause (d) img-src fires on scenes 1 and 3 (raw site_img_* a
 const A5_DIR = path.join(process.cwd(), "src/generated/CAST_SPIKE_A5_GLM52");
 const DUO_REF_DIR = path.join(process.cwd(), "src/generated/01KWTMK9WXRZNF7X553R9AN63M");
 
-await check("v5 genDir: thin-hero fires on EXACTLY scene 2 (s2.hero = 1el/0tx; sibling carried clause a)", async () => {
+await checkWithFixtures("v5 genDir: thin-hero fires on EXACTLY scene 2 (s2.hero = 1el/0tx; sibling carried clause a)", [A5_DIR], async () => {
   const script = JSON.parse(await fs.readFile(path.join(A5_DIR, "script.json"), "utf8"));
   const code = await fs.readFile(path.join(A5_DIR, "Composition.tsx"), "utf8");
   const findings = assessDensity(code, script);
@@ -414,7 +429,7 @@ await check("v5 genDir: thin-hero fires on EXACTLY scene 2 (s2.hero = 1el/0tx; s
   assert(heroes.every((f) => f.blocking), "thin-hero blocks");
 });
 
-await check("Duolingo GLM reference: zero thin-hero findings (s3.hero = 34el/2tx passes the hero floor)", async () => {
+await checkWithFixtures("Duolingo GLM reference: zero thin-hero findings (s3.hero = 34el/2tx passes the hero floor)", [DUO_REF_DIR], async () => {
   // Calibration pin: the reference hero is an illustrative tableau with only
   // 2 interior text nodes — the hero text floor (≥1) must admit it while the
   // element floor (≥15) still rejects the v5 lone-element hero.
@@ -425,7 +440,7 @@ await check("Duolingo GLM reference: zero thin-hero findings (s3.hero = 34el/2tx
   assert(heroes.length === 0, `reference heroes must pass, got: ${heroes.map((f) => f.detail).join(" | ")}`);
 });
 
-await check("every finding carries the gate contract: kind, scene, blocking, detail, repairInstruction", () => {
+await checkWithFixtures("every finding carries the gate contract: kind, scene, blocking, detail, repairInstruction", [REF_DIR, SPIKE_DIR], () => {
   assert(refFindings !== null && spikeFindings !== null, "fixtures did not load");
   for (const f of [...refFindings!, ...spikeFindings!]) {
     assert(typeof f.kind === "string" && Number.isInteger(f.scene), "kind + scene");
@@ -435,5 +450,5 @@ await check("every finding carries the gate contract: kind, scene, blocking, det
   }
 });
 
-console.log(`\n${passed} passed, ${failed} failed`);
+console.log(`\n${passed} passed, ${failed} failed${skipped > 0 ? `, ${skipped} SKIPPED (gitignored fixtures absent — synthetic coverage only)` : ""}`);
 if (failed > 0) process.exitCode = 1;

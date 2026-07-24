@@ -127,7 +127,8 @@ export const getAnthropic = (): Anthropic => {
 // EVERY TEXT STAGE ON GLM 5.2 — served by FIREWORKS (founder call 2026-07-23:
 // z.ai is out of the stack entirely; its [1113] balance failures took builds
 // down twice). These entries stay the ABSTRACT model name: the usage ledger
-// keys pricing off it (same $1.40/$4.40 list on Fireworks), and the transport
+// keys pricing off it (the fast router's real $2.10/$6.60 billing — the rate
+// lives in lib/usage.ts), and the transport
 // (lib/llm/build-client.ts) maps it to the Fireworks deployment
 // (accounts/fireworks/routers/glm-5p2-fast — override with RB_BUILD_MODEL).
 // getAnthropic() below is DORMANT: no build path calls the Anthropic SDK
