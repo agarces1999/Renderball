@@ -15,6 +15,26 @@ const nextConfig = {
       "esbuild",
     ],
   },
+  async redirects() {
+    return [
+      {
+        // /videos → /documents (canvas pivot). This lives here, NOT as a
+        // page-level permanentRedirect(): a prerendered redirect page served
+        // a 308 with NO Location header in production (verified against both
+        // Cloudflare and Railway directly), so old bookmarks dead-ended.
+        // A config redirect is emitted by the server router and always
+        // carries Location.
+        source: "/videos",
+        destination: "/documents",
+        permanent: true,
+      },
+      {
+        source: "/videos/:path*",
+        destination: "/documents",
+        permanent: true,
+      },
+    ];
+  },
   async headers() {
     return [
       {
