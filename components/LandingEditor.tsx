@@ -32,6 +32,11 @@ import { DEMO_DECKS, type DemoSlide } from "./demo-decks";
 const seg = (p: number, a: number, b: number): number =>
   Math.max(0, Math.min(1, (p - a) / (b - a)));
 
+/** Shared ease-in-out: the cursor's travel and the marquee's growth use the
+ *  same curve, so the rectangle's corner stays glued to the cursor. */
+const ease = (t: number): number =>
+  t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+
 const typed = (text: string, t: number): string =>
   text.slice(0, Math.round(Math.max(0, Math.min(1, t)) * text.length));
 
@@ -47,6 +52,20 @@ type Section = {
   /** which demo deck + slide the canvas shows */
   deck: number;
   slide: number;
+  /**
+   * The cursor's work on THIS slide. `box` is in canvas %, chosen to sit in
+   * that slide's genuinely empty region — generated things never cover the
+   * slide's own content. `dark` matches the card to the slide it lands on.
+   */
+  demo: {
+    box: { left: string; top: string; width: string; height: string };
+    intent: string;
+    eyebrow: string;
+    value: string;
+    note: string;
+    dark?: boolean;
+    swatches?: string[];
+  };
 };
 
 const SECTIONS: Section[] = [
@@ -57,6 +76,13 @@ const SECTIONS: Section[] = [
     body: "Marquee any area of a slide and describe what goes there. A real element is generated inside exactly those bounds — the model writes the element, it never moves your box.",
     deck: 0,
     slide: 0,
+    demo: {
+      box: { left: "7%", top: "44%", width: "23%", height: "24%" },
+      intent: "a stat tile — 3 of 5 regions live",
+      eyebrow: "rollout",
+      value: "3 of 5",
+      note: "regions live",
+    },
   },
   {
     id: "real",
@@ -65,6 +91,14 @@ const SECTIONS: Section[] = [
     body: "Drag it, resize it, retype it, delete it, export it to PDF at any scale. What the model made is the same material you edit — there is no flattened image step.",
     deck: 0,
     slide: 1,
+    demo: {
+      box: { left: "8%", top: "42%", width: "25%", height: "22%" },
+      intent: "a stat tile — 214 edits, zero tokens",
+      eyebrow: "edits",
+      value: "214",
+      note: "free — zero tokens",
+      dark: true,
+    },
   },
   {
     id: "brand",
@@ -73,6 +107,14 @@ const SECTIONS: Section[] = [
     body: "Renderball reads the site — logo, palette, type, and the way the brand actually composes — then designs inside it. You confirm the kit before anything generates.",
     deck: 0,
     slide: 2,
+    demo: {
+      box: { left: "7%", top: "60%", width: "26%", height: "21%" },
+      intent: "the extracted brand — swatches",
+      eyebrow: "brand kit",
+      value: "4 colors",
+      note: "read from the site",
+      swatches: ["#0b0f14", "#10b981", "#e5e7eb", "#38bdf8"],
+    },
   },
   {
     id: "range",
@@ -81,6 +123,14 @@ const SECTIONS: Section[] = [
     body: "The same engine composes an editorial opener and a dense analysis page. Register, density, and type change with the argument being made.",
     deck: 1,
     slide: 0,
+    demo: {
+      box: { left: "58%", top: "14%", width: "27%", height: "22%" },
+      intent: "a metric tile — p50 lead time",
+      eyebrow: "lead time",
+      value: "4.2h",
+      note: "p50 · down 38%",
+      dark: true,
+    },
   },
   {
     id: "meter",
@@ -89,6 +139,13 @@ const SECTIONS: Section[] = [
     body: "Drag, resize, retype, reorder, undo — unmetered, forever. Generation is pay as you go, priced per token, and your first million are on us.",
     deck: 1,
     slide: 1,
+    demo: {
+      box: { left: "7%", top: "45%", width: "26%", height: "22%" },
+      intent: "a ledger chip — this session",
+      eyebrow: "this session",
+      value: "0 tokens",
+      note: "editing is free",
+    },
   },
 ];
 
@@ -180,7 +237,7 @@ export function LandingEditor() {
               onPointerCancel={sb.onPointerCancel}
             >
               <CaptureRegion top={0} armed={armed && !sb.pending} />
-              <Canvas section={section} local={local} idx={idx} />
+              <Canvas section={section} local={local} />
               <SandboxLayer sb={sb} interactive={idx === 0} tabbable={armed}>
                 <SandboxHint
                   show={armed && sb.elements.length === 0 && !sb.marquee && !sb.pending}
@@ -358,20 +415,24 @@ function Toolbar({ armed, clock }: { armed: boolean; clock: number }) {
 function Canvas({
   section,
   local,
-  idx,
 }: {
   section: Section;
   local: number;
-  idx: number;
 }) {
   const deck = DEMO_DECKS[section.deck];
   const slide = deck?.slides[section.slide];
   if (!slide) return null;
-  // The slide settles in, then (section 0 only) the scripted marquee runs.
-  const enter = seg(local, 0.02, 0.18);
-  const drag = idx === 0 ? seg(local, 0.2, 0.32) : 0;
-  const type = idx === 0 ? seg(local, 0.33, 0.44) : 0;
-  const made = idx === 0 ? seg(local, 0.46, 0.62) : 0;
+  const d = section.demo;
+
+  // One repeatable choreography, run on EVERY slide: settle → the cursor
+  // travels in → drags the marquee open → types the intent inside it →
+  // the element assembles and stays selected.
+  const enter = seg(local, 0.02, 0.14);
+  const travel = seg(local, 0.14, 0.24);
+  const drag = seg(local, 0.24, 0.38);
+  const type = seg(local, 0.4, 0.54);
+  const made = seg(local, 0.56, 0.74);
+
   return (
     <div className="pointer-events-none absolute inset-0">
       <div
@@ -381,29 +442,33 @@ function Canvas({
         <SlideFrame slide={slide} />
       </div>
 
-      {/* The teaching moment: a marquee drawn ON a real slide. */}
-      {idx === 0 && drag > 0 && (
-        <div
-          className="absolute"
-          /* The empty left-middle of this slide. Nothing generated may sit
-             on top of the slide's own content — same no-overlap rule the
-             rest of the page follows. */
-          style={{ left: "7%", top: "44%", width: "23%", height: "24%" }}
-        >
+      {travel > 0 && (
+        <div className="absolute" style={d.box}>
+          {/* the marquee, growing with the cursor's drag */}
           <div
-            className="absolute left-0 top-0 rounded-[4px] border-[1.5px] border-dashed border-accent-line bg-accent-soft/40"
+            className="absolute left-0 top-0 rounded-[4px] border-[1.5px] border-dashed"
             style={{
-              width: `${Math.max(12, drag * 100)}%`,
-              height: `${Math.max(14, drag * 100)}%`,
-              opacity: made > 0.3 ? 0 : 1,
+              width: `${Math.max(10, ease(drag) * 100)}%`,
+              height: `${Math.max(12, ease(drag) * 100)}%`,
+              borderColor: d.dark ? "rgba(52,211,153,0.75)" : "var(--accent-line)",
+              background: d.dark ? "rgba(52,211,153,0.10)" : "rgba(0,194,138,0.10)",
+              opacity: drag <= 0 ? 0 : made > 0.3 ? 0 : 1,
             }}
             aria-hidden
           />
+
+          {/* the intent, typed INSIDE the drawn box */}
           {drag >= 1 && made < 0.12 && (
-            <p className="absolute left-3 top-3 font-mono text-[12px] text-accent-text">
-              {typed("a stat tile — 3 of 5 regions live", type)}
+            <p
+              className="absolute left-3 top-3 font-mono text-[12px]"
+              style={{ color: d.dark ? "#6ee7b7" : "var(--accent-text)" }}
+            >
+              {typed(d.intent, type)}
               {type < 1 ? (
-                <span className="ml-0.5 inline-block h-[13px] w-[1.5px] animate-pulse bg-accent-text align-middle" />
+                <span
+                  className="ml-0.5 inline-block h-[13px] w-[1.5px] animate-pulse align-middle"
+                  style={{ background: d.dark ? "#6ee7b7" : "var(--accent-text)" }}
+                />
               ) : (
                 <span className="ml-2 rounded-sm bg-accent px-1.5 py-0.5 text-[10px] font-semibold text-accent-ink">
                   ⏎
@@ -411,23 +476,133 @@ function Canvas({
               )}
             </p>
           )}
-          {made > 0 && (
-            <div
-              className="absolute inset-0 rounded-lg border border-hairline bg-surface p-4 shadow-[0_18px_40px_-24px_rgba(18,26,43,0.45)] transition-all duration-500"
-              style={{ opacity: made, transform: `translateY(${(1 - made) * 8}px)` }}
-            >
-              <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-muted">
-                rollout
-              </p>
-              <p className="mt-1 font-display text-[34px] font-bold leading-none tracking-tight text-accent-text tabular-nums">
-                {Math.round(3 * seg(made, 0.2, 0.7))} of 5
-              </p>
-              <p className="mt-1 text-[12px] text-ink-soft">regions live</p>
-              {made >= 1 && <Handles />}
-            </div>
-          )}
+
+          <GeneratedCard demo={d} t={made} />
         </div>
       )}
+
+      <Cursor demo={d} travel={travel} drag={drag} type={type} made={made} />
+    </div>
+  );
+}
+
+/** The element the cursor makes — assembled in stages, dressed for the slide
+ *  it lands on (a light card on a dark slide would read as a sticker). */
+function GeneratedCard({
+  demo: d,
+  t,
+}: {
+  demo: Section["demo"];
+  t: number;
+}) {
+  if (t <= 0) return null;
+  const frame = seg(t, 0, 0.2);
+  const head = seg(t, 0.15, 0.4);
+  const val = seg(t, 0.35, 0.7);
+  const rest = seg(t, 0.7, 1);
+  return (
+    <div
+      className="absolute inset-0 rounded-lg border p-4 transition-all duration-500"
+      style={{
+        opacity: frame,
+        transform: `translateY(${(1 - frame) * 8}px)`,
+        background: d.dark ? "rgba(10,16,22,0.92)" : "var(--surface)",
+        borderColor: d.dark ? "rgba(148,163,184,0.25)" : "var(--hairline)",
+        boxShadow: d.dark
+          ? "0 18px 44px -26px rgba(0,0,0,0.8)"
+          : "0 18px 44px -26px rgba(18,26,43,0.45)",
+      }}
+    >
+      <p
+        className="font-mono text-[10px] uppercase tracking-[0.16em]"
+        style={{ opacity: head, color: d.dark ? "#94a3b8" : "var(--muted)" }}
+      >
+        {d.eyebrow}
+      </p>
+      <p
+        className="mt-1.5 font-display text-[30px] font-bold leading-none tracking-tight tabular-nums"
+        style={{
+          opacity: val,
+          color: d.dark ? "#6ee7b7" : "var(--accent-text)",
+        }}
+      >
+        {d.value}
+      </p>
+      <p
+        className="mt-1.5 text-[12.5px]"
+        style={{ opacity: rest, color: d.dark ? "#cbd5e1" : "var(--ink-soft)" }}
+      >
+        {d.note}
+      </p>
+      {d.swatches && (
+        <div className="mt-2.5 flex gap-1.5" style={{ opacity: rest }}>
+          {d.swatches.map((c, i) => (
+            <span
+              key={c}
+              className="h-4 w-4 rounded-[3px] border border-hairline transition-all duration-300"
+              style={{
+                background: c,
+                opacity: rest > i * 0.22 ? 1 : 0,
+              }}
+            />
+          ))}
+        </div>
+      )}
+      {t >= 1 && <Handles />}
+    </div>
+  );
+}
+
+/** The authoring cursor, present on EVERY slide: it travels to the box, drags
+ *  it open (the rectangle's corner is glued to it — same easing on both),
+ *  perches while the intent types, then steps aside once the element lands. */
+function Cursor({
+  demo: d,
+  travel,
+  drag,
+  type,
+  made,
+}: {
+  demo: Section["demo"];
+  travel: number;
+  drag: number;
+  type: number;
+  made: number;
+}) {
+  if (travel <= 0 || made >= 1) return null;
+  const L = parseFloat(d.box.left);
+  const T = parseFloat(d.box.top);
+  const W = parseFloat(d.box.width);
+  const H = parseFloat(d.box.height);
+
+  let x: number;
+  let y: number;
+  if (drag <= 0) {
+    // travelling in from just outside the box's corner
+    const e = ease(travel);
+    x = L - 9 + 9 * e;
+    y = T - 7 + 7 * e;
+  } else if (drag < 1) {
+    const e = ease(drag);
+    x = L + W * e;
+    y = T + H * e;
+  } else if (type < 1 || made <= 0) {
+    // perched under the typing line, out of the text's way
+    x = L + 2.2;
+    y = T + H * 0.42;
+  } else {
+    // steps aside as the element assembles
+    x = L + W + 2.5;
+    y = T + H * 0.7;
+  }
+  return (
+    <div
+      className="absolute z-30 transition-opacity duration-300"
+      style={{ left: `${x}%`, top: `${y}%`, opacity: made > 0.85 ? 0 : 1 }}
+      aria-hidden
+    >
+      <span className="orb block h-[17px] w-[17px] -translate-x-1/2 -translate-y-1/2" />
+      <span className="absolute -inset-1 -translate-x-1/2 -translate-y-1/2 rounded-full border border-accent-line opacity-40" />
     </div>
   );
 }
