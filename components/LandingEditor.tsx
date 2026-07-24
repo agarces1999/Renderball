@@ -695,25 +695,20 @@ function ClaimBar({
 /* ─── static shell (mobile + reduced motion) ─────────────────────────── */
 
 function StaticEditor() {
+  const hero = SECTIONS[0];
+  const heroSlide = DEMO_DECKS[hero.deck]?.slides[hero.slide];
   return (
     <div className="mx-auto max-w-[720px] px-5 py-10">
-      <div className="mb-6 flex items-center gap-2.5">
-        <span className="orb h-7 w-7 shrink-0" aria-hidden />
-        <span className="font-display text-[17px] font-semibold tracking-tight text-ink">
-          Renderball
-        </span>
-      </div>
+      {/* No wordmark here: this branch renders UNDER the page header, which
+          already carries it. (The desktop branch hides that header and puts
+          the wordmark in its own rail instead.) */}
       <p className="mb-3 font-mono text-[11px] uppercase tracking-[0.18em] text-muted">
         The first AI-native design editor
       </p>
       <h1 className="font-display text-[clamp(32px,8vw,46px)] font-bold leading-[1.06] tracking-[-0.02em] text-ink">
-        Design should not be prompted. It should be drawn.
+        {hero.headline}
       </h1>
-      <p className="mt-5 text-[15px] leading-relaxed text-ink-soft">
-        An editor where you draw a box, type what belongs inside it, and a real
-        element appears — on your brand, editable to the last pixel, never an
-        image.
-      </p>
+      <p className="mt-5 text-[15px] leading-relaxed text-ink-soft">{hero.body}</p>
       <div className="mt-6 flex flex-wrap items-center gap-3">
         <Link
           href="/new"
@@ -726,20 +721,21 @@ function StaticEditor() {
         </span>
       </div>
 
+      {heroSlide && (
+        <div className="relative mt-8 aspect-video overflow-hidden rounded-lg border border-hairline">
+          <SlideFrame slide={heroSlide} />
+        </div>
+      )}
+
+      {/* The hero already told section 1; the rest follow it. */}
       <div className="mt-10 space-y-8">
-        {SECTIONS.map((s) => {
+        {SECTIONS.slice(1).map((s) => {
           const slide = DEMO_DECKS[s.deck]?.slides[s.slide];
           return (
             <section key={s.id}>
               {slide && (
-                <div
-                  className="relative mb-3 aspect-video overflow-hidden rounded-lg border border-hairline"
-                  style={{ background: slide.bg }}
-                >
-                  <div
-                    className="absolute inset-0"
-                    dangerouslySetInnerHTML={{ __html: slide.html }}
-                  />
+                <div className="relative mb-3 aspect-video overflow-hidden rounded-lg border border-hairline">
+                  <SlideFrame slide={slide} />
                 </div>
               )}
               <h2 className="font-display text-[19px] font-bold tracking-tight text-ink">
