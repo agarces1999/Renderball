@@ -40,6 +40,16 @@ const ease = (t: number): number =>
 const typed = (text: string, t: number): string =>
   text.slice(0, Math.round(Math.max(0, Math.min(1, t)) * text.length));
 
+/**
+ * Scroll distance per section, in viewport heights.
+ *
+ * Each section plays a five-beat choreography (settle → travel → drag →
+ * type → assemble), so this is effectively the playback speed: at 100 the
+ * whole cycle flew past in a single screen-height and read as a blur.
+ * 220 gives each beat room to be seen without the page feeling endless.
+ */
+const SECTION_VH = 220;
+
 /** Sections of the page, each anchored to a slide in the canvas. The rail
  *  renders one thumbnail per entry. */
 type Section = {
@@ -217,7 +227,7 @@ export function LandingEditor() {
       <div
         ref={wrapRef}
         className="relative hidden lg:motion-safe:block"
-        style={{ height: `${SECTIONS.length * 120}vh` }}
+        style={{ height: `${SECTIONS.length * SECTION_VH}vh` }}
       >
         <div className="sticky top-0 flex h-screen gap-4 overflow-hidden p-4">
           <SlideRail active={idx} onJump={jumpTo} />
