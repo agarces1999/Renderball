@@ -28,35 +28,44 @@ const completion = (text: string, extra: Record<string, unknown> = {}) => ({
 
 console.log("cast-provider (Cerebras OpenAI-wire transport)");
 
+// Pin BOTH wires' env deterministically — the import chain may have loaded
+// .env.local (lib/anthropic.ts), and the default model is Fireworks-served
+// since the FIREWORKS ONLY pivot (2026-07-23), so RB_FIREWORKS_KEY governs
+// castConfigured() for the default.
 process.env.RB_CAST_KEY = "test-key";
+process.env.RB_FIREWORKS_KEY = "fw-test-key";
 delete process.env.RB_CAST_BASE_URL;
 delete process.env.RB_CAST_MODEL;
 
 await check("unconfigured provider fails fast and loud (no silent fallback)", async () => {
-  const saved = process.env.RB_CAST_KEY;
+  const savedCast = process.env.RB_CAST_KEY;
+  const savedFw = process.env.RB_FIREWORKS_KEY;
   delete process.env.RB_CAST_KEY;
-  assert(!castConfigured(), "castConfigured must be false without a key");
+  delete process.env.RB_FIREWORKS_KEY;
   try {
+    assert(!castConfigured(), "castConfigured must be false without a key");
     await castCall({ system: "", user: "x", maxTokens: 100 });
     assert(false, "must throw");
   } catch (e) {
     assert(e instanceof CastProviderError && !e.retryable, "non-retryable config error");
   } finally {
-    process.env.RB_CAST_KEY = saved;
+    process.env.RB_CAST_KEY = savedCast;
+    process.env.RB_FIREWORKS_KEY = savedFw;
   }
 });
 
-await check("effort dial + max_completion_tokens reach the wire verbatim", async () => {
+await check("effort dial + max_completion_tokens reach the Cerebras wire verbatim", async () => {
   let sent: Record<string, unknown> = {};
   mockFetch((_url, init) => {
     sent = JSON.parse(String(init.body));
     return ok(completion("<div />"));
   });
-  await castCall({ system: "sys", user: "usr", maxTokens: 4000, effort: "low" });
+  // Cerebras-style wire is selected by a non-Fireworks model id.
+  await castCall({ system: "sys", user: "usr", maxTokens: 4000, effort: "low", model: "gpt-oss-120b" });
   assert(sent.reasoning_effort === "low", "reasoning_effort must be sent — dropping it reruns M0's mistake");
   assert(sent.max_completion_tokens === 4000, "pre-debit param must be max_completion_tokens");
   assert(!("max_tokens" in sent), "must NOT send max_tokens alongside it");
-  assert(sent.model === "gpt-oss-120b", "default model");
+  assert(sent.model === "gpt-oss-120b", "explicit model reaches the wire");
   const msgs = sent.messages as { role: string }[];
   assert(msgs[0].role === "system" && msgs[1].role === "user", "system + user roles");
 });
@@ -79,7 +88,10 @@ await check("model override reaches the wire (call.model → RB_CAST_MODEL → d
     delete process.env.RB_CAST_MODEL;
   }
   await castCall({ system: "", user: "u", maxTokens: 100 });
-  assert(sent.model === "gpt-oss-120b", "no override, no env → the gpt-oss default");
+  assert(
+    sent.model === "accounts/fireworks/routers/glm-5p2-fast",
+    "no override, no env → the Fireworks glm-5p2-fast default (FIREWORKS ONLY pivot)",
+  );
 });
 
 await check("omitted effort omits the param (model default, not a guess)", async () => {
@@ -90,6 +102,7 @@ await check("omitted effort omits the param (model default, not a guess)", async
   });
   await castCall({ system: "", user: "u", maxTokens: 100 });
   assert(!("reasoning_effort" in sent), "no effort key when unset");
+  assert(!("thinking" in sent), "no thinking param when unset (Fireworks default wire)");
 });
 
 await check("429 honors retry-after, then succeeds; usage + reasoning mapped", async () => {

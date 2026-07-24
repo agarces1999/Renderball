@@ -2,6 +2,15 @@
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
+import {
+  CaptureRegion,
+  DotGrid,
+  Handles,
+  SandboxHint,
+  SandboxLayer,
+  SandboxPanel,
+  useSandbox,
+} from "./LandingSandbox";
 
 /**
  * The landing hero IS a Renderball canvas performing (DESIGN.md "Landing —
@@ -54,6 +63,10 @@ const CAPTIONS = [
 /** Hero text lives above this line; the performance below. Hard contract. */
 const BAND = 500;
 
+/** The stage accepts visitor marquees from the first landed artifact until
+ *  the deck beat clears the canvas for the finale. */
+const SANDBOX_ARM = [0.26, 0.64] as const;
+
 /** The three marquee slots (bigger, per founder review). */
 const SLOTS = {
   kpi: { x: 56, y: BAND + 8, w: 384, h: 248 },
@@ -71,9 +84,23 @@ const W = {
 
 export function LandingCanvas() {
   const wrapRef = useRef<HTMLDivElement>(null);
+  const stageRef = useRef<HTMLDivElement>(null);
   const [p, setP] = useState(0);
   const [clock, setClock] = useState(0);
   const started = useRef(false);
+  // The visitor's turn — additive over the scripted beats (see LandingSandbox).
+  const armed = p >= SANDBOX_ARM[0] && p < SANDBOX_ARM[1];
+  const sb = useSandbox({
+    hostRef: stageRef,
+    surface: "stage",
+    armed,
+    interactive: p < SANDBOX_ARM[1],
+    regionTop: BAND,
+    // The scripted tile is already showing kpi[0] and the scripted chart
+    // chart[0] — start the visitor a variant along so their first draw
+    // reads as a new element, not a copy.
+    startVariants: { kpi: 1, chart: 1 },
+  });
 
   useEffect(() => {
     let raf = 0;
@@ -110,13 +137,29 @@ export function LandingCanvas() {
         ref={wrapRef}
         className="relative hidden lg:motion-safe:block"
         style={{ height: "620vh" }}
-        aria-hidden
       >
         <div className="sticky top-0 h-screen overflow-hidden">
           <DotGrid />
-          <div className="relative mx-auto h-full max-w-[1180px] px-6">
+          <div
+            ref={stageRef}
+            className={`relative mx-auto h-full max-w-[1180px] px-6 ${
+              sb.drawing ? "select-none" : ""
+            }`}
+            style={{ touchAction: sb.drawing ? "none" : undefined }}
+            onPointerDown={sb.onPointerDown}
+            onPointerMove={sb.onPointerMove}
+            onPointerUp={sb.onPointerUp}
+            onPointerCancel={sb.onPointerCancel}
+          >
+            <CaptureRegion top={BAND} armed={armed && !sb.pending} />
             <HeroBlock doorT={seg(p, T.door[0], 0.87)} />
             <Stage p={p} />
+            <SandboxLayer sb={sb} interactive={p < SANDBOX_ARM[1]} tabbable={armed}>
+              <SandboxHint
+                show={armed && sb.elements.length === 0 && !sb.marquee && !sb.pending}
+                style={{ left: 486, top: BAND + 268, width: 300, height: 74 }}
+              />
+            </SandboxLayer>
             <Cursor p={p} />
             <CaptionRail p={p} />
             <div className="absolute bottom-5 right-6 font-mono text-[11px] tabular-nums text-faint">
@@ -135,21 +178,7 @@ export function LandingCanvas() {
   );
 }
 
-/* ─── scenery ────────────────────────────────────────────────────────── */
-
-function DotGrid() {
-  return (
-    <div
-      className="pointer-events-none absolute inset-0 opacity-[0.5]"
-      style={{
-        backgroundImage:
-          "radial-gradient(circle, rgba(18,26,43,0.10) 1px, transparent 1px)",
-        backgroundSize: "24px 24px",
-      }}
-      aria-hidden
-    />
-  );
-}
+/* ─── scenery ─────────────────────────────────────────────────────────── */
 
 /** Centered hero. Editor-first copy — no URL instructions (founder call). */
 function HeroBlock({ doorT }: { doorT: number }) {
@@ -194,30 +223,6 @@ function HeroBlock({ doorT }: { doorT: number }) {
         </span>
       </div>
     </div>
-  );
-}
-
-function Handles() {
-  const pos = [
-    "-left-1 -top-1",
-    "left-1/2 -top-1 -translate-x-1/2",
-    "-right-1 -top-1",
-    "-left-1 top-1/2 -translate-y-1/2",
-    "-right-1 top-1/2 -translate-y-1/2",
-    "-left-1 -bottom-1",
-    "left-1/2 -bottom-1 -translate-x-1/2",
-    "-right-1 -bottom-1",
-  ];
-  return (
-    <>
-      {pos.map((c) => (
-        <span
-          key={c}
-          className={`absolute ${c} z-20 h-2 w-2 rounded-[2px] border border-accent bg-surface`}
-          aria-hidden
-        />
-      ))}
-    </>
   );
 }
 
@@ -290,8 +295,11 @@ function Cursor({ p }: { p: number }) {
 /* ─── beats ──────────────────────────────────────────────────────────── */
 
 function Stage({ p }: { p: number }) {
+  // Pointer-inert: the visitor's marquee must be able to start on any empty
+  // canvas the scripted beats aren't using. Interactive bits (the door CTA)
+  // re-enable pointers for themselves.
   return (
-    <div className="absolute inset-0">
+    <div className="pointer-events-none absolute inset-0">
       <Funeral p={p} />
       <DrawBeat p={p} />
       <DeckBeat p={p} />
@@ -782,7 +790,7 @@ function DoorBeat({ p }: { p: number }) {
           aria-hidden
         />
         <div
-          className="absolute inset-0 flex flex-col items-center justify-center gap-3 transition-all duration-500"
+          className="pointer-events-auto absolute inset-0 flex flex-col items-center justify-center gap-3 transition-all duration-500"
           style={{
             opacity: t > 0.78 ? 1 : 0,
             transform: t > 0.78 ? "translateY(0)" : "translateY(10px)",
@@ -861,20 +869,18 @@ function StaticStory() {
         </span>
       </div>
 
-      <div className="relative mx-auto mt-14 max-w-[440px] overflow-hidden rounded-lg border border-hairline bg-canvas p-5 text-left">
-        <p className="mb-2 font-mono text-[12px] text-accent-text">
-          a KPI tile — 3.2× faster close
-          <span className="ml-2 rounded-sm bg-accent px-1.5 py-0.5 font-mono text-[10px] font-semibold text-accent-ink">
-            ⏎ generate
-          </span>
-        </p>
-        <div className="rounded-md border-[1.5px] border-dashed border-accent-line p-3">
-          <KpiTile b={1} dx={0} grow={-40} caret={null} selected={false} />
-        </div>
-        <p className="mt-3 font-mono text-[10px] tracking-[0.1em] text-faint">
-          drawn as a box · typed inside it · generated as a real element · sandbox
-        </p>
-      </div>
+      <SandboxPanel
+        still={
+          <>
+            <p className="mb-2 font-mono text-[11px] text-accent-text">
+              a KPI tile — 3.2× faster close
+            </p>
+            <div className="rounded-md border-[1.5px] border-dashed border-accent-line p-3">
+              <KpiTile b={1} dx={0} grow={-64} caret={null} selected={false} />
+            </div>
+          </>
+        }
+      />
 
       <div className="mx-auto mt-8 max-w-[420px] space-y-3 text-left">
         {CAPTIONS.slice(1).map((c) => (

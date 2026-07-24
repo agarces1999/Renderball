@@ -141,10 +141,26 @@ flarebit deck build; real ledger token counts). Every claim on the page must
 be demonstrated on the page or cut. Session clock in mono ticks from first
 scroll.
 
-**Deferred (queued, not tonight):** visitor-editable hero elements and
-landing-canvas state persisting through sign-in into the first document
-("your edits come with you") — the strongest activation idea from the
-consultation; needs real pointer plumbing + a state-seeding path.
+**Shipped 2026-07-24 (was deferred):** the two activation ideas from the
+consultation are live. (1) **The sandbox beat** — from the moment the first
+scripted artifact lands until the deck beat, the band is a real canvas: the
+visitor drags a real marquee ("your turn — draw here"), picks from
+precomputed intents (kpi tile / bar chart / pull-quote), and the element
+materializes instantly from a local sandbox set — zero LLM calls, mono
+`sandbox` label, and the editor's bounds discipline (the user's box is law;
+sub-24px drags are stray clicks). Visitor boxes hold the BAND contract too
+(clamped below the band edge — their generations never touch the copy
+either). The scripted artifacts are draggable with the selection-handle
+affordance; visitor drags compose additively so the beats stay pure
+functions of scroll. The intent picker is chips, never a text input — the
+no-prompt-box rule holds. (2) **Persistence into activation** — the
+visitor's canvas (boxes, intents, drags) serializes to localStorage; after
+sign-in, /new offers "Continue what you started", which seeds the brief
+prompt from their intents in words they can edit (the honest smallest
+version — no forged document), with a mono `start clean` escape hatch.
+Reduced-motion and mobile visitors get the same sandbox in a bounded panel
+inside the static story (no theatrics — enter animations are killed under
+reduced motion).
 
 **Hard rules:**
 - NO prompt box anywhere on the landing. Not the hero, not the footer
@@ -230,3 +246,4 @@ The old 5-step upfront wizard (site → format → colors → shape → prompt, 
 | 2026-06-06 | Front door (`/new`) adopts an emerald "brand field": a white-dominant green mesh background, frosted "opaquely transparent" glass panels, a green-tinted crystal orb with a slowly rotating rim, and a visual screen-ratio format picker (little screens drawn at true 9:16 / 1:1 / 16:9 proportions) | **DELIBERATE, user-approved deviation** from the core rules "no gradients-as-decoration," "the emerald is the only chroma and appears rarely," and "the chrome is quiet." Scoped to `/new` only via the `.brand-field` and `.glass` classes in `globals.css` — every other surface keeps the greyscale chrome. The front door shows no user content yet, so a branded moment here does not fight a brand-color video preview. QA: this screen is intentionally off the base spec; do not flag. |
 | 2026-06-06 | Built the flow's remaining screens: a shared quiet app header (crystal-ball mark + "Renderball" wordmark, "Your videos" + "New video"), a "Your videos" gallery at `/videos`, an on-brand build ceremony (crystal orb + honest per-scene progress), and a reskinned preview playback surface | Completes the create → review → build → preview → export loop and gives returning users a home base (surfaces `listBriefs`). Replaced off-brand developer UI — the yellow "build preview" box and raw `gray-900` / `amber` / `emerald-600` controls — with the design tokens. |
 | 2026-06-06 | Quiet chrome enforced on `/review` and `/preview`; the emerald-glass treatment stays exclusive to `/new`; MP4 export consolidated to a single point (preview) | Applies the "chrome recedes when a brand-color preview is on screen" rule so the user's video is the loudest thing. Removed the duplicate "Render MP4" action from `/review` (export lives at the end of the flow); fixed scenes rendering "Untitled scene" by promoting the best available scene text (headline → role → label). |
+| 2026-07-24 | Landing sandbox beat + persistence into activation shipped (the consultation's two deferred ideas) | The band accepts real visitor marquees from the first landed artifact until the deck beat; precomputed intents materialize instantly (zero LLM, mono `sandbox` label, user box is law, clamped to the BAND contract); the scripted artifacts drag with the handle affordance, additively over the pure scroll beats. Canvas state persists to localStorage; `/new` offers "Continue what you started" (seeds the brief prompt in editable words) with a mono `start clean` hatch. Picker is chips only — the no-prompt-box rule holds. |

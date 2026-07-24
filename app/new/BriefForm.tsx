@@ -15,6 +15,13 @@ import {
   SECONDS_PER_MOMENT_FLOOR,
 } from "./schema";
 import { AnalyzePanel, computeAnalyzeSteps, type AnalyzeStep } from "./AnalyzePanel";
+import {
+  clearSandboxState,
+  composeBriefFromSandbox,
+  describeSandbox,
+  loadSandboxState,
+  type LandingSandboxState,
+} from "../../lib/landing-sandbox";
 
 /**
  * Brief front door (fluid v1).
@@ -59,6 +66,28 @@ export function BriefForm({
   // initialPrompt / initialUrl carry a prompt typed on the landing hero
   // through sign-in into the front door.
   const [introPrompt, setIntroPrompt] = useState(initialPrompt);
+
+  // ─── Continue what you started (landing-canvas sandbox) ──────────
+  // The landing stage serializes the visitor's drawn boxes + chosen intents
+  // to localStorage; if that survived sign-in, offer to seed the brief from
+  // it. Honest smallest version: the intents become words in the prompt the
+  // user can read and edit — no forged document. `start clean` is the
+  // escape hatch; both paths clear the stored canvas.
+  const [landingSeed, setLandingSeed] = useState<LandingSandboxState | null>(null);
+  useEffect(() => {
+    const s = loadSandboxState();
+    if (s && s.elements.length > 0) setLandingSeed(s);
+  }, []);
+  const continueFromLanding = () => {
+    if (!landingSeed) return;
+    setIntroPrompt(composeBriefFromSandbox(landingSeed));
+    clearSandboxState();
+    setLandingSeed(null);
+  };
+  const startClean = () => {
+    clearSandboxState();
+    setLandingSeed(null);
+  };
   const [brandFiles] = useState<File[]>([]);
   const [brandKitUrl, setBrandKitUrl] = useState(initialUrl);
   /**
@@ -290,6 +319,38 @@ export function BriefForm({
           Render your business{" "}
           <span className="text-accent-text">story</span>.
         </h1>
+
+        {/* Continue what you started — seeded by the landing-canvas sandbox */}
+        {landingSeed && (
+          <div className="glass mb-4 rounded-md p-4">
+            <p className="font-mono text-[11px] uppercase tracking-[0.14em] text-muted">
+              from the landing canvas
+            </p>
+            <p className="mt-1.5 text-[13.5px] leading-relaxed text-ink">
+              You started something out there —{" "}
+              <span className="font-mono text-[12.5px] text-accent-text">
+                {describeSandbox(landingSeed)}
+              </span>
+              .
+            </p>
+            <div className="mt-3 flex flex-wrap items-center gap-4">
+              <button
+                type="button"
+                onClick={continueFromLanding}
+                className="rounded-md border border-accent-line bg-accent-soft px-3.5 py-1.5 text-[12.5px] font-medium text-ink transition-colors hover:bg-accent hover:text-accent-ink"
+              >
+                Continue what you started →
+              </button>
+              <button
+                type="button"
+                onClick={startClean}
+                className="font-mono text-[11.5px] text-muted transition-colors hover:text-ink"
+              >
+                start clean
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Prompt card — frosted glass floating on the emerald field */}
         <div className="glass rounded-md p-4 transition-colors focus-within:border-accent-line">
