@@ -3,7 +3,8 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { cn } from "../../lib/cn";
-import { submitBrief, crawlWebsite } from "./actions";
+import { submitBrief, crawlWebsite, loadSavedBrandKit } from "./actions";
+import type { BrandKitSummary } from "./actions";
 import type {
   BrandExtract,
   DistributionFormat,
@@ -55,9 +56,12 @@ const newMoment = (): MomentInput => ({
 export function BriefForm({
   initialPrompt = "",
   initialUrl = "",
+  savedKits = [],
 }: {
   initialPrompt?: string;
   initialUrl?: string;
+  /** The account's saved brand kits (canvas pivot) — picker near the URL field. */
+  savedKits?: BrandKitSummary[];
 } = {}) {
   const router = useRouter();
   const [error, setError] = useState<string | null>(null);
@@ -127,6 +131,12 @@ export function BriefForm({
   const crawledUrlRef = useRef<string | null>(null);
   const crawlInflightRef = useRef<Promise<BrandExtract> | null>(null);
 
+  // ─── Saved brand kits (canvas pivot: kit reuse across documents) ──
+  // Picking a kit hydrates the form from the stored extract — no crawl.
+  const [kits, setKits] = useState<BrandKitSummary[]>(savedKits);
+  const [selectedKitId, setSelectedKitId] = useState<string | null>(null);
+  const [kitBusy, setKitBusy] = useState<"loading" | "refreshing" | null>(null);
+
   // ─── Generation phase ────────────────────────────────────────────
   const [generating, setGenerating] = useState(false);
   const [analyzeSteps, setAnalyzeSteps] = useState<AnalyzeStep[]>([]);
@@ -167,6 +177,82 @@ export function BriefForm({
     });
     crawlInflightRef.current = p;
     return p;
+  };
+
+  // ─── Saved-kit selection / refresh ───────────────────────────────
+  /**
+   * Hydrate the form from a saved kit: the stored extract stands in for a
+   * completed crawl (ensureCrawl sees the host as already crawled, so submit
+   * fires no crawl), and the user's earlier locks pre-fill — a kit that
+   * carries a logo_source passed the identity gate before.
+   */
+  const applySavedKit = async (kit: BrandKitSummary) => {
+    setSelectedKitId(kit.id);
+    setKitBusy("loading");
+    setBrandKitUrl(kit.host);
+    crawledUrlRef.current = kit.host;
+    crawlInflightRef.current = null;
+    const saved = await loadSavedBrandKit(kit.id);
+    if (!saved) {
+      // Kit unreadable (deleted / DB blip) — degrade to a fresh crawl.
+      setSelectedKitId(null);
+      setKitBusy(null);
+      setBrandExtract(null);
+      const p = crawlWebsite(kit.host).then((extract) => {
+        setBrandExtract(extract);
+        return extract;
+      });
+      crawlInflightRef.current = p;
+      return;
+    }
+    setBrandExtract(saved.brand_extract);
+    setPaletteRoles(saved.palette_roles ?? {});
+    // Switching identity: a logo uploaded for the previous brand doesn't carry.
+    setLogoFile(null);
+    setLogoPreview((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return null;
+    });
+    setCrawledLogoAccepted(
+      saved.logo_source === "crawl_confirmed" && !!saved.brand_extract.logo_hd,
+    );
+    // logo_source on the kit ⇒ it completed a submit's identity gate, which
+    // required the palette confirmation — honor that earlier lock.
+    setColorsConfirmed(saved.logo_source != null);
+    setKitBusy(null);
+  };
+
+  /** Re-crawl the kit's site; the server refreshes the stored kit in place. */
+  const refreshSavedKit = async (kit: BrandKitSummary) => {
+    setKitBusy("refreshing");
+    setBrandKitUrl(kit.host);
+    crawledUrlRef.current = kit.host;
+    const p = crawlWebsite(kit.host).then((extract) => {
+      setBrandExtract(extract);
+      return extract;
+    });
+    crawlInflightRef.current = p;
+    const extract = await p;
+    // Fresh scan = fresh identity evidence: confirmations don't carry over.
+    setCrawledLogoAccepted(false);
+    setColorsConfirmed(false);
+    if (extract.ok) {
+      // The server upserted the kit; keep this pill's chrome in sync.
+      setKits((ks) =>
+        ks.map((k) =>
+          k.id === kit.id
+            ? {
+                ...k,
+                title: extract.title ?? k.title,
+                logo_hd: extract.logo_hd,
+                palette: (extract.palette ?? []).slice(0, 4),
+                updated_at: new Date().toISOString(),
+              }
+            : k,
+        ),
+      );
+    }
+    setKitBusy(null);
   };
 
   // ─── Generation ──────────────────────────────────────────────────
@@ -372,9 +458,11 @@ export function BriefForm({
                   setBrandKitUrl(e.target.value);
                   if (crawledUrlRef.current !== e.target.value.trim()) {
                     setBrandExtract(null);
-                    // New site = new identity: prior confirmations don't carry.
+                    // New site = new identity: prior confirmations don't carry,
+                    // and a hand-edited URL deselects the saved kit.
                     setCrawledLogoAccepted(false);
                     setColorsConfirmed(false);
+                    setSelectedKitId(null);
                   }
                 }}
                 onBlur={() => {
@@ -404,8 +492,67 @@ export function BriefForm({
           </div>
         </div>
 
+        {/* Saved brand kits — pick one to skip the crawl (canvas pivot).
+            Quiet by design: a mono eyebrow + hairline pills; the accent only
+            marks the active kit. Renders nothing when the account has none. */}
+        {kits.length > 0 && (
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <span className="font-mono text-[11px] uppercase tracking-[0.14em] text-muted">
+              saved brands
+            </span>
+            {kits.map((kit) => {
+              const active = selectedKitId === kit.id;
+              return (
+                <button
+                  key={kit.id}
+                  type="button"
+                  onClick={() => void applySavedKit(kit)}
+                  disabled={kitBusy !== null}
+                  title={kit.title ? `${kit.title} — last scanned ${kit.updated_at.slice(0, 10)}` : kit.host}
+                  className={cn(
+                    "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 font-mono text-[11px] transition-colors disabled:opacity-60",
+                    active
+                      ? "border-accent-line bg-accent-soft text-ink"
+                      : "border-hairline-strong text-muted hover:text-ink",
+                  )}
+                >
+                  {kit.palette.length > 0 && (
+                    <span className="flex items-center gap-0.5" aria-hidden>
+                      {kit.palette.slice(0, 3).map((hex) => (
+                        <span
+                          key={hex}
+                          className="inline-block h-2 w-2 rounded-full border border-hairline"
+                          style={{ background: hex }}
+                        />
+                      ))}
+                    </span>
+                  )}
+                  {kit.host}
+                </button>
+              );
+            })}
+            {selectedKitId && (
+              <button
+                type="button"
+                onClick={() => {
+                  const kit = kits.find((k) => k.id === selectedKitId);
+                  if (kit) void refreshSavedKit(kit);
+                }}
+                disabled={kitBusy !== null}
+                title="Re-scan the site and update this saved brand"
+                className="font-mono text-[11px] text-muted transition-colors hover:text-ink disabled:opacity-60"
+              >
+                {kitBusy === "refreshing" ? "re-scanning…" : "↻ re-scan"}
+              </button>
+            )}
+          </div>
+        )}
+
         {/* Crawl status */}
         <div className="mt-3 min-h-[20px] font-mono text-[12.5px]">
+          {kitBusy === "loading" && !brandExtract && (
+            <span className="text-muted">loading saved brand…</span>
+          )}
           {brandExtract?.ok && (
             <span className="inline-flex items-center gap-2 text-accent-text">
               <span className="inline-block h-1.5 w-1.5 rounded-full bg-accent" />

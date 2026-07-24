@@ -57,6 +57,7 @@ model User {
   usageRecords  UsageRecord[]
   subscription  Subscription?
   tokenUsage    TokenUsage?
+  brandKits     BrandKit[]
 }
 
 model Subscription {
@@ -175,6 +176,26 @@ model FreeTierSignup {
   @@index([email])
   @@index([ip])
   @@index([fingerprint])
+}
+
+// Saved brand kit (canvas pivot, docs/PIVOT.md NEW #5): the crawl's
+// BrandExtract promoted from a per-brief cache (StoredBrief.brand_extract)
+// to an account-level entity reusable across documents. One kit per
+// (owner, host); a re-crawl refreshes `extract` in place, and the user's
+// overrides only change when the user re-locks them (see lib/brand-kits.ts).
+model BrandKit {
+  id           String   @id @default(cuid())
+  ownerId      String
+  owner        User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  url          String   // normalized host, e.g. "acme.com" (the full crawl URL lives in extract.url)
+  extract      Json     // BrandExtract (app/new/schema.ts) — shape identical to StoredBrief.brand_extract
+  paletteRoles Json?    // user override: { primary?, accent?, light?, dark? } hex roles
+  logoSource   String?  // user override: "upload" | "crawl_confirmed" — how the logo was locked
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([ownerId, url])
+  @@index([ownerId, updatedAt])
 }
 
 // Script JSON bytes, keyed by script ULID. Separate from Project.script

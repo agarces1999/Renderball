@@ -95,7 +95,7 @@ export async function deleteUserData(userId: string): Promise<DeletionSummary> {
     scriptDocsDeleted = r.count;
   }
 
-  // 3. The user row (cascades projects/usage/renders/subscription)
+  // 3. The user row (cascades projects/usage/renders/subscription/brand kits)
   await prisma.user.delete({ where: { id: user.id } });
 
   // 4. Local artifacts — best-effort
