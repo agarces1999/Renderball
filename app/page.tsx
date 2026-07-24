@@ -1,29 +1,37 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { auth } from "@clerk/nextjs/server";
-import { HeroPrompt } from "../components/HeroPrompt";
-import { HowItWorksDemo } from "../components/HowItWorksDemo";
+import { LandingCanvas } from "../components/LandingCanvas";
 
 /**
- * Public marketing landing page (the only fully public surface).
+ * Public landing (the only fully public surface) — canvas-pivot edition, per
+ * DESIGN.md "Landing — the canvas performs" (2026-07-24).
  *
- * Signed-in visitors are sent straight to their gallery; signed-out visitors
- * see the product pitch + pricing. This is also what payment/processor reviews
- * (Lemon Squeezy, Stripe) look at — a real description of what's sold, not a
- * login wall. Voice + tokens per DESIGN.md: cool greyscale chrome, the emerald
- * signal used sparingly, Cabinet Grotesk for display, no exclamation marks.
+ * The hero IS a Renderball canvas performing the product story: the
+ * prompt-box funeral, marquee-draw → element, brand-from-URL, real-elements
+ * manipulation, the deck rail with the real 4:37 receipt, and a final drawn
+ * marquee that generates the CTA. NO prompt box exists on this page — the
+ * category's convention is the thing being refused.
+ *
+ * Below the fold stays quiet and server-rendered: claims, usage-based
+ * pricing (editing free · generation metered · first 1M tokens free — never
+ * a flat $/mo figure), a deck-era FAQ, and the legal/contact links that
+ * payment-processor reviews require.
+ *
+ * Signed-in visitors go straight to the editor entry (/new), not a gallery —
+ * editor companies drop you in the tool.
  */
 export const dynamic = "force-dynamic";
 
 export default async function LandingPage() {
   const { userId } = await auth();
-  if (userId) redirect("/videos");
+  if (userId) redirect("/new");
 
   return (
     <div className="min-h-screen bg-canvas">
       <LandingHeader />
-      <Hero />
-      <HowItWorks />
+      <LandingCanvas />
+      <Claims />
       <Pricing />
       <Faq />
       <FooterCta />
@@ -44,12 +52,6 @@ function LandingHeader() {
         </Link>
         <nav className="flex items-center gap-1">
           <a
-            href="#how"
-            className="hidden rounded-md px-3 py-1.5 text-[13px] text-muted transition-colors hover:text-ink sm:inline-block"
-          >
-            How it works
-          </a>
-          <a
             href="#pricing"
             className="hidden rounded-md px-3 py-1.5 text-[13px] text-muted transition-colors hover:text-ink sm:inline-block"
           >
@@ -65,7 +67,7 @@ function LandingHeader() {
             href="/new"
             className="rounded-md bg-accent px-3.5 py-1.5 text-[13px] font-semibold text-accent-ink transition-all hover:brightness-110"
           >
-            Make a video
+            Open the editor
           </Link>
         </nav>
       </div>
@@ -73,82 +75,35 @@ function LandingHeader() {
   );
 }
 
-function Hero() {
-  return (
-    // Emerald brand-field scoped to the hero (DESIGN.md decisions log 2026-06-06
-    // already approves this treatment on /new — extending the same exception
-    // here so the front door reads as a brand moment, not a doc page).
-    <section className="brand-field relative overflow-hidden">
-      <div className="mx-auto max-w-6xl px-6 pb-24 pt-16 text-center sm:pt-24">
-        <span
-          className="orb orb-spin mx-auto mb-9 block h-[120px] w-[120px]"
-          aria-hidden
-        />
-        <p className="mb-5 font-mono text-[11px] uppercase tracking-[0.18em] text-muted">
-          AI-native video generation
-        </p>
-        <h1 className="mx-auto max-w-[18ch] font-display text-[clamp(34px,6vw,60px)] font-semibold leading-[1.04] tracking-tight text-ink">
-          Animation-rich video. Written by AI. Rendered to your brand.
-        </h1>
-        <p className="mx-auto mt-6 max-w-[56ch] text-[clamp(15px,2vw,18px)] leading-relaxed text-ink-soft">
-          Describe the video you want. Approve a detailed script. Get a polished
-          MP4 in minutes. Your fonts, your colors, your exact text.
-        </p>
-        <HeroPrompt />
-        <div className="mt-6 flex flex-wrap items-center justify-center gap-x-4 gap-y-1 font-mono text-[11px] text-faint">
-          <span>$49.99/mo · 1080p · no watermark</span>
-          <a href="#how" className="underline transition-colors hover:text-muted">
-            See how it works
-          </a>
-        </div>
-      </div>
-    </section>
-  );
-}
-
-function HowItWorks() {
-  const steps = [
+function Claims() {
+  const claims = [
     {
       n: "01",
-      title: "Tell us what the video is for",
-      body: "Plain English — a launch on your landing page, a Black Friday social story, an investor update. No categories, no boxes. Describe it the way you'd describe it to a designer.",
+      title: "Draw a box. Say what lives in it.",
+      body: "Marquee any area of the canvas and describe what belongs there — a KPI tile, a chart, a pull-quote. A real element is generated inside exactly those bounds. The model writes the element; it never controls your box.",
     },
     {
       n: "02",
-      title: "Approve a detailed script",
-      body: "We generate a second-by-second script: text, fonts, colors, timing, animation, music cues. Edit any field, regenerate any scene, or approve as-is. Nothing renders until you say yes.",
+      title: "Paste a URL. It's already on-brand.",
+      body: "Renderball crawls the site, extracts the logo, palette, and fonts, and reads the design language. Every slide it generates is set in your brand before you touch anything.",
     },
     {
       n: "03",
-      title: "Get the MP4 in minutes",
-      body: "We render at 1080p and verify the output against your approved script. Download it, share it, or tweak the script and re-render the changed scenes.",
+      title: "Real elements. Never images.",
+      body: "Everything generated is a live, positioned element — draggable, resizable, retypable, exportable to crisp PDF at any scale. Not a screenshot of a design. The design.",
     },
   ];
   return (
-    <section id="how" className="border-t border-hairline bg-surface">
+    <section className="border-t border-hairline bg-surface">
       <div className="mx-auto max-w-6xl px-6 py-20">
-        <h2 className="mb-2 font-display text-[clamp(24px,3.4vw,32px)] font-semibold tracking-tight text-ink">
-          Three gates, no surprises
-        </h2>
-        <p className="mb-10 max-w-[52ch] text-[15px] leading-relaxed text-muted">
-          You approve the story before any expensive compute runs, so you never
-          pay for the wrong video.
-        </p>
-        <div className="mb-14">
-          <HowItWorksDemo />
-        </div>
-        <div className="grid gap-8 md:grid-cols-3">
-          {steps.map((s) => (
-            <div key={s.n}>
+        <div className="grid gap-10 md:grid-cols-3">
+          {claims.map((c) => (
+            <div key={c.n}>
               <div className="mb-4 font-mono text-[12px] tracking-[0.14em] text-accent-text">
-                {s.n}
+                {c.n}
               </div>
-              <h3 className="mb-2 text-[17px] font-semibold text-ink">
-                {s.title}
-              </h3>
-              <p className="text-[14.5px] leading-relaxed text-ink-soft">
-                {s.body}
-              </p>
+              <h3 className="mb-2 text-[17px] font-semibold text-ink">{c.title}</h3>
+              <p className="text-[14.5px] leading-relaxed text-ink-soft">{c.body}</p>
             </div>
           ))}
         </div>
@@ -158,14 +113,6 @@ function HowItWorks() {
 }
 
 function Pricing() {
-  const points = [
-    "Unlimited videos, every month",
-    "1080p, no watermark, your license",
-    "AI voiceover included",
-    "Brand kit storage + script history",
-    "Priority render queue",
-    "Cancel anytime",
-  ];
   return (
     <section id="pricing" className="border-t border-hairline bg-surface">
       <div className="mx-auto max-w-6xl px-6 py-20">
@@ -173,37 +120,40 @@ function Pricing() {
           Pricing
         </p>
         <h2 className="mb-3 text-center font-display text-[clamp(26px,3.6vw,36px)] font-semibold tracking-tight text-ink">
-          One plan. Everything included.
+          Editing is free. Generation is metered.
         </h2>
-        <p className="mx-auto mb-12 max-w-[52ch] text-center text-[15px] leading-relaxed text-muted">
-          Full 1080p, no watermark, AI voiceover included. Your license, your
-          assets.
+        <p className="mx-auto mb-12 max-w-[56ch] text-center text-[15px] leading-relaxed text-muted">
+          Dragging, resizing, retyping, reordering — free, forever, unmetered.
+          You pay only for the tokens the model spends creating, at a price you
+          can read like a receipt.
         </p>
         <div className="mx-auto max-w-md">
           <div className="flex flex-col rounded-lg border border-accent-line bg-canvas p-7 shadow-[0_24px_60px_-30px_rgba(0,194,138,0.5)]">
             <div className="mb-1 flex items-center justify-between gap-2">
-              <h3 className="text-[15px] font-semibold text-ink">Renderball</h3>
+              <h3 className="text-[15px] font-semibold text-ink">Usage-based</h3>
               <span className="rounded-full bg-accent-soft px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.1em] text-accent-text">
-                Subscription
+                Metered
               </span>
             </div>
             <div className="mb-1 flex items-baseline gap-1.5">
               <span className="font-display text-[42px] font-semibold tracking-tight text-ink">
-                $49.99
+                1M tokens
               </span>
-              <span className="font-mono text-[12px] text-muted">
-                per month
-              </span>
+              <span className="font-mono text-[12px] text-muted">free</span>
             </div>
             <p className="mb-6 text-[13px] text-muted">
-              Billed monthly. Cancel anytime.
+              About three full decks. No card required.
             </p>
             <ul className="mb-7 flex-1 space-y-2.5">
-              {points.map((p) => (
-                <li
-                  key={p}
-                  className="flex items-start gap-2.5 text-[14px] text-ink-soft"
-                >
+              {[
+                "Every edit free: drag, resize, retype, reorder, undo",
+                "Generation metered per token — $9.30 per 1M tokens",
+                "A full deck ≈ 330k tokens (about $3)",
+                "On-brand from your URL, editable to the last element",
+                "Export to PDF and per-slide PNG",
+                "No subscription, no seats, no watermark",
+              ].map((p) => (
+                <li key={p} className="flex items-start gap-2.5 text-[14px] text-ink-soft">
                   <span
                     className="mt-1.5 inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-accent"
                     aria-hidden
@@ -216,10 +166,10 @@ function Pricing() {
               href="/new"
               className="rounded-md bg-accent px-4 py-3 text-center text-[14.5px] font-semibold text-accent-ink transition-all hover:brightness-110"
             >
-              Start your subscription
+              Open the editor
             </Link>
             <p className="mt-3 text-center font-mono text-[11px] text-faint">
-              Secure checkout via our payment processor
+              Metered billing via Stripe · usage visible on your account
             </p>
           </div>
         </div>
@@ -231,24 +181,24 @@ function Pricing() {
 function Faq() {
   const qa = [
     {
-      q: "Do I need to know video software?",
-      a: "No. You describe what the video is for in plain English, and Renderball does the rest — script, design, animation, and render.",
+      q: "Is the output actually editable?",
+      a: "Yes — that's the whole point. Every slide is made of real positioned elements. Drag them, resize them, retype them inline, delete them, or draw a box and generate a new one. Nothing is a flattened image.",
     },
     {
-      q: "Will my video have a watermark?",
-      a: "Never. Every video is yours, clean — no watermark, your license.",
+      q: "How does it stay on my brand?",
+      a: "Paste your website. Renderball extracts your logo, palette, and fonts, reads your design language, and sets every generated slide in it. You confirm the brand kit before anything is generated.",
     },
     {
-      q: "Can I use my own logo, fonts, and brand colors?",
-      a: "Yes. Paste your website and Renderball auto-extracts your brand, or upload your assets directly.",
+      q: "How long does a deck take?",
+      a: "About five minutes from URL to exported deck — the receipt on this page (4:37, five slides) is a real recorded session, not a promise.",
     },
     {
-      q: "How long does a video take?",
-      a: "Minutes from brief to delivery, including the script-approval step. Script edits re-render the changed scenes quickly.",
+      q: "What does it cost?",
+      a: "Editing is free and unmetered. Generation is billed per token: your first 1,000,000 tokens are free (about three decks), then $9.30 per 1M tokens. A typical deck runs about $3 of generation.",
     },
     {
-      q: "What can I use it for?",
-      a: "Anything animation-rich: product launches, feature reveals, customer stories, sales outreach, social posts, investor updates, explainers.",
+      q: "What about video?",
+      a: "The same engine renders motion. Video returns as a premium export — your deck, animated — after decks. It's shelved, not gone.",
     },
   ];
   return (
@@ -260,12 +210,8 @@ function Faq() {
         <div className="divide-y divide-hairline">
           {qa.map((item) => (
             <div key={item.q} className="py-5">
-              <h3 className="mb-1.5 text-[15px] font-semibold text-ink">
-                {item.q}
-              </h3>
-              <p className="text-[14.5px] leading-relaxed text-ink-soft">
-                {item.a}
-              </p>
+              <h3 className="mb-1.5 text-[15px] font-semibold text-ink">{item.q}</h3>
+              <p className="text-[14.5px] leading-relaxed text-ink-soft">{item.a}</p>
             </div>
           ))}
         </div>
@@ -276,28 +222,24 @@ function Faq() {
 
 function FooterCta() {
   return (
-    // Closer: same brand-field as the hero, so the landing opens and closes on
-    // an emerald moment with the content in between in the quiet greyscale.
     <section className="brand-field relative overflow-hidden border-t border-hairline">
       <div className="mx-auto max-w-6xl px-6 py-28 text-center">
-        <span
-          className="orb orb-spin mx-auto mb-9 block h-[140px] w-[140px]"
-          aria-hidden
-        />
-        <h2 className="mx-auto max-w-[22ch] font-display text-[clamp(32px,5vw,52px)] font-semibold leading-[1.04] tracking-tight text-ink">
-          Make videos people remember
+        <span className="orb orb-spin mx-auto mb-9 block h-[120px] w-[120px]" aria-hidden />
+        <h2 className="mx-auto max-w-[24ch] font-display text-[clamp(30px,4.6vw,48px)] font-semibold leading-[1.04] tracking-tight text-ink">
+          The canvas is waiting.
         </h2>
-        <p className="mx-auto mt-5 max-w-[44ch] text-[clamp(15px,2vw,17px)] leading-relaxed text-ink-soft">
-          One subscription. Unlimited videos. Your brand, every frame.
+        <p className="mx-auto mt-5 max-w-[46ch] text-[clamp(15px,2vw,17px)] leading-relaxed text-ink-soft">
+          Sign-in drops you onto a canvas, not a dashboard. First million
+          tokens on us.
         </p>
         <Link
           href="/new"
           className="mt-10 inline-block rounded-md bg-accent px-8 py-3.5 text-[15px] font-semibold text-accent-ink shadow-[0_20px_50px_-20px_rgba(0,194,138,0.7)] transition-all hover:brightness-110"
         >
-          Start for $49.99/mo →
+          Open the editor →
         </Link>
         <p className="mt-5 font-mono text-[11px] text-faint">
-          Billed monthly. Cancel anytime.
+          no card · editing always free
         </p>
       </div>
     </section>
@@ -327,16 +269,11 @@ function SiteFooter() {
           <Link href="/refunds" className="transition-colors hover:text-ink">
             Refunds
           </Link>
-          <a
-            href="mailto:support@renderball.com"
-            className="transition-colors hover:text-ink"
-          >
+          <a href="mailto:support@renderball.com" className="transition-colors hover:text-ink">
             Contact
           </a>
         </nav>
-        <p className="font-mono text-[11px] text-faint">
-          © 2026 Renderball
-        </p>
+        <p className="font-mono text-[11px] text-faint">© 2026 Renderball</p>
       </div>
     </footer>
   );

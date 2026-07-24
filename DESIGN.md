@@ -109,6 +109,83 @@ The split is the point: a precise display face for the story, a neutral grotesqu
 - **Easing:** enter ease-out, exit ease-in, move ease-in-out. No bounce in the chrome.
 - **Duration:** micro 80-120ms · short 160-240ms · medium 260-420ms · long 420-700ms (reserve long for the orb / hero only).
 
+## Landing — the canvas performs (locked 2026-07-24, founder brief + /design-consultation)
+
+**Positioning thesis:** every AI tool's landing sells the input (a prompt box);
+Renderball's sells the surface where work finishes. The landing IS the editor
+performing. Evidence: v0/Gamma lead with "ask the box"; Cursor/Framer can only
+show static screenshots of their editors. Our output is real DOM, so the page
+itself can generate — a claim chat-output competitors structurally cannot copy.
+
+**Tagline (lock):** "Design should not be prompted. It should be drawn."
+Two-voice synthesis (2026-07-24): the founder's original word was
+"visualized"; the independent design voice argued — and the consultation
+agreed — that "drawn" is the verb only this product owns (drawing the
+rectangle IS the interface), while "visualized" is what every AI company
+claims. The founder's original sentence lives on as the meta description.
+One-string revert if the founder disagrees. The second line wears a live
+emerald selection frame + corner handles + a mono dimension tag: the tagline
+presents as a just-generated element. Eyebrow above it in mono: THE FIRST
+AI-NATIVE DESIGN EDITOR.
+
+**Hero opener — the prompt-box funeral:** the canvas first shows the
+category's altar (a centered "Describe your deck…" input), selects it like an
+object (mono tag: `prompt — legacy input`), and DELETES it; the first marquee
+draws in its place. The positioning argument performed in three seconds,
+no copy needed.
+
+**Honesty rules (from the outside voice, adopted):** precomputed
+generations carry a mono `sandbox` label; no fake spinners; every timestamp
+and token figure on the page comes from a real recorded session (the 4:37
+flarebit deck build; real ledger token counts). Every claim on the page must
+be demonstrated on the page or cut. Session clock in mono ticks from first
+scroll.
+
+**Deferred (queued, not tonight):** visitor-editable hero elements and
+landing-canvas state persisting through sign-in into the first document
+("your edits come with you") — the strongest activation idea from the
+consultation; needs real pointer plumbing + a state-seeding path.
+
+**Hard rules:**
+- NO prompt box anywhere on the landing. Not the hero, not the footer
+  (Framer caves at the bottom; we don't). The only inputs on screen are
+  diegetic — props inside the canvas performance.
+- Everything that "generates" is REAL DOM appearing with system easings —
+  never video, never Lottie. The medium is the proof.
+- Light canvas default (subverts the dark-AI-tool trend; Cursor-adjacent,
+  distinct from Framer/Linear). Dark stays available via tokens.
+- Emerald discipline holds: accent appears only on the marquee stroke, the
+  CTA, and generation highlights. The performed brand-swap beat may tint
+  DEMO content with a demo-brand color; chrome never borrows it.
+- Orb = the seed. It sits at canvas origin and "clears" as beats generate.
+  Meaning shifts from video-era foresight to: the seed that renders.
+- Reduced motion / no-JS: the composed final state renders statically with
+  the caption stack; no sticky theatrics.
+- CTA is "Open the editor" and routes to /new — through sign-in when logged
+  out, straight in when logged in. Signed-in visitors hitting / redirect to
+  /new, not the gallery. Editor companies drop you in the tool.
+
+**Scroll narrative (sticky stage, ~5 beats):**
+1. SEED — blank dot-grid canvas, orb pulsing; tagline stages itself; the
+   second line generates inside a drawn marquee.
+2. DRAW — a marquee rectangle draws, a mono prompt types ("a KPI tile
+   showing 3.2× faster"), a real KPI tile pops at exactly those bounds.
+   Claim: Draw a box. Say what goes there. It exists.
+3. BRAND — a URL chip lands; palette/font chips extract from it; the demo
+   content re-tints live. Claim: Paste a URL. It's already on-brand.
+4. REAL — selection handles appear, the tile drags/resizes, a caption gets
+   an inline text caret, mono coords tick. Claim: Real elements, not
+   screenshots.
+5. DECK + CLOSE — the canvas becomes slide 1 of a rail; slides 2–5
+   generate; mono timer. Then the canvas clears and one final marquee draws
+   with the CTA generated inside it. Ledger line: editing is free ·
+   generation is metered · first 1M tokens free.
+
+**Below the fold (quiet, server-rendered):** three claim columns
+(draw/brand/real), usage-based pricing (free 1M tokens, then per-token —
+NEVER a flat $/mo figure), deck-era FAQ, legal links + support contact
+(processor-review requirements stay).
+
 ## UX Flow — fluid v1 (the redesign)
 The old 5-step upfront wizard (site → format → colors → shape → prompt, before showing anything) is replaced. The whole category moved to intent-first generation; config-before-creation is the friction. New flow leads with the prompt and makes the **story** the first artifact the user sees and shapes.
 

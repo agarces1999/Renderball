@@ -4,13 +4,15 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   metadataBase: new URL(process.env.NEXT_PUBLIC_APP_URL || "https://renderball.com"),
-  title: "Renderball — render your business story",
+  title: "Renderball — the AI-native design editor",
+  // The founder's original tagline lives here by design (DESIGN.md Landing):
+  // the H1 sharpened to "drawn", the meta keeps "visualized".
   description:
-    "AI-native video generation. A brief becomes a story-driven, on-brand animated video. Render your business story.",
+    "Design should not be prompted, it should be visualized. Draw a box, say what goes there, and a real element appears — decks generated on your brand in minutes. Editing is free; generation is metered.",
   openGraph: {
-    title: "Renderball — render your business story",
+    title: "Renderball — the AI-native design editor",
     description:
-      "AI-native video generation. A brief becomes a story-driven, on-brand animated video.",
+      "Draw a box, say what goes there, and a real element appears. On-brand, editable decks in minutes. Editing free; generation metered.",
     siteName: "Renderball",
     type: "website",
   },
