@@ -364,7 +364,7 @@ function Marquee({
       style={{ left: slot.x, top: slot.y, width: slot.w, height: slot.h }}
     >
       <div
-        className="absolute left-0 top-0 rounded-[4px] border-[1.5px] border-dashed border-accent-line bg-accent-soft/30 transition-opacity duration-300"
+        className="absolute left-0 top-0 rounded-[4px] border-[1.5px] border-dashed border-accent-line bg-accent-soft transition-opacity duration-300"
         style={{
           width: Math.max(20, ease(drawT) * slot.w),
           height: Math.max(20, ease(drawT) * slot.h),
@@ -542,8 +542,8 @@ function QuoteBlock({ b }: { b: number }) {
       style={{ opacity: frame, transform: `translateY(${(1 - frame) * 10}px)` }}
     >
       <span
-        className="pointer-events-none absolute -top-2 left-3 select-none font-display text-[86px] leading-none text-ink/[0.07] transition-all duration-500"
-        style={{ opacity: mark, transform: `scale(${0.85 + mark * 0.15})` }}
+        className="pointer-events-none absolute -top-2 left-3 select-none font-display text-[86px] leading-none text-ink transition-all duration-500"
+        style={{ opacity: mark * 0.1, transform: `scale(${0.85 + mark * 0.15})` }}
         aria-hidden
       >
         &ldquo;
@@ -806,15 +806,15 @@ function DeckBeat({ p }: { p: number }) {
     if (i === 0)
       return (
         <>
-          <div className="h-2 w-3/4 rounded-sm bg-ink/80" />
-          <div className="mt-1 h-1 w-1/2 rounded-sm bg-ink/25" />
-          <div className="mt-3 h-[3px] w-6 rounded-full bg-accent/70" />
+          <div className="h-2 w-3/4 rounded-sm bg-ink" />
+          <div className="mt-1 h-1 w-1/2 rounded-sm bg-faint" />
+          <div className="mt-3 h-[3px] w-6 rounded-full bg-accent" />
         </>
       );
     if (i === 2)
       return (
         <>
-          <div className="h-1.5 w-2/3 rounded-sm bg-ink/70" />
+          <div className="h-1.5 w-2/3 rounded-sm bg-ink" />
           <div className="mt-2 flex h-8 items-end gap-1 border-b border-hairline pb-0.5">
             {[40, 70, 55, 90].map((v, j) => (
               <div
@@ -832,16 +832,16 @@ function DeckBeat({ p }: { p: number }) {
     if (i === 4)
       return (
         <>
-          <div className="mx-auto mt-2 h-2 w-2/3 rounded-sm bg-ink/75" />
-          <div className="mx-auto mt-2 h-4 w-1/2 rounded-md bg-accent/80" />
+          <div className="mx-auto mt-2 h-2 w-2/3 rounded-sm bg-ink" />
+          <div className="mx-auto mt-2 h-4 w-1/2 rounded-md bg-accent" />
         </>
       );
     return (
       <>
-        <div className="h-1.5 w-3/4 rounded-sm bg-ink/70" />
-        <div className="mt-1.5 h-1 w-full rounded-sm bg-ink/15" />
-        <div className="mt-1 h-1 w-5/6 rounded-sm bg-ink/15" />
-        <div className="mt-1 h-1 w-4/6 rounded-sm bg-ink/15" />
+        <div className="h-1.5 w-3/4 rounded-sm bg-ink" />
+        <div className="mt-1.5 h-1 w-full rounded-sm bg-surface-3" />
+        <div className="mt-1 h-1 w-5/6 rounded-sm bg-surface-3" />
+        <div className="mt-1 h-1 w-4/6 rounded-sm bg-surface-3" />
       </>
     );
   };

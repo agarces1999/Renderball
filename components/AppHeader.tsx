@@ -26,7 +26,7 @@ export function AppHeader({
         "z-20 w-full",
         light
           ? "relative"
-          : "sticky top-0 border-b border-hairline bg-canvas/80 backdrop-blur-md",
+          : "sticky top-0 border-b border-hairline chrome-veil backdrop-blur-md",
       )}
     >
       <div className="mx-auto flex max-w-5xl items-center justify-between px-6 py-3.5">

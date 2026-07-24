@@ -115,7 +115,7 @@ export function AppShell({
 
       {/* Mobile top bar */}
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="sticky top-0 z-20 flex items-center justify-between border-b border-hairline bg-canvas/80 px-4 py-3 backdrop-blur-md md:hidden">
+        <header className="sticky top-0 z-20 flex items-center justify-between border-b border-hairline chrome-veil px-4 py-3 backdrop-blur-md md:hidden">
           <Link href="/" className="flex items-center gap-2">
             <span className="orb h-5 w-5 shrink-0" aria-hidden />
             <span className="font-display text-[15px] font-semibold tracking-tight text-ink">

@@ -303,3 +303,16 @@
 @media (prefers-reduced-motion: reduce) {
   [data-rb-anim] { animation: none !important; }
 }
+
+/*
+ * Translucent chrome (sticky headers / action bars).
+ *
+ * Tailwind's color-opacity modifier (`bg-canvas/80`) is INVALID against our
+ * tokens: they resolve to hex values (`--canvas: #EAEDF1`), so Tailwind's
+ * generated `rgb(var(--canvas) / 0.8)` is dropped and the element renders
+ * FULLY TRANSPARENT — every sticky header was blur-only, with page content
+ * smearing underneath. color-mix takes the var as-is and keeps theme support.
+ */
+.chrome-veil {
+  background-color: color-mix(in srgb, var(--canvas) 82%, transparent);
+}

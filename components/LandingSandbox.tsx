@@ -623,7 +623,7 @@ function SandboxElementContent({ el }: { el: SandboxElement }) {
                   </span>
                 )}
                 <div
-                  className={`w-full rounded-[3px] ${last ? "bg-accent/80" : "bg-surface-3"}`}
+                  className={`w-full rounded-[3px] ${last ? "bg-accent" : "bg-surface-3"}`}
                   style={{ height: `${v * 0.72}%` }}
                 />
               </div>

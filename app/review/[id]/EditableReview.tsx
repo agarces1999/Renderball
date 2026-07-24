@@ -84,7 +84,7 @@ export function EditableReview({
   return (
     <div>
       {/* Action bar — sits just under the global header */}
-      <div className="sticky top-[53px] z-10 -mx-6 mb-10 flex flex-wrap items-center justify-between gap-4 border-b border-hairline bg-canvas/90 px-6 py-4 backdrop-blur-md">
+      <div className="sticky top-[53px] z-10 -mx-6 mb-10 flex flex-wrap items-center justify-between gap-4 border-b border-hairline chrome-veil px-6 py-4 backdrop-blur-md">
         <div className="font-mono text-[12px] text-muted">
           {isDeck
             ? `${script.scenes.length} ${script.scenes.length === 1 ? "page" : "pages"}`

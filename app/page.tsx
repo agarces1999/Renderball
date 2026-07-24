@@ -41,7 +41,7 @@ export default async function LandingPage() {
 
 function LandingHeader() {
   return (
-    <header className="sticky top-0 z-20 w-full border-b border-hairline bg-canvas/80 backdrop-blur-md">
+    <header className="sticky top-0 z-20 w-full border-b border-hairline chrome-veil backdrop-blur-md">
       <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-3.5">
         <Link href="/" className="flex items-center gap-2.5">
           <span className="orb h-6 w-6 shrink-0" aria-hidden />
