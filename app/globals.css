@@ -300,6 +300,11 @@
   30% { opacity: 1; }
   to { opacity: 1; transform: scale(1); }
 }
+/* Landing scroll cue: the chevron nudges down to say "this scrolls". */
+@keyframes rb-scroll-nudge {
+  0%, 100% { transform: translateY(0); opacity: 0.5; }
+  50% { transform: translateY(4px); opacity: 1; }
+}
 @media (prefers-reduced-motion: reduce) {
   [data-rb-anim] { animation: none !important; }
 }

@@ -262,6 +262,7 @@ export function LandingEditor() {
                   style={{ right: 28, bottom: 28, width: 190, height: 84 }}
                 />
               </SandboxLayer>
+              <ScrollCue progress={p} />
             </div>
 
             <ClaimBar section={section} local={local} first={idx === 0} />
@@ -274,6 +275,36 @@ export function LandingEditor() {
         <StaticEditor />
       </div>
     </>
+  );
+}
+
+/* ─── scroll cue: the first frame is a frozen mid-draw and reads as empty ─
+ *
+ * At scroll 0 the choreography is paused part-way into its first cycle, so
+ * the canvas is a static half-drawn box with no motion to say "keep going".
+ * This is the one bit of the page that is NOT a function of scroll — a small
+ * nudging chevron that announces the page scrolls, and fades out the instant
+ * it does. bg is a SOLID token: an opacity modifier on a hex CSS-var token
+ * (bg-surface/85) renders fully transparent. */
+function ScrollCue({ progress }: { progress: number }) {
+  const opacity = 1 - seg(progress, 0.006, 0.045);
+  if (opacity <= 0.01) return null;
+  return (
+    <div
+      className="pointer-events-none absolute inset-x-0 bottom-5 z-40 flex justify-center"
+      style={{ opacity }}
+      aria-hidden
+    >
+      <div className="flex items-center gap-2 rounded-full border border-hairline bg-surface px-4 py-2 font-mono text-[11px] tracking-wide text-muted shadow-[0_10px_30px_-14px_rgba(18,26,43,0.55)]">
+        <span>scroll to watch it build</span>
+        <span
+          className="text-accent-text"
+          style={{ animation: "rb-scroll-nudge 1.4s ease-in-out infinite" }}
+        >
+          ↓
+        </span>
+      </div>
+    </div>
   );
 }
 
