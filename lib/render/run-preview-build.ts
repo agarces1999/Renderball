@@ -1056,22 +1056,6 @@ async function runCastPreviewBuild(args: {
       };
     }
 
-    // ── usage + entitlement metering (build-model spend = head + cast + repairs) ──
-    await recordUsage({ op: "build", model, scriptId, url: brief?.brand_kit_url, usage: castUsage });
-    await recordMeteredUsage({
-      ownerId,
-      operation: "build",
-      model,
-      costUsd: costUsd(model, castUsage),
-      inputTokens: castUsage.input_tokens,
-      outputTokens: castUsage.output_tokens,
-    });
-    let visionCostUsd = 0;
-    if (visionRan && (visionUsage.input_tokens || visionUsage.output_tokens)) {
-      visionCostUsd = costUsd(VISION_MODEL, visionUsage);
-      await recordUsage({ op: "vision-qa", model: VISION_MODEL, scriptId, url: brief?.brand_kit_url, usage: visionUsage });
-    }
-
     await recordGateTelemetry({
       scriptId,
       fires,
