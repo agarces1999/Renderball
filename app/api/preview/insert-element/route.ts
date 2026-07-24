@@ -13,11 +13,14 @@ import { insertElement, parseInsertBody, type InsertMode } from "../../../../lib
  *   { scriptId, sceneIndex, bounds:{x,y,w,h},
  *     mode:"primitive", primitive:"text"|"image"|"icon", text?|src?|icon? }
  *   { scriptId, sceneIndex, bounds:{x,y,w,h}, mode:"generate", prompt, kind? }
+ *   { scriptId, sceneIndex, bounds:{x,y,w,h}, mode:"generate-image", prompt }
  * Returns: { ok, sceneIndex, pieceId, usage? } | { ok:false, error }
  *
  * Primitive mode is deterministic (no LLM, no spend). Generate mode is the marquee
  * killer feature and reuses the element-regen guards: z.ai breaker + per-owner cap +
- * usage ledger. Both rewrite Composition.tsx, which the iframe + MP4 both consume.
+ * usage ledger. Generate-image bills per image on the Fireworks image service —
+ * per-owner cap applies, the LLM breaker does not (different substrate). All modes
+ * rewrite Composition.tsx, which the iframe + exports both consume.
  */
 export async function POST(request: Request) {
   const user = await getCurrentUser();
@@ -38,15 +41,18 @@ export async function POST(request: Request) {
   }
   const { scriptId, sceneIndex, bounds, spec } = parsed;
 
-  // Generate mode is LLM spend — apply the same breaker + per-owner cap as regen.
-  if (spec.mode === "generate") {
-    try {
-      assertZaiAvailable();
-    } catch (err) {
-      if (err instanceof ZaiUnavailableError) {
-        return NextResponse.json({ error: err.friendly }, { status: 503 });
+  // Both generate modes are spend — per-owner cap. The LLM breaker guards only
+  // the LLM path; image generation runs on a separate Fireworks service.
+  if (spec.mode === "generate" || spec.mode === "generate-image") {
+    if (spec.mode === "generate") {
+      try {
+        assertZaiAvailable();
+      } catch (err) {
+        if (err instanceof ZaiUnavailableError) {
+          return NextResponse.json({ error: err.friendly }, { status: 503 });
+        }
+        throw err;
       }
-      throw err;
     }
     const cap = takeRegenSlot(user.id);
     if (!cap.allowed) {

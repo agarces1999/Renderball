@@ -1,10 +1,13 @@
 //
-// Insert a NEW element into a rendered scene — the editor's "add" path. Two modes:
+// Insert a NEW element into a rendered scene — the editor's "add" path. Three modes:
 //
-//   primitive:  a text box / image / icon built from a deterministic code template,
-//               NO LLM, positioned at the marquee box. Free (no spend, no z.ai).
-//   generate:   the marquee killer feature — an LLM (generatePiece) creates the
-//               element's inner JSX from a prompt; we wrap it at the marquee box.
+//   primitive:       a text box / image / icon built from a deterministic code
+//                    template, NO LLM, positioned at the marquee box. Free.
+//   generate:        the marquee killer feature — an LLM (generatePiece) creates
+//                    the element's inner JSX from a prompt; we wrap it at the box.
+//   generate-image:  the marquee's Image mode — a diffusion model (image-provider)
+//                    turns the prompt into a PNG, stored as a document asset and
+//                    wrapped as an <Img> at the box. Billed per image.
 //
 // Both build the positioned wrapper DETERMINISTICALLY (the LLM never controls
 // bounds), insert via lego-store.insertPiece, then reassemble → finalize →
@@ -28,7 +31,9 @@ import { lucideIconNameSet } from "../agents/finalize-refs";
 import { commitGenDir } from "./commit";
 import { withGenDirLock } from "./gendir-lock";
 import { emitFreetextSpan, DEFAULT_FORMAT } from "./freetext";
-import { recordUsage, type Usage } from "../usage";
+import { saveImageAsset } from "./image-assets";
+import { imageCall, ImageProviderError } from "../llm/image-provider";
+import { recordUsage, EMPTY_USAGE, type Usage } from "../usage";
 import { MODELS } from "../anthropic";
 
 const msg = (e: unknown): string => (e instanceof Error ? e.message : String(e));
@@ -53,7 +58,8 @@ export type InsertMode =
   | { mode: "primitive"; primitive: "text"; text?: string }
   | { mode: "primitive"; primitive: "image"; src?: string }
   | { mode: "primitive"; primitive: "icon"; icon?: string }
-  | { mode: "generate"; prompt: string; kind?: string };
+  | { mode: "generate"; prompt: string; kind?: string }
+  | { mode: "generate-image"; prompt: string };
 
 export interface InsertElementInput {
   genDir: string;
@@ -90,13 +96,18 @@ export const parseInsertBody = (raw: unknown): ParsedInsertBody => {
       return { ok: false, error: "Say what to create — generation needs a prompt." };
     }
     spec = { mode: "generate", prompt: b.prompt, ...(typeof b.kind === "string" ? { kind: b.kind } : {}) };
+  } else if (b.mode === "generate-image") {
+    if (typeof b.prompt !== "string" || !b.prompt.trim()) {
+      return { ok: false, error: "Describe the image — generation needs a prompt." };
+    }
+    spec = { mode: "generate-image", prompt: b.prompt };
   } else if (b.mode === "primitive") {
     if (b.primitive === "text") spec = { mode: "primitive", primitive: "text", ...(typeof b.text === "string" ? { text: b.text } : {}) };
     else if (b.primitive === "image") spec = { mode: "primitive", primitive: "image", ...(typeof b.src === "string" ? { src: b.src } : {}) };
     else if (b.primitive === "icon") spec = { mode: "primitive", primitive: "icon", ...(typeof b.icon === "string" ? { icon: b.icon } : {}) };
     else return { ok: false, error: 'primitive must be "text", "image", or "icon"' };
   } else {
-    return { ok: false, error: 'mode must be "primitive" or "generate"' };
+    return { ok: false, error: 'mode must be "primitive", "generate", or "generate-image"' };
   }
 
   return { ok: true, scriptId: b.scriptId, sceneIndex: b.sceneIndex, bounds, spec };
@@ -189,11 +200,29 @@ export const insertElement = async (input: InsertElementInput): Promise<InsertEl
       return { ok: false, error: `scene ${sceneIndex} not found` };
     }
 
-    // Build inner JSX + kind. Generate mode calls the LLM (billed); primitives are free.
+    // Build inner JSX + kind. Generate modes are billed (LLM tokens / per image);
+    // primitives are free.
     let inner: string;
     let kind: string;
     let usage: Usage | undefined;
-    if (spec.mode === "generate") {
+    let imageModel: string | undefined;
+    if (spec.mode === "generate-image") {
+      try {
+        const img = await imageCall({ prompt: spec.prompt, width: bounds.w, height: bounds.h });
+        const ref = await saveImageAsset(genDir, img.png, "png");
+        imageModel = img.model;
+        // Same shape as the primitive-image inner: the box owns the crop.
+        inner = `<Img src=${JSON.stringify(ref)} style={{ width: "100%", height: "100%", objectFit: "cover", borderRadius: 8 }} />`;
+        kind = "image";
+      } catch (e) {
+        // Nothing was delivered, so nothing is billed — no ledger row.
+        const friendly =
+          e instanceof ImageProviderError && e.status === 401
+            ? "Image generation isn't enabled for this account yet — ask us to switch it on."
+            : `image generation failed: ${msg(e)}`;
+        return { ok: false, error: friendly };
+      }
+    } else if (spec.mode === "generate") {
       const d = await readDecomposed(genDir);
       const scene = d.scenes.find((s) => s.sceneIndex === sceneIndex)!;
       const gen = await generatePiece({
@@ -221,8 +250,10 @@ export const insertElement = async (input: InsertElementInput): Promise<InsertEl
     const openTag = `<Piece id=${JSON.stringify(id)} kind=${JSON.stringify(kind)}>`;
     const body = wrap(kind, bounds, z, inner);
 
+    // A post-generation failure still spent the tokens / billed the image.
     const logGenFail = () => {
       if (usage) void recordUsage({ op: "insert-element", model: MODELS.codingAgentBuild, scriptId, usage, failed: true });
+      if (imageModel) void recordUsage({ op: "generate-image", model: imageModel, scriptId, usage: EMPTY_USAGE, images: 1, failed: true });
     };
 
     const undo = await captureUndo(genDir);
@@ -242,7 +273,8 @@ export const insertElement = async (input: InsertElementInput): Promise<InsertEl
         return { ok: false, usage, error: res.error || "inserted element did not materialize in the composition" };
       }
       if (usage) void recordUsage({ op: "insert-element", model: MODELS.codingAgentBuild, scriptId, usage });
-      await commitUndo(genDir, undo, spec.mode === "generate" ? "generate" : "add");
+      if (imageModel) void recordUsage({ op: "generate-image", model: imageModel, scriptId, usage: EMPTY_USAGE, images: 1 });
+      await commitUndo(genDir, undo, spec.mode === "primitive" ? "add" : spec.mode);
       return { ok: true, pieceId: id, code: res.code, usage };
     } catch (e) {
       await writeManifest(genDir, snapshot).catch(() => {});

@@ -154,7 +154,12 @@ export function ElementEditor({
   const [marquee, setMarquee] = useState<null | { x0: number; y0: number; x1: number; y1: number }>(null);
   const [genBox, setGenBox] = useState<null | { left: number; top: number; width: number; height: number }>(null);
   const [genPrompt, setGenPrompt] = useState("");
+  // What the marquee generates: a JSX element (LLM) or an image (diffusion).
+  // An explicit switch on the prompt bar — never guessed from the prompt text.
+  const [genKind, setGenKind] = useState<"element" | "image">("element");
   const overlayRef = useRef<HTMLDivElement>(null);
+  // Hidden file input for the Add-toolbar image path (upload, not placeholder).
+  const fileRef = useRef<HTMLInputElement>(null);
   // Formatting for an INSERTED text box (null when the selection isn't one). Read
   // from the live span's data-rb-fmt, so it always reflects what's on screen.
   const [fmt, setFmt] = useState<FreetextFormat | null>(null);
@@ -214,11 +219,29 @@ export function ElementEditor({
     const vh = doc?.documentElement?.clientHeight || iframeRef.current?.clientHeight || 0;
     const isFullBleed = (r: DOMRect): boolean =>
       vw > 0 && vh > 0 && r.width >= vw * 0.92 && r.height >= vh * 0.92;
+    // A persisted MOVE renders as an anti-symmetric inset frame around the piece
+    // (lego-store wrapOffset: left:dx, top:dy, right:-dx, bottom:-dy). It's a
+    // coordinate frame, not content — its own rect is canvas-sized and shifted,
+    // which used to inflate the union after any large move (the selection box
+    // hung off the piece). Skip the frame itself; its children still measure.
+    const isOffsetFrame = (c: Element): boolean => {
+      const s = (c as HTMLElement).style;
+      if (!s || s.position !== "absolute") return false;
+      const l = parseFloat(s.left);
+      const t = parseFloat(s.top);
+      const r = parseFloat(s.right);
+      const b = parseFloat(s.bottom);
+      return (
+        Number.isFinite(l) && Number.isFinite(t) && Number.isFinite(r) && Number.isFinite(b) &&
+        l === -r && t === -b && (l !== 0 || t !== 0)
+      );
+    };
     const collect = (dropFullBleed: boolean): DOMRect[] => {
       const rects: DOMRect[] = [];
       const own = el.getBoundingClientRect();
       if (own.width > 0 && own.height > 0 && !(dropFullBleed && isFullBleed(own))) rects.push(own);
       el.querySelectorAll("*").forEach((c) => {
+        if (isOffsetFrame(c)) return;
         const r = c.getBoundingClientRect();
         if (r.width > 0 && r.height > 0 && !(dropFullBleed && isFullBleed(r))) rects.push(r);
       });
@@ -259,6 +282,25 @@ export function ElementEditor({
   const post = useCallback(
     async (url: string, body: unknown): Promise<boolean> => (await postJson(url, body)).ok,
     [postJson],
+  );
+  // Multipart sibling of postJson (uploads) — same error surface.
+  const postForm = useCallback(
+    async (url: string, form: FormData): Promise<{ ok: boolean; json: Record<string, unknown> }> => {
+      setError(null);
+      try {
+        const res = await fetch(url, { method: "POST", body: form });
+        const json = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+        if (!res.ok || !json.ok) {
+          setError(json.error || `upload failed (${res.status})`);
+          return { ok: false, json: json as Record<string, unknown> };
+        }
+        return { ok: true, json: json as Record<string, unknown> };
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+        return { ok: false, json: {} };
+      }
+    },
+    [],
   );
 
   // Resolve the clicked node to the copy field it belongs to: a data-content-path
@@ -468,6 +510,7 @@ export function ElementEditor({
     setMarquee(null);
     setGenBox(null);
     setGenPrompt("");
+    setGenKind("element");
     const iframe = iframeRef.current;
     if (!iframe) return;
     let doc: Document | null = null;
@@ -723,22 +766,83 @@ export function ElementEditor({
     return { x, y, w: Math.max(1, w), h: Math.max(1, h) };
   };
 
-  const insertPrimitive = async (primitive: "text" | "image" | "icon") => {
-    if (busy) return;
+  /** Default centred box for a toolbar insert (text/icon/uploaded image). */
+  const defaultBounds = (kind: "text" | "media", aspect?: number | null) => {
     const dims = canvasIntrinsic();
-    if (!dims) {
+    if (!dims) return null;
+    const w = Math.round(dims.w * 0.4);
+    // An uploaded image's box follows its real aspect (clamped) so it lands
+    // uncropped; otherwise the stock proportions.
+    let h = Math.round(dims.h * (kind === "text" ? 0.16 : 0.28));
+    if (aspect && Number.isFinite(aspect) && aspect > 0) {
+      h = Math.min(Math.round(w / aspect), Math.round(dims.h * 0.8));
+    }
+    return clampBounds({ x: Math.round((dims.w - w) / 2), y: Math.round((dims.h - h) / 2), w, h });
+  };
+
+  const insertPrimitive = async (primitive: "text" | "icon") => {
+    if (busy) return;
+    const bounds = defaultBounds(primitive === "text" ? "text" : "media");
+    if (!bounds) {
       setError("Canvas not ready — try again in a moment.");
       return;
     }
-    const w = Math.round(dims.w * 0.4);
-    const h = Math.round(dims.h * (primitive === "text" ? 0.16 : 0.28));
-    const bounds = clampBounds({ x: Math.round((dims.w - w) / 2), y: Math.round((dims.h - h) / 2), w, h });
     setBusy("insert");
     const { ok, json } = await postJson(`${apiBase}/insert-element`, { scriptId, sceneIndex, bounds, mode: "primitive", primitive });
     setBusy(null);
     if (ok) {
       const pid = json.pieceId;
       if (typeof pid === "string") reselectIdRef.current = pid;
+      onChanged();
+    }
+  };
+
+  /** width/height ratio of the picked file, so the insert box fits it. */
+  const imageAspect = (file: File): Promise<number | null> =>
+    new Promise((resolve) => {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => {
+        URL.revokeObjectURL(url);
+        resolve(img.naturalWidth > 0 && img.naturalHeight > 0 ? img.naturalWidth / img.naturalHeight : null);
+      };
+      img.onerror = () => {
+        URL.revokeObjectURL(url);
+        resolve(null);
+      };
+      img.src = url;
+    });
+
+  // The Add-toolbar "image" path: a real file, placed at the drawn box when one
+  // is open, else a centred box shaped to the image.
+  const onFilePicked = async (file: File | null) => {
+    if (!file || busy) return;
+    let bounds: { x: number; y: number; w: number; h: number } | null;
+    if (genBox) {
+      const p0 = overlayToCanvas(genBox.left, genBox.top);
+      const p1 = overlayToCanvas(genBox.left + genBox.width, genBox.top + genBox.height);
+      bounds = clampBounds({ x: p0.x, y: p0.y, w: p1.x - p0.x, h: p1.y - p0.y });
+    } else {
+      bounds = defaultBounds("media", await imageAspect(file));
+    }
+    if (!bounds) {
+      setError("Canvas not ready — try again in a moment.");
+      return;
+    }
+    const form = new FormData();
+    form.append("file", file);
+    form.append("scriptId", scriptId);
+    form.append("sceneIndex", String(sceneIndex));
+    form.append("bounds", JSON.stringify(bounds));
+    setBusy("insert");
+    const { ok, json } = await postForm(`${apiBase}/upload-image`, form);
+    setBusy(null);
+    if (ok) {
+      const pid = json.pieceId;
+      if (typeof pid === "string") reselectIdRef.current = pid;
+      setGenBox(null);
+      setGenPrompt("");
+      setTool(null);
       onChanged();
     }
   };
@@ -750,7 +854,12 @@ export function ElementEditor({
     const p1 = overlayToCanvas(genBox.left + genBox.width, genBox.top + genBox.height);
     const bounds = clampBounds({ x: p0.x, y: p0.y, w: p1.x - p0.x, h: p1.y - p0.y });
     setBusy("insert");
-    const { ok, json } = await postJson(`${apiBase}/insert-element`, { scriptId, sceneIndex, bounds, mode: "generate", prompt });
+    const { ok, json } = await postJson(`${apiBase}/insert-element`, {
+      scriptId,
+      sceneIndex,
+      bounds,
+      ...(genKind === "image" ? { mode: "generate-image", prompt } : { mode: "generate", prompt }),
+    });
     setBusy(null);
     if (ok) {
       const pid = json.pieceId;
@@ -1106,17 +1215,42 @@ export function ElementEditor({
       {!editing && (
         <div className="absolute left-2 top-2 flex items-center gap-1" style={{ pointerEvents: "auto" }}>
           <span className="mr-0.5 font-mono text-[10px] uppercase tracking-[0.14em] text-white/70">Add</span>
-          {(["text", "image", "icon"] as const).map((p) => (
-            <button
-              key={p}
-              type="button"
-              onClick={() => void insertPrimitive(p)}
-              disabled={!!busy}
-              className={`${HIT} ${R_SM} ${CHROME} px-2.5 text-[11px] font-medium capitalize disabled:opacity-50`}
-            >
-              {p}
-            </button>
-          ))}
+          <button
+            type="button"
+            onClick={() => void insertPrimitive("text")}
+            disabled={!!busy}
+            className={`${HIT} ${R_SM} ${CHROME} px-2.5 text-[11px] font-medium disabled:opacity-50`}
+          >
+            Text
+          </button>
+          <button
+            type="button"
+            onClick={() => fileRef.current?.click()}
+            disabled={!!busy}
+            title="Upload an image"
+            className={`${HIT} ${R_SM} ${CHROME} px-2.5 text-[11px] font-medium disabled:opacity-50`}
+          >
+            Image
+          </button>
+          <input
+            ref={fileRef}
+            type="file"
+            accept="image/png,image/jpeg,image/gif,image/webp,image/svg+xml"
+            className="hidden"
+            onChange={(e) => {
+              const f = e.target.files?.[0] ?? null;
+              e.target.value = ""; // allow re-picking the same file
+              void onFilePicked(f);
+            }}
+          />
+          <button
+            type="button"
+            onClick={() => void insertPrimitive("icon")}
+            disabled={!!busy}
+            className={`${HIT} ${R_SM} ${CHROME} px-2.5 text-[11px] font-medium disabled:opacity-50`}
+          >
+            Icon
+          </button>
           <button
             type="button"
             aria-pressed={tool === "generate"}
@@ -1199,9 +1333,10 @@ export function ElementEditor({
             }}
             style={{
               position: "absolute",
-              // Keep the prompt inside the canvas: clamp horizontally, and flip it
-              // ABOVE the box when a box drawn near the bottom leaves no room below.
-              left: Math.max(4, Math.min(genBox.left, (overlayRef.current?.clientWidth ?? 9999) - 440)),
+              // Keep the prompt inside the canvas: clamp horizontally (bar ≈
+              // toggle + input + buttons), and flip it ABOVE the box when a box
+              // drawn near the bottom leaves no room below.
+              left: Math.max(4, Math.min(genBox.left, (overlayRef.current?.clientWidth ?? 9999) - 560)),
               top:
                 genBox.top + genBox.height + 8 + 40 <= (overlayRef.current?.clientHeight ?? 0)
                   ? genBox.top + genBox.height + 8
@@ -1210,6 +1345,25 @@ export function ElementEditor({
             }}
             className={`flex items-center gap-1 ${R_MD} border border-white/10 bg-[#11141b] px-1.5 py-1 shadow-xl`}
           >
+            {/* What to put in the box — an explicit switch, never inferred from
+                the prompt. Element = LLM JSX; Image = diffusion photo/art. */}
+            <div role="group" aria-label="What to generate" className={`flex items-center gap-0.5 ${R_SM} bg-white/10 p-0.5`}>
+              {(["element", "image"] as const).map((k) => (
+                <button
+                  key={k}
+                  type="button"
+                  aria-pressed={genKind === k}
+                  onClick={() => setGenKind(k)}
+                  disabled={!!busy}
+                  className={
+                    `${HIT} rounded-[6px] px-2 text-[11px] font-medium capitalize disabled:opacity-50 ` +
+                    (genKind === k ? ACTIVE : "text-white/70 hover:bg-white/10")
+                  }
+                >
+                  {k}
+                </button>
+              ))}
+            </div>
             <input
               autoFocus
               value={genPrompt}
@@ -1222,8 +1376,12 @@ export function ElementEditor({
                 }
               }}
               disabled={!!busy}
-              aria-label="Describe the element to generate"
-              placeholder="What goes here? e.g. a KPI tile showing 3.2x"
+              aria-label={genKind === "image" ? "Describe the image to generate" : "Describe the element to generate"}
+              placeholder={
+                genKind === "image"
+                  ? "Describe the image, e.g. aerial photo of a harbor at dusk"
+                  : "What goes here? e.g. a KPI tile showing 3.2x"
+              }
               className={`h-[28px] w-72 ${R_SM} bg-white/10 px-2 text-[11px] text-white placeholder-white/45 outline-none focus:bg-white/15 disabled:opacity-50`}
             />
             <button

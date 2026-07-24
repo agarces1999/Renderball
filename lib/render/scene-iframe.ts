@@ -4,6 +4,7 @@ import React from "react";
 import * as esbuild from "esbuild";
 import type { Script } from "../../src/schema";
 import { dimensionsForScript, WIDE_LOCKUP_RATIO } from "./build-wrapper";
+import { inlineAssetSrcs } from "../edit/image-assets";
 
 // react-dom/server via runtime require to bypass Next's app-router static check.
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -110,6 +111,11 @@ export async function renderSceneDoc(
   } catch (err) {
     return { ok: false, status: 500, message: `Render error: ${err instanceof Error ? err.message : String(err)}` };
   }
+
+  // Document-asset refs (editor-inserted images, lib/edit/image-assets.ts) are
+  // origin-free tokens — inline the bytes so this doc renders identically in
+  // the preview iframe and in export's origin-less page.setContent.
+  sectionHtml = await inlineAssetSrcs(sectionHtml, path.dirname(compPath));
 
   const dims = dimensionsForScript(script);
 

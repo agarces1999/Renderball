@@ -48,6 +48,11 @@ process.env.RB_CAST_KEY = "test-key";
 process.env.RB_FIREWORKS_KEY = "fw-test-key";
 delete process.env.RB_CAST_BASE_URL;
 delete process.env.RB_CAST_MODEL;
+delete process.env.RB_FIREWORKS_KEY;
+// The DEFAULT model is the Fireworks GLM router (2026-07-23 flip); the Cerebras
+// wire mechanics below pin gpt-oss-120b explicitly so each test keeps exercising
+// the wire it was written for.
+const CEREBRAS_MODEL = "gpt-oss-120b";
 
 await check("unconfigured provider fails fast and loud; castConfigured is wire-aware", async () => {
   // Fireworks default → RB_FIREWORKS_KEY decides; RB_CAST_KEY alone must not
@@ -131,7 +136,7 @@ await check("429 honors retry-after, then succeeds; usage + reasoning mapped", a
     if (calls === 1) return new Response("rate limited", { status: 429, headers: { "retry-after": "0.05" } });
     return ok(completion("body", { reasoning: "brief thought" }));
   });
-  const r = await castCall({ system: "", user: "u", maxTokens: 100 });
+  const r = await castCall({ system: "", user: "u", maxTokens: 100, model: CEREBRAS_MODEL });
   assert(calls === 2, `one retry expected, got ${calls}`);
   assert(Date.now() - t0 >= 45, "retry-after must be honored (waited ~50ms)");
   assert(r.text === "body" && r.thinking === "brief thought", "text + reasoning mapped");
@@ -146,7 +151,7 @@ await check("client errors (400) do NOT retry — the request is wrong, not the 
     return new Response(JSON.stringify({ error: { message: "bad param" } }), { status: 400 });
   });
   try {
-    await castCall({ system: "", user: "u", maxTokens: 100 });
+    await castCall({ system: "", user: "u", maxTokens: 100, model: CEREBRAS_MODEL });
     assert(false, "must throw");
   } catch (e) {
     assert(e instanceof CastProviderError && e.status === 400 && !e.retryable, "non-retryable 400");
@@ -161,7 +166,7 @@ await check("network failure retries within budget then surfaces the error", asy
     throw new Error("ECONNRESET");
   });
   try {
-    await castCall({ system: "", user: "u", maxTokens: 100 });
+    await castCall({ system: "", user: "u", maxTokens: 100, model: CEREBRAS_MODEL });
     assert(false, "must throw");
   } catch (e) {
     assert(e instanceof CastProviderError && e.retryable, "retryable transport error");
@@ -202,7 +207,7 @@ await check("json flag maps to response_format json_object on both wires; absent
   assert((sent.response_format as { type?: string })?.type === "json_object", "fireworks wire carries response_format");
   await castCall({ system: "", user: "u", maxTokens: 100, json: true, model: CEREBRAS_MODEL });
   assert((sent.response_format as { type?: string })?.type === "json_object", "cerebras wire carries response_format");
-  await castCall({ system: "", user: "u", maxTokens: 100 });
+  await castCall({ system: "", user: "u", maxTokens: 100, model: CEREBRAS_MODEL });
   assert(!("response_format" in sent), "no response_format unless asked — element TSX must stay unconstrained");
 });
 

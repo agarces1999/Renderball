@@ -6,7 +6,8 @@
 // insertPiece → reassemble → finalize → compile path with a synthetic generated body.
 //
 import { decomposeGenDir, readManifest, reassembleFromDisk, insertPiece, nextPieceId } from "../agents/lego-store";
-import { insertElement } from "./insert-element";
+import { insertElement, parseInsertBody } from "./insert-element";
+import { inlineAssetSrcs } from "./image-assets";
 import { editPieceText } from "./edit-piece-text";
 import { readFreetext, themeSwatches } from "./freetext";
 import { deleteElement, resizeElement } from "./edit-layout";
@@ -16,6 +17,20 @@ import { verifyCompilable } from "../agents/code-extraction";
 import { promises as fs } from "fs";
 import path from "path";
 import os from "os";
+
+// The runner imports every test file into ONE process — save/restore anything
+// this file sets, or later files (cast-provider's unconfigured check) see it.
+const SAVED_ENV = {
+  RB_USAGE_DISABLE: process.env.RB_USAGE_DISABLE,
+  RB_FIREWORKS_KEY: process.env.RB_FIREWORKS_KEY,
+};
+const restoreEnv = () => {
+  for (const [k, v] of Object.entries(SAVED_ENV)) {
+    if (v === undefined) delete process.env[k];
+    else process.env[k] = v;
+  }
+};
+process.env.RB_USAGE_DISABLE = "1"; // orchestrator paths must not write real ledger rows
 
 let passed = 0;
 let failed = 0;
@@ -190,10 +205,76 @@ await check("generate store path: a synthetic generated body inserts + reassembl
   await fs.writeFile(path.join(dir, "Composition.tsx"), code, "utf8"); // persist, like commit()
 });
 
+// ---- generate-image (diffusion → asset → <Img>) ----------------------------
+
+// A real (1×1 transparent) PNG so the transport's signature check passes and a
+// genuine file lands under assets/.
+const TINY_PNG = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
+  "base64",
+);
+
+await check("generate-image: mocked provider → asset on disk + <Img> at the box, compiles", async () => {
+  const realFetch = globalThis.fetch;
+  process.env.RB_FIREWORKS_KEY = process.env.RB_FIREWORKS_KEY || "test-key";
+  globalThis.fetch = (() =>
+    Promise.resolve(new Response(TINY_PNG, { status: 200, headers: { "content-type": "image/png" } }))) as typeof fetch;
+  try {
+    const r = await insertElement({
+      genDir: dir,
+      scriptId: "t",
+      sceneIndex: 0,
+      bounds: { x: 40, y: 40, w: 640, h: 360 },
+      spec: { mode: "generate-image", prompt: "a calm teal gradient" },
+    });
+    assert(r.ok && !!r.pieceId, `generate-image insert: ${JSON.stringify(r)}`);
+    const code = await comp();
+    // finalize normalizes src={"…"} to the plain attribute form.
+    const ref = code.match(/src="(assets\/img-[0-9a-f]{12}\.png)"/)?.[1];
+    assert(!!ref, `composition must reference the stored asset, got: ${code.match(/src=[^ ]*/)?.[0]}`);
+    const bytes = await fs.readFile(path.join(dir, ref!));
+    assert(bytes.equals(TINY_PNG), "stored asset bytes must be the provider's PNG");
+    assert(new RegExp(`id="${r.pieceId}"[\\s\\S]*left: 40, top: 40, width: 640, height: 360`).test(code), "deterministic wrapper must carry the drawn bounds");
+    // The SSR inline pass swaps the token for a data URI (what export renders).
+    const inlined = await inlineAssetSrcs(`<img src="${ref}"/>`, dir);
+    assert(inlined.startsWith('<img src="data:image/png;base64,'), "inlineAssetSrcs must produce a data URI");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+await check("generate-image: provider failure → ok:false, no piece added", async () => {
+  const realFetch = globalThis.fetch;
+  const before = (await readManifest(dir)).scenes[0].pieces.length;
+  globalThis.fetch = (() =>
+    Promise.resolve(new Response(JSON.stringify({ error: { message: "Unauthorized" } }), { status: 401 }))) as typeof fetch;
+  try {
+    const r = await insertElement({
+      genDir: dir,
+      scriptId: "t",
+      sceneIndex: 0,
+      bounds: { x: 0, y: 0, w: 100, h: 100 },
+      spec: { mode: "generate-image", prompt: "x" },
+    });
+    assert(!r.ok && /isn't enabled|image generation failed/.test(r.error ?? ""), `expected friendly failure, got ${JSON.stringify(r)}`);
+    assert((await readManifest(dir)).scenes[0].pieces.length === before, "no piece may be added on failure");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+await check("parseInsertBody accepts generate-image and demands a prompt", () => {
+  const okBody = parseInsertBody({ scriptId: "s", sceneIndex: 0, bounds: { x: 1, y: 1, w: 10, h: 10 }, mode: "generate-image", prompt: "a dog" });
+  assert(okBody.ok && okBody.spec.mode === "generate-image", `parse ok: ${JSON.stringify(okBody)}`);
+  const noPrompt = parseInsertBody({ scriptId: "s", sceneIndex: 0, bounds: { x: 1, y: 1, w: 10, h: 10 }, mode: "generate-image", prompt: "  " });
+  assert(!noPrompt.ok && /Describe the image/.test(noPrompt.ok ? "" : noPrompt.error), "blank prompt must be rejected");
+});
+
 await check("inserted pieces re-decompose cleanly (byte-identical round-trip)", async () => {
   const rep = await decomposeGenDir(dir);
-  // atmos, copy, chrome + add1(text) + add2(image) + add3(icon) + the generated one = 7
-  assert(rep.ok && rep.pieces === 7, `re-decompose: ${JSON.stringify(rep)}`);
+  // atmos, copy, chrome + add1(text) + add2(image) + add3(icon) + the synthetic
+  // generated one + the generate-image piece = 8
+  assert(rep.ok && rep.pieces === 8, `re-decompose: ${JSON.stringify(rep)}`);
 });
 
 await check("delete an inserted piece: clean removal, siblings survive", async () => {
@@ -265,6 +346,7 @@ await check("undo with an empty stack → ok:false, nothing to undo", async () =
 });
 
 await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+restoreEnv();
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exitCode = 1;
