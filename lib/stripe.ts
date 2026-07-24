@@ -23,6 +23,19 @@ export const isStripeConfigured = (): boolean =>
       process.env.STRIPE_PRICE_SUBSCRIPTION,
   );
 
+/**
+ * Usage-based token billing (docs/METERING.md) — configured when the metered
+ * per-unit price from scripts/stripe-setup-meter.mjs is present alongside the
+ * base keys. Independent of the flat-subscription price: the pivot's token
+ * pricing supersedes it, so a token-only Stripe account must work.
+ */
+export const isTokenBillingConfigured = (): boolean =>
+  Boolean(
+    process.env.STRIPE_SECRET_KEY &&
+      process.env.STRIPE_WEBHOOK_SECRET &&
+      process.env.STRIPE_PRICE_TOKENS,
+  );
+
 let _stripe: Stripe | null = null;
 export const getStripe = (): Stripe => {
   const key = process.env.STRIPE_SECRET_KEY;

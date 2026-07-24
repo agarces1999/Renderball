@@ -37,6 +37,7 @@ import { callZaiVision, callZaiText } from "./zai-vision";
 import { recordUsage, costUsd, addUsage, EMPTY_USAGE, type Usage } from "../usage";
 import { tallyGateFires, recordGateTelemetry } from "./gate-telemetry";
 import { recordMeteredUsage } from "../entitlement";
+import { recordTokenUsage } from "../metering";
 import { assertZaiAvailable, ZaiUnavailableError } from "../zai-breaker";
 import { BuildTimeline } from "../agents/build-timeline";
 import { runQualityLoop, type SceneVisionVerdict, type GateRoundReport, type LoopScript, type BrandTruthLite } from "./quality-loop";
@@ -197,6 +198,8 @@ export async function runPreviewBuild(
         usage: result.usage,
         failed: true,
       });
+      // Pivot token counter (RB_METERING): failed attempts still spent tokens.
+      await recordTokenUsage({ ownerId, usage: result.usage, op: "build" });
     }
     return { status: 500, body: { error: result.error, stage: result.stage } };
   }
@@ -277,6 +280,7 @@ export async function runPreviewBuild(
       outputTokens: currentUsage.output_tokens,
       failed: true,
     });
+    await recordTokenUsage({ ownerId, usage: currentUsage, op: "build" });
       return {
         status: 500,
         body: {
@@ -423,6 +427,7 @@ export async function runPreviewBuild(
       outputTokens: currentUsage.output_tokens,
       failed: true,
     });
+    await recordTokenUsage({ ownerId, usage: currentUsage, op: "build" });
     await recordGateTelemetry({
       scriptId,
       fires: tallyGateFires({ findings: repair.initialFindings, warnings: currentWarnings }),
@@ -536,6 +541,7 @@ export async function runPreviewBuild(
         url: brief?.brand_kit_url,
         usage: visionUsage,
       });
+      await recordTokenUsage({ ownerId, usage: visionUsage, op: "vision-qa" });
     }
     if (visionFindings.length) {
       console.warn(
@@ -556,6 +562,7 @@ export async function runPreviewBuild(
       usage: visionUsage,
       failed: true,
     }).catch(() => {});
+    await recordTokenUsage({ ownerId, usage: visionUsage, op: "vision-qa" });
   }
 
   // VISION-IN-THE-LOOP (docs/QUALITY-ARCHITECTURE.md #2). One BOUNDED act on
@@ -646,6 +653,7 @@ export async function runPreviewBuild(
     inputTokens: currentUsage.input_tokens,
     outputTokens: currentUsage.output_tokens,
   });
+  await recordTokenUsage({ ownerId, usage: currentUsage, op: "build" });
 
   // Gate fire-rate telemetry — the deletion criterion (QUALITY-ARCHITECTURE.md).
   // `fires` tallies the FIRST measure (what the gates caught — repaired findings
@@ -923,6 +931,7 @@ async function runCastPreviewBuild(args: {
 
     if (loop.castRoundError) {
       await recordUsage({ op: "build", model, scriptId, url: brief?.brand_kit_url, usage: castUsage, failed: true });
+      await recordTokenUsage({ ownerId, usage: castUsage, op: "build" });
       return {
         status: 500,
         body: { error: `cast build failed: ${loop.castRoundError.error}`, stage: "cast-build" },
@@ -941,6 +950,24 @@ async function runCastPreviewBuild(args: {
       warnings,
       assetManifest: undefined,
     });
+
+    // ── usage + entitlement metering (build-model spend = head + cast + repairs) ──
+    await recordUsage({ op: "build", model, scriptId, url: brief?.brand_kit_url, usage: castUsage });
+    await recordMeteredUsage({
+      ownerId,
+      operation: "build",
+      model,
+      costUsd: costUsd(model, castUsage),
+      inputTokens: castUsage.input_tokens,
+      outputTokens: castUsage.output_tokens,
+    });
+    await recordTokenUsage({ ownerId, usage: castUsage, op: "build" });
+    let visionCostUsd = 0;
+    if (visionRan && (visionUsage.input_tokens || visionUsage.output_tokens)) {
+      visionCostUsd = costUsd(VISION_MODEL, visionUsage);
+      await recordUsage({ op: "vision-qa", model: VISION_MODEL, scriptId, url: brief?.brand_kit_url, usage: visionUsage });
+      await recordTokenUsage({ ownerId, usage: visionUsage, op: "vision-qa" });
+    }
 
     // ── gate telemetry tallies (fire-rate is the gate-deletion criterion).
     // Computed BEFORE the SSR gate below so the fail-closed path records the

@@ -56,6 +56,7 @@ model User {
   renders       Render[]
   usageRecords  UsageRecord[]
   subscription  Subscription?
+  tokenUsage    TokenUsage?
 }
 
 model Subscription {
@@ -127,6 +128,38 @@ model UsageRecord {
   createdAt    DateTime @default(now())
 
   @@index([ownerId, createdAt])
+}
+
+// Per-user LIFETIME LLM token counter — the canvas pivot's usage-based pricing
+// unit (docs/METERING.md). One row per user, atomically incremented from every
+// LLM call site; deterministic edits never touch it. The 1M free allowance is
+// enforced against totalTokens app-side; Stripe only ever sees overage.
+// BigInt: a heavy account crosses Int4's 2.1B within normal product life.
+model TokenUsage {
+  ownerId      String   @id
+  owner        User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  totalTokens  BigInt   @default(0) // lifetime counted tokens (input + output)
+  billedTokens BigInt   @default(0) // overage tokens already handed to the Stripe outbox
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+// Durable outbox for Stripe Billing Meter events. Ops append billable deltas
+// here transactionally and a best-effort flusher reports them to Stripe with
+// `identifier = id` (Stripe dedupes identifiers → at-least-once flush is safe).
+// An op NEVER blocks on Stripe availability; unsent rows retry on later ops.
+model MeterEventOutbox {
+  id        String    @id @default(cuid())
+  ownerId   String
+  tokens    Int // billable tokens of one op (an op's delta always fits Int4)
+  status    String    @default("pending") // pending | sent
+  attempts  Int       @default(0)
+  lastError String?
+  createdAt DateTime  @default(now())
+  sentAt    DateTime?
+
+  @@index([status, createdAt])
+  @@index([ownerId])
 }
 
 // Anti-abuse ledger for the no-watermark free tier (PRODUCT.md §825-877).

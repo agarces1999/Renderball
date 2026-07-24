@@ -16,6 +16,7 @@ import {
 import { decomposeGenDir } from "../../../../lib/agents/lego-store";
 import { withGenDirLock } from "../../../../lib/edit/gendir-lock";
 import { recordUsage } from "../../../../lib/usage";
+import { checkTokenAllowance, recordTokenUsage } from "../../../../lib/metering";
 import { MODELS } from "../../../../lib/anthropic";
 
 /**
@@ -51,6 +52,13 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: err.friendly }, { status: 503 });
     }
     throw err;
+  }
+
+  // Token allowance (pivot pricing, RB_METERING) — before the hourly cap so
+  // the out-of-tokens message (actionable) wins over the rate-limit one.
+  const gate = await checkTokenAllowance(user.id);
+  if (!gate.allowed) {
+    return NextResponse.json({ error: gate.reason ?? "token allowance exhausted" }, { status: 402 });
   }
 
   // Per-owner hourly cap — this route checks auth but not entitlement, so a
@@ -149,6 +157,8 @@ export async function POST(request: Request) {
       usage: result.usage,
       ...(result.ok ? {} : { failed: true }),
     });
+    // Pivot token counter: scene regens spend tokens whether or not they succeed.
+    await recordTokenUsage({ ownerId: user.id, usage: result.usage, op: "regen-scene" });
   }
 
   if (!result.ok) {

@@ -7,6 +7,7 @@ import { generateScript, DECK_SECONDS_PER_SLIDE } from "../../lib/agents/script-
 import { saveBriefFiles } from "../../lib/uploads";
 import { brandKitStatus } from "../../lib/brand-kit";
 import { checkEntitlement, recordMeteredUsage } from "../../lib/entitlement";
+import { checkTokenAllowance, recordTokenUsage } from "../../lib/metering";
 import { assertZaiAvailable, ZaiUnavailableError } from "../../lib/zai-breaker";
 import { extractBrand } from "../../lib/crawl/extract-brand";
 import { withDbRetry } from "../../lib/db";
@@ -72,9 +73,14 @@ export async function crawlWebsite(url: string): Promise<BrandExtract> {
   const extract = await extractBrand(url, {
     onUsage: (model, usage) => crawlUsage.set(model, addUsage(crawlUsage.get(model) ?? EMPTY_USAGE, usage)),
   });
+  let crawlTotal = EMPTY_USAGE;
   for (const [model, usage] of crawlUsage) {
     await recordUsage({ op: "crawl", model, url, usage });
+    crawlTotal = addUsage(crawlTotal, usage);
   }
+  // Pivot token counter (RB_METERING): crawl spend is LLM spend — counted,
+  // though only the five generating ops are 402-gated.
+  await recordTokenUsage({ ownerId: user.id, usage: crawlTotal, op: "crawl" });
   return extract;
 }
 
@@ -129,6 +135,12 @@ export async function submitBrief(
   const ent = await checkEntitlement(user.id, "generate");
   if (!ent.allowed) {
     return { ok: false, error: ent.reason ?? "Plan limit reached." };
+  }
+
+  // Token allowance (pivot pricing, RB_METERING) — same fail-closed posture.
+  const gate = await checkTokenAllowance(user.id);
+  if (!gate.allowed) {
+    return { ok: false, error: gate.reason ?? "Token allowance exhausted." };
   }
 
   const validation = validateBrief(briefParsed);
@@ -329,6 +341,7 @@ export async function submitBrief(
         projectId: brief_id,
       }),
     );
+    await recordTokenUsage({ ownerId: user.id, usage: result.usage, op: "generate" });
     await withDbRetry(() => saveBrief(updatedBrief));
   } catch (err) {
     console.error(`[submitBrief] post-generate persistence failed for ${brief_id} (script ${result.script.id}):`, err);
