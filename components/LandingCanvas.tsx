@@ -92,7 +92,7 @@ export function LandingCanvas() {
         <div className="sticky top-0 h-screen overflow-hidden">
           <DotGrid />
           <div className="relative mx-auto h-full max-w-[1180px] px-6">
-            <HeroBlock doorT={seg(p, T.door[0], 0.95)} />
+            <HeroBlock doorT={seg(p, T.door[0], 0.89)} />
             <Stage p={p} />
             <CaptionRail p={p} />
             <div className="absolute bottom-5 right-6 font-mono text-[11px] tabular-nums text-faint">
@@ -132,7 +132,7 @@ function HeroBlock({ doorT }: { doorT: number }) {
   return (
     <div
       className="absolute left-1/2 top-[60px] w-full max-w-[820px] -translate-x-1/2 text-center transition-opacity duration-300"
-      style={{ opacity: 1 - doorT * 0.92 }}
+      style={{ opacity: 1 - doorT, pointerEvents: doorT > 0.3 ? "none" : "auto" }}
     >
       <span className="orb mx-auto mb-5 block h-8 w-8" aria-hidden />
       <p className="mb-3 font-mono text-[11px] uppercase tracking-[0.18em] text-muted">
@@ -649,10 +649,10 @@ function DoorBeat({ p }: { p: number }) {
     ["new slide", "8,930 tokens", false],
     ["first 1,000,000 tokens", "free", true],
   ];
-  const shown = Math.round(seg(t, 0.05, 0.42) * rows.length);
+  const shown = Math.round(seg(t, 0.3, 0.55) * rows.length);
   return (
     <div className="absolute left-1/2 top-[10vh] w-[520px] -translate-x-1/2">
-      <div className="rounded-lg border border-hairline bg-surface/90 p-5 shadow-sm backdrop-blur-sm">
+      <div className="rounded-lg border border-hairline bg-surface p-5 shadow-[0_16px_40px_-24px_rgba(18,26,43,0.35)]">
         {rows.slice(0, shown).map(([k, v, hot]) => (
           <div
             key={k}
@@ -670,17 +670,17 @@ function DoorBeat({ p }: { p: number }) {
         <div
           className="absolute left-0 top-0 rounded-[3px] border border-dashed border-accent-line"
           style={{
-            width: `${Math.max(6, seg(t, 0.45, 0.64) * 100)}%`,
-            height: `${Math.max(14, seg(t, 0.45, 0.64) * 100)}%`,
-            opacity: seg(t, 0.45, 0.64) >= 1 ? 0.55 : 1,
+            width: `${Math.max(6, seg(t, 0.6, 0.76) * 100)}%`,
+            height: `${Math.max(14, seg(t, 0.6, 0.76) * 100)}%`,
+            opacity: seg(t, 0.6, 0.76) <= 0 ? 0 : seg(t, 0.6, 0.76) >= 1 ? 0.55 : 1,
           }}
           aria-hidden
         />
         <div
           className="absolute inset-0 flex flex-col items-center justify-center gap-3 transition-all duration-500"
           style={{
-            opacity: t > 0.66 ? 1 : 0,
-            transform: t > 0.66 ? "translateY(0)" : "translateY(10px)",
+            opacity: t > 0.78 ? 1 : 0,
+            transform: t > 0.78 ? "translateY(0)" : "translateY(10px)",
           }}
         >
           <Link
