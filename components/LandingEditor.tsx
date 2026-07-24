@@ -543,18 +543,27 @@ function Canvas({
     ? section.demo!.intent
     : (section.intents[baseShown + stepIdx] ?? "");
 
-  // A piece lands as its own cycle assembles, and stays for the rest of the
+  // A piece lands as its own cycle assembles and stays for the rest of the
   // section — the slide accumulates rather than flickering.
-  const authored = ready
-    ? Math.min(authorable, baseShown + stepIdx + (made > 0.25 ? 1 : 0))
-    : authorable;
+  //
+  // Opacity is a pure function of scroll, like every other beat on this page,
+  // rather than a threshold plus a CSS transition. With a transition, a fast
+  // scroll could leave the marquee's fade-out and the element's fade-in in
+  // flight at the same time, so the element appeared inside its own marquee.
+  const current = baseShown + stepIdx;
+  const reveal = Array.from({ length: authorable }, (_, i) => {
+    if (!ready) return 1;
+    if (i < current) return 1;
+    if (i > current) return 0;
+    return Number(seg(made, 0.32, 0.62).toFixed(2));
+  });
 
   return (
     <div className="pointer-events-none absolute inset-0">
       <SlideFrame
         key={`${section.deck}-${section.slide}`}
         slide={slide}
-        authored={authored}
+        reveal={reveal}
         limit={section.intents.length}
         onMeasure={(b) => setMeasured({ id: section.id, boxes: b })}
       />
@@ -576,8 +585,12 @@ function Canvas({
               width: `${Math.max(8, ease(drag) * 100)}%`,
               height: `${Math.max(10, ease(drag) * 100)}%`,
               background: "rgba(0,194,138,0.10)",
-              opacity: drag <= 0 ? 0 : made > 0.3 ? 0 : 1,
-              transition: "opacity 260ms ease",
+              // Scroll-driven, with no CSS transition, for the same reason
+              // the pieces are: a time-based fade-out could still be in
+              // flight when the element began revealing, so the element
+              // appeared inside its own marquee and read as having been
+              // there all along. Fully clear by 0.18; elements land at 0.32.
+              opacity: drag <= 0 ? 0 : 1 - seg(made, 0.04, 0.18),
             }}
             aria-hidden
           />
@@ -620,8 +633,8 @@ function GeneratedArtifact({
   t: number;
 }) {
   if (t <= 0) return null;
-  const frame = seg(t, 0, 0.2);
-  const head = seg(t, 0.15, 0.4);
+  const frame = seg(t, 0.1, 0.3);
+  const head = seg(t, 0.25, 0.45);
   const body = seg(t, 0.35, 0.75);
   const rest = seg(t, 0.7, 1);
 
@@ -787,13 +800,14 @@ function Cursor({
  *  with `transform`, which we must not clobber. */
 function SlideFrame({
   slide,
-  authored = 0,
+  /** opacity per authorable piece, in reading order */
+  reveal = [],
   // limit 0 = author nothing: the static branch just wants the finished slide.
   limit = 0,
   onMeasure = () => {},
 }: {
   slide: DemoSlide;
-  authored?: number;
+  reveal?: number[];
   limit?: number;
   onMeasure?: (boxes: PieceBox[]) => void;
 }) {
@@ -809,6 +823,8 @@ function SlideFrame({
    * A rule in the stylesheet survives it.
    */
   const [order, setOrder] = useState<number[]>([]);
+  /** true once this slide has been measured and its mask is on the page */
+  const [masked, setMasked] = useState(false);
   const measureRef = useRef(onMeasure);
   measureRef.current = onMeasure;
   const uid = `rbslide${useId().replace(/[^a-zA-Z0-9]/g, "")}`;
@@ -853,17 +869,18 @@ function SlideFrame({
     found.sort((a, b) => a.box.top - b.box.top || a.box.left - b.box.left);
     const picked = found.slice(0, limit);
     setOrder(picked.map((f) => f.idx));
+    setMasked(true);
     measureRef.current(picked.map((f) => f.box));
   }, [slide, scale, limit]);
 
-  // `!important` because several pieces carry their own entry animations,
-  // and an animation beats a plain declaration.
+  // `!important` because several pieces carry their own entry animations, and
+  // an animation beats a plain declaration. No CSS transition: the caller
+  // already drives these from scroll position, and adding one would reinstate
+  // the in-flight overlap it was written to remove.
   const hideCss = order
     .map(
       (childIdx, i) =>
-        `#${uid}>*>:nth-child(${childIdx + 1}){opacity:${
-          i < authored ? 1 : 0
-        }!important;transition:opacity 420ms ease}`,
+        `#${uid}>*>:nth-child(${childIdx + 1}){opacity:${reveal[i] ?? 1}!important}`,
     )
     .join("");
 
@@ -883,8 +900,11 @@ function SlideFrame({
           height: 1080,
           transform: `scale(${scale})`,
           transformOrigin: "center center",
-          // Until measured, stay invisible rather than flashing a 1920px slab.
-          opacity: scale > 0 ? 1 : 0,
+          // Hidden until BOTH the fit and the mask are ready: showing it after
+          // the fit alone painted the finished slide for several frames before
+          // the mask could hide the unauthored pieces. `limit === 0` is the
+          // static branch, which never masks and must not wait for one.
+          opacity: scale > 0 && (limit === 0 || masked) ? 1 : 0,
         }}
         dangerouslySetInnerHTML={html}
       />
