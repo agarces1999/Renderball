@@ -140,7 +140,7 @@ export async function submitBrief(
 
   const user = await getCurrentUser();
   if (!user) {
-    return { ok: false, error: "Please sign in to create a video." };
+    return { ok: false, error: "Please sign in to create a document." };
   }
 
   // Balance circuit breaker — while the z.ai account is dry, fail fast and

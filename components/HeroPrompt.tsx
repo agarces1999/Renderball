@@ -5,15 +5,15 @@ import { useRouter } from "next/navigation";
 
 /**
  * Hero prompt — the intent-first entry on the landing page. The user starts
- * describing their video right here; submitting carries the prompt (and
+ * describing their deck right here; submitting carries the prompt (and
  * optional site URL) into /new via query params, where the brief form prefills
  * them. Unauthenticated users hit sign-in first and return to /new with the
  * prompt intact.
  */
 const EXAMPLES = [
-  "Launch video for our new analytics product",
-  "TikTok story for our Black Friday sale",
-  "Investor update for our Series B",
+  "Seed pitch deck for our analytics startup",
+  "Sales deck for outreach to marketing VPs",
+  "All-hands deck for our Q3 update",
 ];
 
 export function HeroPrompt() {
@@ -42,7 +42,7 @@ export function HeroPrompt() {
             }
           }}
           rows={3}
-          placeholder="Describe the video you want — e.g. a 30-second launch video for our new product, upbeat, ending on a sign-up CTA."
+          placeholder="Describe the deck you want — e.g. a 10-page seed pitch for our analytics startup, confident, ending on the ask."
           className="w-full resize-none bg-transparent px-3 py-2.5 text-[15px] leading-relaxed text-ink outline-none placeholder:text-faint"
         />
         <div className="flex flex-col gap-2 border-t border-hairline px-1 pt-2.5 sm:flex-row sm:items-center">
@@ -63,7 +63,7 @@ export function HeroPrompt() {
             onClick={go}
             className="shrink-0 rounded-md bg-accent px-5 py-2 text-[14px] font-semibold text-accent-ink transition-all hover:brightness-110"
           >
-            Make a video →
+            Make a deck →
           </button>
         </div>
       </div>

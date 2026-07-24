@@ -18,11 +18,13 @@ export default function TermsPage() {
       </Clause>
       <Clause heading="2. The service">
         <p>
-          Renderball generates animated, on-brand video from a brief you provide.
-          You describe the video, review and approve a generated script, and we
-          render it to an MP4 file. Output quality depends on the inputs you
-          provide and the nature of generative AI; we do not guarantee any
-          specific result.
+          Renderball generates on-brand design documents — presentation decks,
+          graphics, and, where offered, animated video — from a brief you
+          provide. You describe the document, review and approve a generated
+          outline, and we build it into an editable document you can export
+          (PDF, PNG, or MP4 where offered). Output quality depends on the
+          inputs you provide and the nature of generative AI; we do not
+          guarantee any specific result.
         </p>
       </Clause>
       <Clause heading="3. Accounts">
@@ -46,8 +48,8 @@ export default function TermsPage() {
       <Clause heading="5. Your content and brand assets">
         <p>
           You retain ownership of the briefs, text, logos, images, and other
-          materials you provide (&ldquo;Your Content&rdquo;) and of the videos
-          you generate. You represent and warrant that you own or have the rights
+          materials you provide (&ldquo;Your Content&rdquo;) and of the
+          documents you generate. You represent and warrant that you own or have the rights
           to use Your Content, including any brand assets you upload or that we
           extract from a website you submit.
         </p>
@@ -82,8 +84,8 @@ export default function TermsPage() {
           The Service is provided &ldquo;as is&rdquo; without warranties of any
           kind, express or implied, including merchantability, fitness for a
           particular purpose, and non-infringement. AI-generated output may
-          contain errors; you are responsible for reviewing any video before you
-          publish or distribute it.
+          contain errors; you are responsible for reviewing any output before
+          you publish or distribute it.
         </p>
       </Clause>
       <Clause heading="9. Limitation of liability">

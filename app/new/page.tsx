@@ -7,7 +7,7 @@ import { listBrandKitSummaries, type BrandKitSummary } from "../../lib/brand-kit
  * /new — the front door (fluid v1).
  *
  * The BriefForm renders a self-contained, centered front door (orb +
- * "Render your business story" + one prompt) floating on an emerald mesh
+ * "Design your business story" + one prompt) floating on an emerald mesh
  * field. The old "step 1 / step 2" indicator is gone — story-first means
  * no upfront wizard framing.
  */

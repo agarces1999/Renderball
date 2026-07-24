@@ -5,14 +5,14 @@ import { cn } from "../../../lib/cn";
 
 /**
  * The build moment (DESIGN.md step 5: "Build it" — one loud action, honest
- * per-scene progress). Shown on /preview/[id] when no Composition.tsx exists.
+ * per-page progress). Shown on /preview/[id] when no Composition.tsx exists.
  *
- * The user already approved the story and clicked "Build the video" on the
- * review screen, so the build starts on arrival — no second button. While the
- * Design + Choreography pass runs (/api/preview/build, ~1-2 min, one shot,
- * no streaming) we run a paced ceremony over the real scene list: read the
- * story, design each scene, choreograph, compile. The last step holds with a
- * spinner until the build resolves, then the page reloads into the preview.
+ * The user already approved the outline and clicked Build on the review
+ * screen, so the build starts on arrival — no second button. While the design
+ * pass runs (/api/preview/build, one shot, no streaming) we run a paced
+ * ceremony over the real page/scene list; decks speak outline/page language,
+ * videos keep story/scene/choreography. The last step holds with a spinner
+ * until the build resolves, then the page reloads into the editor/preview.
  */
 type Phase =
   | { kind: "building" }
@@ -26,20 +26,25 @@ type Status = "done" | "active" | "pending";
 
 export function BuildPreviewClient({
   scriptId,
+  kind = "video",
   sceneLabels,
 }: {
   scriptId: string;
+  kind?: "deck" | "video";
   sceneLabels: string[];
 }) {
+  const isDeck = kind === "deck";
   const steps = useMemo(() => {
-    const s = ["Reading the approved story"];
+    const s = [isDeck ? "Reading the approved outline" : "Reading the approved story"];
     sceneLabels.forEach((label, i) =>
-      s.push(`Designing scene ${i + 1}${label ? ` — ${label}` : ""}`),
+      s.push(
+        `Designing ${isDeck ? "page" : "scene"} ${i + 1}${label ? ` — ${label}` : ""}`,
+      ),
     );
-    s.push("Choreographing the motion");
-    s.push("Compiling your live preview");
+    s.push(isDeck ? "Composing the layout" : "Choreographing the motion");
+    s.push(isDeck ? "Opening the editor" : "Compiling your live preview");
     return s;
-  }, [sceneLabels]);
+  }, [sceneLabels, isDeck]);
 
   const [phase, setPhase] = useState<Phase>({ kind: "building" });
   const [current, setCurrent] = useState(0);
@@ -200,12 +205,12 @@ export function BuildPreviewClient({
         Building
       </div>
       <h1 className="mb-2 text-center font-display text-[clamp(24px,3.4vw,32px)] font-semibold tracking-tight text-ink">
-        Building your video
+        {isDeck ? "Building your deck" : "Building your video"}
       </h1>
       <p className="mb-8 max-w-[44ch] text-center text-[14px] leading-relaxed text-muted">
-        Designing each scene, choreographing the motion, then compiling a live
-        preview. About a minute — the story&apos;s already approved, so this is
-        the last wait.
+        {isDeck
+          ? "Designing every page in your brand, then opening the editor. The outline's already approved, so this is the last wait."
+          : "Designing each scene, choreographing the motion, then compiling a live preview. About a minute — the story's already approved, so this is the last wait."}
       </p>
 
       <div className="mb-6 h-1 w-full overflow-hidden rounded-full bg-surface-3">

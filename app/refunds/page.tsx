@@ -22,11 +22,11 @@ export default function RefundsPage() {
           already paid for.
         </p>
       </Clause>
-      <Clause heading="3. Failed renders">
+      <Clause heading="3. Failed builds">
         <p>
-          You approve the script before any video is rendered, so you only pay
-          for work you have already agreed to. If a render fails for a technical
-          reason on our side, we will re-render it at no extra cost.
+          You approve the outline before any document is built, so you only pay
+          for work you have already agreed to. If a build or export fails for a
+          technical reason on our side, we will re-run it at no extra cost.
         </p>
       </Clause>
       <Clause heading="4. Dissatisfaction within 14 days">

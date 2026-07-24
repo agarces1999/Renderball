@@ -22,8 +22,8 @@ interface Props {
  * browser reloads the iframe so CSS animations restart.
  *
  * Chrome stays quiet (DESIGN.md): a dark canvas frames the brand-colored
- * video, controls use the greyscale + emerald tokens, and the one loud action
- * is "Export MP4".
+ * work, controls use the greyscale + emerald tokens, and the one loud action
+ * is the export (PDF/PNG for decks, MP4 for videos).
  */
 type Mp4State =
   | { kind: "idle" }
@@ -217,7 +217,7 @@ export function PreviewClient({ scriptId, script, initialWarnings }: Props) {
 
   return (
     <div>
-      {/* Canvas — the brand-colored video; dark frame so it's the loudest thing */}
+      {/* Canvas — the user's brand-colored work; dark frame so it's the loudest thing */}
       <div
         className="relative mb-5 overflow-hidden rounded-lg border border-hairline bg-[#0b0d12]"
         style={{ aspectRatio: `${dims.width}/${dims.height}` }}
@@ -225,7 +225,7 @@ export function PreviewClient({ scriptId, script, initialWarnings }: Props) {
         <iframe
           ref={iframeRef}
           src={iframeSrc}
-          title={`Scene ${sceneIndex + 1}`}
+          title={`${isDeck ? "Page" : "Scene"} ${sceneIndex + 1}`}
           style={{
             position: "absolute",
             inset: 0,
@@ -373,7 +373,7 @@ export function PreviewClient({ scriptId, script, initialWarnings }: Props) {
         >
           {regenerating
             ? "Regenerating…"
-            : `Regenerate ${isDeck ? "slide" : "scene"} ${sceneIndex + 1}`}
+            : `Regenerate ${isDeck ? "page" : "scene"} ${sceneIndex + 1}`}
         </button>
         {regenAsk && !regenerating && (
           <form
@@ -390,7 +390,7 @@ export function PreviewClient({ scriptId, script, initialWarnings }: Props) {
               onKeyDown={(e) => {
                 if (e.key === "Escape") setRegenAsk(false);
               }}
-              placeholder="What should change in this scene?"
+              placeholder={`What should change on this ${isDeck ? "page" : "scene"}?`}
               className="w-72 rounded-md border border-hairline-strong bg-surface-2 px-3 py-2 text-[13px] text-ink placeholder:text-faint outline-none focus:border-accent-line"
             />
             <button
@@ -410,7 +410,7 @@ export function PreviewClient({ scriptId, script, initialWarnings }: Props) {
                 href={`/api/preview/${scriptId}/export?format=png&scene=${sceneIndex}`}
                 className="rounded-md border border-hairline-strong bg-surface px-4 py-2 text-[13px] text-ink transition-colors hover:bg-surface-2"
               >
-                Slide {sceneIndex + 1} PNG
+                Page {sceneIndex + 1} PNG
               </a>
               <a
                 href={`/api/preview/${scriptId}/export?format=pdf`}
@@ -467,16 +467,16 @@ export function PreviewClient({ scriptId, script, initialWarnings }: Props) {
         </div>
       )}
 
-      {/* Current scene meta */}
+      {/* Current page/scene meta — deck pages have no meaningful duration */}
       {currentScene && (
         <div className="font-mono text-[12px] text-muted">
           <div>
-            scene {sceneIndex + 1}/{script.scenes.length} ·{" "}
-            {(
-              (currentScene.end_seconds ?? 0) -
-              (currentScene.start_seconds ?? 0)
-            ).toFixed(1)}
-            s
+            {isDeck
+              ? `page ${sceneIndex + 1}/${doc.scenes.length}`
+              : `scene ${sceneIndex + 1}/${script.scenes.length} · ${(
+                  (currentScene.end_seconds ?? 0) -
+                  (currentScene.start_seconds ?? 0)
+                ).toFixed(1)}s`}
           </div>
           {currentScene.description && (
             <div className="mt-1 italic text-faint">
@@ -505,8 +505,8 @@ function StructuralPanel({ issues }: { issues: string[] }) {
       </div>
       <div className="mb-2.5 text-[12px] text-ink-soft">
         These failed the build&apos;s structural quality gates and survived
-        every automatic retry — the video shipped with them. Regenerate the
-        affected scene, or rebuild, to clear them.
+        every automatic retry — the design shipped with them. Regenerate the
+        affected page or scene, or rebuild, to clear them.
       </div>
       <ul className="space-y-1">
         {issues.slice(0, 10).map((issue, i) => {

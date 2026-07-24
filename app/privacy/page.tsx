@@ -25,8 +25,9 @@ export default function PrivacyPage() {
           assets (logos, images), and the website URLs you ask us to analyze.
         </p>
         <p>
-          <strong>Usage data:</strong> the videos you generate, render history,
-          and basic technical logs needed to operate and secure the Service.
+          <strong>Usage data:</strong> the documents you generate, build and
+          export history, and basic technical logs needed to operate and secure
+          the Service.
         </p>
         <p>
           <strong>Payment data:</strong> processed by our third-party payment
@@ -35,8 +36,8 @@ export default function PrivacyPage() {
       </Clause>
       <Clause heading="3. How we use it">
         <p>
-          To provide and improve the Service: authenticating you, generating and
-          rendering your videos, hosting your files, processing payments,
+          To provide and improve the Service: authenticating you, generating
+          and building your documents, hosting your files, processing payments,
           preventing abuse, and providing support. We do not sell your personal
           information.
         </p>

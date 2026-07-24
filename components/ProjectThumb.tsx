@@ -4,13 +4,15 @@ import { useEffect, useRef, useState } from "react";
 
 /**
  * The visual for a gallery card. Leads with the work and stays light:
+ *   - thumbUrl present → the document's cached page-1 PNG (deck cards); if the
+ *                        image fails to load, falls back to the placeholder.
  *   - mp4Url present  → the rendered video, muted + looping, autoplays while
  *                       it's in view (paused when it scrolls away) so the grid
  *                       shows the actual output playing.
  *   - previewUrl only → a branded placeholder; on hover it mounts the live
  *                       composition preview (server-compiled scene), so the
  *                       heavier previews only load when you point at a card.
- *   - neither         → branded placeholder (story not built yet).
+ *   - none            → branded placeholder (not built yet).
  *
  * Sized to the project's true aspect so portrait/square/landscape read at a
  * glance. Dark frame so the work is the loudest thing on the card.
@@ -19,15 +21,18 @@ export function ProjectThumb({
   aspect,
   mp4Url,
   previewUrl,
+  thumbUrl = null,
 }: {
   aspect: string; // "9:16" | "1:1" | "16:9"
   mp4Url: string | null;
   previewUrl: string | null;
+  thumbUrl?: string | null;
 }) {
   const ar = (aspect || "16:9").replace(":", " / ");
   const wrapRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const [hover, setHover] = useState(false);
+  const [thumbFailed, setThumbFailed] = useState(false);
 
   // Autoplay the rendered video while it's on screen; pause when it leaves.
   // Keeps motion to what the viewer is actually looking at.
@@ -57,7 +62,16 @@ export function ProjectThumb({
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
     >
-      {mp4Url ? (
+      {thumbUrl && !thumbFailed ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={thumbUrl}
+          alt=""
+          loading="lazy"
+          onError={() => setThumbFailed(true)}
+          className="h-full w-full object-cover"
+        />
+      ) : mp4Url ? (
         <video
           ref={videoRef}
           src={`${mp4Url}#t=0.1`}

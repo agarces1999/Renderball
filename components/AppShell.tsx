@@ -8,23 +8,24 @@ import { cn } from "../lib/cn";
 
 /**
  * Authenticated app shell — a quiet left rail (DESIGN.md: "predictable rail +
- * canvas"). The rail IS the video list, like sessions in a chat app: New video
- * up top, the user's videos as a scrollable list (click to open its story),
- * account controls at the bottom. The immersive playback surface (/preview)
- * deliberately stays full-bleed so the rendered video is the loudest thing.
+ * canvas"). The rail IS the document list, like sessions in a chat app: New
+ * document up top, the user's documents as a scrollable list (click to open
+ * its outline), account controls at the bottom. The immersive editor surface
+ * (/preview) deliberately stays full-bleed so the user's work is the loudest
+ * thing.
  */
-type SidebarVideo = {
+type SidebarDocument = {
   id: string;
   title: string;
   status: string;
 };
 
 export function AppShell({
-  videos = [],
+  documents = [],
   hasMore = false,
   children,
 }: {
-  videos?: SidebarVideo[];
+  documents?: SidebarDocument[];
   hasMore?: boolean;
   children: ReactNode;
 }) {
@@ -46,22 +47,22 @@ export function AppShell({
             href="/new"
             className="block rounded-md bg-accent px-3.5 py-2 text-center text-[13.5px] font-semibold text-accent-ink transition-all hover:brightness-110"
           >
-            New video
+            New document
           </Link>
         </div>
 
-        {/* Videos — the rail's "recents". Scrolls; New video + account stay put. */}
+        {/* Documents — the rail's "recents". Scrolls; New document + account stay put. */}
         <div className="mt-5 flex min-h-0 flex-1 flex-col px-3">
           <div className="mb-1.5 px-2 font-mono text-[10.5px] uppercase tracking-[0.14em] text-faint">
-            Videos
+            Documents
           </div>
           <nav className="min-h-0 flex-1 space-y-0.5 overflow-y-auto pb-2">
-            {videos.length === 0 ? (
+            {documents.length === 0 ? (
               <p className="px-2 py-2 text-[13px] leading-relaxed text-faint">
-                No videos yet. Make your first one.
+                No documents yet. Make your first one.
               </p>
             ) : (
-              videos.map((v) => {
+              documents.map((v) => {
                 const active = pathname === `/review/${v.id}`;
                 return (
                   <Link
@@ -83,10 +84,10 @@ export function AppShell({
             )}
             {hasMore && (
               <Link
-                href="/videos"
+                href="/documents"
                 className="block rounded-md px-2 py-1.5 text-[12.5px] text-accent-text transition-colors hover:bg-surface-2"
               >
-                Show all videos
+                Show all documents
               </Link>
             )}
           </nav>
@@ -123,16 +124,16 @@ export function AppShell({
           </Link>
           <div className="flex items-center gap-3">
             <Link
-              href="/videos"
+              href="/documents"
               className="text-[12.5px] text-muted transition-colors hover:text-ink"
             >
-              Videos
+              Documents
             </Link>
             <Link
               href="/new"
               className="rounded-md bg-accent px-3 py-1.5 text-[12.5px] font-semibold text-accent-ink"
             >
-              New video
+              New document
             </Link>
             <UserButton afterSignOutUrl="/" />
           </div>

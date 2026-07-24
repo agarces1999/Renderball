@@ -8,18 +8,18 @@ import { cn } from "../lib/cn";
  *
  * A looping, six-stage performance of the real Renderball flow, each stage a
  * realistic mini-UI: the user's brief typed in → brand auto-extracted → the
- * second-by-second script → the render → frame-by-frame QA → the finished
- * video playing. A persistent pipeline rail shows where we are. Built in
- * CSS/React (Renderball is a motion product, so its explainer is animated); a
- * recorded MP4 can drop in later. Honors prefers-reduced-motion (holds on the
- * finished video). Stages remount each cycle so entrance animations replay.
+ * page-by-page outline → every page designing in parallel → the editor's
+ * marquee-to-generate moment → the finished deck. A persistent pipeline rail
+ * shows where we are. Built in CSS/React; honors prefers-reduced-motion
+ * (holds on the finished deck). Stages remount each cycle so entrance
+ * animations replay.
  */
 const STEPS = [
   { key: "brief", label: "Brief", ms: 5400 },
   { key: "brand", label: "Brand", ms: 3800 },
-  { key: "script", label: "Script", ms: 5800 },
-  { key: "render", label: "Render", ms: 4800 },
-  { key: "qa", label: "QA", ms: 3000 },
+  { key: "outline", label: "Outline", ms: 5600 },
+  { key: "build", label: "Build", ms: 4800 },
+  { key: "edit", label: "Edit", ms: 5600 },
   { key: "ready", label: "Ready", ms: 4600 },
 ] as const;
 
@@ -120,12 +120,12 @@ function Stage({ stepKey, reduced }: { stepKey: string; reduced: boolean }) {
       return <BriefStage reduced={reduced} />;
     case "brand":
       return <BrandStage />;
-    case "script":
-      return <ScriptStage />;
-    case "render":
-      return <RenderStage reduced={reduced} />;
-    case "qa":
-      return <QaStage />;
+    case "outline":
+      return <OutlineStage />;
+    case "build":
+      return <BuildStage reduced={reduced} />;
+    case "edit":
+      return <EditStage />;
     default:
       return <ReadyStage />;
   }
@@ -133,7 +133,7 @@ function Stage({ stepKey, reduced }: { stepKey: string; reduced: boolean }) {
 
 // ── Stage 1 · Brief (the user's input) ───────────────────────────────
 const BRIEF_TEXT =
-  "A 45-second launch video for Renderball — show how a brief becomes a finished animated video, on-brand, end on “Start your subscription.”";
+  "A 10-page seed pitch for Renderball — the problem, the product, traction, the ask. Confident, on-brand from renderball.com.";
 
 function BriefStage({ reduced }: { reduced: boolean }) {
   const [typed, setTyped] = useState(reduced ? BRIEF_TEXT.length : 0);
@@ -148,7 +148,7 @@ function BriefStage({ reduced }: { reduced: boolean }) {
 
   return (
     <div className="flex h-full flex-col justify-center gap-3 px-6 py-5 sm:px-10">
-      <Label>What&rsquo;s the story?</Label>
+      <Label>What are we making?</Label>
       <div className="rounded-lg border border-hairline-strong bg-surface p-4 shadow-sm">
         <p className="min-h-[3.4em] text-[14px] leading-relaxed text-ink sm:text-[15px]">
           {BRIEF_TEXT.slice(0, typed)}
@@ -162,11 +162,11 @@ function BriefStage({ reduced }: { reduced: boolean }) {
           <span className="rounded-md bg-surface-2 px-2.5 py-1 font-mono text-[11px] text-ink-soft">
             renderball.com
           </span>
-          <Chip selected>16:9</Chip>
-          <Chip>9:16</Chip>
-          <Chip>1:1</Chip>
+          <Chip selected>Deck</Chip>
+          <Chip>Post</Chip>
+          <Chip>16:9</Chip>
           <span className="rounded-md bg-surface-2 px-2.5 py-1 font-mono text-[11px] text-ink-soft">
-            45s
+            10 pages
           </span>
         </div>
       </div>
@@ -176,7 +176,7 @@ function BriefStage({ reduced }: { reduced: boolean }) {
           className="rounded-md bg-accent px-5 py-2 text-[13px] font-semibold text-accent-ink"
           style={{ animation: "rb-press 5.4s ease-in-out infinite" }}
         >
-          Make a video →
+          Make a deck →
         </span>
       </div>
     </div>
@@ -191,7 +191,7 @@ function BrandStage() {
     { label: "Logo found", v: "the orb mark" },
     { label: "Palette", v: "emerald + greyscale" },
     { label: "Fonts", v: "Cabinet Grotesk · Geist" },
-    { label: "Motion", v: "restrained" },
+    { label: "Design language", v: "editorial, precise" },
   ];
   return (
     <div className="flex h-full flex-col justify-center gap-4 px-6 py-5 sm:px-10">
@@ -246,30 +246,30 @@ function BrandStage() {
   );
 }
 
-// ── Stage 3 · Script (the second-by-second spec) ─────────────────────
-const SCENES = [
-  { t: "0:00", label: "The crystal ball opens", chips: ["Cabinet 88pt", "#10141C", "typewriter"] },
-  { t: "0:08", label: "Brief → script → render", chips: ["3 panels", "#00C28A", "slide-up"] },
-  { t: "0:22", label: "On-brand, every frame", chips: ["device UI", "spring", "stagger"] },
-  { t: "0:38", label: "Start your subscription — CTA", chips: ["CTA", "pulse", "orb out"] },
+// ── Stage 3 · Outline (the page-by-page narrative) ───────────────────
+const PAGES = [
+  { n: "01", label: "Decks take days. Yours took a brief.", chips: ["full-bleed", "Cabinet 88pt", "#10141C"] },
+  { n: "02", label: "Brief → outline → designed pages", chips: ["split", "3 columns", "#00C28A"] },
+  { n: "03", label: "Traction — the numbers", chips: ["stat", "bar chart", "big figure"] },
+  { n: "04", label: "The ask — join the round", chips: ["centered", "CTA", "logo out"] },
 ];
 
-function ScriptStage() {
+function OutlineStage() {
   return (
     <div className="flex h-full flex-col justify-center gap-2.5 px-6 py-4 sm:px-10">
       <div
         data-rb-anim
         style={{ animation: "rb-fade-up 0.5s ease-out both" }}
       >
-        <Label>Your script — approve before any render</Label>
+        <Label>Your outline — approve before any build</Label>
         <p className="font-display text-[clamp(16px,2.4vw,20px)] font-semibold leading-tight tracking-tight text-ink">
-          &ldquo;Animation-rich video, written by AI.&rdquo;
+          &ldquo;The deck that designs itself.&rdquo;
         </p>
       </div>
       <div className="space-y-1.5">
-        {SCENES.map((s, i) => (
+        {PAGES.map((s, i) => (
           <div
-            key={s.t}
+            key={s.n}
             data-rb-anim
             className="flex items-center gap-3 rounded-md border border-hairline bg-surface px-3 py-2"
             style={{
@@ -277,7 +277,7 @@ function ScriptStage() {
               animationDelay: `${0.25 + i * 0.32}s`,
             }}
           >
-            <span className="font-mono text-[11px] text-accent-text">{s.t}</span>
+            <span className="font-mono text-[11px] text-accent-text">{s.n}</span>
             <span className="w-px self-stretch bg-hairline" />
             <span className="shrink-0 text-[12.5px] font-medium text-ink">
               {s.label}
@@ -299,117 +299,159 @@ function ScriptStage() {
   );
 }
 
-// ── Stage 4 · Render ─────────────────────────────────────────────────
-const TOTAL_FRAMES = 1350;
+// ── Stage 4 · Build (every page designs in parallel) ─────────────────
+const TOTAL_PAGES = 10;
 
-function RenderStage({ reduced }: { reduced: boolean }) {
-  const [frame, setFrame] = useState(reduced ? TOTAL_FRAMES : 0);
-  const chunks = 24;
-  const filled = Math.round((frame / TOTAL_FRAMES) * chunks);
+function BuildStage({ reduced }: { reduced: boolean }) {
+  const [done, setDone] = useState(reduced ? TOTAL_PAGES : 0);
   useEffect(() => {
     if (reduced) return;
     const id = setInterval(
-      () => setFrame((f) => (f >= TOTAL_FRAMES ? f : Math.min(f + 38, TOTAL_FRAMES))),
-      70,
+      () => setDone((d) => (d >= TOTAL_PAGES ? d : d + 1)),
+      380,
     );
     return () => clearInterval(id);
   }, [reduced]);
-  const pct = Math.round((frame / TOTAL_FRAMES) * 100);
+  const pct = Math.round((done / TOTAL_PAGES) * 100);
 
   return (
     <div className="flex h-full flex-col justify-center gap-3 px-6 py-5 sm:px-10">
-      <Label>Rendering · 1080p · H.264</Label>
+      <Label>Designing every page · in parallel</Label>
       <div className="flex items-center gap-2">
-        <Pill done>Design agent</Pill>
+        <Pill done>Composition</Pill>
         <span className="text-faint">→</span>
-        <Pill done>Choreography</Pill>
+        <Pill done>Layout</Pill>
         <span className="text-faint">→</span>
-        <Pill>Capturing frames</Pill>
+        <Pill>Filling elements</Pill>
       </div>
-      {/* Frame strip filling in */}
-      <div className="grid grid-cols-12 gap-1">
-        {Array.from({ length: chunks }).map((_, i) => (
+      {/* Page grid filling in — each cell is a tiny 16:9 page */}
+      <div className="grid grid-cols-5 gap-1.5">
+        {Array.from({ length: TOTAL_PAGES }).map((_, i) => (
           <span
             key={i}
             className={cn(
-              "h-5 rounded-sm transition-colors duration-150",
-              i < filled ? "bg-accent" : "bg-surface-3",
+              "rounded-sm border transition-colors duration-200",
+              i < done
+                ? "border-accent-line bg-accent-soft"
+                : "border-hairline bg-surface-3",
             )}
-          />
+            style={{ aspectRatio: "16 / 9" }}
+          >
+            {i < done && (
+              <span className="flex h-full flex-col justify-center gap-[3px] px-[6px]">
+                <span className="h-[3px] w-3/4 rounded-full bg-accent/70" />
+                <span className="h-[2px] w-1/2 rounded-full bg-accent/40" />
+              </span>
+            )}
+          </span>
         ))}
       </div>
       <div className="h-2 w-full overflow-hidden rounded-full bg-surface-3">
         <div
-          className="h-full rounded-full bg-accent transition-[width] duration-75 ease-linear"
+          className="h-full rounded-full bg-accent transition-[width] duration-300 ease-out"
           style={{ width: `${pct}%` }}
         />
       </div>
       <div className="flex items-center justify-between font-mono text-[12px] text-muted">
-        <span>frame {frame} / {TOTAL_FRAMES}</span>
+        <span>page {done} / {TOTAL_PAGES}</span>
         <span className="text-accent-text">{pct}%</span>
       </div>
     </div>
   );
 }
 
-// ── Stage 5 · QA ─────────────────────────────────────────────────────
-function QaStage() {
-  const checks = [
-    "Scene 1 — title text matches script",
-    "Scene 2 — brand color within tolerance",
-    "Scene 3 — all 3 cards visible",
-    "Scene 4 — CTA present, logo placed",
-  ];
+// ── Stage 5 · Edit (marquee-to-generate — the differentiator) ────────
+const MARQUEE_PROMPT = "bar chart of MRR growth";
+
+function EditStage() {
+  const [typed, setTyped] = useState(0);
+  useEffect(() => {
+    let id: ReturnType<typeof setInterval> | null = null;
+    const start = setTimeout(() => {
+      id = setInterval(
+        () => setTyped((n) => (n >= MARQUEE_PROMPT.length ? n : n + 1)),
+        45,
+      );
+    }, 900);
+    return () => {
+      clearTimeout(start);
+      if (id) clearInterval(id);
+    };
+  }, []);
+
   return (
     <div className="flex h-full flex-col justify-center gap-3 px-6 py-5 sm:px-10">
-      <Label>Frame-by-frame QA against your script</Label>
-      <div className="space-y-1.5">
-        {checks.map((c, i) => (
+      <Label>Draw a box, say what goes there</Label>
+      {/* The slide being edited */}
+      <div className="relative overflow-hidden rounded-lg border border-hairline bg-[#10141C] p-5"
+        style={{ aspectRatio: "16 / 7" }}
+      >
+        {/* Existing elements */}
+        <div className="font-display text-[clamp(15px,2.2vw,20px)] font-bold leading-tight tracking-tight text-white">
+          Traction
+        </div>
+        <div className="mt-1 font-mono text-[10px] uppercase tracking-[0.18em] text-[#7fe9c4]">
+          $1.2M ARR · 9 months
+        </div>
+        {/* Marquee draws, prompt types, chart pops into exactly that box */}
+        <div
+          data-rb-anim
+          className="absolute bottom-4 right-5 top-12 w-[46%] rounded-sm border-2 border-dashed border-[#00E0A0]"
+          style={{
+            animation: "rb-draw 0.7s cubic-bezier(0.2,0.7,0.2,1) both",
+            animationDelay: "0.3s",
+            transformOrigin: "top left",
+          }}
+        >
+          {/* The generated chart, in-bounds by construction */}
           <div
-            key={c}
             data-rb-anim
-            className="flex items-center gap-2.5 rounded-md border border-hairline bg-surface px-3 py-2"
-            style={{
-              animation: "rb-fade-left 0.4s ease-out both",
-              animationDelay: `${0.15 + i * 0.4}s`,
-            }}
+            className="absolute inset-1.5 flex items-end justify-around gap-1"
+            style={{ animation: "rb-fade 0.4s ease-out both", animationDelay: "3s" }}
           >
-            <Check />
-            <span className="text-[12.5px] text-ink-soft">{c}</span>
+            {[28, 42, 55, 74, 100].map((h, i) => (
+              <span
+                key={i}
+                data-rb-anim
+                className="w-full rounded-t-sm bg-[#00E0A0]/80"
+                style={{
+                  height: `${h}%`,
+                  animation: "rb-pop 0.4s ease-out both",
+                  animationDelay: `${3.1 + i * 0.12}s`,
+                }}
+              />
+            ))}
           </div>
-        ))}
+        </div>
+        {/* Floating prompt chip */}
+        <div
+          data-rb-anim
+          className="absolute bottom-6 left-5 flex items-center gap-2 rounded-md border border-white/15 bg-black/60 px-3 py-1.5 backdrop-blur-sm"
+          style={{ animation: "rb-fade-up 0.4s ease-out both", animationDelay: "0.9s" }}
+        >
+          <span className="font-mono text-[11px] text-white/90">
+            {MARQUEE_PROMPT.slice(0, typed)}
+          </span>
+          <span
+            data-rb-anim
+            className="inline-block h-[12px] w-[2px] bg-[#00E0A0]"
+            style={{ animation: "rb-blink 1s step-end infinite" }}
+          />
+        </div>
       </div>
       <div
         data-rb-anim
         className="font-mono text-[11px] uppercase tracking-[0.12em] text-accent-text"
-        style={{ animation: "rb-fade 0.4s ease-out both", animationDelay: "1.9s" }}
+        style={{ animation: "rb-fade 0.4s ease-out both", animationDelay: "4s" }}
       >
-        Verified · ready to deliver
+        Generated in place · moves and rewrites cost nothing
       </div>
     </div>
   );
 }
 
-// ── Stage 6 · Ready (the finished video — recursive: Renderball's own) ───
+// ── Stage 6 · Ready (the finished deck — recursive: Renderball's own) ───
 function ReadyStage() {
-  // Frame counter eases up to a hero number for the payoff.
-  const [frames, setFrames] = useState(0);
-  useEffect(() => {
-    const target = 1243500;
-    const dur = 1700;
-    let startTs: number | null = null;
-    let raf = 0;
-    const tick = (ts: number) => {
-      if (startTs === null) startTs = ts;
-      const p = Math.min((ts - startTs) / dur, 1);
-      const eased = 1 - Math.pow(1 - p, 3);
-      setFrames(Math.round(eased * target));
-      if (p < 1) raf = requestAnimationFrame(tick);
-    };
-    raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
-  }, []);
-
   return (
     <div className="flex h-full flex-col">
       <div className="relative flex flex-1 items-center justify-center overflow-hidden bg-[#06100c]">
@@ -442,7 +484,7 @@ function ReadyStage() {
               animationDelay: "0.1s",
             }}
           >
-            Animation-rich video.
+            Decks that look designed.
           </div>
           <div
             data-rb-anim
@@ -452,42 +494,43 @@ function ReadyStage() {
               animationDelay: "0.34s",
             }}
           >
-            Written by AI.
+            From a brief.
           </div>
           <div
             data-rb-anim
-            className="mt-4 font-mono text-[11px] tabular-nums text-white/55"
+            className="mt-4 font-mono text-[11px] text-white/55"
             style={{ animation: "rb-fade 0.6s ease-out both", animationDelay: "0.75s" }}
           >
-            {frames.toLocaleString()} frames rendered
+            10 on-brand pages · every element editable
           </div>
           <div
             data-rb-anim
             className="mt-3.5 inline-block rounded-full bg-accent px-4 py-1.5 text-[12px] font-semibold text-accent-ink shadow-[0_8px_28px_-8px_rgba(0,194,138,0.7)]"
             style={{ animation: "rb-pop 0.5s ease-out both", animationDelay: "0.95s" }}
           >
-            Start for $49.99/mo →
+            Start free — 1M tokens →
           </div>
         </div>
         <span className="absolute bottom-3 right-4 font-mono text-[10px] text-white/35">
-          1080p · no watermark · your license
+          PDF · PNG · no watermark
         </span>
       </div>
-      {/* Playback bar */}
+      {/* Pager bar */}
       <div className="flex items-center gap-3 border-t border-hairline bg-surface px-4 py-2.5">
-        <span className="flex h-6 w-6 items-center justify-center rounded-full bg-accent text-[10px] text-accent-ink">
-          ▶
-        </span>
-        <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-surface-3">
-          <div
-            data-rb-anim
-            className="h-full rounded-full bg-accent"
-            style={{ animation: "rb-scrub 4.6s linear both" }}
-          />
+        <div className="flex flex-1 items-center gap-1.5">
+          {Array.from({ length: 10 }).map((_, i) => (
+            <span
+              key={i}
+              className={cn(
+                "h-1.5 rounded-full",
+                i === 0 ? "w-5 bg-accent" : "w-1.5 bg-surface-3",
+              )}
+            />
+          ))}
         </div>
-        <span className="font-mono text-[10px] text-muted">0:45</span>
+        <span className="font-mono text-[10px] text-muted">page 1 / 10</span>
         <span className="rounded-md border border-hairline-strong px-2.5 py-1 font-mono text-[10px] text-ink-soft">
-          Download MP4
+          Export PDF
         </span>
       </div>
     </div>

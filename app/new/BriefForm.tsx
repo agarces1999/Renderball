@@ -41,10 +41,10 @@ import {
 // quality is locked.
 const DURATION_CHIPS = [15, 30, 45, 60];
 const PURPOSE_EXAMPLES = [
-  "Launch video for our new analytics product",
-  "TikTok story for our Black Friday sale",
-  "Investor update for our Series B announcement",
-  "Cold sales outreach to a marketing VP",
+  "Seed pitch deck for our analytics startup",
+  "Sales deck for outreach to marketing VPs",
+  "All-hands deck for our Q3 update",
+  "Launch deck for our new API",
 ];
 
 const newMoment = (): MomentInput => ({
@@ -260,6 +260,7 @@ export function BriefForm({
     const steps = computeAnalyzeSteps({
       hasWebsite: brandKitUrl.trim().length > 0,
       fileCount: brandFiles.length,
+      kind,
     });
     setAnalyzeSteps(steps);
     setAgentDone(false);
@@ -336,14 +337,14 @@ export function BriefForm({
 
   const handleAutoGenerate = () => {
     if (!introPrompt.trim()) {
-      setError("Write what video you want before generating.");
+      setError("Write what you want to make before generating.");
       return;
     }
     if (!logoLocked) {
       setError(
         crawledLogo
           ? "Lock in your logo — upload one, or confirm the logo we found on your site."
-          : "Upload your logo (SVG or PNG) — it's required so the video is unmistakably yours.",
+          : "Upload your logo (SVG or PNG) — it's required so the design is unmistakably yours.",
       );
       return;
     }
@@ -384,6 +385,7 @@ export function BriefForm({
         <div className="glass w-full max-w-[640px] rounded-lg p-8">
           <AnalyzePanel
             steps={analyzeSteps}
+            kind={kind}
             isAgentDone={agentDone}
             agentError={agentError}
             onDone={handleGenerationComplete}
@@ -402,7 +404,7 @@ export function BriefForm({
       <div className="w-full max-w-[640px]">
         <div className="orb orb-spin mx-auto mb-7 h-16 w-16" aria-hidden />
         <h1 className="mb-9 text-center font-display text-[clamp(32px,6vw,46px)] font-semibold leading-[1.04] tracking-tight text-ink">
-          Render your business{" "}
+          Design your business{" "}
           <span className="text-accent-text">story</span>.
         </h1>
 
@@ -445,7 +447,7 @@ export function BriefForm({
             value={introPrompt}
             onChange={(e) => setIntroPrompt(e.target.value)}
             rows={5}
-            placeholder="A 30-second launch video for [brand] — what it does, who it's for, and the one thing someone should remember. Tone, too."
+            placeholder="A 10-page pitch deck for [brand] — what it does, who it's for, and the one thing someone should remember. Tone, too."
             className="w-full resize-none bg-transparent text-[16.5px] leading-relaxed text-ink placeholder:text-muted focus:outline-none"
           />
           <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-hairline pt-3">
@@ -472,23 +474,26 @@ export function BriefForm({
                 className="w-full bg-transparent font-mono text-[13px] text-ink-soft placeholder:text-muted focus:outline-none"
               />
             </div>
-            <div className="flex items-center gap-1">
-              {DURATION_CHIPS.map((d) => (
-                <button
-                  key={d}
-                  type="button"
-                  onClick={() => setDuration(d)}
-                  className={cn(
-                    "rounded-full px-2.5 py-1 font-mono text-[11px] transition-colors",
-                    duration === d
-                      ? "border border-accent-line bg-accent-soft text-ink"
-                      : "border border-hairline-strong text-muted hover:text-ink",
-                  )}
-                >
-                  {d}s
-                </button>
-              ))}
-            </div>
+            {/* Seconds are video pacing — a deck brief doesn't show them. */}
+            {kind === "video" && (
+              <div className="flex items-center gap-1">
+                {DURATION_CHIPS.map((d) => (
+                  <button
+                    key={d}
+                    type="button"
+                    onClick={() => setDuration(d)}
+                    className={cn(
+                      "rounded-full px-2.5 py-1 font-mono text-[11px] transition-colors",
+                      duration === d
+                        ? "border border-accent-line bg-accent-soft text-ink"
+                        : "border border-hairline-strong text-muted hover:text-ink",
+                    )}
+                  >
+                    {d}s
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         </div>
 
@@ -838,10 +843,12 @@ export function BriefForm({
           onClick={handleAutoGenerate}
           className="mt-7 w-full rounded-md bg-accent px-6 py-3.5 text-[15px] font-semibold text-accent-ink shadow-[0_14px_32px_-12px_rgba(0,194,138,0.55)] transition-all hover:brightness-110"
         >
-          See the story →
+          {kind === "deck" ? "See the outline →" : "See the story →"}
         </button>
         <p className="mt-3 text-center text-[12px] text-muted">
-          We&apos;ll draft a story you can shape before anything renders.
+          {kind === "deck"
+            ? "We'll draft an outline you can shape before anything builds."
+            : "We'll draft a story you can shape before anything renders."}
         </p>
       </div>
     </div>

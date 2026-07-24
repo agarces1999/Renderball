@@ -60,8 +60,8 @@ export default async function BillingPage() {
           </div>
           {usage ? (
             <div className="mt-5 space-y-4">
-              <MeterRow label="Stories generated" used={usage.generate.used} limit={usage.generate.limit} />
-              <MeterRow label="Videos built" used={usage.build.used} limit={usage.build.limit} />
+              <MeterRow label="Outlines generated" used={usage.generate.used} limit={usage.generate.limit} />
+              <MeterRow label="Documents built" used={usage.build.used} limit={usage.build.limit} />
             </div>
           ) : (
             <p className="mt-2 text-[13px] text-muted">
@@ -84,7 +84,8 @@ export default async function BillingPage() {
             <span className="font-mono text-[12px] text-muted">per month</span>
           </div>
           <p className="mb-4 text-[13px] text-muted">
-            Unlimited videos. 1080p. No watermark. Cancel anytime.
+            Unlimited documents. Full-quality export. No watermark. Cancel
+            anytime.
           </p>
           {isStripeConfigured() ? (
             usage?.plan === "subscription" ? (
