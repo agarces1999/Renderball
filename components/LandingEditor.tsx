@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import {
   CaptureRegion,
+  DotGrid,
   Handles,
   SandboxHint,
   SandboxLayer,
@@ -262,7 +263,7 @@ export function LandingEditor() {
                   style={{ right: 28, bottom: 28, width: 190, height: 84 }}
                 />
               </SandboxLayer>
-              <ScrollCue progress={p} />
+              <ColdOpen progress={p} />
             </div>
 
             <ClaimBar section={section} local={local} first={idx === 0} />
@@ -278,31 +279,59 @@ export function LandingEditor() {
   );
 }
 
-/* ─── scroll cue: the first frame is a frozen mid-draw and reads as empty ─
+/* ─── cold open: the branded SEED beat (DESIGN.md "Scroll narrative" beat 1) ─
  *
- * At scroll 0 the choreography is paused part-way into its first cycle, so
- * the canvas is a static half-drawn box with no motion to say "keep going".
- * This is the one bit of the page that is NOT a function of scroll — a small
- * nudging chevron that announces the page scrolls, and fades out the instant
- * it does. bg is a SOLID token: an opacity modifier on a hex CSS-var token
- * (bg-surface/85) renders fully transparent. */
-function ScrollCue({ progress }: { progress: number }) {
-  const opacity = 1 - seg(progress, 0.006, 0.045);
-  if (opacity <= 0.01) return null;
+ * The first frame used to be a frozen mid-draw on an empty canvas, which read
+ * as "nothing here". This fills it with the motif instead: the crystal orb
+ * floating (its rim rotating, a gentle bob), the wordmark, and a scroll arrow
+ * — then it lifts and fades as the visitor scrolls, revealing the editor
+ * choreography underneath.
+ *
+ * Not part of the scroll choreography, but its opacity and lift ARE driven by
+ * scroll, so it clears by ~7.5% and never sits over the beats. Covers the
+ * canvas only: the rail, toolbar and claim bar stay framed around it, so the
+ * seed reads as "inside the editor", not a splash screen over it. */
+function ColdOpen({ progress }: { progress: number }) {
+  const out = seg(progress, 0.02, 0.075);
+  if (out >= 1) return null;
   return (
     <div
-      className="pointer-events-none absolute inset-x-0 bottom-5 z-40 flex justify-center"
-      style={{ opacity }}
+      className="pointer-events-none absolute inset-0 z-50 flex flex-col items-center justify-center overflow-hidden bg-surface"
+      style={{ opacity: 1 - out, transform: `translateY(${-out * 46}px)` }}
       aria-hidden
     >
-      <div className="flex items-center gap-2 rounded-full border border-hairline bg-surface px-4 py-2 font-mono text-[11px] tracking-wide text-muted shadow-[0_10px_30px_-14px_rgba(18,26,43,0.55)]">
-        <span>scroll to watch it build</span>
+      <DotGrid />
+      <div className="relative flex flex-col items-center">
         <span
-          className="text-accent-text"
-          style={{ animation: "rb-scroll-nudge 1.4s ease-in-out infinite" }}
+          className="orb orb-spin block h-24 w-24"
+          style={{ animation: "rb-orb-float 4.5s ease-in-out infinite" }}
+        />
+        <h1
+          className="mt-8 font-display text-[clamp(38px,5.5vw,64px)] font-bold tracking-[-0.02em] text-ink"
+          style={{ animation: "rb-fade-up 640ms ease-out both", animationDelay: "120ms" }}
         >
-          ↓
-        </span>
+          Renderball
+        </h1>
+        <p
+          className="mt-2.5 font-mono text-[12px] uppercase tracking-[0.24em] text-muted"
+          style={{ animation: "rb-fade-up 640ms ease-out both", animationDelay: "240ms" }}
+        >
+          AI-native design editor
+        </p>
+        <div
+          className="mt-11 flex flex-col items-center gap-1.5"
+          style={{ animation: "rb-fade 640ms ease-out both", animationDelay: "560ms" }}
+        >
+          <span className="font-mono text-[10.5px] tracking-[0.18em] text-faint">
+            SCROLL TO BEGIN
+          </span>
+          <span
+            className="text-[17px] text-accent-text"
+            style={{ animation: "rb-scroll-nudge 1.4s ease-in-out infinite" }}
+          >
+            ↓
+          </span>
+        </div>
       </div>
     </div>
   );

@@ -305,6 +305,11 @@
   0%, 100% { transform: translateY(0); opacity: 0.5; }
   50% { transform: translateY(4px); opacity: 1; }
 }
+/* Cold-open: the crystal orb floats (the body bobs; the rim spins separately). */
+@keyframes rb-orb-float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-10px); }
+}
 @media (prefers-reduced-motion: reduce) {
   [data-rb-anim] { animation: none !important; }
 }
