@@ -68,6 +68,19 @@ export default async function PreviewPage({
   const backHref = brief ? `/review/${brief.id}` : "/documents";
   const isDeck = script.config.kind === "deck";
 
+  // A built deck is a full-bleed editor app (EditorShell owns its own chrome —
+  // rail, toolbar, canvas — matching the landing). No AppHeader or centered doc
+  // wrapper here: the shell's rail carries the wordmark and "← Documents".
+  if (compositionExists && isDeck) {
+    return (
+      <PreviewClient
+        scriptId={params.id}
+        script={script}
+        initialWarnings={initialWarnings}
+      />
+    );
+  }
+
   return (
     <>
       <AppHeader />

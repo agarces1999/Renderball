@@ -1,6 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  useState,
+} from "react";
 import { matchFieldPath } from "../../../lib/edit/scene-content";
 import { parseFmt, serializeFmt, type FreetextFormat } from "../../../lib/edit/freetext";
 
@@ -45,6 +52,33 @@ interface Props {
   apiBase?: string;
   /** Start with the piece x-ray on (the dev dashboard defaults to visible). */
   defaultShowAll?: boolean;
+  /**
+   * Hide the overlay's own floating controls (the Add pill, the top-right
+   * undo/x-ray cluster, the bottom guidance hint). The editor SHELL renders a
+   * unified toolbar instead and drives the same actions through the ref below.
+   * Selection, hover, marquee, grips and text-edit chrome always stay.
+   */
+  hideToolbar?: boolean;
+  /** Report tool/undo/x-ray/busy state up so a shell toolbar can reflect it. */
+  onState?: (s: EditorState) => void;
+}
+
+/** The actions a shell toolbar can invoke — the same ones the internal pill fires. */
+export interface ElementEditorHandle {
+  addText: () => void;
+  addImage: () => void;
+  addIcon: () => void;
+  toggleGenerate: () => void;
+  toggleOutlines: () => void;
+  undo: () => void;
+}
+
+/** A snapshot of the editor's chrome-relevant state, for a shell toolbar. */
+export interface EditorState {
+  tool: "select" | "generate";
+  showAll: boolean;
+  canUndo: boolean;
+  busy: string | null;
 }
 
 const BLOCK_TEXT = /^(H[1-6]|P|LI|DIV|FIGCAPTION|LABEL|BLOCKQUOTE|DD|DT|TD|TH)$/;
@@ -128,16 +162,22 @@ const AlignIcon = ({ a }: { a: "left" | "center" | "right" }) => (
   </span>
 );
 
-export function ElementEditor({
-  iframeRef,
-  scriptId,
-  sceneIndex,
-  reloadKey,
-  canvasWidth,
-  onChanged,
-  apiBase = "/api/preview",
-  defaultShowAll = false,
-}: Props) {
+export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
+  function ElementEditor(
+    {
+      iframeRef,
+      scriptId,
+      sceneIndex,
+      reloadKey,
+      canvasWidth,
+      onChanged,
+      apiBase = "/api/preview",
+      defaultShowAll = false,
+      hideToolbar = false,
+      onState,
+    }: Props,
+    ref,
+  ) {
   const [selected, setSelected] = useState<PieceRef | null>(null);
   const [hovered, setHovered] = useState<PieceRef | null>(null);
   const [showAll, setShowAll] = useState(defaultShowAll);
@@ -1199,6 +1239,43 @@ export function ElementEditor({
   const canEditText =
     !!selected && (selected.kind === "text" || selected.kind === "chrome" || !!textTargetRef.current?.path);
 
+  // Arm/disarm the marquee-to-generate surface. Shared by the internal pill and
+  // the shell toolbar so both stay in lockstep.
+  const toggleGenerate = useCallback(() => {
+    setSelected(null);
+    setHovered(null);
+    setGenBox(null);
+    setMarquee(null);
+    setTool((t) => (t === "generate" ? null : "generate"));
+  }, []);
+  const toggleOutlines = useCallback(() => setShowAll((s) => !s), []);
+
+  // Actions a shell toolbar drives, and a state readout it reflects. onState is
+  // kept in a ref so an inline parent callback doesn't re-fire the effect every
+  // render — it fires only when the reported state actually changes.
+  useImperativeHandle(
+    ref,
+    () => ({
+      addText: () => void insertPrimitive("text"),
+      addImage: () => fileRef.current?.click(),
+      addIcon: () => void insertPrimitive("icon"),
+      toggleGenerate,
+      toggleOutlines,
+      undo: () => void undo(),
+    }),
+    [toggleGenerate, toggleOutlines],
+  );
+  const onStateRef = useRef(onState);
+  onStateRef.current = onState;
+  useEffect(() => {
+    onStateRef.current?.({
+      tool: tool === "generate" ? "generate" : "select",
+      showAll,
+      canUndo: undoDepth > 0,
+      busy,
+    });
+  }, [tool, showAll, undoDepth, busy]);
+
   return (
     <div ref={overlayRef} style={{ position: "absolute", inset: 0, pointerEvents: "none", zIndex: 5 }}>
       {/* drag shield: while dragging, catch every mouse event before the iframe can
@@ -1212,7 +1289,7 @@ export function ElementEditor({
 
       {/* Add toolbar (top-left). Neutral chrome; the emerald is reserved for the
           primary action and active state (DESIGN.md). */}
-      {!editing && (
+      {!hideToolbar && !editing && (
         <div className="absolute left-2 top-2 flex items-center gap-1" style={{ pointerEvents: "auto" }}>
           <span className="mr-0.5 font-mono text-[10px] uppercase tracking-[0.14em] text-white/70">Add</span>
           <button
@@ -1254,13 +1331,7 @@ export function ElementEditor({
           <button
             type="button"
             aria-pressed={tool === "generate"}
-            onClick={() => {
-              setSelected(null);
-              setHovered(null);
-              setGenBox(null);
-              setMarquee(null);
-              setTool((t) => (t === "generate" ? null : "generate"));
-            }}
+            onClick={toggleGenerate}
             disabled={!!busy}
             className={
               `ml-1 ${HIT} ${R_SM} px-2.5 text-[11px] font-semibold disabled:opacity-50 gap-1.5 ` +
@@ -1412,33 +1483,35 @@ export function ElementEditor({
           </form>
         </>
       )}
-      {/* Top-right: undo + the x-ray toggle. The top strip now holds ONLY controls —
-          the guidance hint moved to the bottom so nothing overlaps. */}
-      <div className="absolute right-2 top-2 flex items-center gap-1" style={{ pointerEvents: "auto" }}>
-        {undoDepth > 0 && !editing && (
+      {/* Top-right: undo + the x-ray toggle. Hidden when a shell toolbar owns
+          these (hideToolbar); otherwise the strip holds ONLY controls. */}
+      {!hideToolbar && (
+        <div className="absolute right-2 top-2 flex items-center gap-1" style={{ pointerEvents: "auto" }}>
+          {undoDepth > 0 && !editing && (
+            <button
+              type="button"
+              onClick={() => void undo()}
+              disabled={!!busy}
+              title="Undo last change (⌘Z)"
+              aria-label="Undo last change"
+              className={`${HIT} ${R_SM} ${CHROME} px-2.5 text-[11px] font-medium disabled:opacity-50`}
+            >
+              {busy === "undo" ? "Undoing…" : "↩ Undo"}
+            </button>
+          )}
           <button
             type="button"
-            onClick={() => void undo()}
-            disabled={!!busy}
-            title="Undo last change (⌘Z)"
-            aria-label="Undo last change"
-            className={`${HIT} ${R_SM} ${CHROME} px-2.5 text-[11px] font-medium disabled:opacity-50`}
+            aria-pressed={showAll}
+            onClick={toggleOutlines}
+            className={`${HIT} ${R_SM} px-2.5 text-[11px] font-medium ${showAll ? ACTIVE : CHROME}`}
           >
-            {busy === "undo" ? "Undoing…" : "↩ Undo"}
+            {showAll ? "Hide outlines" : "Show all pieces"}
           </button>
-        )}
-        <button
-          type="button"
-          aria-pressed={showAll}
-          onClick={() => setShowAll((s) => !s)}
-          className={`${HIT} ${R_SM} px-2.5 text-[11px] font-medium ${showAll ? ACTIVE : CHROME}`}
-        >
-          {showAll ? "Hide outlines" : "Show all pieces"}
-        </button>
-      </div>
+        </div>
+      )}
 
       {/* Guidance, bottom-centre — out of the way of both toolbars. */}
-      {!selected && !editing && !tool && !genBox && !marquee && (
+      {!hideToolbar && !selected && !editing && !tool && !genBox && !marquee && (
         <div
           style={{ pointerEvents: "none" }}
           className="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full bg-[#11141b]/85 px-3 py-1 text-[11px] font-medium text-white/70"
@@ -1740,4 +1813,4 @@ export function ElementEditor({
       )}
     </div>
   );
-}
+});

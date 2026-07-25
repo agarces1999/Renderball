@@ -1,9 +1,18 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import type { Script } from "../../../src/schema";
 import { cn } from "../../../lib/cn";
-import { ElementEditor } from "./ElementEditor";
+import {
+  ElementEditor,
+  type ElementEditorHandle,
+  type EditorState,
+} from "./ElementEditor";
+import {
+  EditorShell,
+  type EditorToolController,
+} from "../../../components/EditorShell";
 
 interface Props {
   scriptId: string;
@@ -214,6 +223,126 @@ export function PreviewClient({ scriptId, script, initialWarnings }: Props) {
       warnings.throughline_drift?.length ||
       (warnings.duplicate_logo ?? 0) > 1 ||
       warnings.overflow_crop?.length);
+
+  // Tool state for the shell toolbar (deck path). ElementEditor reports its
+  // state up through onState; the toolbar buttons drive it back through the ref.
+  const editorRef = useRef<ElementEditorHandle>(null);
+  const [ed, setEd] = useState<EditorState>({
+    tool: "select",
+    showAll: false,
+    canUndo: false,
+    busy: null,
+  });
+  const controls: EditorToolController = {
+    tool: ed.tool,
+    showAll: ed.showAll,
+    canUndo: ed.canUndo,
+    busy: !!ed.busy || regenerating || pageBusy,
+    select: () => {
+      if (ed.tool === "generate") editorRef.current?.toggleGenerate();
+    },
+    generate: () => editorRef.current?.toggleGenerate(),
+    addText: () => editorRef.current?.addText(),
+    addImage: () => editorRef.current?.addImage(),
+    addIcon: () => editorRef.current?.addIcon(),
+    toggleOutlines: () => editorRef.current?.toggleOutlines(),
+    undo: () => editorRef.current?.undo(),
+  };
+
+  // ── Decks: the app-shell editor (matches the landing) ───────────────────
+  // Videos keep the classic playback surface below; decks are static design
+  // documents, so the editor is always live (no "edit mode" toggle) and the
+  // loud action is PDF/PNG export, not MP4.
+  if (isDeck) {
+    return (
+      <div className="min-h-screen bg-canvas">
+        <EditorShell
+          slides={doc.scenes.map((s) => ({ label: s.label ?? "Slide" }))}
+          active={sceneIndex}
+          onSelect={selectScene}
+          onAddSlide={() => void pageOp({ op: "add", after: sceneIndex })}
+          width={dims.width}
+          height={dims.height}
+          status={ed.busy || regenerating || pageBusy ? "saving" : "saved"}
+          controls={controls}
+          actions={
+            <>
+              <button
+                type="button"
+                onClick={() => setRegenAsk((a) => !a)}
+                disabled={regenerating}
+                className={cn(
+                  "rounded-md border px-3 py-1.5 text-[12px] transition-colors disabled:opacity-50",
+                  regenAsk
+                    ? "border-accent-line bg-accent-soft text-ink"
+                    : "border-hairline-strong text-muted hover:text-ink",
+                )}
+              >
+                {regenerating ? "Regenerating…" : "Regenerate"}
+              </button>
+              <a
+                href={`/api/preview/${scriptId}/export?format=png&scene=${sceneIndex}`}
+                className="rounded-md border border-hairline-strong bg-surface px-3 py-1.5 text-[12px] text-ink transition-colors hover:bg-surface-2"
+              >
+                PNG
+              </a>
+              <a
+                href={`/api/preview/${scriptId}/export?format=pdf`}
+                className="inline-flex items-center gap-2 rounded-md bg-accent px-4 py-1.5 text-[12px] font-semibold text-accent-ink transition-all hover:brightness-110"
+              >
+                Export PDF →
+              </a>
+            </>
+          }
+          banner={
+            <DeckBanner
+              regenAsk={regenAsk && !regenerating}
+              regenInstruction={regenInstruction}
+              onRegenInstruction={setRegenInstruction}
+              onRegenSubmit={() => void handleRegenerate()}
+              onRegenCancel={() => setRegenAsk(false)}
+              regenError={regenError}
+              pageError={pageError}
+              structural={warnings?.structural_unresolved ?? null}
+              warnings={hasWarnings ? warnings : null}
+            />
+          }
+          sidePanel={
+            <DeckPagePanel
+              index={sceneIndex}
+              total={doc.scenes.length}
+              description={currentScene?.description ?? null}
+              busy={pageBusy}
+              onOp={(op) => void pageOp(op)}
+            />
+          }
+          footer={
+            <Link href="/documents" className="transition-colors hover:text-ink">
+              ← Documents
+            </Link>
+          }
+        >
+          <iframe
+            ref={iframeRef}
+            src={iframeSrc}
+            title={`Page ${sceneIndex + 1}`}
+            style={{ position: "absolute", inset: 0, width: "100%", height: "100%", border: 0 }}
+          />
+          <ElementEditor
+            ref={editorRef}
+            iframeRef={iframeRef}
+            scriptId={scriptId}
+            sceneIndex={sceneIndex}
+            reloadKey={reloadKey}
+            canvasWidth={dims.width}
+            onChanged={() => setReloadKey((k) => k + 1)}
+            hideToolbar
+            onState={setEd}
+          />
+        </EditorShell>
+      </div>
+    );
+  }
 
   return (
     <div>
@@ -486,6 +615,162 @@ export function PreviewClient({ scriptId, script, initialWarnings }: Props) {
         </div>
       )}
     </div>
+  );
+}
+
+type PageOp =
+  | { op: "duplicate"; page: number }
+  | { op: "remove"; page: number }
+  | { op: "move"; page: number; to: number }
+  | { op: "add"; after: number };
+
+/**
+ * The strip between the deck toolbar and canvas: an open regen form, then any
+ * quality warnings and errors. Empty (renders nothing) in the common case.
+ */
+function DeckBanner({
+  regenAsk,
+  regenInstruction,
+  onRegenInstruction,
+  onRegenSubmit,
+  onRegenCancel,
+  regenError,
+  pageError,
+  structural,
+  warnings,
+}: {
+  regenAsk: boolean;
+  regenInstruction: string;
+  onRegenInstruction: (v: string) => void;
+  onRegenSubmit: () => void;
+  onRegenCancel: () => void;
+  regenError: string | null;
+  pageError: string | null;
+  structural: string[] | null;
+  warnings: PreviewWarnings | null;
+}) {
+  const anything =
+    regenAsk ||
+    regenError ||
+    pageError ||
+    (structural && structural.length > 0) ||
+    warnings;
+  if (!anything) return null;
+  return (
+    <div className="space-y-2">
+      {regenAsk && (
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            onRegenSubmit();
+          }}
+          className="flex items-center gap-2 rounded-lg border border-hairline bg-surface px-2.5 py-2"
+        >
+          <span className="shrink-0 font-mono text-[10.5px] uppercase tracking-[0.14em] text-faint">
+            Regenerate this page
+          </span>
+          <input
+            autoFocus
+            value={regenInstruction}
+            onChange={(e) => onRegenInstruction(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") onRegenCancel();
+            }}
+            placeholder="What should change on this page?"
+            className="min-w-0 flex-1 rounded-md border border-hairline-strong bg-surface-2 px-3 py-1.5 text-[13px] text-ink placeholder:text-faint outline-none focus:border-accent-line"
+          />
+          <button
+            type="submit"
+            disabled={!regenInstruction.trim()}
+            className="shrink-0 rounded-md bg-accent px-4 py-1.5 text-[13px] font-medium text-accent-ink transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Go
+          </button>
+        </form>
+      )}
+      {structural && structural.length > 0 && <StructuralPanel issues={structural} />}
+      {warnings && <WarningsPanel warnings={warnings} />}
+      {(pageError || regenError) && (
+        <div className="whitespace-pre-wrap rounded-md border border-red-500/30 bg-red-500/5 p-3 font-mono text-[12px] text-red-500">
+          {pageError ?? regenError}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** The deck's per-page inspector — structural ops on the active page. */
+function DeckPagePanel({
+  index,
+  total,
+  description,
+  busy,
+  onOp,
+}: {
+  index: number;
+  total: number;
+  description: string | null;
+  busy: boolean;
+  onOp: (op: PageOp) => void;
+}) {
+  return (
+    <div className="rounded-xl border border-hairline bg-surface px-4 py-3.5">
+      <div className="mb-1.5 font-mono text-[10.5px] uppercase tracking-[0.14em] text-faint">
+        Page {index + 1} of {total}
+      </div>
+      {description && (
+        <p className="mb-3 text-[13px] leading-relaxed text-ink-soft">{description}</p>
+      )}
+      <div className="border-t border-hairline pt-3">
+        <div className="mb-2 font-mono text-[10.5px] uppercase tracking-[0.14em] text-faint">
+          Page actions
+        </div>
+        <div className="grid grid-cols-2 gap-1.5">
+          <PageOpBtn onClick={() => onOp({ op: "move", page: index, to: index - 1 })} disabled={busy || index === 0}>
+            ← Move left
+          </PageOpBtn>
+          <PageOpBtn onClick={() => onOp({ op: "move", page: index, to: index + 1 })} disabled={busy || index >= total - 1}>
+            Move right →
+          </PageOpBtn>
+          <PageOpBtn onClick={() => onOp({ op: "duplicate", page: index })} disabled={busy}>
+            Duplicate
+          </PageOpBtn>
+          <PageOpBtn onClick={() => onOp({ op: "add", after: index })} disabled={busy}>
+            + Blank page
+          </PageOpBtn>
+          <PageOpBtn onClick={() => onOp({ op: "remove", page: index })} disabled={busy || total <= 1} danger>
+            Delete page
+          </PageOpBtn>
+        </div>
+        {busy && <div className="mt-2 text-[12px] text-faint">Applying…</div>}
+      </div>
+    </div>
+  );
+}
+
+function PageOpBtn({
+  onClick,
+  disabled,
+  danger,
+  children,
+}: {
+  onClick: () => void;
+  disabled?: boolean;
+  danger?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className={cn(
+        "rounded-md border border-hairline-strong bg-surface px-2.5 py-1.5 text-[12px] text-muted transition-colors disabled:opacity-40",
+        danger ? "hover:text-red-500" : "hover:text-ink",
+      )}
+    >
+      {children}
+    </button>
   );
 }
 
