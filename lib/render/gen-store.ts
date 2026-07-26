@@ -43,6 +43,25 @@ export const docKey = (scriptId: string): string => `docs/${scriptId}.json.gz`;
 const SKIP_DIRS = new Set([".render-truth"]);
 const SKIP_FILES = new Set(["build-timeline.json"]);
 
+/** The S3 client is constructed without a request timeout, so every call here
+ *  carries its own deadline — these run on the build and render paths. */
+const PERSIST_TIMEOUT_MS = 30_000;
+const HYDRATE_TIMEOUT_MS = 20_000;
+
+const withTimeout = async <T>(p: Promise<T>, ms: number, what: string): Promise<T> => {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      p,
+      new Promise<never>((_, rej) => {
+        timer = setTimeout(() => rej(new Error(`${what} timed out after ${ms}ms`)), ms);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+};
+
 /** Every file that must survive, relative to genDir. */
 const collect = async (dir: string, base = ""): Promise<string[]> => {
   let entries: Awaited<ReturnType<typeof fs.readdir>>;
@@ -81,7 +100,15 @@ export const persistGenDir = async (scriptId: string): Promise<boolean> => {
       bundle[rel] = (await fs.readFile(path.join(dir, rel))).toString("base64");
     }
     const gz = await gzip(Buffer.from(JSON.stringify({ v: 1, files: bundle }), "utf8"));
-    await putObject(docKey(scriptId), gz, "application/gzip");
+    // Bounded: this runs inside writeGeneratedFiles, so an unresponsive
+    // storage endpoint would otherwise hang a finished build indefinitely.
+    // Losing durability is bad; losing the build the user just paid for is
+    // worse, so the upload gets a deadline and the build proceeds either way.
+    await withTimeout(
+      putObject(docKey(scriptId), gz, "application/gzip"),
+      PERSIST_TIMEOUT_MS,
+      "persist",
+    );
     return true;
   } catch (err) {
     console.error(
@@ -111,7 +138,11 @@ export const hydrateGenDir = async (scriptId: string): Promise<boolean> => {
   }
   if (!isStorageConfigured()) return false;
   try {
-    const gz = await getObjectBytes(docKey(scriptId));
+    const gz = await withTimeout(
+      getObjectBytes(docKey(scriptId)),
+      HYDRATE_TIMEOUT_MS,
+      "hydrate",
+    );
     if (!gz) return false;
     const parsed = JSON.parse((await gunzip(gz)).toString("utf8")) as {
       v: number;
