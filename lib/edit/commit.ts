@@ -11,6 +11,7 @@
 // previously each op carried its own copy of this sequence.
 //
 import { promises as fs } from "fs";
+import { persistGenDir } from "../render/gen-store";
 import path from "path";
 import { reassembleFromDisk } from "../agents/lego-store";
 import { finalizeUndefinedRefs } from "../agents/finalize-refs";
@@ -29,5 +30,8 @@ export const commitGenDir = async (genDir: string, what = "edit"): Promise<Commi
   const compileError = await verifyCompilable(code);
   if (compileError) return { ok: false, error: `${what} does not compile: ${compileError}` };
   await fs.writeFile(path.join(genDir, "Composition.tsx"), code, "utf8");
+  // Republish so the edit survives the next deploy too — otherwise a restored
+  // document would silently roll back to its as-built state.
+  await persistGenDir(path.basename(genDir));
   return { ok: true, code };
 };

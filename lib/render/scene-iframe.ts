@@ -3,6 +3,7 @@ import path from "path";
 import React from "react";
 import * as esbuild from "esbuild";
 import { sandboxedRequire } from "./code-guard";
+import { hydrateGenDir } from "./gen-store";
 import type { Script } from "../../src/schema";
 import { dimensionsForScript, WIDE_LOCKUP_RATIO } from "./build-wrapper";
 import { inlineAssetSrcs } from "../edit/image-assets";
@@ -47,11 +48,22 @@ export async function renderSceneDoc(
     return { ok: false, status: 400, message: `scene ${sceneIndex} out of range (0..${script.scenes.length - 1})` };
   }
 
+  // Restore from durable storage if this container has never seen the
+  // document — i.e. any container after a deploy. Every render path (canvas,
+  // export, thumbnail) funnels through here, so this one call is what keeps a
+  // built deck alive across the ephemeral filesystem. No-op when it is
+  // already local.
+  await hydrateGenDir(scriptId);
+
   const compPath = path.join(process.cwd(), "src", "generated", scriptId, "Composition.tsx");
   try {
     await fs.access(compPath);
   } catch {
-    return { ok: false, status: 404, message: `Composition.tsx not found at ${compPath}. Run a build first.` };
+    return {
+      ok: false,
+      status: 404,
+      message: `Composition.tsx not found for ${scriptId}. Run a build first.`,
+    };
   }
 
   let bundleSource: string;

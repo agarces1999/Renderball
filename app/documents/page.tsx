@@ -6,6 +6,8 @@ import { getCurrentUser } from "../../lib/auth";
 import { listBriefsByOwner, type BriefStatus, type StoredBrief } from "../../lib/store";
 import { prisma } from "../../lib/db";
 import { AppShellServer } from "../../components/AppShellServer";
+import { objectExists } from "../../lib/storage/r2";
+import { docKey } from "../../lib/render/gen-store";
 import { ProjectThumb } from "../../components/ProjectThumb";
 
 /**
@@ -105,12 +107,18 @@ export default async function DocumentsPage() {
       if (!sid) {
         return { brief, kind, aspect, href: reviewHref, mp4Url: null, previewUrl: null, thumbUrl: null };
       }
-      const [hasLocalMp4, hasComp] = await Promise.all([
+      const [hasLocalMp4, hasLocalComp, hasDurableComp] = await Promise.all([
         exists(path.join(process.cwd(), ".data", "renders", `${sid}.mp4`)),
         exists(
           path.join(process.cwd(), "src", "generated", sid, "Composition.tsx"),
         ),
+        // Same reasoning as the MP4 line below: local disk is a warm cache, so
+        // a durable bundle in storage also means "built". Without this every
+        // card silently downgrades to the outline link after a redeploy. HEAD
+        // only — the document is hydrated lazily when actually opened.
+        objectExists(docKey(sid)),
       ]);
+      const hasComp = hasLocalComp || hasDurableComp;
       // Show the MP4 if it's on the warm local disk OR a completed Render row
       // proves it's durably in R2 (survives a fresh container).
       const hasMp4 = hasLocalMp4 || renderedProjectIds.has(brief.id);

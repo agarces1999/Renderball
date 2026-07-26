@@ -26,6 +26,7 @@ import { promises as fs } from "fs";
 import path from "path";
 import type { Script } from "../../src/schema";
 import { assertSafeComposition } from "./code-guard";
+import { persistGenDir } from "./gen-store";
 import { throughlineAnchorFor } from "../agents/choreograph";
 import { selectThroughlineAnchor } from "../agents/throughline-anchor";
 import type { Aspect } from "../agents/layout-composer";
@@ -774,4 +775,10 @@ export const writeGeneratedFiles = async (
       "utf-8",
     );
   }
+
+  // Publish to durable storage. The container filesystem is wiped on every
+  // deploy, so without this the document the user just paid for exists only
+  // until the next push. Best-effort: a storage outage must not fail a
+  // finished build (see gen-store.ts).
+  await persistGenDir(path.basename(genDir));
 };

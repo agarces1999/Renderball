@@ -5,6 +5,7 @@ import path from "path";
 import { getCurrentUser } from "../../../lib/auth";
 import { loadScript, loadBriefByScriptId } from "../../../lib/store";
 import { AppHeader } from "../../../components/AppHeader";
+import { hydrateGenDir } from "../../../lib/render/gen-store";
 import { PreviewClient } from "./PreviewClient";
 import { BuildPreviewClient } from "./BuildPreviewClient";
 
@@ -26,6 +27,11 @@ export default async function PreviewPage({
 
   const script = await loadScript(params.id, user.id);
   if (!script) notFound();
+
+  // Restore from durable storage first. Without this a redeploy makes the
+  // check below fail for a document that still exists, and the page silently
+  // fires a brand-new full-price build that yields a DIFFERENT design.
+  await hydrateGenDir(params.id);
 
   const compPath = path.join(
     process.cwd(),
