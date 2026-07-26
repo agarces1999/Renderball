@@ -14,9 +14,12 @@ const assert = (c: boolean, m: string) => { if (!c) throw new Error(m); };
 
 console.log("entitlement");
 
-check("free plan defaults: 3 generates, 1 build per month", () => {
-  assert(planLimit("free", "generate") === 3, `generate ${planLimit("free", "generate")}`);
-  assert(planLimit("free", "build") === 1, `build ${planLimit("free", "build")}`);
+// The free build limit must not undercut what the landing sells — "your
+// first 1,000,000 tokens are free (about three decks)". At 1, users hit a
+// wall at a third of the advertised allowance.
+check("free plan defaults: 10 outlines, 3 builds per month", () => {
+  assert(planLimit("free", "generate") === 10, `generate ${planLimit("free", "generate")}`);
+  assert(planLimit("free", "build") === 3, `build ${planLimit("free", "build")}`);
 });
 
 check("subscription defaults: 60 generates, 30 builds", () => {
@@ -26,11 +29,11 @@ check("subscription defaults: 60 generates, 30 builds", () => {
 
 check("under the limit → allowed with counts attached", () => {
   const e = decideEntitlement("free", "build", 0);
-  assert(e.allowed && e.used === 0 && e.limit === 1 && !e.reason, JSON.stringify(e));
+  assert(e.allowed && e.used === 0 && e.limit === 3 && !e.reason, JSON.stringify(e));
 });
 
 check("at the limit → denied with an upgrade-worded reason on free", () => {
-  const e = decideEntitlement("free", "build", 1);
+  const e = decideEntitlement("free", "build", 3);
   assert(!e.allowed && /Upgrade/.test(e.reason ?? ""), JSON.stringify(e));
 });
 

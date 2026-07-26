@@ -5,34 +5,52 @@ export const metadata: Metadata = {
   title: "Refund Policy — Renderball",
 };
 
+/**
+ * Must describe the model the customer is actually charged under. This page
+ * still said "a single monthly subscription at $49.99 per month" after the
+ * pivot to usage-based token pricing — a legal document contradicting the
+ * checkout is the worst possible mismatch, so it tracks lib/metering.ts and
+ * the pricing block on the landing.
+ */
 export default function RefundsPage() {
   return (
-    <LegalShell title="Refund Policy" updated="June 2026">
-      <Clause heading="1. Subscription">
+    <LegalShell title="Refund Policy" updated="July 2026">
+      <Clause heading="1. How billing works">
         <p>
-          Renderball is offered as a single monthly subscription at $49.99 per
-          month. The subscription renews automatically until you cancel.
+          Renderball is usage-based. There is no subscription and no monthly
+          fee. Editing an existing document — moving, resizing, rewriting,
+          reordering, deleting, undoing — is always free and is never metered.
+          You are charged only when Renderball generates something for you, and
+          only for the tokens that generation consumes.
+        </p>
+        <p>
+          Your first 1,000,000 tokens are free. Beyond that, usage is billed per
+          token in arrears through our payment processor.
         </p>
       </Clause>
-      <Clause heading="2. Cancel anytime">
+      <Clause heading="2. Nothing to cancel">
         <p>
-          You can cancel from your billing settings at any time. Cancellation
-          takes effect at the end of the current billing period and stops all
-          future charges. You keep access through the end of the period you
-          already paid for.
+          Because there is no recurring subscription, there is nothing to
+          cancel. If you stop generating, you stop being charged. You keep
+          access to documents you have already created, and you can keep editing
+          and exporting them at no cost.
         </p>
       </Clause>
-      <Clause heading="3. Failed builds">
+      <Clause heading="3. Failed builds and generations">
         <p>
           You approve the outline before any document is built, so you only pay
-          for work you have already agreed to. If a build or export fails for a
-          technical reason on our side, we will re-run it at no extra cost.
+          for work you have already agreed to. If a build, generation, or export
+          fails for a technical reason on our side, we do not charge you for it;
+          where usage has already been recorded, we credit it back. If you are
+          charged for a generation that failed, tell us and we will refund it.
         </p>
       </Clause>
-      <Clause heading="4. Dissatisfaction within 14 days">
+      <Clause heading="4. Disputed usage">
         <p>
-          If you are dissatisfied with the Service, contact us within 14 days of
-          a subscription charge and we will review your request in good faith.
+          If a charge does not look right to you, contact us within 30 days of
+          the invoice and we will review the underlying usage with you in good
+          faith. Your recorded usage is visible on your account page at any
+          time.
         </p>
       </Clause>
       <Clause heading="5. How to request a refund">

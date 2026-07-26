@@ -27,6 +27,14 @@ const envInt = (name: string, fallback: number): number => {
   return Number.isFinite(v) && v >= 0 ? v : fallback;
 };
 
+/**
+ * This gate runs BEFORE the token gate in the build route, so whichever is
+ * tighter is what the user actually experiences. The free build limit was 1
+ * while the landing sells "your first 1,000,000 tokens are free (about three
+ * decks)" — users hit a wall at a third of the advertised allowance, which is
+ * a refund generator. The default now matches the promise, and the token
+ * allowance is intended to be the binding constraint once metering is on.
+ */
 export const planLimit = (plan: PlanName, op: MeteredOp): number => {
   if (plan === "subscription") {
     return op === "generate"
@@ -34,8 +42,8 @@ export const planLimit = (plan: PlanName, op: MeteredOp): number => {
       : envInt("SUB_BUILDS_PER_MONTH", 30);
   }
   return op === "generate"
-    ? envInt("FREE_GENERATES_PER_MONTH", 3)
-    : envInt("FREE_BUILDS_PER_MONTH", 1);
+    ? envInt("FREE_GENERATES_PER_MONTH", 10)
+    : envInt("FREE_BUILDS_PER_MONTH", 3);
 };
 
 export interface Entitlement {
@@ -56,7 +64,7 @@ export const decideEntitlement = (
 ): Entitlement => {
   const limit = planLimit(plan, op);
   if (used >= limit) {
-    const noun = op === "generate" ? "stories" : "video builds";
+    const noun = op === "generate" ? "outlines" : "document builds";
     return {
       allowed: false,
       plan,

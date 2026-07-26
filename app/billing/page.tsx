@@ -27,9 +27,11 @@ function MeterRow({ label, used, limit }: { label: string; used: number; limit: 
 
 /**
  * Billing — current plan + subscription state. Checkout is not wired yet (lands
- * with the payment-processor integration); this honestly shows that and points
- * to the $49.99/mo subscription. Becomes the manage-subscription surface once
- * payments are live.
+ * with the payment-processor integration); this honestly shows that and states the
+ * usage-based model (1M tokens free, then per token) that the landing and the
+ * refund policy describe. Becomes the manage-billing surface once payments
+ * are live. It must never quote a flat monthly price again — that was the
+ * pre-pivot model and contradicted both of those pages.
  */
 export const dynamic = "force-dynamic";
 
@@ -72,20 +74,21 @@ export default async function BillingPage() {
 
         <div className="mt-5 rounded-lg border border-accent-line bg-surface p-6">
           <div className="mb-1 flex items-center justify-between gap-2">
-            <h2 className="text-[15px] font-semibold text-ink">Renderball</h2>
+            <h2 className="text-[15px] font-semibold text-ink">Usage-based</h2>
             <span className="rounded-full bg-accent-soft px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.1em] text-accent-text">
-              Subscription
+              Metered
             </span>
           </div>
           <div className="mb-1 flex items-baseline gap-1.5">
             <span className="font-display text-[34px] font-semibold tracking-tight text-ink">
-              $49.99
+              1M tokens
             </span>
-            <span className="font-mono text-[12px] text-muted">per month</span>
+            <span className="font-mono text-[12px] text-muted">free, then per token</span>
           </div>
           <p className="mb-4 text-[13px] text-muted">
-            Unlimited documents. Full-quality export. No watermark. Cancel
-            anytime.
+            Editing is always free — drag, resize, retype, reorder, undo. You
+            only pay when Renderball generates, priced per token. No
+            subscription, no seats, no watermark.
           </p>
           {isStripeConfigured() ? (
             usage?.plan === "subscription" ? (
@@ -95,9 +98,9 @@ export default async function BillingPage() {
             )
           ) : (
             <p className="mb-1 text-[13.5px] leading-relaxed text-ink-soft">
-              Checkout opens shortly through our payment processor. You will be
-              able to manage your subscription from this page once it&rsquo;s
-              live.
+              Metered billing opens shortly through our payment processor. Until
+              then everything here is free, and your usage above is still
+              recorded so nothing is lost.
             </p>
           )}
         </div>
