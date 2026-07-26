@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "../../../../lib/auth";
-import { loadBriefByScriptId } from "../../../../lib/store";
+import { loadBriefByScriptId, loadScript } from "../../../../lib/store";
 import { brandKitStatus } from "../../../../lib/brand-kit";
 import { checkEntitlement } from "../../../../lib/entitlement";
 import { checkTokenAllowance } from "../../../../lib/metering";
@@ -126,8 +126,14 @@ export async function GET(request: Request) {
   const scriptId = new URL(request.url).searchParams.get("scriptId");
   if (!scriptId) return NextResponse.json({ error: "scriptId required" }, { status: 400 });
 
-  // Ownership: never report another account's build state.
-  const owned = await loadBriefByScriptId(scriptId, user.id);
+  // Ownership: never report another account's build state. This MUST accept
+  // the same set of scripts POST accepts. POST deliberately tolerates a
+  // missing Brief row (see the legacy-brief branch above) and builds anyway;
+  // if this checked the Brief too, such a build would return 202 and then poll
+  // forever behind the client's `if (!res.ok) continue`, showing an infinite
+  // spinner for a build that actually succeeded. loadScript is the same
+  // owner-scoped check runPreviewBuild itself uses.
+  const owned = await loadScript(scriptId, user.id);
   if (!owned) return NextResponse.json({ error: "not found" }, { status: 404 });
 
   const job = buildStatus(scriptId);

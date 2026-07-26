@@ -13,6 +13,7 @@
 // exactly as they were.
 //
 import { promises as fs } from "fs";
+import { persistGenDir } from "../render/gen-store";
 import path from "path";
 import { readDecomposed, writePieceBody, reassembleFromDisk, captureUndo, commitUndo } from "../agents/lego-store";
 import { regeneratePiece } from "../agents/regenerate-piece";
@@ -129,6 +130,11 @@ export const regenerateElement = async (
   await writePieceBody(genDir, writeId, newBody);
   await fs.writeFile(path.join(genDir, "Composition.tsx"), candidate, "utf8");
   await commitUndo(genDir, undo, "regenerate");
+  // This path writes Composition.tsx directly rather than through
+  // commitGenDir, so it must republish itself — otherwise a redeploy restores
+  // the pre-regen bundle and the user's PAID regeneration silently reverts to
+  // the old design with no error anywhere.
+  await persistGenDir(path.basename(genDir));
 
   logUsage(regen.usage, false);
   return { ok: true, code: candidate, body: regen.body, usage: regen.usage };

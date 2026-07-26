@@ -37,10 +37,29 @@ const jobs = new Map<string, BuildJob>();
 /** How long a finished job stays queryable, so a slow poll still sees it. */
 const RETAIN_MS = 15 * 60_000;
 
+/**
+ * A build that never settles (a hung headless Chromium is the classic) would
+ * otherwise stay "running" forever, so startBuild would refuse every future
+ * POST for that document and the client would poll indefinitely — the
+ * document becomes permanently unbuildable on this container. Past this age a
+ * running job is treated as lost.
+ */
+const MAX_RUN_MS = 45 * 60_000;
+
 const sweep = (): void => {
   const now = Date.now();
   for (const [id, job] of jobs) {
-    if (job.state !== "running" && now - job.finishedAt > RETAIN_MS) jobs.delete(id);
+    if (job.state === "running") {
+      if (now - job.startedAt > MAX_RUN_MS) {
+        jobs.set(id, {
+          state: "error",
+          finishedAt: now,
+          message: "build exceeded the maximum run time and was abandoned",
+        });
+      }
+      continue;
+    }
+    if (now - job.finishedAt > RETAIN_MS) jobs.delete(id);
   }
 };
 

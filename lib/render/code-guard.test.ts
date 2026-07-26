@@ -2,7 +2,10 @@ import { strict as assert } from "assert";
 import {
   assertSafeComposition,
   checkComposition,
+  reportUnsafeComposition,
   sandboxedRequire,
+  shadowedFunctionArgs,
+  shadowedValues,
   UnsafeCompositionError,
 } from "./code-guard";
 
@@ -96,6 +99,66 @@ test("sandboxedRequire resolves only the allowlist", () => {
   for (const bad of ["child_process", "fs", "node:fs", "http", "net", "../../secrets"]) {
     assert.throws(() => jailed(bad), UnsafeCompositionError, bad);
   }
+});
+
+/* ── lexical shadowing: cheap depth, NOT a boundary ─────────────────── */
+
+// Shadowing stops the laziest payloads (a bare `process.env.X`) and nothing
+// more. It is explicitly NOT a sandbox: `Function("return this")()` still
+// hands back the real global object, because a Function-constructed function
+// compiles in global scope — verified. The test below pins the narrow thing
+// shadowing does buy; the escape it does NOT stop is asserted underneath so
+// nobody mistakes this for containment.
+test("shadowing blocks direct process/global/globalThis references", () => {
+  const realSecret = "postgres://SECRET@host/db";
+  const prev = process.env.RB_GUARD_TEST_SECRET;
+  process.env.RB_GUARD_TEST_SECRET = realSecret;
+
+  const payloads = [
+    'const p="proc"+"ess"; module.exports.v = typeof global==="undefined" ? "safe" : String(global[p].env.RB_GUARD_TEST_SECRET);',
+    'module.exports.v = typeof process==="undefined" ? "safe" : String(process.env.RB_GUARD_TEST_SECRET);',
+    'module.exports.v = typeof globalThis==="undefined" ? "safe" : "ESCAPED";',
+  ];
+  for (const src of payloads) {
+    const mod: { exports: Record<string, unknown> } = { exports: {} };
+    // eslint-disable-next-line @typescript-eslint/no-implied-eval
+    new Function(...shadowedFunctionArgs(), src)(
+      mod,
+      mod.exports,
+      sandboxedRequire(((m: string) => ({ m })) as unknown as NodeRequire),
+      ...shadowedValues(),
+    );
+    assert.equal(mod.exports.v, "safe", `escaped with: ${src.slice(0, 40)}`);
+  }
+
+  if (prev === undefined) delete process.env.RB_GUARD_TEST_SECRET;
+  else process.env.RB_GUARD_TEST_SECRET = prev;
+});
+
+// Deliberately asserts the WEAKNESS, so a future reader cannot mistake the
+// shadowing above for a security boundary. If this ever starts failing,
+// something real changed and the module header should be revisited.
+test("shadowing does NOT stop Function(\"return this\") — documented gap", () => {
+  const mod: { exports: Record<string, unknown> } = { exports: {} };
+  // eslint-disable-next-line @typescript-eslint/no-implied-eval
+  new Function(
+    ...shadowedFunctionArgs(),
+    'module.exports.escaped = typeof Function("return this")() === "object";',
+  )(
+    mod,
+    mod.exports,
+    sandboxedRequire(((m: string) => ({ m })) as unknown as NodeRequire),
+    ...shadowedValues(),
+  );
+  assert.equal(mod.exports.escaped, true, "the realm escape is real; see module header");
+});
+
+test("the build-path scan is a tripwire and never throws", () => {
+  // Ordinary business prose trips the process rule. On the build path this
+  // must log, not destroy a finished paid build.
+  const prose = "export const S = () => <p>That is our process. We ship weekly.</p>;";
+  assert.equal(checkComposition(prose).safe, false, "prose does trip the scan");
+  assert.doesNotThrow(() => reportUnsafeComposition(prose, "prose"));
 });
 
 test("checkComposition reports instead of throwing", () => {

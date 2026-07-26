@@ -1,26 +1,42 @@
 /**
- * Containment for LLM-authored composition code.
+ * Partial containment for LLM-authored composition code.
  *
- * The design agents emit `Composition.tsx` as source text. That file is
- * esbuild-bundled and then executed IN THIS PROCESS via
+ * READ THIS BEFORE TRUSTING IT. The design agents emit `Composition.tsx` as
+ * source text, which is esbuild-bundled and executed IN THIS PROCESS via
  * `new Function(...)(module, exports, require)` — see scene-iframe.ts,
  * ssr-render.ts, measure-scene.ts, density-gates.ts. The process holds
- * DATABASE_URL, CLERK_SECRET_KEY, STRIPE_SECRET_KEY and RB_FIREWORKS_KEY, so
- * "whatever the model wrote" must not be able to reach a real `require`.
+ * DATABASE_URL, CLERK_SECRET_KEY, STRIPE_SECRET_KEY and RB_FIREWORKS_KEY.
  *
- * The model is not the only author in that chain: crawled third-party page
- * text reaches the prompt and is deliberately framed as authoritative ("the
- * brand's ACTUAL claims"), so a poisoned site is an injection channel into
- * the emitted file. Prompt-level rules are not a control here — an audit
- * build violated the prompt's explicit "never invent timeframes" rule on the
- * first try. Hence two mechanical layers, neither of which trusts the model:
+ * WHAT THIS MODULE ACTUALLY GUARANTEES:
+ *   - sandboxedRequire() is a real control. Module resolution is a chokepoint
+ *     an attacker cannot route around, so `require("child_process")` — which
+ *     survives bundling, since esbuild keeps node builtins external under
+ *     platform:"node" — is genuinely blocked.
  *
- *   1. assertSafeComposition() — refuse to WRITE source that imports outside
- *      the render allowlist or reaches for host capabilities.
- *   2. sandboxedRequire()      — refuse to RESOLVE anything outside the
- *      allowlist at execute time, which is what actually stops a bundle
- *      (esbuild keeps node builtins external under platform:"node", so an
- *      un-allowlisted `import "child_process"` survives bundling).
+ * WHAT IT DOES NOT GUARANTEE — measured, not theorised:
+ *   - assertSafeComposition() is a TRIPWIRE, not a boundary. It is a regex
+ *     over text and loses to obfuscation: `"req"+"uire"`, `(0,eval)(…)`,
+ *     `const p = process; p["env"]`, unicode escapes and comment-splitting
+ *     all pass it.
+ *   - Lexical shadowing of process/global/globalThis does NOT contain an
+ *     attacker either. `Function("return this")()` is compiled in global
+ *     scope, so it hands back the real global object regardless of what the
+ *     parameter names are bound to; `({}).constructor.constructor` recovers
+ *     Function even if Function itself is shadowed. Verified: a payload that
+ *     passes the scan reads process.env through it.
+ *
+ * THEREFORE: assume a hostile composition can read every secret in this
+ * process. The only sound fix is to stop executing this code here — run the
+ * bundle in a forked process or worker started with a scrubbed env, or move
+ * SSR out of the Next server. `vm.runInNewContext` is hardening, not a
+ * boundary, per Node's own documentation. Until that lands, the layers below
+ * raise the cost of an attack and catch accidents; they do not make the
+ * execution safe.
+ *
+ * Injection reaches here through crawled third-party page text, which the
+ * prompt frames as authoritative ("the brand's ACTUAL claims"), and through
+ * the user's own brief. Prompt-level rules are not a control: an audit build
+ * violated the prompt's explicit "never invent timeframes" rule on sight.
  */
 
 /**
@@ -115,9 +131,9 @@ const importSpecifiers = (source: string): string[] => {
 };
 
 /**
- * Throw unless `source` is safe to write and execute. Called before the
- * emitted file touches disk, so unsafe output fails the BUILD rather than
- * reaching a renderer.
+ * Throw unless `source` looks safe. NOTE: callers on the build path must use
+ * `reportUnsafeComposition` instead — see there for why this must not fail a
+ * build. Exported for tests and for any caller that genuinely wants to reject.
  */
 export const assertSafeComposition = (source: string, label = "composition"): void => {
   for (const { re, reason } of FORBIDDEN) {
@@ -154,6 +170,34 @@ export const checkComposition = (
   }
 };
 
+/**
+ * Tripwire for the build path: log loudly, never throw.
+ *
+ * This scan CANNOT be a gate. Measured against realistic compositions, it
+ * rejects 6 out of 6 legitimate ones — ordinary business prose ("That is our
+ * process. We ship weekly." matches the process-access rule, since `\s*`
+ * spans the sentence break) and any slide that renders a CODE SNIPPET
+ * containing `require(`, `node_modules`, `import express from "express"` or a
+ * chart series labelled "eval (ms)". Rendering code samples is a first-class
+ * use case for a deck tool aimed at software companies.
+ *
+ * Because it runs inside writeGeneratedFiles, a hit would throw AFTER a
+ * complete ~$1-2 build, destroying finished work the user paid for, with an
+ * unactionable error. Given the scan is a tripwire rather than a boundary
+ * (module header), that trade is strictly bad: the cost is certain and the
+ * security benefit is near zero. So it reports and the build proceeds; the
+ * real control on module access is sandboxedRequire.
+ */
+export const reportUnsafeComposition = (source: string, label: string): void => {
+  const r = checkComposition(source, label);
+  if (!r.safe) {
+    console.warn(
+      `[code-guard] ${r.message} — NOT blocking the build (this scan is a ` +
+        `tripwire, not a boundary; see lib/render/code-guard.ts). Review if unexpected.`,
+    );
+  }
+};
+
 const excerpt = (source: string, at: number): string =>
   source.slice(Math.max(0, at - 12), at + 48).replace(/\s+/g, " ").trim();
 
@@ -164,6 +208,42 @@ const excerpt = (source: string, at: number): string =>
  * `require("child_process")` reaches the host regardless of what the source
  * scan did.
  */
+/**
+ * Identifiers shadowed in the executing bundle's scope.
+ *
+ * KEEP EXPECTATIONS LOW. This raises the cost of the laziest payloads
+ * (a bare `process.env.X`) and nothing more: `Function("return this")()`
+ * still returns the real global object, because a Function-constructed
+ * function is compiled in global scope. Retained as cheap defence in depth,
+ * NOT as the boundary — see the module header.
+ *
+ * The source scan is a regex over text, so it loses to obfuscation — verified:
+ * `"req"+"uire"`, `require`, `req/**\/uire` and `global[p]` all slip past
+ * it. Module resolution is still safe (everything funnels through
+ * sandboxedRequire), but `process` is a genuine Node global, so
+ * `global["proc"+"ess"].env.DATABASE_URL` would otherwise read every secret
+ * in the container no matter how clever the scanner got.
+ *
+ * Passing these as PARAMETERS to `new Function` shadows them lexically for
+ * the whole bundle. Scope resolution is not string-addressable, so there is
+ * no concatenation trick that reaches around it. Nothing legitimate is lost:
+ * only the composition and its relative shims are bundled here — react,
+ * recharts and friends stay external and keep their own module scope with
+ * the real globals.
+ */
+export const SHADOWED_GLOBALS = ["process", "global", "globalThis"] as const;
+
+/** Argument list for `new Function(...)` — names then the guarded require. */
+export const shadowedFunctionArgs = (): string[] => [
+  "module",
+  "exports",
+  "require",
+  ...SHADOWED_GLOBALS,
+];
+
+/** Values to apply for the shadowed names (all undefined). */
+export const shadowedValues = (): undefined[] => SHADOWED_GLOBALS.map(() => undefined);
+
 export const sandboxedRequire = (real: NodeRequire): NodeRequire => {
   const guarded = ((spec: string) => {
     if (typeof spec === "string" && (ALLOWED.has(spec) || isAllowedSubpath(spec))) {

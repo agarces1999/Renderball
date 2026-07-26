@@ -24,7 +24,7 @@
  *     first): honor retry-after, jittered backoff, bounded retries.
  */
 
-import { noteZaiError } from "../zai-breaker";
+import { noteZaiError, noteZaiSuccess } from "../zai-breaker";
 
 export type CastEffort = "none" | "low" | "medium" | "high";
 
@@ -232,9 +232,18 @@ export const castCall = async (call: CastCall): Promise<CastResult> => {
         res.status,
         false,
       );
-      noteZaiError(fatal);
+      // Only 402 means the account is dry. Reporting every non-2xx here fed
+      // 400/401/403/404 into the breaker.
+      if (res.status === 402) noteZaiError(fatal);
       throw fatal;
     }
+
+    // Closes a half-open breaker. Previously the ONLY caller of
+    // noteZaiSuccess was pipeline.ts's streamBuildCall, which the edit
+    // endpoints and the whole cast path never touch — so the first probe
+    // after a cooldown could be consumed by a regen that succeeded without
+    // ever closing the circuit, latching it open until a restart.
+    noteZaiSuccess();
 
     const msg = j.choices?.[0]?.message ?? {};
     return {

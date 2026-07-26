@@ -35,7 +35,7 @@ import path from "path";
 import { createRequire } from "module";
 import React from "react";
 import * as esbuild from "esbuild";
-import { sandboxedRequire } from "./code-guard";
+import { sandboxedRequire, shadowedFunctionArgs, shadowedValues } from "./code-guard";
 
 // Same externals the SSR gate uses — peer deps resolve at runtime; only the
 // local TS (Composition + ./Img/./BrandChrome shims) bundles.
@@ -528,10 +528,11 @@ export const measureScenes = async (
     const bundle = result.outputFiles[0].text;
     const moduleObj: { exports: Record<string, unknown> } = { exports: {} };
     // eslint-disable-next-line @typescript-eslint/no-implied-eval
-    new Function("module", "exports", "require", bundle)(
+    new Function(...shadowedFunctionArgs(), bundle)(
       moduleObj,
       moduleObj.exports,
       sandboxedRequire(nodeRequire),
+      ...shadowedValues(),
     );
     mod = moduleObj.exports;
   } catch (err) {

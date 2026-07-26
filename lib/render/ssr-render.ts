@@ -3,7 +3,7 @@ import path from "path";
 import { createRequire } from "module";
 import React from "react";
 import * as esbuild from "esbuild";
-import { sandboxedRequire } from "./code-guard";
+import { sandboxedRequire, shadowedFunctionArgs, shadowedValues } from "./code-guard";
 
 /**
  * Server-side render gate (QA): does every Section{N} actually RENDER, not just
@@ -99,8 +99,8 @@ export const verifyScenesRender = async (
   const moduleObj: { exports: Record<string, any> } = { exports: {} };
   try {
     // eslint-disable-next-line @typescript-eslint/no-implied-eval
-    const fn = new Function("module", "exports", "require", bundle);
-    fn(moduleObj, moduleObj.exports, sandboxedRequire(nodeRequire));
+    const fn = new Function(...shadowedFunctionArgs(), bundle);
+    fn(moduleObj, moduleObj.exports, sandboxedRequire(nodeRequire), ...shadowedValues());
   } catch (err) {
     return {
       ok: false,

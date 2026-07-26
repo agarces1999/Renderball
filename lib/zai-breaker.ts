@@ -68,21 +68,26 @@ export const isBalanceError = (err: unknown): boolean => {
       ? `${err.message} ${String((err as Error & { cause?: unknown }).cause ?? "")}`
       : String(err);
 
-  // z.ai (historical)
+  // z.ai (historical) — these strings are unambiguous.
   if (/\[1113\]|Insufficient balance|no resource package/i.test(msg)) return true;
 
-  // Fireworks: payment required is unambiguous.
-  if (/\b(HTTP )?402\b|payment required/i.test(msg)) return true;
+  // Fireworks: HTTP 402 is the account-dry signal, matched on the STATUS the
+  // transport attached — never on the rendered text. A substring match found
+  // "402" inside bodies like "error code 402 upstream connect error" and
+  // "invalid max_tokens: 402 exceeds limit", either of which would have taken
+  // all generation down.
+  const status = (err as { status?: unknown } | null)?.status;
+  if (typeof status === "number" && status === 402) return true;
 
-  // Fireworks: quota/billing exhaustion, however it is worded. Requires a
-  // money/quota noun so a plain 429 overload does not trip the breaker.
-  if (
-    /(quota|billing|credit|balance|payment|spending limit|account limit)/i.test(msg) &&
-    /(exceed|exhaust|insufficient|out of|depleted|reached|required|suspend)/i.test(msg)
-  ) {
-    return true;
-  }
-
+  // Deliberately NOTHING for 429. Every 429 vocabulary a provider actually
+  // emits for ordinary throttling contains money/quota words — measured:
+  // "Quota exceeded for requests per minute", "Rate limit reached for model;
+  // your account limit is 600 RPM", "Too many concurrent requests. See
+  // billing docs; upgrade required". An earlier quota/billing keyword
+  // heuristic tripped on all three. Since this breaker stops ALL generation
+  // for a cooldown, a false positive during a traffic spike is a
+  // self-inflicted outage — strictly worse than the failure it guards. Rate
+  // limiting is what the retry ladder and adaptive gate are for.
   return false;
 };
 

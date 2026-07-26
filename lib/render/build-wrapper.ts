@@ -25,7 +25,7 @@
 import { promises as fs } from "fs";
 import path from "path";
 import type { Script } from "../../src/schema";
-import { assertSafeComposition } from "./code-guard";
+import { reportUnsafeComposition } from "./code-guard";
 import { persistGenDir } from "./gen-store";
 import { throughlineAnchorFor } from "../agents/choreograph";
 import { selectThroughlineAnchor } from "../agents/throughline-anchor";
@@ -738,8 +738,8 @@ export const writeGeneratedFiles = async (
   // process later executes them with a real `new Function(...)`, so unsafe
   // output must fail the build rather than wait for a renderer to run it.
   // The shims below are ours and are not scanned. See code-guard.ts.
-  assertSafeComposition(files.code, "Composition.tsx");
-  assertSafeComposition(files.designCode, "Composition.design.tsx");
+  reportUnsafeComposition(files.code, "Composition.tsx");
+  reportUnsafeComposition(files.designCode, "Composition.design.tsx");
 
   await fs.mkdir(genDir, { recursive: true });
   await fs.writeFile(path.join(genDir, "Img.tsx"), IMG_SHIM_SOURCE, "utf-8");

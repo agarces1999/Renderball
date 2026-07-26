@@ -38,15 +38,35 @@ check("isBalanceError: the real 1113 string yes; overload/network/1302 no", () =
 // still recognised only z.ai's vocabulary, so the breaker could no longer
 // trip on the provider actually in use — five call sites consulted a circuit
 // that nothing could open.
-check("isBalanceError: Fireworks exhaustion vocabularies trip it", () => {
+check("isBalanceError: HTTP 402 (by status, not substring) trips it", () => {
+  const e = Object.assign(new Error("cast HTTP 402: payment required"), { status: 402 });
+  assert(isBalanceError(e), "402 status");
+});
+
+// The dangerous direction. This breaker stops ALL generation for a cooldown,
+// so a false positive is a self-inflicted outage. An earlier keyword
+// heuristic (money noun + exhaustion verb) tripped on every 429 vocabulary
+// providers actually emit for ordinary throttling — measured against real
+// body shapes. Rate limiting is the retry ladder's job, not the breaker's.
+check("isBalanceError: real 429 throttling bodies NEVER trip it", () => {
   for (const msg of [
-    "cast HTTP 402: payment required",
-    "cast HTTP 429: quota exceeded for account",
-    "cast HTTP 402: insufficient credit balance",
-    "cast HTTP 403: account suspended for billing",
-    "cast HTTP 429: spending limit reached",
+    'cast HTTP 429: {"error":{"message":"Quota exceeded for requests per minute. Please retry."}}',
+    'cast HTTP 429: {"error":{"message":"Rate limit reached for model; your account limit is 600 RPM"}}',
+    'cast HTTP 429: {"error":{"message":"Too many concurrent requests. See billing docs; upgrade required"}}',
   ]) {
-    assert(isBalanceError(new Error(msg)), msg);
+    const e = Object.assign(new Error(msg), { status: 429 });
+    assert(!isBalanceError(e), msg.slice(0, 60));
+  }
+});
+
+// "402" appears inside unrelated provider text; only the STATUS counts.
+check("isBalanceError: a 402 substring in other errors does not trip it", () => {
+  for (const [msg, status] of [
+    ["cast HTTP 503: error code 402 upstream connect error", 503],
+    ["cast HTTP 400: invalid max_tokens: 402 exceeds limit", 400],
+  ] as const) {
+    const e = Object.assign(new Error(msg), { status });
+    assert(!isBalanceError(e), msg);
   }
 });
 
