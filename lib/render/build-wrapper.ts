@@ -25,6 +25,7 @@
 import { promises as fs } from "fs";
 import path from "path";
 import type { Script } from "../../src/schema";
+import { assertSafeComposition } from "./code-guard";
 import { throughlineAnchorFor } from "../agents/choreograph";
 import { selectThroughlineAnchor } from "../agents/throughline-anchor";
 import type { Aspect } from "../agents/layout-composer";
@@ -732,6 +733,13 @@ export const writeGeneratedFiles = async (
   genDir: string,
   files: GeneratedFiles,
 ): Promise<void> => {
+  // The two LLM-authored files are checked BEFORE anything touches disk: this
+  // process later executes them with a real `new Function(...)`, so unsafe
+  // output must fail the build rather than wait for a renderer to run it.
+  // The shims below are ours and are not scanned. See code-guard.ts.
+  assertSafeComposition(files.code, "Composition.tsx");
+  assertSafeComposition(files.designCode, "Composition.design.tsx");
+
   await fs.mkdir(genDir, { recursive: true });
   await fs.writeFile(path.join(genDir, "Img.tsx"), IMG_SHIM_SOURCE, "utf-8");
   await fs.writeFile(path.join(genDir, "Piece.tsx"), PIECE_SHIM_SOURCE, "utf-8");

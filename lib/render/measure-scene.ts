@@ -35,6 +35,7 @@ import path from "path";
 import { createRequire } from "module";
 import React from "react";
 import * as esbuild from "esbuild";
+import { sandboxedRequire } from "./code-guard";
 
 // Same externals the SSR gate uses — peer deps resolve at runtime; only the
 // local TS (Composition + ./Img/./BrandChrome shims) bundles.
@@ -530,7 +531,7 @@ export const measureScenes = async (
     new Function("module", "exports", "require", bundle)(
       moduleObj,
       moduleObj.exports,
-      nodeRequire,
+      sandboxedRequire(nodeRequire),
     );
     mod = moduleObj.exports;
   } catch (err) {

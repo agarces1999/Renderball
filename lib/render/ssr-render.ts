@@ -3,6 +3,7 @@ import path from "path";
 import { createRequire } from "module";
 import React from "react";
 import * as esbuild from "esbuild";
+import { sandboxedRequire } from "./code-guard";
 
 /**
  * Server-side render gate (QA): does every Section{N} actually RENDER, not just
@@ -99,7 +100,7 @@ export const verifyScenesRender = async (
   try {
     // eslint-disable-next-line @typescript-eslint/no-implied-eval
     const fn = new Function("module", "exports", "require", bundle);
-    fn(moduleObj, moduleObj.exports, nodeRequire);
+    fn(moduleObj, moduleObj.exports, sandboxedRequire(nodeRequire));
   } catch (err) {
     return {
       ok: false,

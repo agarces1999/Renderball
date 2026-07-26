@@ -2,6 +2,7 @@ import { promises as fs } from "fs";
 import path from "path";
 import React from "react";
 import * as esbuild from "esbuild";
+import { sandboxedRequire } from "./code-guard";
 import type { Script } from "../../src/schema";
 import { dimensionsForScript, WIDE_LOCKUP_RATIO } from "./build-wrapper";
 import { inlineAssetSrcs } from "../edit/image-assets";
@@ -87,7 +88,7 @@ export async function renderSceneDoc(
   try {
     // eslint-disable-next-line @typescript-eslint/no-implied-eval
     const fn = new Function("module", "exports", "require", bundleSource);
-    fn(moduleObj, moduleObj.exports, eval("require"));
+    fn(moduleObj, moduleObj.exports, sandboxedRequire(eval("require")));
   } catch (err) {
     return { ok: false, status: 500, message: `Module eval error: ${err instanceof Error ? err.message : String(err)}` };
   }
