@@ -24,6 +24,8 @@
  *     first): honor retry-after, jittered backoff, bounded retries.
  */
 
+import { noteZaiError } from "../zai-breaker";
+
 export type CastEffort = "none" | "low" | "medium" | "high";
 
 export interface CastCall {
@@ -206,6 +208,12 @@ export const castCall = async (call: CastCall): Promise<CastResult> => {
         res.status,
         true,
       );
+      // Report to the spend breaker BEFORE retrying: if the provider account
+      // is dry, every remaining retry is a guaranteed-failing paid call.
+      // noteZaiError returns true only for a genuine balance/quota error — a
+      // plain 429 overload is not one — so the ladder is unaffected by
+      // ordinary rate limiting.
+      if (noteZaiError(lastErr)) throw lastErr;
       if (attempt < RETRIES) await sleep(retryDelayMs(attempt, res.headers.get("retry-after")));
       continue;
     }
@@ -218,11 +226,14 @@ export const castCall = async (call: CastCall): Promise<CastResult> => {
 
     if (!res.ok || !j || j.error) {
       // 4xx other than 429: our request is wrong — do not burn retries on it.
-      throw new CastProviderError(
+      // HTTP 402 lands here, which is exactly how Fireworks says "account dry".
+      const fatal = new CastProviderError(
         `cast HTTP ${res.status}: ${j?.error?.message ?? "unparseable response"}`,
         res.status,
         false,
       );
+      noteZaiError(fatal);
+      throw fatal;
     }
 
     const msg = j.choices?.[0]?.message ?? {};

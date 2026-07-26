@@ -34,6 +34,37 @@ check("isBalanceError: the real 1113 string yes; overload/network/1302 no", () =
   assert(!isBalanceError(new Error("read ETIMEDOUT")), "network is not balance");
 });
 
+// The stack moved to Fireworks (CLAUDE.md 2026-07-23) while this matcher
+// still recognised only z.ai's vocabulary, so the breaker could no longer
+// trip on the provider actually in use — five call sites consulted a circuit
+// that nothing could open.
+check("isBalanceError: Fireworks exhaustion vocabularies trip it", () => {
+  for (const msg of [
+    "cast HTTP 402: payment required",
+    "cast HTTP 429: quota exceeded for account",
+    "cast HTTP 402: insufficient credit balance",
+    "cast HTTP 403: account suspended for billing",
+    "cast HTTP 429: spending limit reached",
+  ]) {
+    assert(isBalanceError(new Error(msg)), msg);
+  }
+});
+
+// The dangerous direction: a false positive takes ALL generation down until
+// the cooldown probe. Ordinary throttling and faults must never trip it.
+check("isBalanceError: ordinary failures never trip the breaker", () => {
+  for (const msg of [
+    "cast HTTP 429: rate limit exceeded, please retry",
+    "cast HTTP 503: model overloaded",
+    "cast transport error: ECONNRESET",
+    "cast HTTP 400: invalid messages",
+    "cast HTTP 500: internal error",
+    "cast HTTP 400: maximum context length exceeded",
+  ]) {
+    assert(!isBalanceError(new Error(msg)), msg);
+  }
+});
+
 check("closed by default: assertZaiAvailable is a no-op", () => {
   assertZaiAvailable(); // must not throw
   assert(!zaiBreakerState().open, "starts closed");

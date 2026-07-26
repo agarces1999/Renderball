@@ -46,14 +46,44 @@ interface BreakerState {
 
 const state: BreakerState = { openedAt: null, trips: 0, probing: false };
 
-/** 429 [1113] — the balance/account error. Deliberately narrow: overloads and
- *  network faults are handled by the retry ladder + adaptive gate, not here. */
+/**
+ * The provider-account-is-dry error. Deliberately narrow: overloads and
+ * network faults are handled by the retry ladder + adaptive gate, not here.
+ *
+ * Two provider vocabularies, because this breaker predates the move to
+ * Fireworks (CLAUDE.md, 2026-07-23) and was still matching only z.ai's
+ * strings — `[1113]`, "Insufficient balance", "no resource package". Nothing
+ * Fireworks emits looks like that, so the breaker had become unable to trip
+ * on the provider actually in use, while five call sites still consulted it.
+ *
+ * Fireworks signals exhaustion as HTTP 402, or 429 whose body names a quota
+ * or billing problem. A bare 429 is NOT a balance error — that is ordinary
+ * rate limiting, and treating it as "account dry" would take the whole
+ * product down on a traffic spike. Hence the 429 branch requires an explicit
+ * quota/billing/credit word.
+ */
 export const isBalanceError = (err: unknown): boolean => {
   const msg =
     err instanceof Error
       ? `${err.message} ${String((err as Error & { cause?: unknown }).cause ?? "")}`
       : String(err);
-  return /\[1113\]|Insufficient balance|no resource package/i.test(msg);
+
+  // z.ai (historical)
+  if (/\[1113\]|Insufficient balance|no resource package/i.test(msg)) return true;
+
+  // Fireworks: payment required is unambiguous.
+  if (/\b(HTTP )?402\b|payment required/i.test(msg)) return true;
+
+  // Fireworks: quota/billing exhaustion, however it is worded. Requires a
+  // money/quota noun so a plain 429 overload does not trip the breaker.
+  if (
+    /(quota|billing|credit|balance|payment|spending limit|account limit)/i.test(msg) &&
+    /(exceed|exhaust|insufficient|out of|depleted|reached|required|suspend)/i.test(msg)
+  ) {
+    return true;
+  }
+
+  return false;
 };
 
 const markerPath = () => path.join(process.cwd(), ".data", "zai-balance-tripped.json");
