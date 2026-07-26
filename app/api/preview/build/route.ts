@@ -6,6 +6,7 @@ import { checkEntitlement } from "../../../../lib/entitlement";
 import { checkTokenAllowance } from "../../../../lib/metering";
 import { runPreviewBuild } from "../../../../lib/render/run-preview-build";
 import { runBuildLocked } from "../../../../lib/render/build-lock";
+import { buildStatus, startBuild } from "../../../../lib/render/build-jobs";
 
 /**
  * Preview-only build endpoint. Runs the Design + Choreography agents and the
@@ -62,7 +63,8 @@ export async function POST(request: Request) {
   // owner (closes the entitlement TOCTOU — usage rows land only at build end),
   // and a global per-container semaphore. The entitlement check runs INSIDE
   // the lock so parallel requests can't all pass the quota gate first.
-  const locked = await runBuildLocked(scriptId, user.id, async () => {
+  const started = await startBuild(scriptId, async () => {
+    const locked = await runBuildLocked(scriptId, user.id, async () => {
     // Metering gate (LAUNCH.md #4) — fail-closed entitlement check BEFORE the
     // ~$1-2 of build spend. 402 carries a user-facing reason.
     const ent = await checkEntitlement(user.id, "build");
@@ -86,14 +88,56 @@ export async function POST(request: Request) {
         },
       } as const;
     }
-    return runPreviewBuild(scriptId, user.id);
+      return runPreviewBuild(scriptId, user.id);
+    });
+    if (locked.kind === "owner-busy") {
+      return {
+        status: 409,
+        body: {
+          error:
+            "You already have a build running — it will finish in a few minutes. One build runs at a time per account.",
+        },
+      };
+    }
+    return locked.result;
   });
-  if (locked.kind === "owner-busy") {
-    return NextResponse.json(
-      { error: "You already have a build running — it will finish in a few minutes. One build runs at a time per account." },
-      { status: 409 },
-    );
+
+  // Settled inside the grace window: a gate rejection (402), owner-busy (409),
+  // or a build that failed immediately. Hand it straight back.
+  if (started.kind === "settled") {
+    return NextResponse.json(started.body, { status: started.status });
   }
-  const result = locked.result;
-  return NextResponse.json(result.body, { status: result.status });
+
+  // Still running. Builds take minutes and the origin sits behind Cloudflare's
+  // 100s timeout, so holding the request open guarantees a 524 for every
+  // build. Return now and let the client poll GET below.
+  return NextResponse.json({ status: "running", scriptId }, { status: 202 });
+}
+
+/**
+ * Poll a build's state. Returns 200 with {status} throughout; the build's own
+ * result body (including a 402/409 recorded after the grace window) rides
+ * along on completion so the client can surface it exactly as before.
+ */
+export async function GET(request: Request) {
+  const user = await getCurrentUser();
+  if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+
+  const scriptId = new URL(request.url).searchParams.get("scriptId");
+  if (!scriptId) return NextResponse.json({ error: "scriptId required" }, { status: 400 });
+
+  // Ownership: never report another account's build state.
+  const owned = await loadBriefByScriptId(scriptId, user.id);
+  if (!owned) return NextResponse.json({ error: "not found" }, { status: 404 });
+
+  const job = buildStatus(scriptId);
+  if (job.state === "done") {
+    return NextResponse.json({ status: "done", result: job.body, resultStatus: job.status });
+  }
+  if (job.state === "error") {
+    return NextResponse.json({ status: "error", error: job.message });
+  }
+  // "unknown" after a container restart is not a failure — the client reloads
+  // and the page decides from whether the document actually exists.
+  return NextResponse.json({ status: job.state });
 }

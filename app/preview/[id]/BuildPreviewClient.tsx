@@ -14,6 +14,62 @@ import { cn } from "../../../lib/cn";
  * videos keep story/scene/choreography. The last step holds with a spinner
  * until the build resolves, then the page reloads into the editor/preview.
  */
+/**
+ * Poll the build until it settles, and re-shape the result into the same
+ * Response the caller used to get from a single blocking POST — so all the
+ * status handling below (402 limit, 409 busy, 503 breaker) is untouched.
+ *
+ * No overall deadline on purpose: builds legitimately run for many minutes,
+ * and a client-side timeout would report failure for a build that is fine.
+ * The user can always close the tab; the build finishes server-side and the
+ * document is durable (lib/render/gen-store.ts), so nothing is lost.
+ */
+const POLL_MS = 4000;
+
+async function pollUntilSettled(scriptId: string): Promise<Response> {
+  for (;;) {
+    await new Promise((r) => setTimeout(r, POLL_MS));
+    let res: Response;
+    try {
+      res = await fetch(
+        `/api/preview/build?scriptId=${encodeURIComponent(scriptId)}`,
+        { cache: "no-store" },
+      );
+    } catch {
+      continue; // transient network blip — keep polling
+    }
+    if (!res.ok) continue;
+    const data = (await res.json().catch(() => null)) as {
+      status?: string;
+      result?: unknown;
+      resultStatus?: number;
+      error?: string;
+    } | null;
+    if (!data) continue;
+
+    if (data.status === "done") {
+      return new Response(JSON.stringify(data.result ?? {}), {
+        status: data.resultStatus ?? 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    if (data.status === "error") {
+      return new Response(JSON.stringify({ error: data.error ?? "build failed" }), {
+        status: 500,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    // "unknown" means this container never saw the job — most likely it
+    // restarted mid-build. Reload: if the document exists the page mounts the
+    // editor, otherwise the build ceremony starts cleanly again.
+    if (data.status === "unknown") {
+      window.location.reload();
+      return new Response("{}", { status: 202 });
+    }
+    // "running" — keep waiting.
+  }
+}
+
 type Phase =
   | { kind: "building" }
   | { kind: "error"; message: string }
@@ -59,11 +115,21 @@ export function BuildPreviewClient({
     lastStarted.current = buildKey;
     (async () => {
       try {
-        const res = await fetch("/api/preview/build", {
+        let res = await fetch("/api/preview/build", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ scriptId }),
         });
+
+        // 202 = the build is running server-side. It takes minutes, and the
+        // origin sits behind Cloudflare's 100s timeout, so the request cannot
+        // be held open — poll instead. Anything that failed fast (402 limit,
+        // 409 busy, 422 brand kit) still arrives on this first response and
+        // falls through to the handling below unchanged.
+        if (res.status === 202) {
+          res = await pollUntilSettled(scriptId);
+        }
+
         if (!res.ok) {
           const txt = await res.text();
           let friendly: string | null = null;
