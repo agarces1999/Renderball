@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { compositionDocHeaders } from "../../../../../lib/render/iframe-csp";
 import { loadScript } from "../../../../../lib/store";
 import { getCurrentUser } from "../../../../../lib/auth";
 import { renderSceneDoc } from "../../../../../lib/render/scene-iframe";
@@ -27,10 +28,6 @@ export async function GET(request: Request, { params }: { params: { id: string }
   if (!result.ok) return new NextResponse(result.message, { status: result.status });
 
   return new NextResponse(result.html, {
-    headers: {
-      "Content-Type": "text/html; charset=utf-8",
-      "Cache-Control": "no-store",
-      "X-Frame-Options": "SAMEORIGIN",
-    },
+    headers: compositionDocHeaders(),
   });
 }
