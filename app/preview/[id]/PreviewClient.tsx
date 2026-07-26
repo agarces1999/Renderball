@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { BrandPanel } from "../../../components/BrandPanel";
 import Link from "next/link";
 import type { Script } from "../../../src/schema";
 import { cn } from "../../../lib/cn";
@@ -73,6 +74,7 @@ export function PreviewClient({ scriptId, script, initialWarnings }: Props) {
   // `doc` is the live document; the server-loaded `script` prop is its seed.
   const [doc, setDoc] = useState(script);
   const [sceneIndex, setSceneIndex] = useState(0);
+  const [panelTab, setPanelTab] = useState<"page" | "brand">("page");
   const [playing, setPlaying] = useState(!isDeck);
   const [pageBusy, setPageBusy] = useState(false);
   const [pageError, setPageError] = useState<string | null>(null);
@@ -308,13 +310,41 @@ export function PreviewClient({ scriptId, script, initialWarnings }: Props) {
             />
           }
           sidePanel={
-            <DeckPagePanel
-              index={sceneIndex}
-              total={doc.scenes.length}
-              description={currentScene?.description ?? null}
-              busy={pageBusy}
-              onOp={(op) => void pageOp(op)}
-            />
+            // Page inspector and brand live in the same column: brand is a
+            // document-level concern, so it belongs beside the canvas rather
+            // than buried in a per-element menu.
+            <div className="flex h-full flex-col">
+              <div className="flex shrink-0 gap-1 border-b border-hairline px-3 pt-2.5">
+                {(["page", "brand"] as const).map((t) => (
+                  <button
+                    key={t}
+                    type="button"
+                    onClick={() => setPanelTab(t)}
+                    className={
+                      "rounded-t-md px-2.5 py-1.5 text-[12px] capitalize transition-colors " +
+                      (panelTab === t
+                        ? "bg-surface font-semibold text-ink"
+                        : "text-muted hover:text-ink")
+                    }
+                  >
+                    {t}
+                  </button>
+                ))}
+              </div>
+              <div className="min-h-0 flex-1 overflow-y-auto">
+                {panelTab === "brand" ? (
+                  <BrandPanel scriptId={scriptId} />
+                ) : (
+                  <DeckPagePanel
+                    index={sceneIndex}
+                    total={doc.scenes.length}
+                    description={currentScene?.description ?? null}
+                    busy={pageBusy}
+                    onOp={(op) => void pageOp(op)}
+                  />
+                )}
+              </div>
+            </div>
           }
           footer={
             <Link href="/documents" className="transition-colors hover:text-ink">

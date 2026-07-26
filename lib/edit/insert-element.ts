@@ -16,6 +16,8 @@
 // source never desync.
 //
 import { promises as fs } from "fs";
+import { readDocumentBrand } from "../brand/document-brand";
+import { brandPromptBlock } from "../brand/brand-prompt";
 import path from "path";
 import {
   readManifest,

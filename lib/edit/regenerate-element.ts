@@ -13,6 +13,8 @@
 // exactly as they were.
 //
 import { promises as fs } from "fs";
+import { readDocumentBrand } from "../brand/document-brand";
+import { brandPromptBlock } from "../brand/brand-prompt";
 import { persistGenDir } from "../render/gen-store";
 import path from "path";
 import { readDecomposed, writePieceBody, reassembleFromDisk, captureUndo, commitUndo } from "../agents/lego-store";
@@ -90,7 +92,11 @@ export const regenerateElement = async (
     makeBody = (b) => spliceChildBody(nested.parent.body, nested.child, b);
   }
 
+  // The user's brand rules + materials, so a regenerated element comes out
+  // on-brand instead of merely matching the old design system.
+  const brandBlock = brandPromptBlock(await readDocumentBrand(genDir));
   const regen = await regeneratePiece({
+    brandBlock,
     preamble: d.preamble,
     piece: regenTarget,
     siblings,

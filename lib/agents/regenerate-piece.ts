@@ -44,6 +44,13 @@ export interface RegenPieceInput {
   sceneIndex: number;
   /** Optional free-text ask ("make it darker", "use a bar chart"). */
   instruction?: string;
+  /**
+   * The document's brand context as prompt text (lib/brand/brand-prompt.ts) —
+   * the user's own brand rules and their uploaded materials. The preamble
+   * tells the model what the design system IS; this tells it what the brand
+   * REQUIRES and what it is allowed to reach for.
+   */
+  brandBlock?: string | null;
   model?: string;
 }
 export interface RegenPieceResult {
@@ -88,6 +95,12 @@ export const regeneratePiece = async (
           // cache-read tokens). Only the small piece+instruction turn re-prefills.
           system: [
             { type: "text", text: SYSTEM },
+            // Placed BEFORE the cached design-system block so brand rules are
+            // read as constraints on everything that follows. Uncached: it is
+            // small, and it changes whenever the user edits their brand.
+            ...(input.brandBlock
+              ? [{ type: "text" as const, text: input.brandBlock }]
+              : []),
             {
               type: "text",
               text: [

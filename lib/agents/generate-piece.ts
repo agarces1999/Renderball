@@ -45,6 +45,10 @@ export interface GenPieceInput {
   bounds: { x: number; y: number; w: number; h: number };
   /** What the user typed under the drawn box. Required. */
   prompt: string;
+  /** The document's brand rules + materials (lib/brand/brand-prompt.ts). This
+   *  is marquee-to-generate's on-brand guarantee: the element created inside
+   *  the user's box follows their brand, not just the old design system. */
+  brandBlock?: string | null;
   model?: string;
 }
 export interface GenPieceResult {
@@ -84,6 +88,9 @@ export const generatePiece = async (input: GenPieceInput): Promise<GenPieceResul
           // Anthropic-compat caching), exactly like regenerate-piece.
           system: [
             { type: "text", text: SYSTEM },
+            ...(input.brandBlock
+              ? [{ type: "text" as const, text: input.brandBlock }]
+              : []),
             {
               type: "text",
               text: [
