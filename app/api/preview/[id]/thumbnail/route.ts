@@ -1,4 +1,5 @@
 import { promises as fs } from "fs";
+import { documentDir } from "../../../../../lib/render/gen-store";
 import path from "path";
 import { NextResponse } from "next/server";
 import { loadScript } from "../../../../../lib/store";
@@ -28,8 +29,9 @@ import { exportPagePng } from "../../../../../lib/render/export-static";
 const thumbPath = (scriptId: string): string =>
   path.join(process.cwd(), ".data", "thumbs", `${scriptId}.png`);
 
-const generatedDir = (scriptId: string): string =>
-  path.join(process.cwd(), "src", "generated", scriptId);
+/** The document's directory, restored from durable storage on a cold
+ *  container (documentDir hydrates before returning the path). */
+const generatedDir = (scriptId: string): Promise<string> => documentDir(scriptId);
 
 /** Newest mtime (ms) of any file under dir, or null if the dir is unreadable. */
 const newestMtimeMs = async (dir: string): Promise<number | null> => {
@@ -87,7 +89,7 @@ export async function GET(request: Request, { params }: { params: { id: string }
   const script = await loadScript(scriptId, user.id);
   if (!script) return new NextResponse(`script not found: ${scriptId}`, { status: 404 });
 
-  const sourceMtime = await newestMtimeMs(generatedDir(scriptId));
+  const sourceMtime = await newestMtimeMs(await generatedDir(scriptId));
   if (sourceMtime === null) {
     return new NextResponse("document not built yet", { status: 404 });
   }

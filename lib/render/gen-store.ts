@@ -33,6 +33,24 @@ const gunzip = promisify(zlib.gunzip);
 export const genDirOf = (scriptId: string): string =>
   path.join(process.cwd(), "src", "generated", scriptId);
 
+/**
+ * The document's directory, restored from durable storage first if this
+ * container has never seen it.
+ *
+ * Prefer this over `genDirOf` in any route that READS or MUTATES a document.
+ * The path construction was duplicated across 26 files, and most editor
+ * mutation routes built it without hydrating — so an editor tab left open
+ * across a deploy would fail every subsequent edit until the user happened to
+ * reload. One helper removes both the duplication and that whole bug class.
+ *
+ * Ownership is still the caller's job: hydration is not authorisation, and
+ * every caller resolves the script through an owner-scoped load first.
+ */
+export const documentDir = async (scriptId: string): Promise<string> => {
+  await hydrateGenDir(scriptId);
+  return genDirOf(scriptId);
+};
+
 export const docKey = (scriptId: string): string => `docs/${scriptId}.json.gz`;
 
 /**
@@ -166,7 +184,3 @@ export const hydrateGenDir = async (scriptId: string): Promise<boolean> => {
     return false;
   }
 };
-
-/** True if the document can be rendered here — locally or after hydration. */
-export const ensureGenDir = async (scriptId: string): Promise<boolean> =>
-  hydrateGenDir(scriptId);

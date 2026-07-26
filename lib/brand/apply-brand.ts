@@ -23,7 +23,6 @@ import {
   decomposeGenDir,
   readDecomposed,
   readManifest,
-  reassembleFromDisk,
   writeManifest,
 } from "../agents/lego-store";
 import { commitGenDir } from "../edit/commit";
@@ -162,7 +161,3 @@ export const applyBrandToDocument = async (
     };
   }
 };
-
-/** Unused import guard — reassembleFromDisk is the contract commitGenDir uses;
- *  referenced here so the dependency is explicit to readers. */
-void reassembleFromDisk;

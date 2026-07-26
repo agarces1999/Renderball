@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { documentDir } from "../../../../lib/render/gen-store";
 import path from "path";
 import { promises as fs } from "fs";
 import { getCurrentUser } from "../../../../lib/auth";
@@ -40,7 +41,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "page operations are deck-only" }, { status: 400 });
   }
 
-  const genDir = path.join(process.cwd(), "src", "generated", scriptId);
+  const genDir = await documentDir(scriptId);
   const result = await applyPageOp(genDir, script, op);
   if (!result.ok || !result.script) {
     return NextResponse.json({ error: result.error ?? "page operation failed" }, { status: 400 });

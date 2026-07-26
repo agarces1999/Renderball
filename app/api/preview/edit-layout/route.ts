@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { documentDir } from "../../../../lib/render/gen-store";
 import path from "path";
 import { getCurrentUser } from "../../../../lib/auth";
 import { loadScript } from "../../../../lib/store";
@@ -63,7 +64,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "script not found" }, { status: 404 });
   }
 
-  const genDir = path.join(process.cwd(), "src", "generated", scriptId);
+  const genDir = await documentDir(scriptId);
   const result =
     op === "move"
       ? await moveElement({ genDir, sceneIndex, pieceId, dx: dx as number, dy: dy as number })

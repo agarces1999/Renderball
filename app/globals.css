@@ -263,43 +263,6 @@
   from { opacity: 0; transform: translateY(10px); }
   to { opacity: 1; transform: translateY(0); }
 }
-@keyframes rb-fade-left {
-  from { opacity: 0; transform: translateX(-8px); }
-  to { opacity: 1; transform: translateX(0); }
-}
-@keyframes rb-pop {
-  from { opacity: 0; transform: scale(0.9); }
-  to { opacity: 1; transform: scale(1); }
-}
-@keyframes rb-blink {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0; }
-}
-@keyframes rb-scan {
-  0% { transform: translateY(0); opacity: 0; }
-  10% { opacity: 0.9; }
-  90% { opacity: 0.9; }
-  100% { transform: translateY(220px); opacity: 0; }
-}
-@keyframes rb-kinetic {
-  0% { opacity: 0; transform: translateY(16px) scale(0.95); letter-spacing: 0.05em; }
-  100% { opacity: 1; transform: translateY(0) scale(1); letter-spacing: -0.015em; }
-}
-@keyframes rb-scrub {
-  from { width: 6%; }
-  to { width: 96%; }
-}
-@keyframes rb-press {
-  0%, 70% { transform: scale(1); }
-  78% { transform: scale(0.94); }
-  100% { transform: scale(1); }
-}
-/* Marquee-to-generate: the selection rectangle "draws" from its corner. */
-@keyframes rb-draw {
-  from { opacity: 0; transform: scale(0.05); }
-  30% { opacity: 1; }
-  to { opacity: 1; transform: scale(1); }
-}
 /* Landing scroll cue: the chevron nudges down to say "this scrolls". */
 @keyframes rb-scroll-nudge {
   0%, 100% { transform: translateY(0); opacity: 0.5; }

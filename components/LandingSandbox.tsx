@@ -21,7 +21,7 @@ import {
  * the canvas performs"; the 2026-07-24 consultation's deferred idea, ported
  * onto the v3 cursor-authored performance).
  *
- * The scripted beats in LandingCanvas.tsx are a pure function of scroll; this
+ * The landing's scripted beats are a pure function of scroll; this
  * module is additive and independent: pointer plumbing for a real marquee,
  * an intent picker (chips — the landing ships NO prompt box), instant
  * materialization from a local content set (zero LLM calls, mono `sandbox`
@@ -675,7 +675,7 @@ export function SandboxHint({
 /** The bounded sandbox for the static branch (mobile + reduced motion): the
  *  same draw → pick → materialize loop inside a panel, without the scroll
  *  theatrics. `still` is the server-rendered composed frame the caller
- *  supplies (kept in LandingCanvas so this module stays presentation-free). */
+ *  supplies (kept in the landing so this module stays presentation-free). */
 export function SandboxPanel({ still }: { still?: React.ReactNode }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const sb = useSandbox({

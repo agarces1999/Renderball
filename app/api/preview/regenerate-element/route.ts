@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { documentDir } from "../../../../lib/render/gen-store";
 import path from "path";
 import { getCurrentUser } from "../../../../lib/auth";
 import { assertZaiAvailable, ZaiUnavailableError } from "../../../../lib/zai-breaker";
@@ -94,7 +95,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "script not found" }, { status: 404 });
   }
 
-  const genDir = path.join(process.cwd(), "src", "generated", scriptId);
+  const genDir = await documentDir(scriptId);
   const result = await regenerateElement({ genDir, sceneIndex, pieceId, instruction });
   // Pivot token counter: regens spend tokens whether or not they succeed.
   if (result.usage) await recordTokenUsage({ ownerId: user.id, usage: result.usage, op: "regen-element" });

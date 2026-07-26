@@ -30,8 +30,14 @@ export const commitGenDir = async (genDir: string, what = "edit"): Promise<Commi
   const compileError = await verifyCompilable(code);
   if (compileError) return { ok: false, error: `${what} does not compile: ${compileError}` };
   await fs.writeFile(path.join(genDir, "Composition.tsx"), code, "utf8");
-  // Republish so the edit survives the next deploy too — otherwise a restored
+  // Republish so the edit survives the next deploy — otherwise a restored
   // document would silently roll back to its as-built state.
-  await persistGenDir(path.basename(genDir));
+  //
+  // NOT awaited: this is a readdir + gzip + network PUT, and editor ops are a
+  // ~126ms interaction. Awaiting it put a round-trip in the critical path of
+  // every drag, resize and retype. The local write above has already
+  // succeeded, so the edit is real either way; a failed publish logs loudly
+  // and the next edit republishes the same directory.
+  void persistGenDir(path.basename(genDir)).catch(() => {});
   return { ok: true, code };
 };

@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { documentDir } from "../../../../lib/render/gen-store";
 import path from "path";
 import { getCurrentUser } from "../../../../lib/auth";
 import { loadScript } from "../../../../lib/store";
@@ -27,7 +28,7 @@ export async function GET(request: Request) {
   if (!script) return NextResponse.json({ error: "script not found" }, { status: 404 });
 
   try {
-    const swatches = await freetextSwatches(path.join(process.cwd(), "src", "generated", scriptId));
+    const swatches = await freetextSwatches(await documentDir(scriptId));
     return NextResponse.json({ swatches });
   } catch {
     return NextResponse.json({ swatches: [] });
@@ -68,7 +69,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "script not found" }, { status: 404 });
   }
 
-  const genDir = path.join(process.cwd(), "src", "generated", scriptId);
+  const genDir = await documentDir(scriptId);
   // normalizeFormat in lib/edit/freetext.ts clamps + sanitizes every field, so an
   // arbitrary object here can't inject anything into the emitted source.
   const result = await editPieceText({

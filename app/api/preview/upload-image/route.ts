@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { documentDir } from "../../../../lib/render/gen-store";
 import path from "path";
 import { getCurrentUser } from "../../../../lib/auth";
 import { loadScript } from "../../../../lib/store";
@@ -36,7 +37,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "script not found" }, { status: 404 });
   }
 
-  const genDir = path.join(process.cwd(), "src", "generated", parsed.scriptId);
+  const genDir = await documentDir(parsed.scriptId);
   const result = await uploadImageElement(genDir, parsed);
   const status = result.ok ? 200 : /not found/.test(result.error ?? "") ? 404 : 400;
   return NextResponse.json(

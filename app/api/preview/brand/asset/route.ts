@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import path from "path";
 import { getCurrentUser } from "../../../../../lib/auth";
 import { loadScript } from "../../../../../lib/store";
-import { hydrateGenDir, persistGenDir } from "../../../../../lib/render/gen-store";
+import { persistGenDir, documentDir } from "../../../../../lib/render/gen-store";
 import {
   readDocumentBrand,
   writeDocumentBrand,
@@ -42,8 +42,7 @@ export async function POST(request: Request) {
   const script = await loadScript(scriptId, user.id);
   if (!script) return NextResponse.json({ error: "script not found" }, { status: 404 });
 
-  await hydrateGenDir(scriptId);
-  const genDir = path.join(process.cwd(), "src", "generated", scriptId);
+  const genDir = await documentDir(scriptId);
 
   let saved;
   try {
@@ -103,8 +102,7 @@ export async function DELETE(request: Request) {
   const script = await loadScript(scriptId, user.id);
   if (!script) return NextResponse.json({ error: "script not found" }, { status: 404 });
 
-  await hydrateGenDir(scriptId);
-  const genDir = path.join(process.cwd(), "src", "generated", scriptId);
+  const genDir = await documentDir(scriptId);
   const brand = await readDocumentBrand(genDir);
   brand.assets = brand.assets.filter((a) => a.ref !== ref);
   if (brand.logo === ref) brand.logo = undefined;

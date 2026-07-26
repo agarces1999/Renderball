@@ -107,18 +107,19 @@ export default async function DocumentsPage() {
       if (!sid) {
         return { brief, kind, aspect, href: reviewHref, mp4Url: null, previewUrl: null, thumbUrl: null };
       }
-      const [hasLocalMp4, hasLocalComp, hasDurableComp] = await Promise.all([
+      const [hasLocalMp4, hasLocalComp] = await Promise.all([
         exists(path.join(process.cwd(), ".data", "renders", `${sid}.mp4`)),
         exists(
           path.join(process.cwd(), "src", "generated", sid, "Composition.tsx"),
         ),
-        // Same reasoning as the MP4 line below: local disk is a warm cache, so
-        // a durable bundle in storage also means "built". Without this every
-        // card silently downgrades to the outline link after a redeploy. HEAD
-        // only — the document is hydrated lazily when actually opened.
-        objectExists(docKey(sid)),
       ]);
-      const hasComp = hasLocalComp || hasDurableComp;
+      // Same reasoning as the MP4 line below: local disk is a warm cache, so a
+      // durable bundle in storage also means "built" — without that check every
+      // card silently downgrades to the outline link after a redeploy. But only
+      // ASK storage when the local answer is already "missing": checking it
+      // unconditionally was one HEAD per card per page view, unbounded-parallel,
+      // for an answer the filesystem had already given us.
+      const hasComp = hasLocalComp || (await objectExists(docKey(sid)));
       // Show the MP4 if it's on the warm local disk OR a completed Render row
       // proves it's durably in R2 (survives a fresh container).
       const hasMp4 = hasLocalMp4 || renderedProjectIds.has(brief.id);

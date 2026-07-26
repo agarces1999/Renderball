@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { documentDir } from "../../../../lib/render/gen-store";
 import { promises as fs } from "fs";
 import path from "path";
 import {
@@ -120,12 +121,7 @@ export async function POST(request: Request) {
   const brief = await loadBriefByScriptId(scriptId, user.id);
   // brief is optional — if not found we still try with empty brand context.
 
-  const generatedDir = path.join(
-    process.cwd(),
-    "src",
-    "generated",
-    scriptId,
-  );
+  const generatedDir = await documentDir(scriptId);
   const compPath = path.join(generatedDir, "Composition.tsx");
   let existingCode: string;
   try {

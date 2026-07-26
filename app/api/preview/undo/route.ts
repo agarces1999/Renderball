@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { documentDir } from "../../../../lib/render/gen-store";
 import path from "path";
 import { getCurrentUser } from "../../../../lib/auth";
 import { loadScript, saveScript } from "../../../../lib/store";
@@ -14,7 +15,6 @@ import { undoEdit, undoAvailable } from "../../../../lib/edit/undo-edit";
  * GET  ?scriptId=…  → { depth } (how many steps are available)
  * POST { scriptId } → { ok, label, remaining } | { ok:false, error }
  */
-const genDirOf = (scriptId: string): string => path.join(process.cwd(), "src", "generated", scriptId);
 
 export async function GET(request: Request) {
   const user = await getCurrentUser();
@@ -26,7 +26,7 @@ export async function GET(request: Request) {
   const script = await loadScript(scriptId, user.id);
   if (!script) return NextResponse.json({ error: "script not found" }, { status: 404 });
 
-  return NextResponse.json({ depth: await undoAvailable(genDirOf(scriptId)) });
+  return NextResponse.json({ depth: await undoAvailable(await documentDir(scriptId)) });
 }
 
 export async function POST(request: Request) {
@@ -47,7 +47,7 @@ export async function POST(request: Request) {
   const script = await loadScript(scriptId, user.id);
   if (!script) return NextResponse.json({ error: "script not found" }, { status: 404 });
 
-  const result = await undoEdit(genDirOf(scriptId));
+  const result = await undoEdit(await documentDir(scriptId));
   // A scene-structure undo (page ops) restores the Script too — persist it so
   // the rail/scenes and the Section components stay in lockstep.
   if (result.ok && result.script) {

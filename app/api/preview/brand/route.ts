@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import path from "path";
 import { getCurrentUser } from "../../../../lib/auth";
 import { loadScript } from "../../../../lib/store";
-import { hydrateGenDir } from "../../../../lib/render/gen-store";
+import { documentDir } from "../../../../lib/render/gen-store";
 import {
   readDocumentBrand,
   validateBrandInput,
@@ -30,8 +30,6 @@ import { promises as fs } from "fs";
  *                                        swatches instead of empty fields.
  * PUT  { scriptId, brand, apply? }       → { ok, brand, changes }
  */
-const genDirOf = (scriptId: string): string =>
-  path.join(process.cwd(), "src", "generated", scriptId);
 
 export async function GET(request: Request) {
   const user = await getCurrentUser();
@@ -44,9 +42,7 @@ export async function GET(request: Request) {
   if (!script) return NextResponse.json({ error: "script not found" }, { status: 404 });
 
   // A container that has never seen this document (any container after a
-  // deploy) must restore it before we can read what it renders with.
-  await hydrateGenDir(scriptId);
-  const genDir = genDirOf(scriptId);
+  const genDir = await documentDir(scriptId);
 
   const brand = await readDocumentBrand(genDir);
   const source = await fs
@@ -93,8 +89,7 @@ export async function PUT(request: Request) {
     return NextResponse.json({ error: v.errors.join("; ") }, { status: 400 });
   }
 
-  await hydrateGenDir(scriptId);
-  const genDir = genDirOf(scriptId);
+  const genDir = await documentDir(scriptId);
   await writeDocumentBrand(genDir, v.brand);
 
   if (body.apply === false) {
