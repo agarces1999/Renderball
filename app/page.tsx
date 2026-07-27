@@ -67,7 +67,7 @@ function LandingHeader() {
             Sign in
           </Link>
           <Link
-            href="/new"
+            href="/api/documents/new"
             className="rounded-md bg-accent px-3.5 py-1.5 text-[13px] font-semibold text-accent-ink transition-all hover:brightness-110"
           >
             Open the editor
@@ -129,7 +129,7 @@ function Pricing() {
               ))}
             </ul>
             <Link
-              href="/new"
+              href="/api/documents/new"
               className="rounded-md bg-accent px-4 py-3 text-center text-[14.5px] font-semibold text-accent-ink transition-all hover:brightness-110"
             >
               Open the editor
@@ -199,7 +199,7 @@ function FooterCta() {
           tokens on us.
         </p>
         <Link
-          href="/new"
+          href="/api/documents/new"
           className="mt-10 inline-block rounded-md bg-accent px-8 py-3.5 text-[15px] font-semibold text-accent-ink shadow-[0_20px_50px_-20px_rgba(0,194,138,0.7)] transition-all hover:brightness-110"
         >
           Open the editor →
