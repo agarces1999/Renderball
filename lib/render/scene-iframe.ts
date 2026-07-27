@@ -2,7 +2,7 @@ import { promises as fs } from "fs";
 import path from "path";
 import React from "react";
 import * as esbuild from "esbuild";
-import { sandboxedRequire, shadowedFunctionArgs, shadowedValues } from "./code-guard";
+import { renderSceneSandboxed } from "./sandbox/pool";
 import { hydrateGenDir } from "./gen-store";
 import type { Script } from "../../src/schema";
 import { dimensionsForScript, WIDE_LOCKUP_RATIO } from "./build-wrapper";
@@ -66,64 +66,19 @@ export async function renderSceneDoc(
     };
   }
 
-  let bundleSource: string;
-  try {
-    const result = await esbuild.build({
-      entryPoints: [compPath],
-      bundle: true,
-      format: "cjs",
-      platform: "node",
-      target: "node18",
-      jsx: "automatic",
-      write: false,
-      external: [
-        "react",
-        "react-dom",
-        "react-dom/server",
-        "recharts",
-        "lucide-react",
-        "shiki",
-        "simple-icons",
-        "simple-icons/icons",
-        "remotion",
-        "@remotion/lottie",
-      ],
-      logLevel: "silent",
-    });
-    bundleSource = result.outputFiles[0].text;
-  } catch (err) {
-    return { ok: false, status: 500, message: `Compilation error: ${err instanceof Error ? err.message : String(err)}` };
+  // Compile + execute + render happen in a SEPARATE PROCESS with an empty
+  // environment (lib/render/sandbox/pool.ts). Composition code is written by a
+  // model whose prompt includes crawled third-party text, and it used to run
+  // right here — next to DATABASE_URL, CLERK_SECRET_KEY, STRIPE_SECRET_KEY and
+  // RB_FIREWORKS_KEY. It also ran synchronously and un-interruptibly, so one
+  // composition with an infinite loop froze the server for everyone. Only the
+  // finished HTML string crosses back, and the sandbox has a hard timeout.
+  const rendered = await renderSceneSandboxed(compPath, sceneIndex, script);
+  if (!rendered.ok) {
+    return { ok: false, status: rendered.status, message: rendered.message };
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const moduleObj: { exports: Record<string, any> } = { exports: {} };
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-implied-eval
-    const fn = new Function(...shadowedFunctionArgs(), bundleSource);
-    fn(moduleObj, moduleObj.exports, sandboxedRequire(eval("require")), ...shadowedValues());
-  } catch (err) {
-    return { ok: false, status: 500, message: `Module eval error: ${err instanceof Error ? err.message : String(err)}` };
-  }
-
-  const mod = moduleObj.exports;
-  const candidates = [`Section${sceneIndex}`, `Scene${sceneIndex}Slide`, `Scene${sceneIndex}`, `Slide${sceneIndex}`];
-  let Section: React.ComponentType<{ script: typeof script }> | undefined;
-  for (const name of candidates) {
-    if (typeof mod[name] === "function") {
-      Section = mod[name];
-      break;
-    }
-  }
-  if (!Section) {
-    return { ok: false, status: 500, message: `No Section${sceneIndex} exported. Exports: ${Object.keys(mod).join(", ")}` };
-  }
-
-  let sectionHtml: string;
-  try {
-    sectionHtml = renderToStaticMarkup(React.createElement(Section, { script }));
-  } catch (err) {
-    return { ok: false, status: 500, message: `Render error: ${err instanceof Error ? err.message : String(err)}` };
-  }
+  let sectionHtml = rendered.html;
 
   // Document-asset refs (editor-inserted images, lib/edit/image-assets.ts) are
   // origin-free tokens — inline the bytes so this doc renders identically in
