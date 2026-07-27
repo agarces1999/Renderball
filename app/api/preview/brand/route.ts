@@ -41,7 +41,9 @@ export async function GET(request: Request) {
   const script = await loadScript(scriptId, user.id);
   if (!script) return NextResponse.json({ error: "script not found" }, { status: 404 });
 
-  // A container that has never seen this document (any container after a
+  // documentDir restores the document first, so a container that has never
+  // seen it (i.e. any container after a deploy) can still read what it
+  // currently renders with.
   const genDir = await documentDir(scriptId);
 
   const brand = await readDocumentBrand(genDir);
