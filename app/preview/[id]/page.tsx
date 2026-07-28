@@ -6,6 +6,7 @@ import { getCurrentUser } from "../../../lib/auth";
 import { loadScript, loadBriefByScriptId } from "../../../lib/store";
 import { AppHeader } from "../../../components/AppHeader";
 import { hydrateGenDir } from "../../../lib/render/gen-store";
+import { isBlankScript } from "../../../lib/documents/blank-document";
 import { PreviewClient } from "./PreviewClient";
 import { BuildPreviewClient } from "./BuildPreviewClient";
 
@@ -121,6 +122,7 @@ export default async function PreviewPage({
             scriptId={params.id}
             script={script}
             initialWarnings={initialWarnings}
+            isBlank={isBlankScript(script)}
           />
         </main>
       )}

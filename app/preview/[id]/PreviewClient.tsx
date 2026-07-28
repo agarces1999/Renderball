@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { BrandPanel } from "../../../components/BrandPanel";
+import { BlankDocumentPanel } from "../../../components/BlankDocumentPanel";
 import Link from "next/link";
 import type { Script } from "../../../src/schema";
 import { cn } from "../../../lib/cn";
@@ -20,6 +21,9 @@ interface Props {
   script: Script;
   /** Persisted warnings.json contents, loaded server-side on first view. */
   initialWarnings?: Record<string, unknown> | null;
+  /** True when this document has never been generated into — drives the
+   *  empty state that offers "generate every page" vs "build it yourself". */
+  isBlank?: boolean;
 }
 
 /**
@@ -66,7 +70,7 @@ interface PreviewWarnings {
   structural_unresolved?: string[];
 }
 
-export function PreviewClient({ scriptId, script, initialWarnings }: Props) {
+export function PreviewClient({ scriptId, script, initialWarnings, isBlank = false }: Props) {
   // Canvas pivot (docs/PIVOT.md): decks are static page documents — no
   // autoplay, pages render settled, and export is PDF/PNG instead of MP4.
   const isDeck = script.config.kind === "deck";
@@ -75,6 +79,8 @@ export function PreviewClient({ scriptId, script, initialWarnings }: Props) {
   const [doc, setDoc] = useState(script);
   const [sceneIndex, setSceneIndex] = useState(0);
   const [panelTab, setPanelTab] = useState<"page" | "brand">("page");
+  // Only while the document is untouched — an empty state, not a mode.
+  const [showBlankPanel, setShowBlankPanel] = useState(isBlank);
   const [playing, setPlaying] = useState(!isDeck);
   const [pageBusy, setPageBusy] = useState(false);
   const [pageError, setPageError] = useState<string | null>(null);
@@ -352,6 +358,12 @@ export function PreviewClient({ scriptId, script, initialWarnings }: Props) {
             </Link>
           }
         >
+          {showBlankPanel && (
+            <BlankDocumentPanel
+              scriptId={scriptId}
+              onDismiss={() => setShowBlankPanel(false)}
+            />
+          )}
           <iframe
             ref={iframeRef}
             src={iframeSrc}
