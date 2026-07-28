@@ -27,13 +27,22 @@ import { persistGenDir } from "../../../../lib/render/gen-store";
  */
 export const dynamic = "force-dynamic";
 
-export async function GET(request: Request) {
+/**
+ * Relative redirect, deliberately.
+ *
+ * `new URL(path, request.url)` resolves against the CONTAINER's own address —
+ * inside Railway that is https://0.0.0.0:8080, so the browser was sent to an
+ * unreachable origin. (The same trap bit the auth middleware.) A relative
+ * Location is resolved by the browser against the address it actually used.
+ */
+const redirectTo = (path: string): NextResponse =>
+  new NextResponse(null, { status: 303, headers: { Location: path } });
+
+export async function GET() {
   const user = await getCurrentUser();
   if (!user) {
-    // Same posture as the protected pages: send them to sign in and come back.
-    const signIn = new URL("/sign-in", request.url);
-    signIn.searchParams.set("redirect_url", "/api/documents/new");
-    return NextResponse.redirect(signIn);
+    // Same posture as the protected pages: sign in, then come back here.
+    return redirectTo("/sign-in?redirect_url=%2Fapi%2Fdocuments%2Fnew");
   }
 
   const briefId = ulid();
@@ -68,5 +77,5 @@ export async function GET(request: Request) {
   // not just from its first edit.
   await persistGenDir(scriptId);
 
-  return NextResponse.redirect(new URL(`/preview/${scriptId}`, request.url));
+  return redirectTo(`/preview/${scriptId}`);
 }
