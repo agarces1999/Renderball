@@ -80,23 +80,22 @@ export function EditorShell({
 }: EditorShellProps) {
   return (
     <div className="flex h-screen gap-4 overflow-hidden bg-canvas p-4">
-      <EditorRail
-        slides={slides}
-        active={active}
-        onSelect={onSelect}
-        onAddSlide={onAddSlide}
-        footer={footer}
-      />
+      {/* ONE left column: the pages, then the commands that act on them, then
+          the way out. Page actions (move / duplicate / delete) operate on
+          exactly what the rail lists, so they sit directly UNDER that list
+          rather than in a second column beside it — which read as two separate
+          pieces of chrome competing for the same attention. */}
+      <div className="flex w-[288px] shrink-0 flex-col gap-3">
+        <EditorRail slides={slides} active={active} onSelect={onSelect} onAddSlide={onAddSlide} />
 
-      {/* Page + brand inspector, LEFT of the canvas and beside the slide rail.
-          Page actions (move / duplicate / delete) operate on exactly what the
-          rail shows, so the pages and the commands that act on them read as one
-          column instead of being split across the window. */}
-      {sidePanel && (
-        <aside className="hidden w-[288px] shrink-0 overflow-y-auto lg:block">
-          {sidePanel}
-        </aside>
-      )}
+        {sidePanel && (
+          <div className="hidden min-h-0 flex-1 overflow-y-auto lg:block">{sidePanel}</div>
+        )}
+
+        {footer && (
+          <div className="shrink-0 px-1 pb-1 font-mono text-[11px] text-muted">{footer}</div>
+        )}
+      </div>
 
       <main className="flex min-w-0 flex-1 flex-col gap-3">
         <EditorToolbar
@@ -132,16 +131,17 @@ function EditorRail({
   active,
   onSelect,
   onAddSlide,
-  footer,
 }: {
   slides: EditorSlide[];
   active: number;
   onSelect: (i: number) => void;
   onAddSlide?: () => void;
-  footer?: ReactNode;
 }) {
   return (
-    <aside className="flex w-[196px] shrink-0 flex-col gap-3">
+    // Full width of the left column, and only as tall as it needs to be: the
+    // page inspector sits underneath, so the slide list caps itself and scrolls
+    // instead of growing until the commands are pushed off-screen.
+    <aside className="flex w-full shrink-0 flex-col gap-3">
       <Link href="/documents" className="flex items-center gap-2.5 px-1 pt-1">
         <span className="orb h-6 w-6 shrink-0" aria-hidden />
         <span className="font-display text-[16px] font-semibold tracking-tight text-ink">
@@ -165,7 +165,7 @@ function EditorRail({
         )}
       </div>
 
-      <div className="flex min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto">
+      <div className="flex max-h-[42vh] min-h-0 flex-col gap-1.5 overflow-y-auto">
         {slides.map((s, i) => {
           const on = i === active;
           return (
@@ -196,10 +196,6 @@ function EditorRail({
           );
         })}
       </div>
-
-      {footer && (
-        <div className="px-1 pb-1 font-mono text-[11px] text-muted">{footer}</div>
-      )}
     </aside>
   );
 }
