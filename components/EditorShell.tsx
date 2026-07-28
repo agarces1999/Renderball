@@ -18,15 +18,13 @@ import { cn } from "../lib/cn";
 
 export interface EditorToolController {
   tool: "select" | "generate";
-  showAll: boolean;
   canUndo: boolean;
   busy?: boolean;
   select: () => void;
   generate: () => void;
   addText: () => void;
+  /** Opens a file picker — this is an upload, not a shape. */
   addImage: () => void;
-  addIcon: () => void;
-  toggleOutlines: () => void;
   undo: () => void;
 }
 
@@ -247,13 +245,22 @@ function EditorToolbar({
   return (
     <div className="flex items-center gap-2 rounded-lg border border-hairline bg-surface px-2.5 py-1.5">
       {/* pointer tools */}
-      <ToolButton label="Select" active={c.tool === "select"} onClick={c.select}>
+      <ToolButton
+        label="Select"
+        hint="Select — click an element to move, resize, rewrite or regenerate it"
+        active={c.tool === "select"}
+        onClick={c.select}
+      >
         <svg viewBox="0 0 18 18" className="h-3.5 w-3.5" fill="currentColor">
           <path d="M4 2 L4 15 L7.5 11.8 L10 17 L11.8 16.2 L9.4 11.2 L14 11 Z" />
         </svg>
       </ToolButton>
+      {/* Not a duplicate of Select, which only starts a box on EMPTY canvas.
+          On a full slide every press lands on an element, so this arms the whole
+          canvas as a drawing surface — the only way to draw over what is there. */}
       <ToolButton
-        label="Draw an area to generate"
+        label="Generate"
+        hint="Draw a box anywhere — including over existing elements — and say what belongs in it"
         active={c.tool === "generate"}
         onClick={c.generate}
         disabled={c.busy}
@@ -263,28 +270,37 @@ function EditorToolbar({
 
       <Divider />
 
-      {/* add primitives */}
-      <ToolButton label="Add text" onClick={c.addText} disabled={c.busy}>
+      {/* add primitives — deterministic, no model, no spend */}
+      <ToolButton label="Text" hint="Add an editable text box" onClick={c.addText} disabled={c.busy}>
         <span className="font-display text-[12px] font-bold leading-none">T</span>
       </ToolButton>
-      <ToolButton label="Add image" onClick={c.addImage} disabled={c.busy}>
-        <span className="h-3 w-3.5 rounded-[2px] border-[1.5px] border-current" />
-      </ToolButton>
-      <ToolButton label="Add icon" onClick={c.addIcon} disabled={c.busy}>
-        <svg viewBox="0 0 18 18" className="h-3.5 w-3.5" fill="currentColor" aria-hidden>
-          <path d="M9 1.5 L11 6.8 L16.5 7 L12.2 10.4 L13.7 15.6 L9 12.6 L4.3 15.6 L5.8 10.4 L1.5 7 L7 6.8 Z" />
+      <ToolButton
+        label="Image"
+        hint="Upload an image from your computer"
+        onClick={c.addImage}
+        disabled={c.busy}
+      >
+        {/* An upload glyph, not a plain square: this opens a file picker, and a
+            bare rectangle read as "draw a rectangle". */}
+        <svg
+          viewBox="0 0 18 18"
+          className="h-3.5 w-3.5"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.5"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden
+        >
+          <path d="M9 11.5 V3" />
+          <path d="M5.75 6.25 L9 3 L12.25 6.25" />
+          <path d="M3 11.5 v2.25 a1 1 0 0 0 1 1 h10 a1 1 0 0 0 1 -1 V11.5" />
         </svg>
       </ToolButton>
 
       <Divider />
 
-      <ToolButton label="Toggle outlines" active={c.showAll} onClick={c.toggleOutlines}>
-        <svg viewBox="0 0 18 18" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.4" aria-hidden>
-          <rect x="2.5" y="2.5" width="8" height="8" rx="1.5" />
-          <rect x="7.5" y="7.5" width="8" height="8" rx="1.5" />
-        </svg>
-      </ToolButton>
-      <ToolButton label="Undo" onClick={c.undo} disabled={!c.canUndo}>
+      <ToolButton label="Undo" hint="Undo the last edit" onClick={c.undo} disabled={!c.canUndo}>
         <span className="text-[13px] leading-none">↩</span>
       </ToolButton>
 
@@ -312,14 +328,25 @@ function EditorToolbar({
   );
 }
 
+/**
+ * A tool: glyph with its NAME under it.
+ *
+ * The row was icon-only, and icon-only asks the user to guess. Two of the
+ * glyphs were guessed wrong in practice — a dashed rectangle does not say
+ * "generate", and a plain square does not say "upload an image" — so the label
+ * is part of the control now rather than a tooltip you have to hover to find.
+ * `hint` carries the longer explanation for those who do hover.
+ */
 function ToolButton({
   label,
+  hint,
   active = false,
   disabled = false,
   onClick,
   children,
 }: {
   label: string;
+  hint?: string;
   active?: boolean;
   disabled?: boolean;
   onClick: () => void;
@@ -330,17 +357,18 @@ function ToolButton({
       type="button"
       onClick={onClick}
       disabled={disabled}
-      title={label}
-      aria-label={label}
+      title={hint ?? label}
+      aria-label={hint ?? label}
       aria-pressed={active}
       className={cn(
-        "flex h-7 w-7 items-center justify-center rounded-md transition-colors disabled:opacity-40",
+        "flex w-[54px] shrink-0 flex-col items-center justify-center gap-1 rounded-md py-1.5 transition-colors disabled:opacity-40",
         active
           ? "bg-accent-soft text-accent-text"
           : "text-muted hover:bg-surface-2 hover:text-ink",
       )}
     >
-      {children}
+      <span className="flex h-4 items-center justify-center">{children}</span>
+      <span className="font-mono text-[9.5px] leading-none tracking-tight">{label}</span>
     </button>
   );
 }

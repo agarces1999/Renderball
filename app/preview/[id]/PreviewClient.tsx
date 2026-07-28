@@ -243,7 +243,6 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
   });
   const controls: EditorToolController = {
     tool: ed.tool,
-    showAll: ed.showAll,
     canUndo: ed.canUndo,
     busy: !!ed.busy || regenerating || pageBusy,
     select: () => {
@@ -252,8 +251,6 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
     generate: () => editorRef.current?.toggleGenerate(),
     addText: () => editorRef.current?.addText(),
     addImage: () => editorRef.current?.addImage(),
-    addIcon: () => editorRef.current?.addIcon(),
-    toggleOutlines: () => editorRef.current?.toggleOutlines(),
     undo: () => editorRef.current?.undo(),
   };
 

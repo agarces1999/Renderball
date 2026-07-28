@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
 import path from "path";
-import { moveElement, deleteElement, resizeElement } from "../../../../lib/edit/edit-layout";
+import {
+  moveElement,
+  deleteElement,
+  resizeElement,
+  reorderElement,
+} from "../../../../lib/edit/edit-layout";
 
 /**
  * Dev-only layout-edit route — headless counterpart to /api/preview/edit-layout for
@@ -41,8 +46,11 @@ export async function POST(request: Request) {
   if (!pieceId || typeof pieceId !== "string") {
     return NextResponse.json({ error: "pieceId required" }, { status: 400 });
   }
-  if (op !== "move" && op !== "resize" && op !== "delete") {
-    return NextResponse.json({ error: 'op must be "move", "resize" or "delete"' }, { status: 400 });
+  if (op !== "move" && op !== "resize" && op !== "delete" && op !== "front" && op !== "back") {
+    return NextResponse.json(
+      { error: 'op must be "move", "resize", "delete", "front" or "back"' },
+      { status: 400 },
+    );
   }
   if (op === "resize" && ![x, y, w, h].every((n) => typeof n === "number" && Number.isFinite(n))) {
     return NextResponse.json({ error: "resize requires numeric x, y, w and h" }, { status: 400 });

@@ -105,7 +105,6 @@ export function DevEditClient({
   const controls: EditorToolController = useMemo(
     () => ({
       tool: ed.tool,
-      showAll: ed.showAll,
       canUndo: ed.canUndo,
       busy: !!ed.busy || playMotion,
       select: () => {
@@ -114,8 +113,6 @@ export function DevEditClient({
       generate: () => editorRef.current?.toggleGenerate(),
       addText: () => editorRef.current?.addText(),
       addImage: () => editorRef.current?.addImage(),
-      addIcon: () => editorRef.current?.addIcon(),
-      toggleOutlines: () => editorRef.current?.toggleOutlines(),
       undo: () => editorRef.current?.undo(),
     }),
     [ed, playMotion],

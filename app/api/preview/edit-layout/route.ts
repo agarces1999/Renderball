@@ -3,7 +3,12 @@ import { documentDir } from "../../../../lib/render/gen-store";
 import path from "path";
 import { getCurrentUser } from "../../../../lib/auth";
 import { loadScript } from "../../../../lib/store";
-import { moveElement, deleteElement, resizeElement } from "../../../../lib/edit/edit-layout";
+import {
+  moveElement,
+  deleteElement,
+  resizeElement,
+  reorderElement,
+} from "../../../../lib/edit/edit-layout";
 
 /**
  * M3 layout-edit endpoint — reposition, resize, or delete one element, NO LLM.
@@ -49,8 +54,11 @@ export async function POST(request: Request) {
   if (!pieceId || typeof pieceId !== "string") {
     return NextResponse.json({ error: "pieceId required" }, { status: 400 });
   }
-  if (op !== "move" && op !== "resize" && op !== "delete") {
-    return NextResponse.json({ error: 'op must be "move", "resize" or "delete"' }, { status: 400 });
+  if (op !== "move" && op !== "resize" && op !== "delete" && op !== "front" && op !== "back") {
+    return NextResponse.json(
+      { error: 'op must be "move", "resize", "delete", "front" or "back"' },
+      { status: 400 },
+    );
   }
   if (op === "move" && (typeof dx !== "number" || typeof dy !== "number")) {
     return NextResponse.json({ error: "move requires numeric dx and dy" }, { status: 400 });
@@ -74,7 +82,13 @@ export async function POST(request: Request) {
 
   const status = result.ok ? 200 : /not found/.test(result.error ?? "") ? 404 : 400;
   if (!result.ok) {
-    return NextResponse.json({ ok: false, error: result.error }, { status });
+    // `code` is forwarded so the editor can branch on WHY a resize failed
+    // (e.g. "no-wrapper" → rebuild the element at the new size) instead of
+    // string-matching an error message that is written for humans.
+    return NextResponse.json(
+      { ok: false, code: (result as { code?: string }).code, error: result.error },
+      { status },
+    );
   }
   const payload =
     op === "move"

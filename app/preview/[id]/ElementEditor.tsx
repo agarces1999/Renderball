@@ -108,6 +108,129 @@ export interface LayoutSuggestion {
   bounds: { x: number; y: number; w: number; h: number };
 }
 
+/**
+ * What generation looks like while it runs.
+ *
+ * Sits exactly on the box being built, so the wait happens WHERE the thing will
+ * appear rather than in a corner spinner — the box reads as already claimed. A
+ * slow sheen sweeps the area (that is the work), the crystal ball from the brand
+ * turns above the label, and the border breathes. Every layer is CSS: no images,
+ * no library, and nothing that keeps painting once the element lands.
+ *
+ * `prefers-reduced-motion` drops the sweep and the pulse and leaves a static
+ * tinted box with the label, which still answers "is anything happening".
+ */
+function GeneratingOverlay({
+  box,
+  label,
+}: {
+  box: { left: number; top: number; width: number; height: number };
+  label: string;
+}) {
+  return (
+    <div
+      style={{
+        position: "absolute",
+        left: box.left,
+        top: box.top,
+        width: box.width,
+        height: box.height,
+        borderRadius: 10,
+        overflow: "hidden",
+        pointerEvents: "none",
+        zIndex: 46,
+        border: "1.5px solid var(--accent, #00c28a)",
+        background: "rgba(0,194,138,0.07)",
+        animation: "rb-gen-breathe 2.4s ease-in-out infinite",
+      }}
+      aria-live="polite"
+      aria-label={label}
+    >
+      <style>{`
+        @keyframes rb-gen-sweep {
+          0%   { transform: translateX(-120%); }
+          100% { transform: translateX(120%); }
+        }
+        @keyframes rb-gen-breathe {
+          0%, 100% { box-shadow: 0 0 0 0 rgba(0,194,138,0.30); }
+          50%      { box-shadow: 0 0 22px 3px rgba(0,194,138,0.22); }
+        }
+        @keyframes rb-gen-spin { to { transform: rotate(360deg); } }
+        @media (prefers-reduced-motion: reduce) {
+          .rb-gen-sweep, .rb-gen-orb { animation: none !important; }
+        }
+      `}</style>
+
+      {/* the sweep — a wide angled sheen crossing the box */}
+      <div
+        className="rb-gen-sweep"
+        style={{
+          position: "absolute",
+          inset: "-40% -10%",
+          background:
+            "linear-gradient(105deg, transparent 30%, rgba(255,255,255,0.55) 50%, transparent 70%)",
+          animation: "rb-gen-sweep 1.9s ease-in-out infinite",
+        }}
+      />
+
+      <div
+        style={{
+          position: "absolute",
+          inset: 0,
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          justifyContent: "center",
+          gap: 8,
+        }}
+      >
+        <span
+          className="rb-gen-orb"
+          style={{ display: "inline-flex", animation: "rb-gen-spin 3.2s linear infinite" }}
+        >
+          <CrystalOrb size={box.width > 220 && box.height > 120 ? 26 : 16} />
+        </span>
+        {/* The label is dropped in boxes too small to hold it legibly. */}
+        {box.width > 190 && box.height > 74 && (
+          <span
+            className={`${R_SM} bg-[#11141b] px-2 py-1 font-mono text-[10.5px] tracking-tight text-white/90`}
+          >
+            {label}
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** One row of the right-click menu. */
+function MenuItem({
+  onClick,
+  disabled,
+  danger,
+  children,
+}: {
+  onClick: () => void;
+  disabled?: boolean;
+  danger?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      role="menuitem"
+      onClick={onClick}
+      disabled={disabled}
+      className={
+        "block w-full px-3 py-1.5 text-left text-[12px] transition-colors disabled:opacity-40 " +
+        (danger ? "text-red-300 hover:bg-red-500/15" : "text-white/85 hover:bg-white/10")
+      }
+    >
+      {children}
+    </button>
+  );
+}
+
 const GEN_BAR_W = 560;
 const GEN_BAR_H = 40;
 /** Breathing room required between the bar and the box edge to sit inside. */
@@ -255,6 +378,16 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
   // goes; this proposes the whole composition. Suggestions are REGIONS ONLY —
   // accepting one hands its box and its words to the marquee flow, so nothing is
   // generated (or billed for generation) until an explicit click.
+  /**
+   * Right-click menu, anchored in OVERLAY px at the click.
+   *
+   * The click itself happens inside the iframe, so the listener lives on that
+   * document — but the menu is rendered in the overlay, which sits over it and is
+   * not clipped by the slide.
+   */
+  const [menu, setMenu] = useState<null | { x: number; y: number; pieceId: string; kind: string }>(
+    null,
+  );
   const [suggestPrompt, setSuggestPrompt] = useState("");
   const [suggestions, setSuggestions] = useState<LayoutSuggestion[]>([]);
   const [suggesting, setSuggesting] = useState(false);
@@ -721,11 +854,29 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
       if (ev.key === "Escape" && !editingRef.current) setSelected(null);
     };
 
+    // Right-click a piece: select it and open the element menu at the pointer.
+    // The browser's own menu is suppressed only when the click landed on an
+    // element — right-clicking bare canvas still behaves normally.
+    const onContext = (ev: MouseEvent) => {
+      if (editingRef.current || busyRef.current) return;
+      const el = (ev.target as Element | null)?.closest?.("[data-piece]") as HTMLElement | null;
+      if (!el) return;
+      const pieceId = el.getAttribute("data-piece");
+      if (!pieceId) return;
+      ev.preventDefault();
+      const rect = rectOf(el);
+      if (rect) setSelected({ pieceId, kind: el.getAttribute("data-kind") ?? "", rect });
+      // The iframe fills the overlay at inset:0, so its client coords ARE
+      // overlay coords — no conversion needed.
+      setMenu({ x: ev.clientX, y: ev.clientY, pieceId, kind: el.getAttribute("data-kind") ?? "" });
+    };
+
     const attach = () => {
       try {
         doc = iframe.contentDocument;
         if (!doc) return;
         doc.addEventListener("click", onClick, true);
+        doc.addEventListener("contextmenu", onContext, true);
         doc.addEventListener("dblclick", onDbl, true);
         doc.addEventListener("mouseover", onOver, true);
         doc.addEventListener("mouseleave", onLeave, true);
@@ -771,6 +922,7 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
       iframe.removeEventListener("load", attach);
       try {
         doc?.removeEventListener("click", onClick, true);
+        doc?.removeEventListener("contextmenu", onContext, true);
         doc?.removeEventListener("dblclick", onDbl, true);
         doc?.removeEventListener("mouseover", onOver, true);
         doc?.removeEventListener("mouseleave", onLeave, true);
@@ -1210,6 +1362,35 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
     };
   }, [colorOpen]);
 
+  /**
+   * Delete / Backspace removes the selected element.
+   *
+   * Guarded hard, because these are also the most destructive keys in any text
+   * field: it does nothing while a text element is being edited, while a request
+   * is in flight, or while focus sits in ANY input — the generate prompt, the
+   * Suggest box, the brand panel. Without the focus check, backspacing a typo
+   * out of the prompt would silently delete the element behind it.
+   */
+  useEffect(() => {
+    if (!selected || editing || busy) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Delete" && e.key !== "Backspace") return;
+      const el = document.activeElement as HTMLElement | null;
+      const typing =
+        !!el &&
+        (el.tagName === "INPUT" ||
+          el.tagName === "TEXTAREA" ||
+          el.isContentEditable ||
+          el.getAttribute("role") === "textbox");
+      if (typing) return;
+      e.preventDefault();
+      void remove();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected, editing, busy]);
+
   // Escape disarms the marquee tool / cancels a pending generate box, and
   // dismisses proposed regions — one key clears every pending offer.
   useEffect(() => {
@@ -1372,21 +1553,52 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
 
   const commitResize = async (b: { left: number; top: number; width: number; height: number }) => {
     if (!selected) return;
+    const pieceId = selected.pieceId;
     const p0 = overlayToCanvas(b.left, b.top);
     const p1 = overlayToCanvas(b.left + b.width, b.top + b.height);
     const bounds = clampBounds({ x: p0.x, y: p0.y, w: p1.x - p0.x, h: p1.y - p0.y });
+
     setBusy("resize");
-    const ok = await post(`${apiBase}/edit-layout`, {
+    const { ok, json } = await postJson(`${apiBase}/edit-layout`, {
       scriptId,
       sceneIndex,
-      pieceId: selected.pieceId,
+      pieceId,
       op: "resize",
       ...bounds,
     });
+
+    // Some pieces are not a single positioned box — a bare component, or a
+    // fragment of siblings each positioned in the section's own coordinate
+    // space. Rewriting a box they don't have is impossible, and wrapping them
+    // would re-base their coordinates and scatter the layout. So the element is
+    // REBUILT at the size that was just dragged, which is what the user asked
+    // for either way. This one path costs tokens where a plain resize does not.
+    if (!ok && json.code === "no-wrapper") {
+      setBusy("regenerate");
+      const redraw = await post(`${apiBase}/regenerate-element`, {
+        scriptId,
+        sceneIndex,
+        pieceId,
+        instruction:
+          `Re-render this element so it exactly fills a box ${Math.round(bounds.w)}px wide by ` +
+          `${Math.round(bounds.h)}px tall, positioned at x=${Math.round(bounds.x)}, y=${Math.round(bounds.y)}. ` +
+          `Keep the same content, wording and styling — only its size and position change. ` +
+          `Scale type and spacing so it fills the new box without overflowing it.`,
+      });
+      setBusy(null);
+      setResizeBox(null);
+      if (redraw) {
+        reselectIdRef.current = pieceId;
+        setSelected(null);
+        onChanged();
+      }
+      return;
+    }
+
     setBusy(null);
     setResizeBox(null);
     if (ok) {
-      reselectIdRef.current = selected.pieceId;
+      reselectIdRef.current = pieceId;
       setSelected(null);
       onChanged();
     }
@@ -1557,6 +1769,85 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
             </div>
           )}
         </div>
+      )}
+
+      {/* ── generation in progress ──────────────────────────────────────────
+          On the box being built: the drawn marquee for a new element, or the
+          selected element's own box for a regenerate / resize-by-rebuild. */}
+      {(busy === "insert" || busy === "regenerate") &&
+        (() => {
+          const target = genBox ?? box;
+          if (!target) return null;
+          return (
+            <GeneratingOverlay
+              box={target}
+              label={busy === "insert" ? "Generating…" : "Rebuilding…"}
+            />
+          );
+        })()}
+
+      {/* ── right-click element menu ────────────────────────────────────────
+          Clamped so a right-click near the right or bottom edge still shows the
+          whole menu inside the canvas rather than half of it off the slide. */}
+      {menu && (
+        <>
+          {/* Click-away catcher. Covers the canvas so the next click anywhere
+              closes the menu instead of also acting on the slide. */}
+          <div
+            style={{ position: "absolute", inset: 0, pointerEvents: "auto", zIndex: 44 }}
+            onMouseDown={() => setMenu(null)}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              setMenu(null);
+            }}
+          />
+          <div
+            role="menu"
+            style={{
+              position: "absolute",
+              left: Math.max(4, Math.min(menu.x, (overlayRef.current?.clientWidth ?? 9999) - 188)),
+              top: Math.max(4, Math.min(menu.y, (overlayRef.current?.clientHeight ?? 9999) - 172)),
+              width: 184,
+              pointerEvents: "auto",
+              zIndex: 45,
+            }}
+            className={`overflow-hidden ${R_MD} border border-white/10 bg-[#11141b] py-1 shadow-2xl`}
+          >
+            <div className="px-3 pb-1.5 pt-1 font-mono text-[9.5px] uppercase tracking-[0.14em] text-white/35">
+              {menu.kind || "element"}
+            </div>
+            {/* Bring to front / Send to back are DELIBERATELY not here yet.
+                The server op (lib/edit/edit-layout.ts reorderElement) is written
+                and unit-tested, and it is correct in isolation — verified against
+                copies of two real decks. But driven through the running server it
+                desynced the manifest from the render on some decks: the piece
+                stayed in Composition.tsx and disappeared from lego/manifest.json.
+                A render-side safety net is in place and did not trip, so the loss
+                happens outside that function and is not yet explained. Reordering
+                is a cosmetic convenience; losing someone's element is not
+                recoverable from the UI, so it stays unexposed until the desync is
+                understood. */}
+            <MenuItem
+              onClick={() => {
+                setMenu(null);
+                setRegenAsk(true);
+              }}
+              disabled={!!busy}
+            >
+              Regenerate…
+            </MenuItem>
+            <MenuItem
+              onClick={() => {
+                setMenu(null);
+                void remove();
+              }}
+              disabled={!!busy}
+              danger
+            >
+              Delete
+            </MenuItem>
+          </div>
+        </>
       )}
 
       {/* ── Suggest: a prompt box ON the slide, above everything ─────────────
