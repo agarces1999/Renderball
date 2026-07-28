@@ -27,6 +27,7 @@
 import { promises as fs } from "fs";
 import path from "path";
 import type { Script } from "../../src/schema";
+import type { StoredBrief } from "../store";
 import { writeGeneratedFiles } from "../render/build-wrapper";
 
 /** A blank page is still a page: give it the canvas the brand system expects. */
@@ -113,6 +114,43 @@ export const blankScript = (scriptId: string, pages = 1): Script =>
       content: {},
     })),
   }) as unknown as Script;
+
+/**
+ * The brief half of a blank document.
+ *
+ * Lives here, fully typed, for one reason: the first version of this object was
+ * written inline at the call site behind `as Parameters<typeof saveBrief>[0]`,
+ * and that cast silently swallowed FOUR required fields. `created_at` was one
+ * of them — `pgSaveBrief` does `new Date(brief.created_at)`, so an absent value
+ * became `new Date(undefined)` → Invalid Date → Prisma rejected every insert.
+ * Result: "New document" 500'd for every signed-in user, and because the cast
+ * satisfied the compiler, both `tsc` and the test suite stayed green.
+ *
+ * A real return type is the fix. Nothing here may be cast — if `StoredBrief`
+ * gains a required field, this must fail to compile.
+ */
+export const blankBrief = (
+  briefId: string,
+  ownerId: string,
+  scriptId: string,
+  pages = 1,
+): StoredBrief => ({
+  id: briefId,
+  owner_id: ownerId,
+  purpose: "Untitled document",
+  kind: "deck",
+  distribution_format: "landscape",
+  duration_seconds: Math.max(1, pages) * PAGE_SECONDS,
+  // Empty, not absent: downstream code reads `.length` and `.map` on these.
+  moments: [],
+  cta: "",
+  created_at: new Date().toISOString(),
+  status: "awaiting_agent_1",
+  script_id: scriptId,
+  // No brand_extract and no brand_files on purpose. Brand is set from the
+  // editor's brand panel now, not demanded up front — the logo requirement was
+  // a hard stop on a user's very first run.
+});
 
 /**
  * Materialise a blank document on disk: composition, shims, script.json — the

@@ -3,7 +3,11 @@ import { getCurrentUser } from "../../../../lib/auth";
 import { saveBrief, saveScript } from "../../../../lib/store";
 import { withDbRetry } from "../../../../lib/db";
 import { ulid } from "../../../../lib/ulid";
-import { writeBlankDocument } from "../../../../lib/documents/blank-document";
+import {
+  blankBrief,
+  blankScript,
+  writeBlankDocument,
+} from "../../../../lib/documents/blank-document";
 import { persistGenDir } from "../../../../lib/render/gen-store";
 
 /**
@@ -48,34 +52,30 @@ export async function GET() {
   const briefId = ulid();
   const scriptId = ulid();
 
-  // Materialise on disk first: if this fails there is no orphan row pointing
-  // at a document that cannot open.
-  await writeBlankDocument(scriptId, 1);
+  try {
+    // Materialise on disk first: if this fails there is no orphan row pointing
+    // at a document that cannot open.
+    await writeBlankDocument(scriptId, 1);
 
-  const script = (await import("../../../../lib/documents/blank-document")).blankScript(
-    scriptId,
-    1,
-  );
+    const script = blankScript(scriptId, 1);
 
-  await withDbRetry(() => saveScript(script, user.id));
-  await withDbRetry(() =>
-    saveBrief({
-      id: briefId,
-      owner_id: user.id,
-      purpose: "Untitled document",
-      duration_seconds: 5,
-      kind: "deck",
-      distribution_format: "landscape",
-      script_id: scriptId,
-      // No brand_extract and no brand_files on purpose. Brand is set from the
-      // editor's brand panel now, not demanded up front — the logo requirement
-      // was a hard stop on a user's very first run.
-    } as Parameters<typeof saveBrief>[0]),
-  );
+    await withDbRetry(() => saveScript(script, user.id));
+    await withDbRetry(() => saveBrief(blankBrief(briefId, user.id, scriptId)));
 
-  // Publish immediately so the document survives a redeploy from creation,
-  // not just from its first edit.
-  await persistGenDir(scriptId);
+    // Publish immediately so the document survives a redeploy from creation,
+    // not just from its first edit.
+    await persistGenDir(scriptId);
+  } catch (err) {
+    // This is the front door — every "New document" button in the app points
+    // here. A bare throw renders the browser's own 500 page, which tells the
+    // user nothing and leaves no trace to debug from, so log with the ids and
+    // send them somewhere they can retry.
+    console.error(
+      `[documents/new] create failed for owner=${user.id} script=${scriptId}:`,
+      err instanceof Error ? (err.stack ?? err.message) : String(err),
+    );
+    return redirectTo("/documents?error=create_failed");
+  }
 
   return redirectTo(`/preview/${scriptId}`);
 }

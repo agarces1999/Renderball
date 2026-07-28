@@ -76,9 +76,16 @@ type Card = {
   thumbUrl: string | null;
 };
 
-export default async function DocumentsPage() {
+export default async function DocumentsPage({
+  searchParams,
+}: {
+  // Set by /api/documents/new when creation fails. Without it that route's
+  // only failure mode was the browser's own bare HTTP 500 page.
+  searchParams?: { error?: string };
+}) {
   const user = await getCurrentUser();
   if (!user) redirect("/");
+  const createFailed = searchParams?.error === "create_failed";
   const briefs = await listBriefsByOwner(user.id);
 
   // Durable-render set: which projects have a completed Render row. This is the
@@ -164,6 +171,21 @@ export default async function DocumentsPage() {
             New document
           </Link>
         </div>
+
+        {createFailed && (
+          <div
+            role="alert"
+            className="mb-6 rounded-md border border-red-500/25 bg-red-500/[0.06] px-4 py-3"
+          >
+            <p className="text-[14px] font-medium text-ink">
+              We couldn&rsquo;t start that document.
+            </p>
+            <p className="mt-1 font-mono text-[12px] text-muted">
+              Nothing was charged. Try &ldquo;New document&rdquo; again — if it
+              keeps failing, email support@renderball.com.
+            </p>
+          </div>
+        )}
 
         {cards.length === 0 ? (
           <EmptyState />
