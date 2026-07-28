@@ -101,6 +101,13 @@ const HIT = "min-h-[28px] min-w-[28px] inline-flex items-center justify-center";
  * user drew, and to centre it there. Single-sourced: the outside-the-box clamp
  * uses the same width.
  */
+/** One proposed region from the Suggest box (lib/agents/suggest-layout.ts). */
+export interface LayoutSuggestion {
+  label: string;
+  prompt: string;
+  bounds: { x: number; y: number; w: number; h: number };
+}
+
 const GEN_BAR_W = 560;
 const GEN_BAR_H = 40;
 /** Breathing room required between the bar and the box edge to sit inside. */
@@ -243,6 +250,27 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
   // What the marquee generates: a JSX element (LLM) or an image (diffusion).
   // An explicit switch on the prompt bar — never guessed from the prompt text.
   const [genKind, setGenKind] = useState<"element" | "image">("element");
+  // ── suggest a layout ──────────────────────────────────────────────────────
+  // The question before the marquee: the marquee assumes you know where a thing
+  // goes; this proposes the whole composition. Suggestions are REGIONS ONLY —
+  // accepting one hands its box and its words to the marquee flow, so nothing is
+  // generated (or billed for generation) until an explicit click.
+  const [suggestPrompt, setSuggestPrompt] = useState("");
+  const [suggestions, setSuggestions] = useState<LayoutSuggestion[]>([]);
+  const [suggesting, setSuggesting] = useState(false);
+  /**
+   * The canvas size the suggested bounds are expressed in, as reported by the
+   * server that produced them.
+   *
+   * Regions are then drawn as PERCENTAGES of the slide, which needs no
+   * measurement at all. Measuring the rendered canvas instead was tried and is a
+   * trap: the iframe reports zero width until it lays out, so a read taken at the
+   * wrong instant yields scale 1 and every region is painted at full canvas size
+   * inside a much smaller overlay — silently, since the numbers look plausible.
+   * The canvas fills the overlay, so percentages are exact and immune to timing,
+   * zoom and resize alike.
+   */
+  const [suggestCanvas, setSuggestCanvas] = useState<{ w: number; h: number } | null>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
   // Hidden file input for the Add-toolbar image path (upload, not placeholder).
   const fileRef = useRef<HTMLInputElement>(null);
@@ -822,6 +850,20 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
     (iframeRef.current?.contentDocument?.querySelector(".renderball-canvas") as HTMLElement | null) ?? null;
   // Overlay-local px (== iframe-viewport px) → canvas px. The canvas is scaled to fit
   // and may be letterboxed, so subtract its rendered origin THEN divide by scale.
+  /** A suggested region as percentages of the slide — see `suggestCanvas`. */
+  const suggestionPct = (
+    b: { x: number; y: number; w: number; h: number },
+  ): { left: string; top: string; width: string; height: string } => {
+    const cw = suggestCanvas?.w || canvasWidth || 1920;
+    const ch = suggestCanvas?.h || Math.round((canvasWidth || 1920) * 9 / 16);
+    return {
+      left: `${(b.x / cw) * 100}%`,
+      top: `${(b.y / ch) * 100}%`,
+      width: `${(b.w / cw) * 100}%`,
+      height: `${(b.h / ch) * 100}%`,
+    };
+  };
+
   const overlayToCanvas = (localX: number, localY: number): { x: number; y: number } => {
     const scale = canvasScale() || 1;
     const c = canvasEl();
@@ -957,6 +999,113 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
     }
   };
 
+  /**
+   * Boxes the page's existing elements actually occupy, in CANVAS px.
+   *
+   * Measured live from the rendered document rather than inferred server-side:
+   * built pieces carry no machine-readable geometry, so the server can only
+   * describe them in words — and a model told "do not overlap the headline"
+   * proposes a box over the headline anyway. The browser is the only place the
+   * real rectangles exist, so it is the browser's job to send them.
+   *
+   * Full-bleed backdrops and move-offset frames are skipped by `rectOf`; without
+   * that a single page-sized backdrop would mark the whole canvas as occupied and
+   * every suggestion would be rejected.
+   */
+  const occupiedBounds = (): { x: number; y: number; w: number; h: number }[] => {
+    const doc = iframeRef.current?.contentDocument;
+    if (!doc) return [];
+    const vw = doc.documentElement?.clientWidth ?? 0;
+    const vh = doc.documentElement?.clientHeight ?? 0;
+    // Refuse to guess. If the canvas has not laid out, every rect below would be
+    // divided by a scale of 1 and come back at overlay pixels labelled as canvas
+    // pixels — plausible-looking numbers that would push the model AWAY from the
+    // free space. No geometry (the model still gets the textual context) beats
+    // wrong geometry.
+    const canvasRect = canvasEl()?.getBoundingClientRect();
+    if (!canvasRect || canvasRect.width <= 0 || canvasWidth <= 0) return [];
+    const out: { x: number; y: number; w: number; h: number }[] = [];
+
+    for (const piece of Array.from(doc.querySelectorAll("[data-piece]"))) {
+      // Atmosphere is decorative — soft gradient washes and sparklines that span
+      // most of the slide. Measured, they read as "the page is full" (one blob
+      // came back 723×723 with nothing in it) and every proposal was rejected.
+      // Content sits over a gradient perfectly happily, so it is not occupancy.
+      if (piece.getAttribute("data-kind") === "atmosphere") continue;
+
+      for (const el of Array.from(piece.querySelectorAll("*"))) {
+        if (el.querySelector("*")) continue; // leaves only — see below
+        const r = el.getBoundingClientRect();
+        if (r.width <= 8 || r.height <= 8) continue; // dots, rules, hairlines
+        if (vw > 0 && vh > 0 && r.width >= vw * 0.92 && r.height >= vh * 0.92) continue; // backdrop
+        // Text nodes are the real ink. An empty leaf with a size is usually a
+        // rule or a decorative fill, and blocking on those over-reports too.
+        if (!(el.textContent ?? "").trim()) continue;
+
+        const p0 = overlayToCanvas(r.left, r.top);
+        const p1 = overlayToCanvas(r.left + r.width, r.top + r.height);
+        out.push({
+          x: Math.round(p0.x),
+          y: Math.round(p0.y),
+          w: Math.round(p1.x - p0.x),
+          h: Math.round(p1.y - p0.y),
+        });
+      }
+    }
+    return out;
+  };
+
+  /** Ask for a layout. Costs a (small) model call and returns regions only. */
+  const submitSuggest = async () => {
+    const prompt = suggestPrompt.trim();
+    if (!prompt || suggesting || busy) return;
+    setSuggesting(true);
+    setError(null);
+    const { ok, json } = await postJson(`${apiBase}/suggest-layout`, {
+      scriptId,
+      sceneIndex,
+      prompt,
+      occupied: occupiedBounds(),
+    });
+    setSuggesting(false);
+    if (ok && Array.isArray(json.suggestions)) {
+      const c = json.canvas as { w?: number; h?: number } | undefined;
+      if (c && c.w && c.h) setSuggestCanvas({ w: c.w, h: c.h });
+      setSuggestions(json.suggestions as LayoutSuggestion[]);
+      // Clear any half-drawn marquee so the proposals are the only thing to act on.
+      setGenBox(null);
+      setTool(null);
+    }
+  };
+
+  /**
+   * Accept one proposed region: it becomes the marquee's frozen box with its
+   * prompt pre-filled, so the user sees exactly what will be built and can edit
+   * the words before spending anything. Identical to having drawn it by hand.
+   */
+  const acceptSuggestion = (s: LayoutSuggestion) => {
+    if (busy) return;
+    // Overlay px, computed from the OVERLAY's own size at click time. Measuring
+    // here is safe in a way that measuring during render is not: the user has
+    // just clicked the region, so the layout is settled by definition.
+    const host = overlayRef.current;
+    const ow = host?.clientWidth ?? 0;
+    const oh = host?.clientHeight ?? 0;
+    const cw = suggestCanvas?.w || canvasWidth || 1920;
+    const ch = suggestCanvas?.h || Math.round((canvasWidth || 1920) * 9 / 16);
+    if (ow > 0 && oh > 0) {
+      setGenBox({
+        left: (s.bounds.x / cw) * ow,
+        top: (s.bounds.y / ch) * oh,
+        width: (s.bounds.w / cw) * ow,
+        height: (s.bounds.h / ch) * oh,
+      });
+    }
+    setGenPrompt(s.prompt);
+    setGenKind("element");
+    setSuggestions((all) => all.filter((x) => x !== s));
+  };
+
   // Marquee draw on the armed capture layer. Overlay-local coords via the overlay's
   // own rect; window listeners track a drag that leaves the layer (like the move shield).
   const onMarqueeDown = (e: React.MouseEvent) => {
@@ -1061,20 +1210,22 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
     };
   }, [colorOpen]);
 
-  // Escape disarms the marquee tool / cancels a pending generate box.
+  // Escape disarms the marquee tool / cancels a pending generate box, and
+  // dismisses proposed regions — one key clears every pending offer.
   useEffect(() => {
-    if (!tool && !genBox) return;
+    if (!tool && !genBox && suggestions.length === 0) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         setTool(null);
         setGenBox(null);
         setMarquee(null);
         setGenPrompt("");
+        setSuggestions([]);
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [tool, genBox]);
+  }, [tool, genBox, suggestions.length]);
 
   // ---- text formatting (inserted text boxes only) -------------------------
   /** The live free-text span inside the selected piece, if it is an inserted text box. */
@@ -1407,6 +1558,90 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
           )}
         </div>
       )}
+
+      {/* ── Suggest: a prompt box ON the slide, above everything ─────────────
+          Quiet until used (DESIGN.md: the chrome recedes so the user's work is
+          the loudest thing). Hidden while a marquee prompt is open or an element
+          is selected, so two prompts are never competing for the same Enter. */}
+      {!genBox && !selected && !editing && (
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            void submitSuggest();
+          }}
+          style={{ position: "absolute", left: "50%", top: 12, transform: "translateX(-50%)", pointerEvents: "auto", zIndex: 43 }}
+          className={`flex items-center gap-1 ${R_MD} border border-black/[0.06] bg-white/85 px-1.5 py-1 shadow-lg backdrop-blur-sm transition-opacity ${suggestions.length || suggesting ? "opacity-100" : "opacity-70 hover:opacity-100 focus-within:opacity-100"}`}
+        >
+          <input
+            value={suggestPrompt}
+            onChange={(e) => setSuggestPrompt(e.target.value)}
+            disabled={suggesting || !!busy}
+            aria-label="Describe this page and get a suggested layout"
+            placeholder="Describe this page — e.g. traction slide with 3 KPIs"
+            className={`h-[28px] w-80 ${R_SM} bg-black/[0.04] px-2 text-[11px] text-ink placeholder-muted outline-none focus:bg-black/[0.06] disabled:opacity-50`}
+          />
+          <button
+            type="submit"
+            disabled={suggesting || !!busy || !suggestPrompt.trim()}
+            className={`${HIT} ${R_SM} ${ACTIVE} gap-1.5 px-2.5 text-[11px] font-semibold disabled:opacity-50`}
+          >
+            {suggesting ? (
+              <>
+                <CrystalOrb /> Suggesting…
+              </>
+            ) : (
+              "Suggest"
+            )}
+          </button>
+          {suggestions.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setSuggestions([])}
+              className={`${HIT} ${R_SM} px-2 text-[11px] font-medium text-muted hover:bg-black/[0.05]`}
+            >
+              Clear
+            </button>
+          )}
+        </form>
+      )}
+
+      {/* Proposed regions: ghost boxes the user can accept one at a time. Nothing
+          is generated until one is clicked — the cheap step is shown before the
+          expensive one. */}
+      {suggestions.map((s, i) => {
+        const box = suggestionPct(s.bounds);
+        return (
+          <button
+            key={`${s.label}-${i}`}
+            type="button"
+            onClick={() => acceptSuggestion(s)}
+            title={s.prompt}
+            style={{
+              position: "absolute",
+              left: box.left,
+              top: box.top,
+              width: box.width,
+              height: box.height,
+              border: "1.5px dashed var(--accent, #00c28a)",
+              background: "rgba(0,194,138,0.07)",
+              borderRadius: 8,
+              pointerEvents: "auto",
+              zIndex: 42,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              padding: 8,
+              textAlign: "center",
+              cursor: "pointer",
+            }}
+            className="group transition-colors hover:bg-[rgba(0,194,138,0.14)]"
+          >
+            <span className={`${R_SM} bg-[#11141b] px-2 py-1 text-[11px] font-medium text-white shadow-md`}>
+              {s.label}
+            </span>
+          </button>
+        );
+      })}
 
       {/* The rubber band — shown for BOTH the native empty-canvas drag and the
           explicitly armed tool, so the two paths look identical to the user. */}
