@@ -245,5 +245,36 @@ await check("buildUserMessage: no brand extract → no copy-language directive (
   assert(!/LANGUAGE \(HARD\)/.test(msg), "no directive when there is no brand copy to match");
 });
 
+// Regression: blank documents carry `moments: []` (a required StoredBrief
+// field), and `![]` is FALSE — so the old truthiness check routed every
+// "generate every page for me" run down the pre-structured branch, where the
+// moment list rendered empty and the user's prompt was dropped entirely. It
+// produced a deck from nothing rather than failing, so nothing caught it.
+await check("buildUserMessage: an EMPTY moments array is freeform, not pre-structured", () => {
+  const msg = buildUserMessage({
+    duration_seconds: 30,
+    moment_count: 6,
+    freeform_prompt: "a pitch deck for a coffee roaster",
+    moments: [],
+  });
+  assert(/FREEFORM brief/.test(msg), "empty moments must take the FREEFORM branch");
+  assert(!/PRE-STRUCTURED/.test(msg), "empty moments must NOT claim a pre-structured brief");
+  assert(
+    !/Moments \(each becomes one scene/.test(msg),
+    "must not emit an empty moment list",
+  );
+});
+
+await check("buildUserMessage: a POPULATED moments array is still pre-structured", () => {
+  const msg = buildUserMessage({
+    duration_seconds: 30,
+    moment_count: 1,
+    freeform_prompt: "ignored when structure exists",
+    moments: [{ title: "Opening", description: "the hook", creativity: "balanced" }],
+  });
+  assert(/PRE-STRUCTURED/.test(msg), "real moments must keep the pre-structured branch");
+  assert(/Opening/.test(msg), "the moment must appear in the message");
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exitCode = 1;

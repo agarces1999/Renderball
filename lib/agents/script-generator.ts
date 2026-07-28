@@ -645,7 +645,15 @@ const stampDocumentKind = (input: unknown, kind?: "video" | "deck"): void => {
 
 export const buildUserMessage = (brief: AgentBrief): string => {
   const momentCount = brief.moment_count;
-  const isFreeform = !!brief.freeform_prompt && !brief.moments;
+  // `?.length`, not truthiness: an EMPTY moments array means "the user gave me
+  // no structure", exactly like an absent one — but `![]` is false, so the bare
+  // check sent freeform briefs down the pre-structured branch. Blank documents
+  // (lib/documents/blank-document.ts) carry `moments: []`, so every "generate
+  // every page for me" run hit this: the brief was announced as PRE-STRUCTURED,
+  // the moment list rendered empty, and the user's actual prompt was never
+  // included. It generated a deck from nothing instead of failing. The
+  // length-aware form below is already the idiom used further down this file.
+  const isFreeform = !!brief.freeform_prompt && !brief.moments?.length;
   const isDeck = brief.kind === "deck";
   const deckDuration = momentCount * DECK_SECONDS_PER_SLIDE;
   const userAspect = formatToAspect(brief.distribution_format);
