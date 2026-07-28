@@ -10,7 +10,7 @@ export default function PrivacyPage() {
     <LegalShell title="Privacy Policy" updated="June 2026">
       <Clause heading="1. Overview">
         <p>
-          This Privacy Policy explains what Renderball, Inc. (&ldquo;we&rdquo;)
+          This Privacy Policy explains what Renderball (&ldquo;we&rdquo;)
           collects, why, and your choices. It applies to renderball.com and the
           Renderball service.
         </p>

@@ -11,9 +11,11 @@ export default function TermsPage() {
       <Clause heading="1. Agreement">
         <p>
           These Terms of Service govern your access to and use of Renderball (the
-          &ldquo;Service&rdquo;), operated by Renderball, Inc. By creating an
-          account or using the Service, you agree to these terms. If you do not
-          agree, do not use the Service.
+          &ldquo;Service&rdquo;), an independently operated software service. Your
+          purchase itself is made from our payment processor, which acts as the
+          merchant of record and is the seller on your invoice (section 6). By
+          creating an account or using the Service, you agree to these terms. If
+          you do not agree, do not use the Service.
         </p>
       </Clause>
       <Clause heading="2. The service">
