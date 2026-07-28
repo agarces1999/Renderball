@@ -899,6 +899,16 @@ function SlideFrame({
   const [order, setOrder] = useState<number[]>([]);
   /** true once this slide has been measured and its mask is on the page */
   const [masked, setMasked] = useState(false);
+  /**
+   * The slide's own call to action, if it has one. The canvas is injected
+   * HTML inside a `pointer-events: none` layer (the sandbox needs the whole
+   * stage to itself), so the big green "Open the editor" pill on the closing
+   * slide LOOKED like the page's primary button and did nothing when clicked.
+   * A real link is laid over its measured rect instead of making the whole
+   * snapshot interactive. `step` is the authored piece the pill belongs to,
+   * so the link goes live only once the cursor has actually drawn it.
+   */
+  const [cta, setCta] = useState<{ box: PieceBox; step: number } | null>(null);
   const measureRef = useRef(onMeasure);
   measureRef.current = onMeasure;
   const uid = `rbslide${useId().replace(/[^a-zA-Z0-9]/g, "")}`;
@@ -945,6 +955,26 @@ function SlideFrame({
     setOrder(picked.map((f) => f.idx));
     setMasked(true);
     measureRef.current(picked.map((f) => f.box));
+
+    // The deck engine emits a slide's button as a `cta.primary` piece; that
+    // is the one thing on a snapshot a visitor will genuinely try to click.
+    const ctaEl = root.querySelector<HTMLElement>('[data-content-path="cta.primary"]');
+    if (!ctaEl) {
+      setCta(null);
+      return;
+    }
+    const r = ctaEl.getBoundingClientRect();
+    setCta({
+      box: {
+        left: ((r.left - rootRect.left) / rootRect.width) * 100,
+        top: ((r.top - rootRect.top) / rootRect.height) * 100,
+        width: (r.width / rootRect.width) * 100,
+        height: (r.height / rootRect.height) * 100,
+      },
+      // -1 when the pill is not one of the authored pieces (the static branch
+      // authors nothing) — `reveal[-1]` is undefined, which reads as visible.
+      step: picked.findIndex((f) => root.children[f.idx]?.contains(ctaEl)),
+    });
   }, [slide, scale, limit]);
 
   // `!important` because several pieces carry their own entry animations, and
@@ -989,6 +1019,35 @@ function SlideFrame({
         }}
         dangerouslySetInnerHTML={html}
       />
+
+      {/* The pill the visitor can see, made real. Mirrors the injected root's
+          geometry — same 1920×1080 box, same scale about the same centre — so
+          the hit area tracks the slide at any container size. */}
+      {cta && scale > 0 && (reveal[cta.step] ?? 1) > 0.6 && (
+        <div
+          className="pointer-events-none absolute left-1/2 top-1/2"
+          style={{
+            width: 1920,
+            height: 1080,
+            marginLeft: -960,
+            marginTop: -540,
+            transform: `scale(${scale})`,
+            transformOrigin: "center center",
+          }}
+        >
+          <Link
+            href="/api/documents/new"
+            aria-label="Open the editor"
+            className="pointer-events-auto absolute block rounded-full outline-offset-8 focus-visible:outline focus-visible:outline-4 focus-visible:outline-[color:var(--accent)]"
+            style={{
+              left: `${cta.box.left}%`,
+              top: `${cta.box.top}%`,
+              width: `${cta.box.width}%`,
+              height: `${cta.box.height}%`,
+            }}
+          />
+        </div>
+      )}
     </div>
   );
 }

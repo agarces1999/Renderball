@@ -75,16 +75,30 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "script not found" }, { status: 404 });
   }
 
-  const genDir = await documentDir(scriptId);
-  const result = await insertElement({ genDir, scriptId, sceneIndex, bounds, spec: spec as InsertMode });
-  // Pivot token counter: only generate-mode inserts produce usage; primitive
-  // inserts never reach here with tokens.
-  if (result.usage) await recordTokenUsage({ ownerId: user.id, usage: result.usage, op: "insert-element" });
-  const status = result.ok ? 200 : /not found/.test(result.error ?? "") ? 404 : 400;
-  return NextResponse.json(
-    result.ok
-      ? { ok: true, sceneIndex, pieceId: result.pieceId, usage: result.usage }
-      : { ok: false, error: result.error },
-    { status },
-  );
+  // Anything below can throw — filesystem, storage hydration, the model call.
+  // Uncaught, that reached the user as a bare "request failed (500)" with no
+  // server-side trace, which is exactly how a missing lego manifest hid.
+  try {
+    const genDir = await documentDir(scriptId);
+    const result = await insertElement({ genDir, scriptId, sceneIndex, bounds, spec: spec as InsertMode });
+    // Pivot token counter: only generate-mode inserts produce usage; primitive
+    // inserts never reach here with tokens.
+    if (result.usage) await recordTokenUsage({ ownerId: user.id, usage: result.usage, op: "insert-element" });
+    const status = result.ok ? 200 : /not found/.test(result.error ?? "") ? 404 : 400;
+    return NextResponse.json(
+      result.ok
+        ? { ok: true, sceneIndex, pieceId: result.pieceId, usage: result.usage }
+        : { ok: false, error: result.error },
+      { status },
+    );
+  } catch (err) {
+    console.error(
+      `[insert-element] ${spec.mode} failed for owner=${user.id} script=${scriptId} scene=${sceneIndex}:`,
+      err instanceof Error ? (err.stack ?? err.message) : String(err),
+    );
+    return NextResponse.json(
+      { ok: false, error: "could not add that element — nothing was changed. Please try again." },
+      { status: 500 },
+    );
+  }
 }

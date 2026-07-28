@@ -49,8 +49,38 @@ export interface Manifest {
 const manifestPath = (genDir: string): string =>
   path.join(genDir, LEGO_DIR, "manifest.json");
 
-export const readManifest = async (genDir: string): Promise<Manifest> =>
-  JSON.parse(await fs.readFile(manifestPath(genDir), "utf8"));
+/**
+ * Read the piece manifest, DECOMPOSING first if it is not there yet.
+ *
+ * Every lego mutation — insert, move, delete, edit, page ops — funnels through
+ * this read, which is why the heal lives here rather than at each call site.
+ *
+ * It exists because the manifest was only ever written by the build pipeline
+ * (run-preview-build), regenerate-scene, and apply-brand. A blank document
+ * created by `writeBlankDocument` had a perfectly good Composition.tsx with a
+ * <Piece> in it and NO lego/ directory, so the first edit of any kind threw
+ * `ENOENT ... lego/manifest.json` out of an API route with no try/catch —
+ * an HTTP 500 on "draw a box and generate", which is the product's core move.
+ *
+ * Decomposition is derived, cheap, and safe to redo: `decomposeGenDir` only
+ * writes when decompose → reassemble round-trips byte-identically, so it can
+ * never corrupt the render source. Treating an absent manifest as "not built
+ * yet" rather than as an error also repairs documents already on disk.
+ */
+export const readManifest = async (genDir: string): Promise<Manifest> => {
+  try {
+    return JSON.parse(await fs.readFile(manifestPath(genDir), "utf8"));
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") throw err;
+    const rep = await decomposeGenDir(genDir);
+    if (!rep.ok) {
+      // Genuinely not editable (no composition, or no <Piece> markers). Say so
+      // in words a route can hand to the user instead of leaking an fs errno.
+      throw new Error(`this page has no editable elements yet (${rep.reason ?? "not decomposable"})`);
+    }
+    return JSON.parse(await fs.readFile(manifestPath(genDir), "utf8"));
+  }
+};
 
 export const writeManifest = async (genDir: string, m: Manifest): Promise<void> =>
   fs.writeFile(manifestPath(genDir), JSON.stringify(m, null, 2), "utf8");

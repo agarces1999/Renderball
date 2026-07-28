@@ -29,6 +29,7 @@ import path from "path";
 import type { Script } from "../../src/schema";
 import type { StoredBrief } from "../store";
 import { writeGeneratedFiles } from "../render/build-wrapper";
+import { decomposeGenDir } from "../agents/lego-store";
 
 /** A blank page is still a page: give it the canvas the brand system expects. */
 const BLANK_PREAMBLE = `import React from "react";
@@ -175,6 +176,14 @@ export const writeBlankDocument = async (
     script,
     warnings: {},
   });
+
+  // Decompose into lego artifacts, exactly as the build pipeline does at the end
+  // of a real build. Without this a blank document has a composition but no
+  // lego/manifest.json, and EVERY editor mutation — marquee-generate, add text,
+  // add image, add icon — threw ENOENT and surfaced as an HTTP 500. The doc
+  // comment above promises the decomposition works "from the first second";
+  // this is the line that makes that true.
+  await decomposeGenDir(genDir);
 
   return { genDir, script };
 };
