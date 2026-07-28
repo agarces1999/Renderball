@@ -46,10 +46,12 @@ export default function PrivacyPage() {
         <p>
           We share data with vendors that help us run the Service, only as needed
           to provide it. These currently include: authentication (Clerk), AI
-          model processing (Anthropic), file and database storage (Cloudflare,
-          Neon), application hosting (Railway), and payments (our payment
-          processor / merchant of record). Each processes data under its own
-          terms.
+          model inference (Fireworks AI, which serves the language and vision
+          models that write and check your document), file and database storage
+          (Cloudflare R2, Neon), application hosting (Railway), stock imagery
+          lookup (Pexels), and payments (our payment processor, which is the
+          merchant of record for your purchase). Each processes data under its
+          own terms.
         </p>
       </Clause>
       <Clause heading="5. Retention and deletion">

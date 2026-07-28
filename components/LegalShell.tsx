@@ -55,6 +55,12 @@ export function LegalShell({
           <Link href="/refunds" className="transition-colors hover:text-ink">
             Refunds
           </Link>
+          <Link href="/acceptable-use" className="transition-colors hover:text-ink">
+            Acceptable use
+          </Link>
+          <Link href="/contact" className="transition-colors hover:text-ink">
+            Contact
+          </Link>
           <a
             href="mailto:support@renderball.com"
             className="transition-colors hover:text-ink"

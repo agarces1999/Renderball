@@ -62,12 +62,18 @@ export default function TermsPage() {
       </Clause>
       <Clause heading="6. Payment">
         <p>
-          Paid plans and credits are billed through our third-party payment
-          processor, which acts as the merchant of record for your purchase.
-          Subscriptions renew automatically until cancelled. You can cancel at
-          any time; cancellation stops future renewals and takes effect at the
-          end of the current billing period. Prices are shown at checkout and may
-          change with notice.
+          Renderball is usage-based. Editing an existing document is always free
+          and is never metered; you are charged only when Renderball generates
+          something for you, and only for the tokens that generation consumes.
+          Your first 1,000,000 tokens are free. There is no subscription and
+          nothing to cancel — if you stop generating, you stop being charged.
+        </p>
+        <p>
+          Payments are processed by our third-party payment processor, which
+          acts as the merchant of record for your purchase: it sells the Service
+          to you, issues your invoice, and collects and remits any applicable
+          sales tax or VAT. Prices are shown before you pay and may change with
+          notice.
         </p>
       </Clause>
       <Clause heading="7. Refunds">
