@@ -94,6 +94,52 @@ const R_MD = "rounded-[12px]";
 /** ≥28px hit area on every control (icon buttons were ~17px). */
 const HIT = "min-h-[28px] min-w-[28px] inline-flex items-center justify-center";
 
+/**
+ * Footprint of the generate prompt bar (kind toggle + input + Generate/Cancel).
+ * The bar is content-sized, but its widest part — the input — is a fixed w-72,
+ * so these are accurate enough to decide whether the bar fits INSIDE the box the
+ * user drew, and to centre it there. Single-sourced: the outside-the-box clamp
+ * uses the same width.
+ */
+const GEN_BAR_W = 560;
+const GEN_BAR_H = 40;
+/** Breathing room required between the bar and the box edge to sit inside. */
+const GEN_BAR_PAD = 14;
+
+/**
+ * Where the generate prompt bar goes for a given drawn box.
+ *
+ * Inside the box, centred, whenever the box is big enough to hold it with room
+ * to breathe — the box is the thing being filled, so the question about what
+ * goes in it belongs in it. Otherwise outside: below when there is room, flipped
+ * above when the box hugs the bottom edge, clamped so the bar can never leave
+ * the canvas. Pure and exported so both branches are unit-tested rather than
+ * eyeballed.
+ */
+export const genBarPosition = (
+  box: { left: number; top: number; width: number; height: number },
+  overlayW: number,
+  overlayH: number,
+): { left: number; top: number; inside: boolean } => {
+  const inside =
+    box.width >= GEN_BAR_W + GEN_BAR_PAD * 2 && box.height >= GEN_BAR_H + GEN_BAR_PAD * 2;
+  if (inside) {
+    return {
+      left: box.left + (box.width - GEN_BAR_W) / 2,
+      top: box.top + (box.height - GEN_BAR_H) / 2,
+      inside,
+    };
+  }
+  return {
+    left: Math.max(4, Math.min(box.left, overlayW - GEN_BAR_W)),
+    top:
+      box.top + box.height + 8 + GEN_BAR_H <= overlayH
+        ? box.top + box.height + 8
+        : Math.max(4, box.top - 44),
+    inside,
+  };
+};
+
 const ORB_KEYFRAMES = "@keyframes rb-orb-spin { to { transform: rotate(360deg); } }";
 
 /**
@@ -1404,14 +1450,15 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
             }}
             style={{
               position: "absolute",
-              // Keep the prompt inside the canvas: clamp horizontally (bar ≈
-              // toggle + input + buttons), and flip it ABOVE the box when a box
-              // drawn near the bottom leaves no room below.
-              left: Math.max(4, Math.min(genBox.left, (overlayRef.current?.clientWidth ?? 9999) - 560)),
-              top:
-                genBox.top + genBox.height + 8 + 40 <= (overlayRef.current?.clientHeight ?? 0)
-                  ? genBox.top + genBox.height + 8
-                  : Math.max(4, genBox.top - 44),
+              // Inside the box when it fits, outside when it doesn't — see
+              // genBarPosition.
+              ...(({ left, top }) => ({ left, top }))(
+                genBarPosition(
+                  genBox,
+                  overlayRef.current?.clientWidth ?? 9999,
+                  overlayRef.current?.clientHeight ?? 0,
+                ),
+              ),
               pointerEvents: "auto",
             }}
             className={`flex items-center gap-1 ${R_MD} border border-white/10 bg-[#11141b] px-1.5 py-1 shadow-xl`}

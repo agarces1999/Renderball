@@ -52,7 +52,7 @@ export interface EditorShellProps {
   controls: EditorToolController;
   /** Right side of the toolbar — export / regenerate / kind-specific actions. */
   actions?: ReactNode;
-  /** Right column beside the canvas — e.g. a script / copy inspector. */
+  /** Inspector column beside the canvas, on the LEFT next to the slide rail. */
   sidePanel?: ReactNode;
   /** A strip between the toolbar and canvas — warnings, an open regen form. */
   banner?: ReactNode;
@@ -88,6 +88,16 @@ export function EditorShell({
         footer={footer}
       />
 
+      {/* Page + brand inspector, LEFT of the canvas and beside the slide rail.
+          Page actions (move / duplicate / delete) operate on exactly what the
+          rail shows, so the pages and the commands that act on them read as one
+          column instead of being split across the window. */}
+      {sidePanel && (
+        <aside className="hidden w-[288px] shrink-0 overflow-y-auto lg:block">
+          {sidePanel}
+        </aside>
+      )}
+
       <main className="flex min-w-0 flex-1 flex-col gap-3">
         <EditorToolbar
           width={width}
@@ -111,12 +121,6 @@ export function EditorShell({
           </div>
         </div>
       </main>
-
-      {sidePanel && (
-        <aside className="hidden w-[288px] shrink-0 overflow-y-auto lg:block">
-          {sidePanel}
-        </aside>
-      )}
     </div>
   );
 }
