@@ -10,6 +10,7 @@
     "start": "next start -H 0.0.0.0",
     "type-check": "tsc --noEmit",
     "test": "node scripts/run-tests.mjs",
+    "qa": "node scripts/run-qa.mjs",
     "usage": "node scripts/usage-report.mjs",
     "db:migrate": "dotenv -e .env.local -- prisma migrate dev",
     "db:deploy": "prisma migrate deploy",

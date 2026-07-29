@@ -360,6 +360,11 @@ function ToolButton({
       title={hint ?? label}
       aria-label={hint ?? label}
       aria-pressed={active}
+      // Stable hook for the QA suite. The accessible name is the long HINT
+      // (better for screen readers), which makes "the button called Select"
+      // unmatchable — so automation targets this instead of prose that is free
+      // to change.
+      data-rb-tool={label.toLowerCase()}
       className={cn(
         "flex w-[54px] shrink-0 flex-col items-center justify-center gap-1 rounded-md py-1.5 transition-colors disabled:opacity-40",
         active

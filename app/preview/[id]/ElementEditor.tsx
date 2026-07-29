@@ -1386,10 +1386,21 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
       e.preventDefault();
       void remove();
     };
+
+    // BOTH documents. Selecting an element means clicking inside the canvas
+    // IFRAME, which moves focus into that document — so a listener on the parent
+    // window alone never hears the keystroke, and the key silently did nothing
+    // in exactly the situation it is for. (Caught by the QA suite: every other
+    // editor flow passed and this one timed out.)
+    const frameDoc = iframeRef.current?.contentDocument ?? null;
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    frameDoc?.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      frameDoc?.removeEventListener("keydown", onKey);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selected, editing, busy]);
+  }, [selected, editing, busy, docTick]);
 
   // Escape disarms the marquee tool / cancels a pending generate box, and
   // dismisses proposed regions — one key clears every pending offer.
@@ -2128,6 +2139,10 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
       {box && selected && (
         <>
           <div
+              // Stable hook: "something is selected, and it is this piece".
+              // The QA suite needs to know that without inferring it from
+              // styling (qa/editor.ts).
+              data-rb-selection={selected.pieceId}
             style={{ position: "absolute", left: box.left, top: box.top, width: box.width, height: box.height, border: "2px solid var(--accent, #00c28a)", borderRadius: 8, boxShadow: "0 0 0 9999px rgba(10,12,20,0.28)", pointerEvents: "none", transition: dragDelta || resizeBox ? "none" : "left 100ms, top 100ms" }}
           />
           <div onMouseDown={onDragStart} title="Drag to move" style={{ position: "absolute", left: box.left, top: box.top, width: box.width, height: box.height, cursor: busy ? "wait" : "move", pointerEvents: "auto" }} />
