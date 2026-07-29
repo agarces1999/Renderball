@@ -6,9 +6,22 @@
 //   node scripts/run-tests.mjs                 # runs every lib/**/*.test.ts
 //   node scripts/run-tests.mjs path/to/x.test.ts
 import * as esbuild from "esbuild";
-import { writeFileSync, mkdirSync, readdirSync } from "fs";
+import { writeFileSync, mkdirSync, readdirSync, readFileSync, existsSync } from "fs";
 import { join } from "path";
 import { pathToFileURL } from "url";
+
+// Load .env.local, so tests that touch the database or storage work the same way
+// the app does. Next loads it automatically; a plain node runner does not, and a
+// missing DATABASE_URL turns a real assertion into a silent skip.
+const envFile = join(process.cwd(), ".env.local");
+if (existsSync(envFile)) {
+  for (const line of readFileSync(envFile, "utf8").split("\n")) {
+    const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/);
+    if (!m) continue;
+    if (process.env[m[1]] !== undefined) continue;
+    process.env[m[1]] = m[2].replace(/^["']|["']$/g, "");
+  }
+}
 
 // Dependency-free recursive scan for *.test.ts under a root.
 const findTests = (dir) => {
@@ -23,7 +36,12 @@ const findTests = (dir) => {
 };
 
 const argv = process.argv.slice(2);
-const files = argv.length > 0 ? argv : findTests(join(process.cwd(), "lib"));
+// lib/ AND app/: route handlers now carry tests too (webhooks, contracts), and
+// they are exactly the code paths that had none.
+const files =
+  argv.length > 0
+    ? argv
+    : [...findTests(join(process.cwd(), "lib")), ...findTests(join(process.cwd(), "app"))];
 
 if (files.length === 0) {
   console.log("No *.test.ts files found.");
@@ -52,7 +70,17 @@ for (const file of files) {
     logLevel: "silent",
   });
   const outFile = join(work, file.replace(/[^a-z0-9]+/gi, "_") + ".mjs");
-  writeFileSync(outFile, result.outputFiles[0].text);
+  // `packages: "external"` leaves bare specifiers untouched — including
+  // "next/server", which node's ESM resolver refuses without an extension (it
+  // suggests "next/server.js" itself). esbuild's `alias` is bypassed for
+  // externals, so the specifier is rewritten in the emitted bundle. This is what
+  // lets an app/ route handler be imported and called directly by a test, which
+  // is how the webhooks get covered at all.
+  const bundled = result.outputFiles[0].text.replace(
+    /(["'])next\/(server|headers)\1/g,
+    (_m, q, sub) => `${q}next/${sub}.js${q}`,
+  );
+  writeFileSync(outFile, bundled);
   // Reset between files; the test sets exitCode=1 on failure.
   process.exitCode = 0;
   await import(pathToFileURL(outFile).href);
