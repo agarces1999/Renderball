@@ -13,6 +13,7 @@ import { expect, until } from "../harness";
 import {
   clickablePoint,
   pickEditablePiece,
+  textPoint,
   pieceBox,
   pieceIds,
   selectPiece,
@@ -84,9 +85,10 @@ export const documentFlows: Flow[] = [
     tier: "free",
     run: async ({ page, base, note }) => {
       await openEditor(page, base);
-      const target = await pickEditablePiece(page);
-      const point = await clickablePoint(page, target);
-      expect(!!point, "the element should have a visible spot to click");
+      // Click the COPY itself — see textPoint. Deriving a point from a piece
+      // lands on whatever is stacked on top of it.
+      const point = await textPoint(page);
+      expect(!!point, "the slide should show some editable copy");
       await page.mouse.dblclick(point!.x, point!.y);
 
       // An open session makes the text itself editable inside the frame.
@@ -100,7 +102,7 @@ export const documentFlows: Flow[] = [
           }),
         20000,
       );
-      note(`editing ${target}`);
+      note(`editing copy in ${point!.piece}`);
       await page.keyboard.press("Escape");
     },
   },
@@ -117,8 +119,20 @@ export const documentFlows: Flow[] = [
       const accent = page.locator('input[type="color"]').first();
       await accent.waitFor({ state: "visible", timeout: 15000 });
       const chosen = "#ff00aa";
-      await accent.fill(chosen);
-      await accent.dispatchEvent("change");
+      // Set through React's own value setter. `fill()` writes the DOM property
+      // directly, which React's synthetic onChange never sees — so the panel
+      // kept its old state, "Apply" had nothing to apply, and no request was
+      // ever sent. Confirmed by watching the network: only GET /brand, never a
+      // PUT.
+      await accent.evaluate((el, hex) => {
+        const setter = Object.getOwnPropertyDescriptor(
+          window.HTMLInputElement.prototype,
+          "value",
+        )!.set!;
+        setter.call(el, hex);
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+      }, chosen);
 
       const apply = page.getByRole("button", { name: /apply|save/i }).first();
       if (await apply.isVisible().catch(() => false)) await apply.click();

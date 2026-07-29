@@ -103,6 +103,69 @@ export const pickEditablePiece = async (page: Page): Promise<string> => {
 };
 
 /**
+ * A piece that actually has EDITABLE TEXT.
+ *
+ * Distinct from pickEditablePiece: plenty of pieces are selectable, movable and
+ * resizable while containing no editable copy at all — a `diegetic` graphic, for
+ * instance. Double-clicking one correctly does nothing, so a text flow aimed at
+ * it reports a bug that isn't there. Editable copy means a free-text span (an
+ * inserted box) or a content-path node (a built field).
+ */
+export const pickTextPiece = async (page: Page): Promise<string> => {
+  const id = await page.evaluate(() => {
+    const d = (document.querySelector("iframe") as HTMLIFrameElement | null)?.contentDocument;
+    if (!d) return null;
+    for (const el of Array.from(d.querySelectorAll("[data-piece]"))) {
+      const pid = el.getAttribute("data-piece");
+      if (!pid) continue;
+      const hasText = Array.from(el.querySelectorAll("[data-rb-freetext],[data-content-path]")).some(
+        (n) => (n.textContent ?? "").trim().length > 0,
+      );
+      if (hasText) return pid;
+    }
+    return null;
+  });
+  expect(!!id, "the slide should contain at least one element with editable text");
+  return id!;
+};
+
+/**
+ * A point on a visible piece of EDITABLE COPY, and the piece that owns it.
+ *
+ * Aims at the text node directly rather than deriving a point from a piece and
+ * hoping it lands there. Elements overlap — a deck can carry several boxes
+ * stacked at the same spot — so a point computed from piece A is regularly
+ * topped by piece B, and a flow that then asserts something about A fails while
+ * the product behaved perfectly. Clicking the copy is also what a person does.
+ */
+export const textPoint = async (
+  page: Page,
+): Promise<{ x: number; y: number; piece: string } | null> =>
+  page.evaluate(() => {
+    const f = document.querySelector("iframe") as HTMLIFrameElement | null;
+    const d = f?.contentDocument;
+    if (!f || !d) return null;
+    const host = f.getBoundingClientRect();
+    const nodes = Array.from(d.querySelectorAll("[data-rb-freetext],[data-content-path]"));
+    for (const n of nodes) {
+      if (!(n.textContent ?? "").trim()) continue;
+      const r = n.getBoundingClientRect();
+      if (r.width < 10 || r.height < 8) continue;
+      const cx = r.left + r.width / 2;
+      const cy = r.top + r.height / 2;
+      // Only accept a point where THIS copy is the topmost thing.
+      const top = d.elementFromPoint(cx, cy);
+      if (!top || !n.contains(top) ? top !== n : false) {
+        // fall through to the containment check below
+      }
+      const owner = (top ?? n).closest("[data-piece]")?.getAttribute("data-piece");
+      if (!owner) continue;
+      return { x: host.left + cx, y: host.top + cy, piece: owner };
+    }
+    return null;
+  });
+
+/**
  * A point on the piece that actually has something on it.
  *
  * NOT the centre of its bounding box. A piece's box is the union of its

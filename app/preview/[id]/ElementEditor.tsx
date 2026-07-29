@@ -895,6 +895,11 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
       try {
         doc = iframe.contentDocument;
         if (!doc) return;
+        // Tag the document itself. Comparing document IDENTITY is not enough:
+        // a frame can reuse the same object across navigations, and then the
+        // listeners are gone while the reference still matches — the canvas
+        // goes inert and nothing detects it.
+        (doc as Document & { __rbBound?: boolean }).__rbBound = true;
         doc.addEventListener("click", onClick, true);
         doc.addEventListener("contextmenu", onContext, true);
         doc.addEventListener("dblclick", onDbl, true);
@@ -956,14 +961,18 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
      * attachment is made self-healing — cheap, and it cannot race.
      */
     const ensureAttached = window.setInterval(() => {
-      const live = iframe.contentDocument;
-      if (live && live !== doc) attach();
-    }, 250);
+      const live = iframe.contentDocument as (Document & { __rbBound?: boolean }) | null;
+      // Re-bind whenever the LIVE document is not carrying our mark, which
+      // covers a fresh document, a reused one, and a first attach that never
+      // ran — without needing to know which happened.
+      if (live && !live.__rbBound) attach();
+    }, 200);
 
     return () => {
       window.clearInterval(ensureAttached);
       iframe.removeEventListener("load", attach);
       try {
+        if (doc) delete (doc as Document & { __rbBound?: boolean }).__rbBound;
         doc?.removeEventListener("click", onClick, true);
         doc?.removeEventListener("contextmenu", onContext, true);
         doc?.removeEventListener("dblclick", onDbl, true);
@@ -1539,7 +1548,14 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
   }, [refreshUndoDepth, reloadKey]);
 
   const undo = async () => {
-    if (busy || undoDepth === 0) return;
+    if (busy) return;
+    // Deliberately NOT gated on the locally-known depth.
+    //
+    // `undoDepth` is refreshed by a fetch keyed on reloadKey, so immediately
+    // after an edit it can still read 0 while the server has plenty to undo.
+    // Gating on it made the button enabled and INERT — pressed, nothing
+    // happened, no request was even sent. The server knows the truth and says so
+    // if there is nothing to undo, which postJson surfaces like any other error.
     setBusy("undo");
     const { ok } = await postJson(`${apiBase}/undo`, { scriptId });
     setBusy(null);
