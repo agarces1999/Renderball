@@ -430,6 +430,17 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
   // Bumped when the iframe's document (re)loads — recomputes x-ray rects + restores
   // selection against the NEW document (contentDocument is stale at src-change time).
   const [docTick, setDocTick] = useState(0);
+  /**
+   * Whether the canvas iframe element exists yet.
+   *
+   * The listener effect bails when `iframeRef.current` is null, and its only
+   * other dependencies are a stable ref plus reloadKey/sceneIndex — so a mount
+   * where the effect ran BEFORE the iframe committed left the canvas inert
+   * forever: no select, no hover, no right-click, no double-click, and
+   * therefore no delete, resize or drag. Silently, with no error. This flag
+   * changes, so the effect re-runs the moment the element appears.
+   */
+  const [iframeReady, setIframeReady] = useState(false);
 
   const editingRef = useRef(false);
   // busy mirrored in a ref: the iframe handlers are attached once per effect and
@@ -759,7 +770,16 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
     setGenPrompt("");
     setGenKind("element");
     const iframe = iframeRef.current;
-    if (!iframe) return;
+    if (!iframe) {
+      // Not mounted yet — watch for it rather than abandoning the canvas.
+      const wait = window.setInterval(() => {
+        if (iframeRef.current) {
+          window.clearInterval(wait);
+          setIframeReady(true);
+        }
+      }, 100);
+      return () => window.clearInterval(wait);
+    }
     let doc: Document | null = null;
     let lastHover = "";
 
@@ -918,7 +938,30 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
     };
     if (iframe.contentDocument && iframe.contentDocument.readyState === "complete") attach();
     iframe.addEventListener("load", attach);
+
+    /**
+     * Keep trying until the listeners are actually on the CURRENT document.
+     *
+     * Every canvas interaction — select, hover, right-click, double-click, and
+     * therefore delete/resize/drag — depends on listeners bound to the iframe's
+     * document. Binding happened in exactly two moments: a synchronous check for
+     * `readyState === "complete"`, and the `load` event. Miss both — the frame
+     * swaps its document between those two lines, or `load` fired before React
+     * subscribed — and the canvas is INERT. Not degraded: clicking does nothing
+     * at all, silently, with no error anywhere.
+     *
+     * That is what the QA suite hit: eight flows failed together and every one of
+     * them needed these listeners, while every flow that did not (toolbar, page
+     * ops, Suggest) passed. Rather than chase which moment was missed, the
+     * attachment is made self-healing — cheap, and it cannot race.
+     */
+    const ensureAttached = window.setInterval(() => {
+      const live = iframe.contentDocument;
+      if (live && live !== doc) attach();
+    }, 250);
+
     return () => {
+      window.clearInterval(ensureAttached);
       iframe.removeEventListener("load", attach);
       try {
         doc?.removeEventListener("click", onClick, true);
@@ -935,7 +978,7 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [iframeRef, reloadKey, sceneIndex]);
+  }, [iframeRef, reloadKey, sceneIndex, iframeReady]);
 
   // Fetch this scene's editable copy fields so text affordances are precise (offer
   // "Edit text" only on bound content, and resolve its exact path). Refreshes on scene
@@ -1697,7 +1740,18 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
   }, [tool, showAll, undoDepth, busy]);
 
   return (
-    <div ref={overlayRef} style={{ position: "absolute", inset: 0, pointerEvents: "none", zIndex: 5 }}>
+    <div
+      ref={overlayRef}
+      // Selection state on the overlay ROOT, which always renders.
+      //
+      // The selection FRAME only mounts once the piece has a measured box, so
+      // reading selection from it conflates "nothing is selected" with "selected
+      // but not yet measured" — and automation saw a click do nothing when it
+      // had in fact worked. This attribute answers only the question asked.
+      data-rb-selected={selected?.pieceId ?? ""}
+      data-rb-busy={busy ?? ""}
+      style={{ position: "absolute", inset: 0, pointerEvents: "none", zIndex: 5 }}
+    >
       {/* drag shield: while dragging, catch every mouse event before the iframe can
           swallow it (iframe docs don't forward mousemove to the parent window, so a
           fast drag that escaped the handle used to stall mid-gesture) */}

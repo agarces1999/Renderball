@@ -81,6 +81,9 @@ export const editorFlows: Flow[] = [
       const ids = await pieceIds(page);
       const box = await pieceBox(page, await pickEditablePiece(page));
       expect(!!box, "the piece should be measurable");
+      // Two moves: a single jump can land without the frame ever seeing a
+      // mouseover, which is what the hover chrome listens for.
+      await page.mouse.move(box!.x + box!.width / 2 - 12, box!.y + box!.height / 2 - 8);
       await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2);
       // The hover chrome names the piece kind and invites a click.
       await until("hover chrome appears", async () =>

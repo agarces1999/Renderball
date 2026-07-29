@@ -71,10 +71,22 @@ const snapshotFixture = async (id: string): Promise<void> => {
   await fs.cp(src, dst, { recursive: true });
 };
 
-/** Captured once per run, before anything has touched the document. */
+/**
+ * The snapshot's OWN script.json is the source of truth, not the database.
+ *
+ * Reading the row instead was tried and silently returned nothing, so the guard
+ * below never fired: the files were reset to 5 pages every run while the
+ * database kept climbing to 7, and page-op refused every request with
+ * "store/script scene mismatch". Taking the script from the same snapshot the
+ * files come from makes the two halves consistent by construction.
+ */
 const snapshotScript = async (id: string): Promise<void> => {
   if (scriptSnapshot) return;
-  scriptSnapshot = await loadScript(id, DEV_OWNER_ID).catch(() => null);
+  const fromSnapshot = await fs
+    .readFile(path.join(backupOf(id), "script.json"), "utf8")
+    .then((t) => JSON.parse(t) as unknown)
+    .catch(() => null);
+  scriptSnapshot = fromSnapshot ?? (await loadScript(id, DEV_OWNER_ID).catch(() => null));
 };
 
 const restoreFixture = async (id: string): Promise<boolean> => {
@@ -84,7 +96,11 @@ const restoreFixture = async (id: string): Promise<boolean> => {
   await fs.rm(genDirOf(id), { recursive: true, force: true });
   await fs.cp(src, genDirOf(id), { recursive: true });
   if (scriptSnapshot) {
-    await saveScript(scriptSnapshot as Parameters<typeof saveScript>[0], DEV_OWNER_ID).catch(() => {});
+    await saveScript(scriptSnapshot as Parameters<typeof saveScript>[0], DEV_OWNER_ID).catch((e) => {
+      // Loud: a silent failure here is what let the document and its row drift
+      // apart in the first place.
+      console.log(`  ! could not restore the script row: ${e instanceof Error ? e.message : e}`);
+    });
   }
   return true;
 };
@@ -102,8 +118,8 @@ const main = async (): Promise<void> => {
   process.env.QA_DEV_SCRIPT_ID = scriptId;
 
   // Pristine fixture in, pristine fixture out.
-  await snapshotScript(scriptId);
   await snapshotFixture(scriptId);
+  await snapshotScript(scriptId);
   const restored = await restoreFixture(scriptId);
 
   console.log(`\n▶ QA — tier "${TIER}", ${CONCURRENCY} in parallel`);

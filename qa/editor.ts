@@ -155,7 +155,14 @@ export const selectPiece = async (page: Page, pieceId: string): Promise<void> =>
  */
 export const selectedPiece = async (page: Page): Promise<string | null> =>
   page
-    .evaluate(() => document.querySelector("[data-rb-selection]")?.getAttribute("data-rb-selection") ?? null)
+    .evaluate(() => {
+      // The overlay root carries selection state whether or not the piece has
+      // been measured yet; the selection FRAME only exists once it has, so
+      // reading the frame conflated "not selected" with "not yet measured".
+      const root = document.querySelector("[data-rb-selected]");
+      const id = root?.getAttribute("data-rb-selected") ?? "";
+      return id || null;
+    })
     .catch(() => null);
 
 export const isSelected = async (page: Page): Promise<boolean> =>

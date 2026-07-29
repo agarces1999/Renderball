@@ -10,9 +10,27 @@
 //   QA_HEADED=1 node scripts/run-qa.mjs         # watch it happen
 //
 import * as esbuild from "esbuild";
-import { writeFileSync, mkdirSync } from "fs";
+import { writeFileSync, mkdirSync, readFileSync, existsSync } from "fs";
 import { join } from "path";
 import { pathToFileURL } from "url";
+
+// Load .env.local ourselves.
+//
+// Next does this automatically, so the dev server has DATABASE_URL and this
+// runner did not — which meant the suite could not restore the document's
+// script row, the files and the database drifted apart, and page-op refused
+// every request with "store/script scene mismatch". The failure surfaced as
+// six unrelated-looking flow failures.
+const envFile = join(process.cwd(), ".env.local");
+if (existsSync(envFile)) {
+  for (const line of readFileSync(envFile, "utf8").split("\n")) {
+    const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/);
+    if (!m) continue;
+    const [, key, rawValue] = m;
+    if (process.env[key] !== undefined) continue; // a real env var always wins
+    process.env[key] = rawValue.replace(/^["']|["']$/g, "");
+  }
+}
 
 const work = join(process.cwd(), "node_modules", ".cache", "rb-qa");
 mkdirSync(work, { recursive: true });
