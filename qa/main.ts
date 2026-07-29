@@ -16,14 +16,37 @@ const CONCURRENCY = Number(process.env.QA_CONCURRENCY ?? 3);
 const ARTIFACTS = process.env.QA_ARTIFACTS ?? path.join(process.cwd(), ".data", "qa");
 
 /**
- * Pick a deck the dev harness can open.
+ * Pick a deck the dev harness can open — and then keep picking the same one.
  *
  * /dev/edit loads scripts owned by DEV_OWNER_ID, so the suite needs one that
  * exists locally. Explicit QA_DEV_SCRIPT_ID wins; otherwise the newest built
  * document on disk is used, which is almost always what a developer wants.
+ *
+ * The choice is PINNED to a file after the first run. Resolving it fresh every
+ * time meant the suite could silently change subject: when a damaged fixture
+ * lost its manifest, the next run picked a different deck, snapshotted it in
+ * whatever state it happened to be in, and blamed the product for the
+ * differences. A suite that quietly changes what it is testing is worse than
+ * one that fails.
  */
+const PIN_FILE = path.join(process.cwd(), ".data", "qa-fixtures", "PINNED");
+
 const resolveDevScript = async (): Promise<string> => {
   if (process.env.QA_DEV_SCRIPT_ID) return process.env.QA_DEV_SCRIPT_ID;
+
+  const hasManifest = async (id: string): Promise<boolean> =>
+    fs
+      .stat(path.join(process.cwd(), "src", "generated", id, "lego", "manifest.json"))
+      .then(() => true)
+      .catch(() => false);
+
+  const pinned = (await fs.readFile(PIN_FILE, "utf8").catch(() => "")).trim();
+  // A pin survives only while the document does, or while its snapshot can put
+  // it back — otherwise it would strand the suite on a deck that is gone.
+  if (pinned && ((await hasManifest(pinned)) || (await fs.stat(backupOf(pinned)).then(() => true).catch(() => false)))) {
+    return pinned;
+  }
+
   const dir = path.join(process.cwd(), "src", "generated");
   const entries = await fs.readdir(dir).catch(() => [] as string[]);
   const withTime = await Promise.all(
@@ -35,7 +58,12 @@ const resolveDevScript = async (): Promise<string> => {
   );
   const usable = withTime.filter((v): v is { id: string; at: number } => v !== null);
   usable.sort((a, b) => b.at - a.at);
-  return usable[0]?.id ?? "";
+  const chosen = usable[0]?.id ?? "";
+  if (chosen) {
+    await fs.mkdir(path.dirname(PIN_FILE), { recursive: true });
+    await fs.writeFile(PIN_FILE, chosen, "utf8").catch(() => {});
+  }
+  return chosen;
 };
 
 /**
@@ -91,12 +119,51 @@ const snapshotScript = async (id: string): Promise<void> => {
   scriptSnapshot = fromSnapshot ?? (await loadScript(id, DEV_OWNER_ID).catch(() => null));
 };
 
+/**
+ * Delete a directory the server may still be writing into.
+ *
+ * A flow's last edit can still be landing when the next reset starts, and a
+ * recursive rm that races a write fails with ENOTEMPTY — which took down a whole
+ * run after 26 green flows. Retrying is enough: the writer finishes in
+ * milliseconds, and the alternative (waiting on the server to be idle) is a
+ * synchronisation problem the harness does not need to solve.
+ */
+const rmDirWithRetry = async (dir: string, attempts = 5): Promise<void> => {
+  for (let i = 0; i < attempts; i++) {
+    try {
+      await fs.rm(dir, { recursive: true, force: true });
+      return;
+    } catch (e) {
+      if (i === attempts - 1) throw e;
+      await new Promise((r) => setTimeout(r, 150 * (i + 1)));
+    }
+  }
+};
+
+/**
+ * Restore the document, without a window in which it does not exist.
+ *
+ * The obvious implementation — delete, then copy back — has a failure mode that
+ * cost a whole run and then some: the delete raced a write, threw ENOTEMPTY, and
+ * left `src/generated/<id>` half-gone. With no manifest there, the NEXT run's
+ * resolveDevScript quietly picked a different deck, snapshotted that one in its
+ * already-edited state, and reported three flows broken that were not. Copying
+ * beside and renaming into place means the fixture is either the old one or the
+ * new one at every instant, and a crash costs a temp directory.
+ */
 const restoreFixture = async (id: string): Promise<boolean> => {
   const src = backupOf(id);
   const ok = await fs.stat(src).then(() => true).catch(() => false);
   if (!ok) return false;
-  await fs.rm(genDirOf(id), { recursive: true, force: true });
-  await fs.cp(src, genDirOf(id), { recursive: true });
+  const staging = `${genDirOf(id)}.restoring`;
+  const retired = `${genDirOf(id)}.old`;
+  await rmDirWithRetry(staging);
+  await rmDirWithRetry(retired);
+  await fs.cp(src, staging, { recursive: true });
+  const live = await fs.stat(genDirOf(id)).then(() => true).catch(() => false);
+  if (live) await fs.rename(genDirOf(id), retired);
+  await fs.rename(staging, genDirOf(id));
+  await rmDirWithRetry(retired).catch(() => {});
   if (scriptSnapshot) {
     await saveScript(scriptSnapshot as Parameters<typeof saveScript>[0], DEV_OWNER_ID).catch((e) => {
       // Loud: a silent failure here is what let the document and its row drift

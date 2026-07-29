@@ -461,6 +461,23 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
   // for "Edit text" appears only on text that actually maps to a field.
   const fieldsRef = useRef<{ path: string; value: string }[]>([]);
   const dragRef = useRef<{ startX: number; startY: number; scale: number } | null>(null);
+  /** True once a press on the selection has travelled far enough to BE a drag. */
+  const draggingRef = useRef(false);
+  /**
+   * The last click anywhere on the canvas, in PARENT-viewport coordinates.
+   *
+   * Double-click has to be detected by hand here, because the browser cannot do
+   * it for us: the first click SELECTS, which mounts the drag surface over the
+   * element, so the two clicks of one gesture land on different elements — and
+   * often in different documents. Whether a native `dblclick` fires at all then
+   * depends on whether React painted between them, which measured as a coin
+   * flip. Recording the click ourselves makes it deterministic, and both
+   * surfaces (iframe and overlay) write to the same ref so a gesture that
+   * crosses the boundary is still one gesture.
+   */
+  const lastClickRef = useRef<{ t: number; x: number; y: number } | null>(null);
+  const DOUBLE_CLICK_MS = 450;
+  const DOUBLE_CLICK_SLOP = 6;
   const dragHandlersRef = useRef<{ move: (e: MouseEvent) => void; up: (e: MouseEvent) => void } | null>(null);
   const [dragDelta, setDragDelta] = useState<{ dx: number; dy: number } | null>(null);
 
@@ -798,6 +815,12 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
       }
       e.preventDefault();
       e.stopPropagation();
+      // Remember where this click landed, in the parent's frame of reference, so
+      // a second click on the drag surface this selection is about to mount can
+      // recognise itself as the other half of a double-click.
+      const me = e as MouseEvent;
+      const host = iframe.getBoundingClientRect();
+      lastClickRef.current = { t: Date.now(), x: host.left + me.clientX, y: host.top + me.clientY };
       textTargetRef.current = target ? resolveTextTarget(target, piece) : null;
       setSelected({ pieceId: piece.getAttribute("data-piece")!, kind: piece.getAttribute("data-kind") ?? "", rect });
     };
@@ -826,7 +849,35 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
     const onDown = (e: MouseEvent) => {
       if (editingRef.current || busyRef.current || toolRef.current) return;
       const target = e.target as Element | null;
-      if (target?.closest?.("[data-piece]")) return; // a piece press = select/drag, not marquee
+      const piece = target?.closest?.("[data-piece]") as Element | null;
+
+      // The other landing spot for the second press of a double-click. Whether
+      // it arrives here or on the overlay's drag surface depends on whether the
+      // first click's selection has painted yet — so both places check, and
+      // whichever gets it opens the session. Resolved from the event target
+      // rather than from `selected`, which this listener captured at mount.
+      if (piece) {
+        const prev = lastClickRef.current;
+        const host = iframe.getBoundingClientRect();
+        const x = host.left + e.clientX;
+        const y = host.top + e.clientY;
+        lastClickRef.current = { t: Date.now(), x, y };
+        if (
+          prev &&
+          Date.now() - prev.t < DOUBLE_CLICK_MS &&
+          Math.abs(x - prev.x) <= DOUBLE_CLICK_SLOP &&
+          Math.abs(y - prev.y) <= DOUBLE_CLICK_SLOP &&
+          collectEditableFields(piece).length > 0
+        ) {
+          lastClickRef.current = null;
+          e.preventDefault();
+          e.stopPropagation();
+          startTextFields(piece, target as HTMLElement);
+          return;
+        }
+      }
+
+      if (piece) return; // a piece press = select/drag, not marquee
       pendingMarqueeRef.current = { x: e.clientX, y: e.clientY };
     };
     const onMove = (e: MouseEvent) => {
@@ -1345,23 +1396,57 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
       dragHandlersRef.current = null;
     }
   };
+  /**
+   * How far a press must travel before it counts as a drag.
+   *
+   * This threshold is why double-click works. `dragDelta` mounts a FULL-SCREEN
+   * shield (see the JSX below) so a fast drag cannot be swallowed by the iframe
+   * — and setting it on mousedown meant every press on a selected element
+   * mounted that shield instantly. The mouseup then landed on the shield rather
+   * than on the element the mousedown hit, so the browser emitted no `click`,
+   * and therefore never a `dblclick`: measured as zero dblclick events reaching
+   * either document. A press that never moves is a click, and must stay one.
+   */
+  const DRAG_MIN_PX = 3;
   const onDragStart = (e: React.MouseEvent) => {
     if (!selected || busy) return;
     e.preventDefault();
+
+    // Second press of a double-click? Open the text instead of starting a drag.
+    // This is the half of the gesture that arrives after the selection mounted
+    // this surface, so it is the one that has to notice.
+    const prev = lastClickRef.current;
+    lastClickRef.current = { t: Date.now(), x: e.clientX, y: e.clientY };
+    if (
+      prev &&
+      Date.now() - prev.t < DOUBLE_CLICK_MS &&
+      Math.abs(e.clientX - prev.x) <= DOUBLE_CLICK_SLOP &&
+      Math.abs(e.clientY - prev.y) <= DOUBLE_CLICK_SLOP
+    ) {
+      lastClickRef.current = null; // a triple-click must not open a third session
+      if (openTextSessionAt(e.clientX, e.clientY)) return;
+    }
+
     dragRef.current = { startX: e.clientX, startY: e.clientY, scale: canvasScale() };
-    setDragDelta({ dx: 0, dy: 0 });
+    draggingRef.current = false;
     const move = (ev: MouseEvent) => {
       const d = dragRef.current;
       if (!d) return;
-      setDragDelta({ dx: ev.clientX - d.startX, dy: ev.clientY - d.startY });
+      const dx = ev.clientX - d.startX;
+      const dy = ev.clientY - d.startY;
+      if (!draggingRef.current && Math.abs(dx) < DRAG_MIN_PX && Math.abs(dy) < DRAG_MIN_PX) return;
+      draggingRef.current = true;
+      setDragDelta({ dx, dy });
     };
     const up = async (ev: MouseEvent) => {
       detachDrag();
       const d = dragRef.current;
+      const dragged = draggingRef.current;
       dragRef.current = null;
-      if (!d || !selected) {
+      draggingRef.current = false;
+      if (!d || !selected || !dragged) {
         setDragDelta(null);
-        return;
+        return; // a press that never travelled — leave it to be a click
       }
       const scale = d.scale || 1;
       const dx = Math.round((ev.clientX - d.startX) / scale);
@@ -1388,6 +1473,37 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
     window.addEventListener("mousemove", move);
     window.addEventListener("mouseup", up);
   };
+
+  /**
+   * Open the selected piece's text session at a point on the overlay.
+   *
+   * The iframe has its own `dblclick` handler (onDbl) and, through the UI, it
+   * was UNREACHABLE. A double-click is down/up/click/down/up/dblclick, and the
+   * FIRST click selects the piece — which drops the drag surface over it, so
+   * the second press lands on the overlay in the parent document. Whether the
+   * browser still emitted a `dblclick`, and to whom, came down to whether React
+   * had painted in between: measured across repeated runs it landed on the
+   * iframe, on the overlay, and on nobody at all. Double-click to edit text
+   * looked implemented and was in practice a coin flip; the "Edit text" button
+   * hid it by reaching the same session another way.
+   *
+   * The overlay sits at inset:0 over the frame, so subtracting the frame's
+   * origin converts a parent-document point into an iframe-viewport point —
+   * which is what elementFromPoint there expects, and how the session learns
+   * WHICH field was double-clicked rather than always focusing the first.
+   */
+  const openTextSessionAt = (clientX: number, clientY: number): boolean => {
+    if (!selected || busy || editing) return false;
+    const frame = iframeRef.current;
+    const doc = frame?.contentDocument;
+    if (!frame || !doc) return false;
+    const piece = doc.querySelector(`[data-piece="${selected.pieceId}"]`);
+    if (!piece) return false;
+    const host = frame.getBoundingClientRect();
+    const under = doc.elementFromPoint(clientX - host.left, clientY - host.top);
+    return startTextFields(piece, under as HTMLElement | null);
+  };
+
   useEffect(() => detachDrag, []);
   // Cancel an in-progress text-edit session if the editor unmounts.
   useEffect(() => () => finishSessionRef.current?.(false), []);
@@ -2215,7 +2331,15 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
               data-rb-selection={selected.pieceId}
             style={{ position: "absolute", left: box.left, top: box.top, width: box.width, height: box.height, border: "2px solid var(--accent, #00c28a)", borderRadius: 8, boxShadow: "0 0 0 9999px rgba(10,12,20,0.28)", pointerEvents: "none", transition: dragDelta || resizeBox ? "none" : "left 100ms, top 100ms" }}
           />
-          <div onMouseDown={onDragStart} title="Drag to move" style={{ position: "absolute", left: box.left, top: box.top, width: box.width, height: box.height, cursor: busy ? "wait" : "move", pointerEvents: "auto" }} />
+          <div
+            onMouseDown={onDragStart}
+            // Belt and braces: when the browser DOES emit a native dblclick here
+            // it arrives after our own detection has already opened the session,
+            // and openTextSessionAt is a no-op while `editing`.
+            onDoubleClick={(e) => openTextSessionAt(e.clientX, e.clientY)}
+            title="Drag to move · double-click to edit the text"
+            style={{ position: "absolute", left: box.left, top: box.top, width: box.width, height: box.height, cursor: busy ? "wait" : "move", pointerEvents: "auto" }}
+          />
 
           {/* Resize grips — the only way to change an element's size after creation. */}
           {!busy && !editing &&
