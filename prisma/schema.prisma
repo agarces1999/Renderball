@@ -86,6 +86,15 @@ model Project {
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt
 
+  /// Public share link. NULL means the document is private, which is the
+  /// default and the state every existing document starts in. The token is the
+  /// entire credential for read-only access, so it is generated from 32 random
+  /// bytes rather than derived from the document id — knowing a scriptId must
+  /// never be enough to read someone's deck. Revoking is setting this back to
+  /// NULL, which takes effect on the next request.
+  shareToken   String?       @unique
+  sharedAt     DateTime?
+
   renders Render[]
 
   @@index([ownerId])

@@ -21,11 +21,28 @@ import {
   waitForCanvas,
 } from "../editor";
 
-/** Set by qa/main.ts — a deck owned by DEV_OWNER_ID to edit. */
-export const DEV_SCRIPT_ID = process.env.QA_DEV_SCRIPT_ID ?? "";
+/**
+ * The deck to edit, owned by DEV_OWNER_ID.
+ *
+ * A FUNCTION, not a constant, and that is not a style preference. qa/main.ts
+ * resolves the document and then writes QA_DEV_SCRIPT_ID — but the import of
+ * this module has already run by then, so a top-level `const` captures the
+ * empty string. Every flow navigated to `/dev/edit/` with no id, got Next's
+ * 404, and reported "the canvas renders at least one piece" thirteen times: a
+ * harness bug wearing the costume of a product bug.
+ */
+export const devScriptId = (): string => process.env.QA_DEV_SCRIPT_ID ?? "";
 
 const openEditor = async (page: import("playwright").Page, base: string): Promise<void> => {
-  await page.goto(`${base}/dev/edit/${DEV_SCRIPT_ID}`, { waitUntil: "domcontentloaded" });
+  const id = devScriptId();
+  expect(!!id, "qa/main.ts should have resolved a document before the flows ran");
+  const res = await page.goto(`${base}/dev/edit/${id}`, { waitUntil: "domcontentloaded" });
+  // Check the status before waiting on the canvas. A 404 will never grow
+  // pieces, so polling it for 30s only buries the real answer under a timeout.
+  expect(
+    (res?.status() ?? 0) < 400,
+    `the editor should open for ${id}, got ${res?.status()} from /dev/edit/${id}`,
+  );
   await waitForCanvas(page);
 };
 

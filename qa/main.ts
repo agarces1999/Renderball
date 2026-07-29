@@ -8,6 +8,7 @@ import { loadScript, saveScript, DEV_OWNER_ID } from "../lib/store";
 import { editorFlows } from "./flows/editor";
 import { documentFlows } from "./flows/document";
 import { securityFlows } from "./flows/security";
+import { shareFlows } from "./flows/share";
 
 const BASE = process.env.QA_BASE ?? "http://localhost:3000";
 const TIER = (process.env.QA_TIER ?? "free") as Tier;
@@ -132,7 +133,7 @@ const main = async (): Promise<void> => {
   const summary = await runFlows({
     base: BASE,
     tier: TIER,
-    flows: [...editorFlows, ...documentFlows, ...securityFlows],
+    flows: [...editorFlows, ...documentFlows, ...securityFlows, ...shareFlows],
     concurrency: CONCURRENCY,
     headless: process.env.QA_HEADED !== "1",
     artifactDir: ARTIFACTS,

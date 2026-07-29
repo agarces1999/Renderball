@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { BrandPanel } from "../../../components/BrandPanel";
+import { ShareButton } from "../../../components/ShareButton";
 import { BlankDocumentPanel } from "../../../components/BlankDocumentPanel";
 import Link from "next/link";
 import type { Script } from "../../../src/schema";
@@ -285,6 +286,7 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
               >
                 {regenerating ? "Regenerating…" : "Regenerate"}
               </button>
+              <ShareButton scriptId={scriptId} />
               <a
                 href={`/api/preview/${scriptId}/export?format=png&scene=${sceneIndex}`}
                 className="rounded-md border border-hairline-strong bg-surface px-3 py-1.5 text-[12px] text-ink transition-colors hover:bg-surface-2"
