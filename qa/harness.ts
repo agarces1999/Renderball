@@ -117,6 +117,16 @@ export interface RunOptions {
   artifactDir: string;
   /** Applies a signed-in session to a fresh context, when one is available. */
   authenticate?: (ctx: BrowserContext) => Promise<void>;
+  /**
+   * Reset the document before each MUTATING flow.
+   *
+   * Serialising them stopped flows from racing, but not from inheriting: a flow
+   * that changes the deck's brand rewrites its sources, and the page-op flows
+   * that ran next failed for reasons that had nothing to do with page ops. Each
+   * mutating flow now starts from the same known document, so a failure means
+   * that flow is broken and nothing else.
+   */
+  resetFixture?: () => Promise<void>;
 }
 
 export interface RunSummary {
@@ -208,8 +218,9 @@ export const runFlows = async (opts: RunOptions): Promise<RunSummary> => {
   });
   await Promise.all(workers);
 
-  // Then the mutating flows, strictly in sequence.
+  // Then the mutating flows, strictly in sequence, each from a clean document.
   for (const flow of serialFlows) {
+    if (opts.resetFixture && tierAtLeast(tier, flow.tier)) await opts.resetFixture();
     const r = await runOne(flow);
     results.push(r);
     const mark = r.status === "passed" ? "✓" : r.status === "failed" ? "✗" : "–";

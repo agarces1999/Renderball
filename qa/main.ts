@@ -4,7 +4,9 @@
 import { promises as fs } from "fs";
 import path from "path";
 import { runFlows, type Tier } from "./harness";
+import { loadScript, saveScript, DEV_OWNER_ID } from "../lib/store";
 import { editorFlows } from "./flows/editor";
+import { documentFlows } from "./flows/document";
 
 const BASE = process.env.QA_BASE ?? "http://localhost:3000";
 const TIER = (process.env.QA_TIER ?? "free") as Tier;
@@ -49,6 +51,17 @@ const resolveDevScript = async (): Promise<string> => {
 const genDirOf = (id: string) => path.join(process.cwd(), "src", "generated", id);
 const backupOf = (id: string) => path.join(process.cwd(), ".data", "qa-fixtures", id);
 
+/**
+ * The script row, snapshotted alongside the files.
+ *
+ * A document is TWO things: the generated sources on disk and the script in the
+ * database. Page operations change the script — add, duplicate, remove, reorder
+ * — so restoring only the directory leaves the two disagreeing about how many
+ * pages exist, and every page-op flow afterwards fails for reasons that have
+ * nothing to do with page ops. Both halves are captured, both are put back.
+ */
+let scriptSnapshot: unknown = null;
+
 const snapshotFixture = async (id: string): Promise<void> => {
   const src = genDirOf(id);
   const dst = backupOf(id);
@@ -58,12 +71,21 @@ const snapshotFixture = async (id: string): Promise<void> => {
   await fs.cp(src, dst, { recursive: true });
 };
 
+/** Captured once per run, before anything has touched the document. */
+const snapshotScript = async (id: string): Promise<void> => {
+  if (scriptSnapshot) return;
+  scriptSnapshot = await loadScript(id, DEV_OWNER_ID).catch(() => null);
+};
+
 const restoreFixture = async (id: string): Promise<boolean> => {
   const src = backupOf(id);
   const ok = await fs.stat(src).then(() => true).catch(() => false);
   if (!ok) return false;
   await fs.rm(genDirOf(id), { recursive: true, force: true });
   await fs.cp(src, genDirOf(id), { recursive: true });
+  if (scriptSnapshot) {
+    await saveScript(scriptSnapshot as Parameters<typeof saveScript>[0], DEV_OWNER_ID).catch(() => {});
+  }
   return true;
 };
 
@@ -80,6 +102,7 @@ const main = async (): Promise<void> => {
   process.env.QA_DEV_SCRIPT_ID = scriptId;
 
   // Pristine fixture in, pristine fixture out.
+  await snapshotScript(scriptId);
   await snapshotFixture(scriptId);
   const restored = await restoreFixture(scriptId);
 
@@ -92,10 +115,12 @@ const main = async (): Promise<void> => {
   const summary = await runFlows({
     base: BASE,
     tier: TIER,
-    flows: [...editorFlows],
+    flows: [...editorFlows, ...documentFlows],
     concurrency: CONCURRENCY,
     headless: process.env.QA_HEADED !== "1",
     artifactDir: ARTIFACTS,
+    // Every mutating flow starts from the same document.
+    resetFixture: () => restoreFixture(scriptId).then(() => undefined),
   });
 
   // Hand the fixture back the way it was found, whatever happened above.

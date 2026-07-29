@@ -51,7 +51,16 @@ const ROLES: { key: Role; label: string }[] = [
   { key: "line", label: "Lines" },
 ];
 
-export function BrandPanel({ scriptId }: { scriptId: string }) {
+export function BrandPanel({
+  scriptId,
+  // Which API to talk to. Defaults to the Clerk-protected production routes;
+  // the dev harness passes "/api/dev" so the panel can be driven — and QA'd —
+  // without a session.
+  apiBase = "/api/preview",
+}: {
+  scriptId: string;
+  apiBase?: string;
+}) {
   const [brand, setBrand] = useState<DocumentBrand | null>(null);
   const [inUse, setInUse] = useState<InUse | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -63,7 +72,7 @@ export function BrandPanel({ scriptId }: { scriptId: string }) {
     let alive = true;
     (async () => {
       try {
-        const r = await fetch(`/api/preview/brand?scriptId=${encodeURIComponent(scriptId)}`);
+        const r = await fetch(`${apiBase}/brand?scriptId=${encodeURIComponent(scriptId)}`);
         if (!r.ok) return;
         const d = await r.json();
         if (!alive) return;
@@ -86,7 +95,7 @@ export function BrandPanel({ scriptId }: { scriptId: string }) {
       setError(null);
       setNote(null);
       try {
-        const r = await fetch("/api/preview/brand", {
+        const r = await fetch(`${apiBase}/brand`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ scriptId, brand: next, apply }),
@@ -122,7 +131,7 @@ export function BrandPanel({ scriptId }: { scriptId: string }) {
       const fd = new FormData();
       fd.set("file", file);
       fd.set("scriptId", scriptId);
-      const r = await fetch("/api/preview/brand/asset", { method: "POST", body: fd });
+      const r = await fetch(`${apiBase}/brand/asset`, { method: "POST", body: fd });
       const d = await r.json().catch(() => null);
       if (!r.ok) {
         setError(d?.error ?? "upload failed");
@@ -246,7 +255,7 @@ export function BrandPanel({ scriptId }: { scriptId: string }) {
             >
               {a.mime.startsWith("image/") ? (
                 <img
-                  src={`/api/preview/asset?scriptId=${encodeURIComponent(scriptId)}&ref=${encodeURIComponent(a.ref)}`}
+                  src={`${apiBase}/asset?scriptId=${encodeURIComponent(scriptId)}&ref=${encodeURIComponent(a.ref)}`}
                   alt=""
                   className="h-6 w-6 shrink-0 rounded object-contain"
                 />

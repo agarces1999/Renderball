@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import {
   ElementEditor,
   type ElementEditorHandle,
@@ -11,6 +12,8 @@ import {
   type EditorToolController,
 } from "../../../../components/EditorShell";
 import { cn } from "../../../../lib/cn";
+import { BrandPanel } from "../../../../components/BrandPanel";
+import { DeckPagePanel } from "../../../preview/[id]/PreviewClient";
 
 /**
  * Dev editing harness (no Clerk session; NODE_ENV-gated route). Renders the
@@ -48,6 +51,46 @@ export function DevEditClient({
   const [sceneIndex, setSceneIndex] = useState(0);
   const [reloadKey, setReloadKey] = useState(0);
   const [playMotion, setPlayMotion] = useState(false);
+  const router = useRouter();
+  const [panelTab, setPanelTab] = useState<"copy" | "page" | "brand">("copy");
+  const [pageBusy, setPageBusy] = useState(false);
+
+  /**
+   * Page operations against the dev twin — add, duplicate, remove, reorder.
+   *
+   * Mirrors PreviewClient's handler but on /api/dev, so the QA suite can drive
+   * page management without a session. The scene index is clamped afterwards
+   * because removing the last page would otherwise leave the editor pointed at
+   * a page that no longer exists.
+   */
+  const pageOp = async (
+    op:
+      | { op: "duplicate"; page: number }
+      | { op: "remove"; page: number }
+      | { op: "move"; page: number; to: number }
+      | { op: "add"; after: number },
+  ) => {
+    setPageBusy(true);
+    try {
+      const res = await fetch("/api/dev/page-op", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scriptId, ...op }),
+      });
+      const json = (await res.json().catch(() => ({}))) as { ok?: boolean; total?: number };
+      if (res.ok && json.ok) {
+        if (typeof json.total === "number" && json.total > 0) {
+          setSceneIndex((i) => Math.min(i, json.total! - 1));
+        }
+        // The scene list is server-rendered, so the page count only
+        // updates on a refresh; the reload key repaints the canvas.
+        router.refresh();
+        setReloadKey((k) => k + 1);
+      }
+    } finally {
+      setPageBusy(false);
+    }
+  };
   const [fields, setFields] = useState<Field[]>([]);
   const iframeRef = useRef<HTMLIFrameElement>(null);
 
@@ -155,13 +198,52 @@ export function DevEditClient({
           </>
         }
         sidePanel={
-          <ScriptPanel
-            logline={logline}
-            sceneIndex={sceneIndex}
-            total={scenes.length}
-            scene={scene}
-            fields={fields}
-          />
+          // Copy / Page / Brand, mirroring the real editor. Page ops and brand
+          // had NO automated coverage at all — not because they were hard to
+          // drive, but because nothing unauthenticated ever rendered their
+          // panels, so the QA suite could not reach two of the product's
+          // largest surfaces.
+          <div className="flex h-full flex-col">
+            <div className="flex shrink-0 gap-1 border-b border-hairline px-3 pt-2.5">
+              {(["copy", "page", "brand"] as const).map((t) => (
+                <button
+                  key={t}
+                  type="button"
+                  data-rb-devtab={t}
+                  onClick={() => setPanelTab(t)}
+                  className={
+                    "rounded-t-md px-2.5 py-1.5 text-[12px] capitalize transition-colors " +
+                    (panelTab === t
+                      ? "bg-surface font-semibold text-ink"
+                      : "text-muted hover:text-ink")
+                  }
+                >
+                  {t}
+                </button>
+              ))}
+            </div>
+            <div className="min-h-0 flex-1 overflow-y-auto">
+              {panelTab === "brand" ? (
+                <BrandPanel scriptId={scriptId} apiBase="/api/dev" />
+              ) : panelTab === "page" ? (
+                <DeckPagePanel
+                  index={sceneIndex}
+                  total={scenes.length}
+                  description={scene?.description ?? null}
+                  busy={pageBusy}
+                  onOp={(op) => void pageOp(op)}
+                />
+              ) : (
+                <ScriptPanel
+                  logline={logline}
+                  sceneIndex={sceneIndex}
+                  total={scenes.length}
+                  scene={scene}
+                  fields={fields}
+                />
+              )}
+            </div>
+          </div>
         }
         footer={<span className="block truncate">{scriptId}</span>}
       >

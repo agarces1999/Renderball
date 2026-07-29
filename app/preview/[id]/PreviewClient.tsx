@@ -739,7 +739,7 @@ function DeckBanner({
 }
 
 /** The deck's per-page inspector — structural ops on the active page. */
-function DeckPagePanel({
+export function DeckPagePanel({
   index,
   total,
   description,
