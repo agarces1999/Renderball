@@ -2,15 +2,44 @@
 
 Operating doc for the canvas pivot's pricing pipeline (docs/PIVOT.md locked
 decision #4): **1M tokens free, then per-token billing at a markup**, via
-Stripe usage-based billing. Deterministic edits (move/resize/text/delete/
+usage-based billing. Deterministic edits (move/resize/text/delete/
 undo/primitive inserts) cost 0 tokens — the product story is "editing is
 free, generating is metered."
 
 Code home: `lib/metering.ts` (policy + IO), `prisma/schema.prisma`
-(`TokenUsage`, `MeterEventOutbox`), `scripts/stripe-setup-meter.mjs` (Stripe
-objects), `GET /api/usage` (account surface).
+(`TokenUsage`, `MeterEventOutbox`), `lib/billing-provider.ts` (which
+processor), `GET /api/usage` (account surface).
 
-## The Stripe shape — and why
+## Processor: Lemon Squeezy (2026-07-30)
+
+**Stripe is unavailable to this company.** It does not operate in Colombia,
+and the workaround is incorporating abroad — weeks and money before any
+revenue. Lemon Squeezy is a merchant of record (they are the seller of
+record, they handle VAT worldwide) and supports metered usage-based
+subscriptions, so the model below survives the switch unchanged.
+
+What differs in practice:
+
+- **Usage attaches to a subscription ITEM**, not a subscription or a
+  customer. `Subscription.lemonItemId` holds it, captured from the
+  `subscription_created` webhook. A subscriber whose row lacks it looks
+  perfectly healthy and cannot be charged — `lib/metering.ts` therefore
+  leaves such rows pending rather than marking them sent, and the webhook
+  never overwrites a known item id with null.
+- **No idempotency key on usage records.** Stripe dedupes replays via
+  `identifier`; Lemon Squeezy has no equivalent. Safety comes from the
+  watermark being claimed in the database *before* the outbox row is
+  written, so a retry re-sends a row that was never marked sent and a row
+  marked sent is never reconsidered.
+- **A metered checkout charges $0 up front** and bills in arrears. That is
+  exactly the shape argued for below — free users never touch the processor.
+
+`scripts/stripe-setup-meter.mjs` belongs to the dormant Stripe path. On
+Lemon Squeezy the equivalent is a product setting: Subscription product →
+**"Usage is metered" ON** → copy the VARIANT id.
+
+## The Stripe shape — and why (retained: the reasoning is processor-agnostic)
+
 
 **Chosen: a flat per-unit metered Price; the 1M free allowance is enforced
 app-side and Stripe only ever receives OVERAGE tokens.**
@@ -73,16 +102,17 @@ or gated.
   means an op straddling the 1M line bills only its over-the-line share, and
   overage accrued while unbilled (count-mode shadow period, or the free tail)
   is **forgiven, never back-billed** — no surprise first invoice.
-- **Outbox** — `MeterEventOutbox` rows are flushed to
-  `stripe.billing.meterEvents.create` fire-and-forget with
-  `identifier = row.id`; Stripe dedupes identifiers, so at-least-once
-  delivery (crash between send and mark-sent, concurrent flushes) is safe.
-  **No op ever blocks on Stripe availability** — unsent rows retry on later
-  ops. Rows for owners whose `stripeCustomerId` hasn't landed yet (webhook
-  in flight) stay pending and flush next round.
-- **billingActive** — `User.plan === "subscription"`, flipped by the existing
-  price-agnostic Stripe webhook (`checkout.session.completed`,
-  `customer.subscription.updated/deleted`). No new webhook events needed.
+- **Outbox** — `MeterEventOutbox` rows are provider-agnostic ("this owner owes
+  for N overage tokens") and flushed fire-and-forget. On Lemon Squeezy that is
+  a usage record against `Subscription.lemonItemId`; on Stripe a meter event
+  with `identifier = row.id`, which Stripe dedupes. **No op ever blocks on the
+  processor's availability** — unsent rows retry on later ops. Rows for owners
+  we cannot yet address (no subscription item, no customer id — webhook in
+  flight) stay pending and flush next round.
+- **billingActive** — `User.plan === "subscription"`, flipped by whichever
+  webhook is live: `subscription_*` on Lemon Squeezy, or
+  `checkout.session.completed` / `customer.subscription.updated|deleted` on
+  Stripe. The gate never asks which.
 
 Known bounded edge cases (accepted for launch, both revenue-safe):
 - Two *simultaneous* ops by one owner can race the watermark; the loser
@@ -98,24 +128,36 @@ Known bounded edge cases (accepted for launch, both revenue-safe):
 
 | Var | Default | Meaning |
 | --- | --- | --- |
-| `RB_METERING` | `off` | `off` = everything inert (current flows byte-identical). `count` = shadow-count tokens only, no gate, no Stripe. `on` = count + 402 gate + meter events. |
+| `RB_METERING` | `off` | `off` = everything inert (current flows byte-identical). `count` = shadow-count tokens only, no gate, no processor contact. `on` = count + 402 gate + usage reporting. |
 | `RB_FREE_TOKENS` | `1000000` | Lifetime free allowance. |
-| `STRIPE_PRICE_TOKENS` | — | The metered per-unit price id (from the setup script). Enables the `tokens` checkout. |
-| `STRIPE_TOKEN_METER_EVENT` | `renderball_tokens` | Meter event name; only set to override. |
+| `LEMONSQUEEZY_API_KEY` | — | Live processor. All four Lemon vars must be set before checkout, portal, webhook or usage reporting do anything. |
+| `LEMONSQUEEZY_WEBHOOK_SECRET` | — | Signs `/api/webhooks/lemonsqueezy`. The only defence that endpoint has. |
+| `LEMONSQUEEZY_STORE_ID` | — | Numeric store id. |
+| `LEMONSQUEEZY_VARIANT_TOKENS` | — | Numeric VARIANT id of the metered plan (not the product id). |
+| `STRIPE_PRICE_TOKENS` | — | Dormant path: the metered per-unit price id (from the setup script). |
+| `STRIPE_TOKEN_METER_EVENT` | `renderball_tokens` | Dormant path: meter event name; only set to override. |
 
 ## Launch runbook
 
-1. `node scripts/stripe-setup-meter.mjs --usd-per-million <rate>` against the
-   test key. Rate math: blended COGS today is ≈ **$3.1/M counted tokens**
-   (P1 deck build: 257k in + 76k out = $1.04 at Fireworks fast-router rates),
-   so e.g. $10/M ≈ 3.2× markup, $15/M ≈ 4.8×. Founder call — the script
-   refuses to default it.
-2. Set `STRIPE_PRICE_TOKENS` (+ webhook secret etc. per docs/LAUNCH.md).
+1. In Lemon Squeezy: create a Subscription product with **"Usage is metered"
+   ON**, priced per unit. Rate math: blended COGS today is ≈ **$3.1/M counted
+   tokens** (P1 deck build: 257k in + 76k out = $1.04 at Fireworks fast-router
+   rates), so e.g. $10/M ≈ 3.2× markup, $15/M ≈ 4.8×. Founder call. Note the
+   unit is ONE TOKEN, so the per-unit price is the rate ÷ 1,000,000 — get this
+   wrong by six orders of magnitude and the first invoice will say so.
+2. Set the four `LEMONSQUEEZY_*` vars (per `.env.example`) and register the
+   webhook at `<APP_URL>/api/webhooks/lemonsqueezy` with every
+   `subscription_*` event.
 3. Set `RB_METERING=count` for the shadow period — watch `TokenUsage` fill
    against `.data/usage.jsonl` for sanity.
-4. Flip `RB_METERING=on` at launch. The billing page's "add usage billing"
-   checkout posts `{ "plan": "tokens" }` to `/api/billing/checkout`.
-5. Repeat step 1 once against the live key before GA.
+4. Subscribe with a real card once and confirm `Subscription.lemonItemId` is
+   populated. **This is the step that cannot be skipped**: a subscriber
+   without an item id looks entirely healthy and can never be charged.
+5. Flip `RB_METERING=on`. Generate something past the allowance on a test
+   account and confirm a usage record lands in the Lemon Squeezy dashboard.
+
+(The dormant Stripe path's equivalent step 1 is
+`node scripts/stripe-setup-meter.mjs --usd-per-million <rate>`.)
 
 ## Supersession note
 

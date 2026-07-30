@@ -27,7 +27,9 @@
  *    overage reported to the Stripe meter for billing-active users.
  */
 import { prisma, withDbRetry } from "./db";
-import { getStripe, isStripeConfigured } from "./stripe";
+import { getStripe } from "./stripe";
+import { reportLemonUsage } from "./lemonsqueezy";
+import { billingProvider } from "./billing-provider";
 import { DEV_OWNER_ID } from "./store";
 import type { Usage } from "./usage";
 
@@ -276,14 +278,26 @@ export const tokenMeterEventName = (): string =>
   process.env.STRIPE_TOKEN_METER_EVENT || "renderball_tokens";
 
 /**
- * Flush pending outbox rows to the Stripe Billing Meter. At-least-once:
- * `identifier = row.id` lets Stripe dedupe replays, so concurrent flushes and
- * retries after a crash are harmless. Rows for owners without a
- * stripeCustomerId yet stay pending (the webhook stores the id at checkout;
- * the next flush picks them up). Never throws; returns counts for logging.
+ * Flush pending outbox rows to whichever processor is live.
+ *
+ * The outbox itself is provider-agnostic — a row is "this owner owes for N
+ * overage tokens" — and only the delivery differs:
+ *
+ *   Stripe: a Billing Meter event keyed by the customer id, with
+ *     `identifier = row.id` so Stripe dedupes replays for us.
+ *   Lemon Squeezy: a usage record against the subscription ITEM id, which has
+ *     no idempotency key. Safety there comes from the watermark being claimed
+ *     in the database BEFORE the row is written (see recordTokenUsage): a retry
+ *     re-sends a row that was never marked sent, and a row marked sent is never
+ *     considered again.
+ *
+ * Rows for owners we cannot yet address — no customer id, no subscription item
+ * — stay pending rather than failing permanently; the webhook fills those in at
+ * checkout and the next flush picks them up. Never throws.
  */
 export const flushMeterOutbox = async (limit = 25): Promise<{ sent: number; failed: number }> => {
-  if (meteringMode() !== "on" || !isStripeConfigured()) return { sent: 0, failed: 0 };
+  const provider = billingProvider();
+  if (meteringMode() !== "on" || provider === "none") return { sent: 0, failed: 0 };
   let sent = 0;
   let failed = 0;
   try {
@@ -295,26 +309,40 @@ export const flushMeterOutbox = async (limit = 25): Promise<{ sent: number; fail
     if (pending.length === 0) return { sent, failed };
 
     const owners = [...new Set(pending.map((p) => p.ownerId))];
-    const users = await prisma.user.findMany({
-      where: { id: { in: owners } },
-      select: { id: true, stripeCustomerId: true },
-    });
+    const [users, subs] = await Promise.all([
+      prisma.user.findMany({
+        where: { id: { in: owners } },
+        select: { id: true, stripeCustomerId: true },
+      }),
+      provider === "lemonsqueezy"
+        ? prisma.subscription.findMany({
+            where: { userId: { in: owners } },
+            select: { userId: true, lemonItemId: true },
+          })
+        : Promise.resolve([] as { userId: string; lemonItemId: string | null }[]),
+    ]);
     const customerOf = new Map(users.map((u) => [u.id, u.stripeCustomerId]));
+    const itemOf = new Map(subs.map((s) => [s.userId, s.lemonItemId]));
 
-    const stripe = getStripe();
     const eventName = tokenMeterEventName();
     for (const row of pending) {
-      const customerId = customerOf.get(row.ownerId);
       try {
-        if (!customerId) throw new Error("owner has no stripeCustomerId yet");
-        await stripe.billing.meterEvents.create({
-          event_name: eventName,
-          identifier: row.id, // Stripe-side idempotency
-          payload: {
-            stripe_customer_id: customerId,
-            value: String(row.tokens),
-          },
-        });
+        if (provider === "lemonsqueezy") {
+          const itemId = itemOf.get(row.ownerId);
+          if (!itemId) throw new Error("owner has no Lemon Squeezy subscription item yet");
+          await reportLemonUsage(itemId, row.tokens);
+        } else {
+          const customerId = customerOf.get(row.ownerId);
+          if (!customerId) throw new Error("owner has no stripeCustomerId yet");
+          await getStripe().billing.meterEvents.create({
+            event_name: eventName,
+            identifier: row.id, // Stripe-side idempotency
+            payload: {
+              stripe_customer_id: customerId,
+              value: String(row.tokens),
+            },
+          });
+        }
         await prisma.meterEventOutbox.update({
           where: { id: row.id },
           data: { status: "sent", sentAt: new Date() },

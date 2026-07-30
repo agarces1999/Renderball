@@ -1,7 +1,7 @@
 import { AppShellServer } from "../../components/AppShellServer";
 import { getCurrentUser } from "../../lib/auth";
 import { getUsageSummary } from "../../lib/entitlement";
-import { isStripeConfigured } from "../../lib/stripe";
+import { isBillingLive } from "../../lib/billing-provider";
 import { SubscribeButton, ManageBillingButton } from "./CheckoutButtons";
 
 /** One meter row: label + used/limit + a quiet progress bar. */
@@ -90,7 +90,7 @@ export default async function BillingPage() {
             only pay when Renderball generates, priced per token. No
             subscription, no seats, no watermark.
           </p>
-          {isStripeConfigured() ? (
+          {isBillingLive() ? (
             usage?.plan === "subscription" ? (
               <ManageBillingButton />
             ) : (

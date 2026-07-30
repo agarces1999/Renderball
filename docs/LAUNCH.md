@@ -163,7 +163,21 @@ Fill in [.env.example](../.env.example) → `.env.local`. Create these accounts;
 
 - [x] **Clerk** app — DONE INCLUDING PRODUCTION (2026-07-23): prod instance on renderball.com (5 CNAMEs verified, certs issued), custom Google OAuth credentials, user.* webhook live with signing secret in Railway; first production user signed up 2026-07-24T00:06Z through the full chain.
 - [x] **Postgres** — Neon connected; Prisma schema migrated (6 tables live), client singleton in `lib/db.ts`.
-- [ ] **Stripe** (test mode) — secret + webhook secret + Price id (`STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` / `STRIPE_PRICE_SUBSCRIPTION`); one Product at **$49.99/mo**. All code is live-on-config.
+- [ ] **Lemon Squeezy** — THE payment processor (2026-07-30). Stripe does not
+      operate in Colombia; getting a Stripe account means incorporating in the UK
+      or US first. Lemon Squeezy is a merchant of record, handles VAT worldwide,
+      and supports metered usage-based subscriptions — which is exactly the
+      1M-free-then-metered model in PIVOT.md. Create a store, then a Subscription
+      product with **"Usage is metered" ON**, and set four vars:
+      `LEMONSQUEEZY_API_KEY` / `LEMONSQUEEZY_WEBHOOK_SECRET` /
+      `LEMONSQUEEZY_STORE_ID` / `LEMONSQUEEZY_VARIANT_TOKENS` (the VARIANT id,
+      not the product id). Webhook → `<APP_URL>/api/webhooks/lemonsqueezy`, all
+      `subscription_*` events. All code is live-on-config: checkout, portal,
+      webhook and usage reporting activate with zero code changes.
+- [ ] ~~**Stripe**~~ — DORMANT, not deleted. Unusable without an entity in a
+      supported country; the code path stays because the fees are lower if one
+      ever exists. Lemon Squeezy wins whenever both are configured
+      (`lib/billing-provider.ts`).
 - [ ] ~~AWS (Remotion Lambda)~~ — not needed for launch (container render decision).
 - [x] **Cloudflare R2** — DONE (2026-07-23): prod bucket + token, all five `STORAGE_*` vars set in Railway.
 - [ ] **Resend** — API key + verified sending domain.

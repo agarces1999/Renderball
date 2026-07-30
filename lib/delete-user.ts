@@ -17,7 +17,9 @@ import { promises as fs } from "fs";
 import path from "path";
 import { prisma } from "./db";
 import { deletePrefix, isStorageConfigured } from "./storage/r2";
-import { isStripeConfigured, getStripe } from "./stripe";
+import { getStripe } from "./stripe";
+import { cancelLemonSubscription } from "./lemonsqueezy";
+import { billingProvider } from "./billing-provider";
 
 export type DeletionSummary = {
   userId: string;
@@ -47,21 +49,28 @@ export async function deleteUserData(userId: string): Promise<DeletionSummary> {
   if (!user) throw new Error(`deleteUserData: no user with id "${userId}"`);
   const scriptIds = user.projects.map((p) => p.scriptId).filter((s): s is string => !!s);
 
-  // 0. Cancel the live Stripe subscription FIRST — deleting the User row erases
-  //    stripeCustomerId, so a deleted account would otherwise keep getting
-  //    charged with no way for us to map the webhook back. Best-effort: a Stripe
-  //    hiccup must not block the data deletion the user asked for.
+  // 0. Cancel the live subscription FIRST — deleting the User row erases the
+  //    processor's customer id, so a deleted account would otherwise keep
+  //    getting charged with no way for us to map the webhook back. Best-effort
+  //    at BOTH processors: a billing hiccup must not block the data deletion
+  //    the user asked for, but it must be shouted about, because the fallback
+  //    is a human cancelling it by hand.
+  const provider = billingProvider();
   let stripeCancel = "skipped";
-  if (isStripeConfigured()) {
+  if (provider !== "none") {
     stripeCancel = "none";
     try {
       const sub = await prisma.subscription.findUnique({ where: { userId: user.id } });
-      if (sub && sub.status !== "canceled") {
+      const live = sub && sub.status !== "canceled" && sub.status !== "cancelled";
+      if (live && provider === "lemonsqueezy" && sub.lemonSubscriptionId) {
+        await cancelLemonSubscription(sub.lemonSubscriptionId);
+        stripeCancel = "canceled";
+      } else if (live && provider === "stripe" && sub.stripeSubscriptionId) {
         await getStripe().subscriptions.cancel(sub.stripeSubscriptionId);
         stripeCancel = "canceled";
       }
     } catch (err) {
-      console.error(`[delete-user] Stripe cancel failed for ${user.id} — CANCEL MANUALLY:`, err);
+      console.error(`[delete-user] subscription cancel failed for ${user.id} — CANCEL MANUALLY:`, err);
       stripeCancel = "error";
     }
   }

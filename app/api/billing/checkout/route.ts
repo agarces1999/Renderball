@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "../../../../lib/auth";
+import { billingProvider, BILLING_NOT_LIVE } from "../../../../lib/billing-provider";
+import { createLemonCheckout } from "../../../../lib/lemonsqueezy";
 import {
   getStripe,
   isStripeConfigured,
@@ -8,19 +10,51 @@ import {
 } from "../../../../lib/stripe";
 
 /**
- * POST /api/billing/checkout — create a Stripe Checkout Session and return
- * its hosted URL. Env-gated: 503 with an honest message until the STRIPE_*
- * keys exist.
+ * POST /api/billing/checkout — start a hosted checkout, return its URL.
  *
- * Body (optional): { plan: "tokens" | "subscription" }. Default stays the
- * flat subscription. "tokens" starts the usage-based metered subscription
- * (docs/METERING.md) — a metered line item carries NO quantity; the invoice
- * total comes from the Billing Meter's overage events.
+ * Routes to whichever processor is configured (lib/billing-provider.ts). Lemon
+ * Squeezy is the live one: Stripe does not operate in Colombia. Env-gated at
+ * both ends, so this answers 503 with an honest message until keys exist.
+ *
+ * Body (optional, Stripe only): { plan: "tokens" | "subscription" }. Lemon
+ * Squeezy has a single metered variant — the pivot's token pricing — so there
+ * is nothing to choose there.
  */
 export async function POST(request: Request) {
   const user = await getCurrentUser();
   if (!user) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  }
+
+  const provider = billingProvider();
+  if (provider === "none") {
+    return NextResponse.json({ error: BILLING_NOT_LIVE }, { status: 503 });
+  }
+
+  // Already-subscribed guard: without it a second checkout (double-click, stale
+  // tab, back-button) creates a SECOND live subscription on the same customer —
+  // the user is charged twice. Send active subscribers to the portal instead.
+  if (user.plan === "subscription") {
+    return NextResponse.json(
+      {
+        error: "You're already subscribed — manage your plan from the billing portal.",
+        alreadySubscribed: true,
+      },
+      { status: 409 },
+    );
+  }
+
+  if (provider === "lemonsqueezy") {
+    try {
+      const checkout = await createLemonCheckout({ id: user.id, email: user.email });
+      return NextResponse.json({ url: checkout.url });
+    } catch (err) {
+      console.error("[lemonsqueezy] checkout failed:", err);
+      return NextResponse.json(
+        { error: "Could not start checkout — please try again." },
+        { status: 500 },
+      );
+    }
   }
 
   let plan: "tokens" | "subscription" = "subscription";
@@ -35,20 +69,7 @@ export async function POST(request: Request) {
 
   const configured = plan === "tokens" ? isTokenBillingConfigured() : isStripeConfigured();
   if (!configured) {
-    return NextResponse.json(
-      { error: "Checkout isn't live yet — payments are being wired up." },
-      { status: 503 },
-    );
-  }
-
-  // Already-subscribed guard: without it a second checkout (double-click, stale
-  // tab, back-button) creates a SECOND live subscription on the same customer —
-  // the user is charged twice. Send active subscribers to the portal instead.
-  if (user.plan === "subscription") {
-    return NextResponse.json(
-      { error: "You're already subscribed — manage your plan from the billing portal.", alreadySubscribed: true },
-      { status: 409 },
-    );
+    return NextResponse.json({ error: BILLING_NOT_LIVE }, { status: 503 });
   }
 
   try {
@@ -80,4 +101,3 @@ export async function POST(request: Request) {
     );
   }
 }
-

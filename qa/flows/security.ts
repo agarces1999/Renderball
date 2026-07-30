@@ -144,7 +144,11 @@ export const securityFlows: Flow[] = [
       // is the only thing standing between a stranger and "this user cancelled",
       // or "this user was deleted".
       const results: string[] = [];
-      for (const path of ["/api/webhooks/clerk", "/api/webhooks/stripe"]) {
+      for (const path of [
+        "/api/webhooks/clerk",
+        "/api/webhooks/stripe",
+        "/api/webhooks/lemonsqueezy",
+      ]) {
         const res = await page.request.fetch(`${base}${path}`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },

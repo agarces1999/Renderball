@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 
-/** POST to a billing endpoint and follow the returned hosted-Stripe URL. */
+/** POST to a billing endpoint and follow the returned hosted-checkout URL. */
 function useRedirectAction(path: string) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);

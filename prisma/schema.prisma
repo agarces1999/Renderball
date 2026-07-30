@@ -47,6 +47,10 @@ model User {
   clerkId          String   @unique // subject id from Clerk
   email            String   @unique
   stripeCustomerId String?  @unique
+  /// Lemon Squeezy's customer id. Separate column rather than a renamed one:
+  /// the two processors' id spaces are unrelated, and a single column would
+  /// make "which processor is this account on?" unanswerable.
+  lemonCustomerId  String?  @unique
   plan             Plan     @default(free)
   freeMinuteUsed   Boolean  @default(false) // the "free first minute" gate
   createdAt        DateTime @default(now())
@@ -61,15 +65,28 @@ model User {
 }
 
 model Subscription {
-  id                   String   @id @default(cuid())
-  userId               String   @unique
-  user                 User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  stripeSubscriptionId String   @unique
-  stripePriceId        String
-  status               String   // active, past_due, canceled, ...
-  currentPeriodEnd     DateTime
-  createdAt            DateTime @default(now())
-  updatedAt            DateTime @updatedAt
+  id     String @id @default(cuid())
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// Which processor owns this subscription. Stripe is unavailable to a
+  /// Colombian entity, so Lemon Squeezy is the live path and the Stripe columns
+  /// below stay for the dormant one — see lib/billing-provider.ts.
+  provider String @default("stripe")
+
+  stripeSubscriptionId String? @unique
+  stripePriceId        String?
+
+  lemonSubscriptionId String? @unique
+  /// The subscription ITEM, not the subscription. Lemon Squeezy attaches usage
+  /// records to an item, so without this id metered billing cannot report a
+  /// single token — it is the one field the whole pricing model hangs on.
+  lemonItemId         String?
+
+  status           String // active, past_due, cancelled, expired, ...
+  currentPeriodEnd DateTime
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
 }
 
 model Project {
