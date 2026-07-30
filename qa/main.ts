@@ -9,6 +9,8 @@ import { editorFlows } from "./flows/editor";
 import { documentFlows } from "./flows/document";
 import { securityFlows } from "./flows/security";
 import { shareFlows } from "./flows/share";
+import { accountFlows } from "./flows/account";
+import { authenticator, testCredentials } from "./auth";
 
 const BASE = process.env.QA_BASE ?? "http://localhost:3000";
 const TIER = (process.env.QA_TIER ?? "free") as Tier;
@@ -191,21 +193,29 @@ const main = async (): Promise<void> => {
   await snapshotScript(scriptId);
   const restored = await restoreFixture(scriptId);
 
+  const creds = testCredentials();
+
   console.log(`\n▶ QA — tier "${TIER}", ${CONCURRENCY} in parallel`);
   console.log(`  target:   ${BASE}`);
   console.log(`  document: ${scriptId}${restored ? " (reset to snapshot)" : ""}`);
+  console.log(
+    `  account:  ${creds ? creds.email : "none — signed-in flows will skip (set QA_TEST_EMAIL / QA_TEST_PASSWORD)"}`,
+  );
   if (TIER === "free") console.log("  (free tier: no model calls, nothing billed)");
   console.log("");
 
   const summary = await runFlows({
     base: BASE,
     tier: TIER,
-    flows: [...editorFlows, ...documentFlows, ...securityFlows, ...shareFlows],
+    flows: [...editorFlows, ...documentFlows, ...securityFlows, ...shareFlows, ...accountFlows],
     concurrency: CONCURRENCY,
     headless: process.env.QA_HEADED !== "1",
     artifactDir: ARTIFACTS,
     // Every mutating flow starts from the same document.
     resetFixture: () => restoreFixture(scriptId).then(() => undefined),
+    // Null when no test account is configured, which makes the harness skip
+    // every needsAuth flow with a reason instead of failing them.
+    ...(authenticator(BASE) ? { authenticate: authenticator(BASE)! } : {}),
   });
 
   // Hand the fixture back the way it was found, whatever happened above.

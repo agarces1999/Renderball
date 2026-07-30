@@ -8,6 +8,7 @@ import { prisma } from "../../lib/db";
 import { AppShellServer } from "../../components/AppShellServer";
 import { objectExists } from "../../lib/storage/r2";
 import { docKey } from "../../lib/render/gen-store";
+import { DeleteDocumentButton } from "./DeleteDocumentButton";
 import { ProjectThumb } from "../../components/ProjectThumb";
 
 /**
@@ -208,9 +209,12 @@ function DocumentCard({ card }: { card: Card }) {
     brief.purpose?.trim() || (kind === "deck" ? "Untitled deck" : "Untitled video");
 
   return (
+    // The delete control is a SIBLING of the link, not a child: a <button>
+    // inside an <a> is invalid markup, and the click would navigate anyway.
+    <div className="group relative mb-3 break-inside-avoid">
     <Link
       href={href}
-      className="group mb-3 block break-inside-avoid overflow-hidden rounded-md border border-hairline bg-surface transition-all hover:border-hairline-strong hover:shadow-[0_14px_34px_-22px_rgba(18,26,43,0.4)]"
+      className="block overflow-hidden rounded-md border border-hairline bg-surface transition-all hover:border-hairline-strong hover:shadow-[0_14px_34px_-22px_rgba(18,26,43,0.4)]"
     >
       <ProjectThumb
         aspect={aspect}
@@ -240,6 +244,8 @@ function DocumentCard({ card }: { card: Card }) {
         </div>
       </div>
     </Link>
+      <DeleteDocumentButton id={brief.id} title={title} />
+    </div>
   );
 }
 

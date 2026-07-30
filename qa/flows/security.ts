@@ -19,7 +19,7 @@
 import type { Flow } from "../harness";
 import { expect } from "../harness";
 
-type Probe = { method: "GET" | "POST" | "PUT"; path: string; why?: string };
+type Probe = { method: "GET" | "POST" | "PUT" | "DELETE"; path: string; why?: string };
 
 /** Every route that must NOT serve an anonymous caller. */
 const PROTECTED: Probe[] = [
@@ -27,6 +27,9 @@ const PROTECTED: Probe[] = [
   { method: "POST", path: "/api/billing/portal" },
   { method: "POST", path: "/api/documents/generate" },
   { method: "GET", path: "/api/documents/new" },
+  // Not behind the Clerk matcher — its own session check is the only lock, and
+  // it destroys data.
+  { method: "DELETE", path: "/api/documents/x" },
   { method: "GET", path: "/api/preview/edit-element?scriptId=x&sceneIndex=0" },
   { method: "POST", path: "/api/preview/edit-layout" },
   { method: "POST", path: "/api/preview/edit-piece-text" },
