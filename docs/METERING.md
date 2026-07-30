@@ -12,11 +12,12 @@ processor), `GET /api/usage` (account surface).
 
 ## Processor: Lemon Squeezy (2026-07-30)
 
-**Stripe is unavailable to this company.** It does not operate in Colombia,
-and the workaround is incorporating abroad — weeks and money before any
-revenue. Lemon Squeezy is a merchant of record (they are the seller of
-record, they handle VAT worldwide) and supports metered usage-based
-subscriptions, so the model below survives the switch unchanged.
+**Founder call, twice (2026-06-19, reaffirmed 2026-07-30.)** Stripe does not
+support Colombia directly, so using it means billing through a US or UK
+entity. Lemon Squeezy is a merchant of record — they are the seller, they
+handle VAT and sales tax worldwide, and none of that depends on which entity
+signs up — and it supports metered usage-based subscriptions, so the model
+below survives the switch unchanged.
 
 What differs in practice:
 

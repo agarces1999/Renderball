@@ -163,9 +163,10 @@ Fill in [.env.example](../.env.example) → `.env.local`. Create these accounts;
 
 - [x] **Clerk** app — DONE INCLUDING PRODUCTION (2026-07-23): prod instance on renderball.com (5 CNAMEs verified, certs issued), custom Google OAuth credentials, user.* webhook live with signing secret in Railway; first production user signed up 2026-07-24T00:06Z through the full chain.
 - [x] **Postgres** — Neon connected; Prisma schema migrated (6 tables live), client singleton in `lib/db.ts`.
-- [ ] **Lemon Squeezy** — THE payment processor (2026-07-30). Stripe does not
-      operate in Colombia; getting a Stripe account means incorporating in the UK
-      or US first. Lemon Squeezy is a merchant of record, handles VAT worldwide,
+- [ ] **Lemon Squeezy** — THE payment processor (founder call 2026-06-19,
+      reaffirmed 2026-07-30). Stripe does not support Colombia directly, so it
+      would have to bill through a US or UK entity. Lemon Squeezy is a merchant
+      of record, handles VAT worldwide regardless of which entity signs up,
       and supports metered usage-based subscriptions — which is exactly the
       1M-free-then-metered model in PIVOT.md. Create a store, then a Subscription
       product with **"Usage is metered" ON**, and set four vars:
@@ -174,10 +175,14 @@ Fill in [.env.example](../.env.example) → `.env.local`. Create these accounts;
       not the product id). Webhook → `<APP_URL>/api/webhooks/lemonsqueezy`, all
       `subscription_*` events. All code is live-on-config: checkout, portal,
       webhook and usage reporting activate with zero code changes.
-- [ ] ~~**Stripe**~~ — DORMANT, not deleted. Unusable without an entity in a
-      supported country; the code path stays because the fees are lower if one
-      ever exists. Lemon Squeezy wins whenever both are configured
-      (`lib/billing-provider.ts`).
+- [ ] ~~**Stripe**~~ — DORMANT, not deleted. Needs billing to run through an
+      entity in a supported country; the code path stays because the fees are
+      lower there. NOTE: a Delaware C-corp via Stripe Atlas was recorded as
+      existing on 2026-06-17 — if that is still true, Stripe IS an option and
+      the only thing choosing Lemon Squeezy is the merchant-of-record
+      convenience (VAT handled for you). Worth confirming before GA, since it
+      is a margin decision, not a blocker either way. Lemon Squeezy wins
+      whenever both are configured (`lib/billing-provider.ts`).
 - [ ] ~~AWS (Remotion Lambda)~~ — not needed for launch (container render decision).
 - [x] **Cloudflare R2** — DONE (2026-07-23): prod bucket + token, all five `STORAGE_*` vars set in Railway.
 - [ ] **Alert channel** — 2 minutes, no account: create a Slack or Discord

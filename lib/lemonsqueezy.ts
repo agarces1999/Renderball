@@ -1,13 +1,13 @@
 /**
  * Lemon Squeezy — the processor that can actually take our money.
  *
- * WHY NOT STRIPE. Stripe does not support Colombia, where this company is. The
- * workaround is incorporating in the UK or US first, which is weeks and money
- * before a single dollar of revenue. Lemon Squeezy is a merchant of record:
- * they are the seller, they handle VAT/sales tax worldwide, and they pay out to
- * founders in countries Stripe has not reached. The Stripe code stays in the
- * tree, dormant, because if an entity ever exists Stripe's fees are lower — see
- * lib/billing-provider.ts for how one of the two is chosen.
+ * WHY NOT STRIPE. Founder call, twice (2026-06-19, reaffirmed 2026-07-30).
+ * Stripe does not support Colombia directly, so using it means billing through
+ * a US or UK entity; Lemon Squeezy is a merchant of record — they are the
+ * seller, they handle VAT and sales tax worldwide, and none of that depends on
+ * which entity signs up. The Stripe code stays in the tree, dormant, because
+ * its fees are lower where it is usable — see lib/billing-provider.ts for how
+ * one of the two is chosen.
  *
  * WHAT'S DIFFERENT, and matters:
  *

@@ -1,11 +1,13 @@
 /**
  * Which payment processor is live.
  *
- * The app supports two and runs one. Lemon Squeezy wins when configured,
- * because it is the one available to this company — Stripe does not operate in
- * Colombia and the Stripe path exists for a future in which an entity abroad
- * does. Keeping both compiled and only one configured means switching is an
- * environment change, not a migration.
+ * The app supports two and runs one. Lemon Squeezy wins when configured: it is
+ * the founder's call (2026-06-19, reaffirmed 2026-07-30), it is a merchant of
+ * record so VAT worldwide is their problem, and it does not care which country
+ * the seller is in — Stripe does not support Colombia directly. The Stripe path
+ * stays for the case where billing runs through a US or UK entity, where its
+ * fees are lower. Keeping both compiled and only one configured means switching
+ * is an environment change, not a migration.
  *
  * Everything else in the codebase asks THIS module rather than testing env vars
  * itself, so there is exactly one place where "who takes the money" is decided.
