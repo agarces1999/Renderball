@@ -43,8 +43,35 @@ export interface Alert {
   detail?: string;
 }
 
+/**
+ * The SMTP connection string, built the easy way if possible.
+ *
+ * `SMTP_URL` is the general form and works with any provider. But asking
+ * someone to hand-assemble `smtps://user%40gmail.com:pass@smtp.gmail.com:465`
+ * is asking them to URL-encode an @ correctly under time pressure, and getting
+ * it wrong fails as an authentication error that says nothing about the cause.
+ * So GMAIL_USER + GMAIL_APP_PASSWORD is accepted instead: two values copied
+ * verbatim, encoded here, where it can be done right once.
+ *
+ * The spaces Google puts in app passwords for readability are stripped — they
+ * are not part of the password, and leaving them in is the most common way this
+ * fails.
+ */
+export const smtpUrl = (): string | null => {
+  if (process.env.SMTP_URL) return process.env.SMTP_URL;
+  const user = process.env.GMAIL_USER;
+  const pass = process.env.GMAIL_APP_PASSWORD;
+  if (!user || !pass) return null;
+  const encoded = encodeURIComponent(pass.replace(/\s+/g, ""));
+  return `smtps://${encodeURIComponent(user)}:${encoded}@smtp.gmail.com:465`;
+};
+
+/** Where alerts go — explicit, or the Gmail account they are sent from. */
+export const alertRecipient = (): string | null =>
+  process.env.RB_ALERT_EMAIL || process.env.GMAIL_USER || null;
+
 export const isEmailAlertingConfigured = (): boolean =>
-  Boolean(process.env.RB_ALERT_EMAIL && process.env.SMTP_URL);
+  Boolean(alertRecipient() && smtpUrl());
 
 export const isAlertingConfigured = (): boolean =>
   isEmailAlertingConfigured() || Boolean(process.env.RB_ALERT_WEBHOOK);
@@ -95,8 +122,8 @@ const emoji = (level: AlertLevel) => (level === "critical" ? "🔴" : "🟡");
  * phone's lock screen and the point of an alert is to be understood there.
  */
 const sendEmail = async (alert: Alert): Promise<void> => {
-  const to = process.env.RB_ALERT_EMAIL;
-  const url = process.env.SMTP_URL;
+  const to = alertRecipient();
+  const url = smtpUrl();
   if (!to || !url) return;
 
   try {

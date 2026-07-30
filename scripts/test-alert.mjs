@@ -43,17 +43,32 @@ const built = await esbuild.build({
 });
 const outFile = join(work, "alert.mjs");
 writeFileSync(outFile, built.outputFiles[0].text);
-const { sendAlert, isEmailAlertingConfigured } = await import(pathToFileURL(outFile).href);
+const { sendAlert, isEmailAlertingConfigured, alertRecipient } = await import(
+  pathToFileURL(outFile).href
+);
 
-const email = process.env.RB_ALERT_EMAIL;
 const webhook = process.env.RB_ALERT_WEBHOOK;
+const ready = isEmailAlertingConfigured();
 
 console.log("\n▶ Alert channels");
-console.log(`  email:   ${isEmailAlertingConfigured() ? `→ ${email}` : "not configured (needs RB_ALERT_EMAIL + SMTP_URL)"}`);
-console.log(`  webhook: ${webhook ? "→ configured" : "not configured (RB_ALERT_WEBHOOK)"}`);
+console.log(`  email:   ${ready ? `→ ${alertRecipient()}` : "not set up"}`);
+console.log(`  webhook: ${webhook ? "→ configured" : "not set up"}`);
 
-if (!isEmailAlertingConfigured() && !webhook) {
-  console.log("\nNothing to test. Set RB_ALERT_EMAIL + SMTP_URL (or RB_ALERT_WEBHOOK) and run again.\n");
+if (!ready && !webhook) {
+  // The failure mode this catches is a half-filled .env.local, so say which
+  // half is missing rather than restating the whole setup.
+  const missing = [];
+  if (!alertRecipient()) missing.push("GMAIL_USER");
+  if (!process.env.GMAIL_APP_PASSWORD && !process.env.SMTP_URL) missing.push("GMAIL_APP_PASSWORD");
+  console.log(`\n  Add these two lines to .env.local, then run this again:\n`);
+  for (const key of missing.length ? missing : ["GMAIL_USER", "GMAIL_APP_PASSWORD"]) {
+    console.log(`    ${key}=`);
+  }
+  console.log(
+    `\n  GMAIL_USER is your address. GMAIL_APP_PASSWORD is the 16-character\n` +
+      `  code from https://myaccount.google.com/apppasswords — not your\n` +
+      `  normal password. Spaces in it are fine, they get stripped.\n`,
+  );
   process.exit(1);
 }
 
