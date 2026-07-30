@@ -185,9 +185,13 @@ Fill in [.env.example](../.env.example) → `.env.local`. Create these accounts;
       whenever both are configured (`lib/billing-provider.ts`).
 - [ ] ~~AWS (Remotion Lambda)~~ — not needed for launch (container render decision).
 - [x] **Cloudflare R2** — DONE (2026-07-23): prod bucket + token, all five `STORAGE_*` vars set in Railway.
-- [ ] **Alert channel** — 2 minutes, no account: create a Slack or Discord
-      incoming webhook and set `RB_ALERT_WEBHOOK`. Until this is set, a total
-      generation outage is announced only to the container log. Pair it with an
+- [ ] **Alert channel** — 5 minutes, no new account. Email via SMTP: a Gmail
+      App Password (https://myaccount.google.com/apppasswords, needs 2-Step
+      Verification on) in `SMTP_URL`, your inbox in `RB_ALERT_EMAIL`. Verify
+      with `npm run alert:test` before trusting it — a channel you have not
+      tested first fires during an incident. `RB_ALERT_WEBHOOK` (Slack/Discord)
+      still works as an optional second channel. Until one is set, a total
+      generation outage is announced only to the container log. Pair with an
       uptime monitor on `GET /api/health` (UptimeRobot's free tier is enough —
       it returns 503 when the database is unreachable or generation is down).
 - [ ] **Resend** — API key + verified sending domain. Needed for receipts and

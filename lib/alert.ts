@@ -7,15 +7,22 @@
  * failure where minutes matter and where a log line in a container nobody is
  * watching is the same as no alert at all.
  *
- * Deliberately NOT an SDK and NOT a vendor. `RB_ALERT_WEBHOOK` takes any HTTPS
- * URL, and the payload is shaped to satisfy Slack and Discord at once: Slack
- * reads `text`, Discord reads `content`, each ignores the other's key. So the
- * founder can point it at whatever channel already exists — no new account, no
- * dependency, no key to rotate. Unset, this degrades to exactly what happens
- * today: a loud console line.
+ * TWO CHANNELS, both optional, both fire when set:
  *
- * Never throws, never blocks the caller. An alert that can fail an operation is
- * worse than no alert.
+ *   EMAIL (`RB_ALERT_EMAIL` + `SMTP_URL`) — the default, because everyone has
+ *   an inbox and not everyone has a Slack. SMTP rather than a vendor SDK so the
+ *   same code works with a Gmail app password today and any provider later
+ *   (Resend, Postmark and SES all speak SMTP) by changing one string.
+ *
+ *   WEBHOOK (`RB_ALERT_WEBHOOK`) — any HTTPS URL. The payload carries both
+ *   `text` and `content`, which Slack and Discord read respectively, each
+ *   ignoring the other's key.
+ *
+ * With neither set this degrades to a loud console line, which is exactly the
+ * behaviour it replaces.
+ *
+ * Never throws, never blocks the caller. An alert fires from inside an error
+ * handler, so one that can fail an operation is worse than no alert.
  */
 
 /** How long the same alert stays quiet after firing. */
@@ -36,7 +43,11 @@ export interface Alert {
   detail?: string;
 }
 
-export const isAlertingConfigured = (): boolean => Boolean(process.env.RB_ALERT_WEBHOOK);
+export const isEmailAlertingConfigured = (): boolean =>
+  Boolean(process.env.RB_ALERT_EMAIL && process.env.SMTP_URL);
+
+export const isAlertingConfigured = (): boolean =>
+  isEmailAlertingConfigured() || Boolean(process.env.RB_ALERT_WEBHOOK);
 
 /** PURE: has this key fired recently enough to suppress? Exported for tests. */
 export const shouldSuppress = (key: string, now: number, window = REPEAT_MS): boolean => {
@@ -65,11 +76,54 @@ export const sendAlert = async (alert: Alert): Promise<void> => {
   if (shouldSuppress(alert.key, now)) return;
   lastSent.set(alert.key, now);
 
+  // Both channels, independently. A failure in one must not skip the other —
+  // the whole point is that at least one message arrives.
+  await Promise.all([sendEmail(alert), postWebhook(alert)]);
+};
+
+const emoji = (level: AlertLevel) => (level === "critical" ? "🔴" : "🟡");
+
+/**
+ * Email, over plain SMTP.
+ *
+ * SMTP rather than a vendor SDK because it is the one interface every provider
+ * offers: a Gmail app password works today with no new account, and moving to
+ * Resend or Postmark later is a change to one connection string rather than to
+ * this file.
+ *
+ * The subject line carries the whole alert, because that is all you see on a
+ * phone's lock screen and the point of an alert is to be understood there.
+ */
+const sendEmail = async (alert: Alert): Promise<void> => {
+  const to = process.env.RB_ALERT_EMAIL;
+  const url = process.env.SMTP_URL;
+  if (!to || !url) return;
+
+  try {
+    // Imported lazily so the module is not loaded by the many code paths that
+    // will never send an alert.
+    const nodemailer = (await import("nodemailer")).default;
+    const transport = nodemailer.createTransport(url);
+    const subject = `${emoji(alert.level)} Renderball: ${alert.title}`;
+    await transport.sendMail({
+      // Falls back to the SMTP user, which is what Gmail requires anyway — it
+      // rewrites the From header to the authenticated account regardless.
+      from: process.env.RB_ALERT_FROM || to,
+      to,
+      subject,
+      text: `${alert.title}\n\n${alert.detail ?? ""}\n\n— Renderball (${alert.level})`,
+    });
+  } catch (err) {
+    console.warn(`[alert] email send failed: ${err instanceof Error ? err.message : err}`);
+  }
+};
+
+/** Slack, Discord, or anything else that accepts a JSON POST. */
+const postWebhook = async (alert: Alert): Promise<void> => {
   const url = process.env.RB_ALERT_WEBHOOK;
   if (!url) return;
 
-  const emoji = alert.level === "critical" ? "🔴" : "🟡";
-  const text = `${emoji} *Renderball* — ${alert.title}${alert.detail ? `\n${alert.detail}` : ""}`;
+  const text = `${emoji(alert.level)} *Renderball* — ${alert.title}${alert.detail ? `\n${alert.detail}` : ""}`;
   try {
     const res = await fetch(url, {
       method: "POST",

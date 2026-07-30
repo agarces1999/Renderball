@@ -10,7 +10,13 @@
  * So: it must fire, it must repeat-suppress, and it must never — under any
  * failure of the channel itself — throw into the code that called it.
  */
-import { sendAlert, shouldSuppress, resetAlertsForTests, isAlertingConfigured } from "./alert";
+import {
+  sendAlert,
+  shouldSuppress,
+  resetAlertsForTests,
+  isAlertingConfigured,
+  isEmailAlertingConfigured,
+} from "./alert";
 
 let passed = 0;
 let failed = 0;
@@ -44,15 +50,54 @@ const ok = () => new Response("ok", { status: 200 });
 
 const run = async () => {
   console.log("alerting");
-  const savedUrl = process.env.RB_ALERT_WEBHOOK;
+  const saved = {
+    webhook: process.env.RB_ALERT_WEBHOOK,
+    email: process.env.RB_ALERT_EMAIL,
+    smtp: process.env.SMTP_URL,
+  };
+  delete process.env.RB_ALERT_EMAIL;
+  delete process.env.SMTP_URL;
 
   try {
-    await check("with no webhook configured, alerting is inert but still logs", async () => {
+    await check("with nothing configured, alerting is inert but still logs", async () => {
       delete process.env.RB_ALERT_WEBHOOK;
       resetAlertsForTests();
-      assert(!isAlertingConfigured(), "no URL → not configured");
+      assert(!isAlertingConfigured(), "no channel → not configured");
       const calls = await withFetch(ok, () => sendAlert({ key: "k", level: "warn", title: "t" }));
-      assert(calls.length === 0, "nothing should be posted without a URL");
+      assert(calls.length === 0, "nothing should be posted without a channel");
+    });
+
+    await check("email needs BOTH a recipient and a server to count as configured", async () => {
+      // Half-configured is the dangerous state: it reads as "alerting is on" in
+      // /api/health while delivering nothing.
+      delete process.env.RB_ALERT_WEBHOOK;
+      process.env.RB_ALERT_EMAIL = "founder@example.test";
+      delete process.env.SMTP_URL;
+      assert(!isEmailAlertingConfigured(), "a recipient with no SMTP server is not configured");
+      assert(!isAlertingConfigured(), "and does not make alerting look live");
+
+      delete process.env.RB_ALERT_EMAIL;
+      process.env.SMTP_URL = "smtps://user:pass@smtp.example.test:465";
+      assert(!isEmailAlertingConfigured(), "an SMTP server with nobody to mail is not configured");
+
+      process.env.RB_ALERT_EMAIL = "founder@example.test";
+      assert(isEmailAlertingConfigured(), "both together → configured");
+      assert(isAlertingConfigured(), "and alerting reports itself live");
+
+      delete process.env.RB_ALERT_EMAIL;
+      delete process.env.SMTP_URL;
+    });
+
+    await check("a broken mail server NEVER throws into the caller", async () => {
+      // Same contract as the webhook, and the more likely failure: an expired
+      // app password, a blocked port, a provider outage. The build that was
+      // already failing must not fail differently because the alert did.
+      process.env.RB_ALERT_EMAIL = "founder@example.test";
+      process.env.SMTP_URL = "smtps://user:pass@127.0.0.1:1"; // nothing listens here
+      resetAlertsForTests();
+      await sendAlert({ key: "smtp-boom", level: "critical", title: "t", detail: "d" });
+      delete process.env.RB_ALERT_EMAIL;
+      delete process.env.SMTP_URL;
     });
 
     process.env.RB_ALERT_WEBHOOK = "https://hooks.example.invalid/abc";
@@ -132,8 +177,13 @@ const run = async () => {
       assert(calls.length === 1, "a 500 from the channel is logged, not retried");
     });
   } finally {
-    if (savedUrl === undefined) delete process.env.RB_ALERT_WEBHOOK;
-    else process.env.RB_ALERT_WEBHOOK = savedUrl;
+    const restore = (k: string, v: string | undefined) => {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    };
+    restore("RB_ALERT_WEBHOOK", saved.webhook);
+    restore("RB_ALERT_EMAIL", saved.email);
+    restore("SMTP_URL", saved.smtp);
   }
 
   console.log(`\n  ${passed} passed, ${failed} failed`);

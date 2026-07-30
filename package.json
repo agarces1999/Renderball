@@ -11,6 +11,7 @@
     "type-check": "tsc --noEmit",
     "test": "node scripts/run-tests.mjs",
     "qa": "node scripts/run-qa.mjs",
+    "alert:test": "node scripts/test-alert.mjs",
     "usage": "node scripts/usage-report.mjs",
     "db:migrate": "dotenv -e .env.local -- prisma migrate dev",
     "db:deploy": "prisma migrate deploy",
@@ -32,6 +33,7 @@
     "linebreak": "1.1.0",
     "lucide-react": "^1.17.0",
     "next": "^14.2.35",
+    "nodemailer": "^9.0.3",
     "pdf-lib": "^1.17.1",
     "playwright": "^1.60.0",
     "react": "18.3.1",
@@ -47,6 +49,7 @@
   },
   "devDependencies": {
     "@types/node": "22.5.0",
+    "@types/nodemailer": "^8.0.1",
     "@types/react": "18.3.3",
     "@types/react-dom": "18.3.0",
     "autoprefixer": "10.4.20",
