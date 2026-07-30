@@ -36,9 +36,17 @@ export const devScriptId = (): string => process.env.QA_DEV_SCRIPT_ID ?? "";
 const openEditor = async (page: import("playwright").Page, base: string): Promise<void> => {
   const id = devScriptId();
   expect(!!id, "qa/main.ts should have resolved a document before the flows ran");
-  const res = await page.goto(`${base}/dev/edit/${id}`, { waitUntil: "domcontentloaded" });
-  // Check the status before waiting on the canvas. A 404 will never grow
-  // pieces, so polling it for 30s only buries the real answer under a timeout.
+  let res = await page.goto(`${base}/dev/edit/${id}`, { waitUntil: "domcontentloaded" });
+
+  // A 5xx on the FIRST hit is usually the dev server compiling this route under
+  // three parallel flows, not a broken page — so retry once. A 404 is not
+  // retried: that one is always real.
+  if ((res?.status() ?? 0) >= 500) {
+    res = await page.goto(`${base}/dev/edit/${id}`, { waitUntil: "domcontentloaded" });
+  }
+
+  // Check the status before waiting on the canvas. An error page will never
+  // grow pieces, so polling it for 30s only buries the real answer in a timeout.
   expect(
     (res?.status() ?? 0) < 400,
     `the editor should open for ${id}, got ${res?.status()} from /dev/edit/${id}`,

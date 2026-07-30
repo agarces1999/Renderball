@@ -117,6 +117,19 @@ performing. Evidence: v0/Gamma lead with "ask the box"; Cursor/Framer can only
 show static screenshots of their editors. Our output is real DOM, so the page
 itself can generate — a claim chat-output competitors structurally cannot copy.
 
+**Go-to line (lock, founder 2026-07-30): "AI decks you can edit."**
+This is the DESCRIPTOR — what goes in every slot that answers "what is this?":
+the `<title>`, the OG card headline, the mono eyebrow above the hero, the
+one-liner in a DM. It replaces "the first AI-native design editor", which
+invented a category nobody was searching for and said nothing about what you
+get. This line names a category people already know (Gamma, Tome) and then
+names the one difference, which is also the locked GTM wedge — editing is the
+moat. Verbatim, including the plain "edit": no "actually", no "really".
+
+It does NOT replace the tagline below. Those are different jobs: the tagline is
+the argument, the go-to line is the label. The landing hero keeps the argument
+because the whole scroll is built to prove it.
+
 **Tagline (lock):** "Design should not be prompted. It should be drawn."
 Two-voice synthesis (2026-07-24): the founder's original word was
 "visualized"; the independent design voice argued — and the consultation
@@ -125,8 +138,8 @@ rectangle IS the interface), while "visualized" is what every AI company
 claims. The founder's original sentence lives on as the meta description.
 One-string revert if the founder disagrees. The second line wears a live
 emerald selection frame + corner handles + a mono dimension tag: the tagline
-presents as a just-generated element. Eyebrow above it in mono: THE FIRST
-AI-NATIVE DESIGN EDITOR.
+presents as a just-generated element. Eyebrow above it in mono: AI DECKS YOU
+CAN EDIT (was "THE FIRST AI-NATIVE DESIGN EDITOR" until 2026-07-30).
 
 **Hero opener — the prompt-box funeral:** the canvas first shows the
 category's altar (a centered "Describe your deck…" input), selects it like an

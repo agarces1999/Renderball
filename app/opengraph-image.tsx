@@ -17,7 +17,7 @@ import { ImageResponse } from "next/og";
 // Node runtime, deliberately. Everything else in this app is Node, and the
 // edge sandbox behaves differently under a self-hosted standalone server than
 // it does on Vercel — not a difference worth discovering from a broken card.
-export const alt = "Renderball — the AI-native design editor";
+export const alt = "Renderball — AI decks you can edit";
 export const size = { width: 1200, height: 630 };
 export const contentType = "image/png";
 
@@ -65,19 +65,22 @@ export default function OpengraphImage() {
         >
           <div
             style={{
-              fontSize: 66,
+              // Sized for THIS line. A short headline at a two-line size reads
+              // as a small headline in a feed, which is the only place this is
+              // ever seen.
+              fontSize: 92,
               fontWeight: 600,
               color: "#10141c",
-              letterSpacing: -2,
-              lineHeight: 1.08,
+              letterSpacing: -3,
+              lineHeight: 1.05,
               maxWidth: 1010,
             }}
           >
-            Design should not be prompted. It should be drawn.
+            AI decks you can edit.
           </div>
           <div style={{ fontSize: 29, color: "#69707e", lineHeight: 1.4, maxWidth: 840 }}>
-            Draw a box, say what goes there, and a real element appears — on-brand,
-            editable decks in minutes.
+            Draw a box, say what goes there, and a real element appears — on your
+            brand, in minutes.
           </div>
         </div>
 

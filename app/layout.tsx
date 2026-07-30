@@ -4,15 +4,16 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   metadataBase: new URL(process.env.NEXT_PUBLIC_APP_URL || "https://renderball.com"),
-  title: "Renderball — the AI-native design editor",
-  // The founder's original tagline lives here by design (DESIGN.md Landing):
-  // the H1 sharpened to "drawn", the meta keeps "visualized".
+  // "AI decks you can edit" is the go-to line (founder, 2026-07-30) — see
+  // DESIGN.md. It goes in every DESCRIPTOR slot: what you say when someone asks
+  // what this is. The manifesto tagline stays where it belongs, on the hero.
+  title: "Renderball — AI decks you can edit",
   description:
-    "Design should not be prompted, it should be visualized. Draw a box, say what goes there, and a real element appears — decks generated on your brand in minutes. Editing is free; generation is metered.",
+    "AI decks you can edit. Draw a box, say what goes there, and a real element appears — on your brand, in minutes. Editing is free; generation is metered.",
   openGraph: {
-    title: "Renderball — the AI-native design editor",
+    title: "Renderball — AI decks you can edit",
     description:
-      "Draw a box, say what goes there, and a real element appears. On-brand, editable decks in minutes. Editing free; generation metered.",
+      "Draw a box, say what goes there, and a real element appears. On your brand, in minutes. Editing free; generation metered.",
     siteName: "Renderball",
     type: "website",
     // The image itself comes from app/opengraph-image.tsx, which Next attaches
@@ -21,9 +22,9 @@ export const metadata: Metadata = {
   },
   twitter: {
     card: "summary_large_image",
-    title: "Renderball — the AI-native design editor",
+    title: "Renderball — AI decks you can edit",
     description:
-      "Draw a box, say what goes there, and a real element appears. On-brand, editable decks in minutes.",
+      "Draw a box, say what goes there, and a real element appears. On your brand, in minutes.",
   },
 };
 

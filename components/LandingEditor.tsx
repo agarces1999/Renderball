@@ -99,7 +99,7 @@ const SECTIONS: Section[] = [
     id: "draw",
     label: "Draw",
     headline: "You draw. Renderball designs.",
-    body: "Renderball is an AI-native design editor. Draw an area on the canvas, say what belongs there, and a real, editable element appears — on your brand. Presentation decks first.",
+    body: "Renderball makes AI decks you can edit. Draw an area on the canvas, say what belongs there, and a real, editable element appears — on your brand. Presentation decks first.",
     deck: 0,
     slide: 2,
     intents: ["the method, in three steps", "a canvas mockup — draw, then real"],
@@ -316,7 +316,7 @@ function ColdOpen({ progress }: { progress: number }) {
           className="mt-2.5 font-mono text-[12px] uppercase tracking-[0.24em] text-muted"
           style={{ animation: "rb-fade-up 640ms ease-out both", animationDelay: "240ms" }}
         >
-          AI-native design editor
+          AI decks you can edit
         </p>
         <div
           className="mt-11 flex flex-col items-center gap-1.5"
@@ -1104,7 +1104,7 @@ function StaticEditor() {
           already carries it. (The desktop branch hides that header and puts
           the wordmark in its own rail instead.) */}
       <p className="mb-3 font-mono text-[11px] uppercase tracking-[0.18em] text-muted">
-        The first AI-native design editor
+        AI decks you can edit
       </p>
       <h1 className="font-display text-[clamp(32px,8vw,46px)] font-bold leading-[1.06] tracking-[-0.02em] text-ink">
         {hero.headline}
