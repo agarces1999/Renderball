@@ -180,10 +180,23 @@ Fill in [.env.example](../.env.example) → `.env.local`. Create these accounts;
       (`lib/billing-provider.ts`).
 - [ ] ~~AWS (Remotion Lambda)~~ — not needed for launch (container render decision).
 - [x] **Cloudflare R2** — DONE (2026-07-23): prod bucket + token, all five `STORAGE_*` vars set in Railway.
-- [ ] **Resend** — API key + verified sending domain.
-- [ ] **Upstash Redis** — REST url + token.
-- [ ] **Sentry + PostHog** — DSN + project key.
-- [ ] **Domain** — confirm `renderball.com` + where the app hosts (Vercel assumed).
+- [ ] **Alert channel** — 2 minutes, no account: create a Slack or Discord
+      incoming webhook and set `RB_ALERT_WEBHOOK`. Until this is set, a total
+      generation outage is announced only to the container log. Pair it with an
+      uptime monitor on `GET /api/health` (UptimeRobot's free tier is enough —
+      it returns 503 when the database is unreachable or generation is down).
+- [ ] **Resend** — API key + verified sending domain. Needed for receipts and
+      any transactional mail; nothing sends email today.
+- [ ] **Upstash Redis** — REST url + token. Rate limits are in-process only, so
+      they reset on every deploy and are not shared across containers.
+- [ ] **Sentry + PostHog** — DSN + project key. Less urgent now that the alert
+      webhook exists, but there is still no error aggregation or product
+      analytics.
+- [x] **Domain** — `renderball.com`, hosted on Railway (not Vercel; the
+      container render decision, 2026-07-10).
+- [ ] **QA account** — one throwaway Clerk dev user in `QA_TEST_EMAIL` /
+      `QA_TEST_PASSWORD` turns on the seven signed-in browser flows. Costs
+      nothing to run; they skip silently without it.
 
 Plus three product confirmations: refund policy text, free-tier risk model
 (no-watermark + full anti-abuse vs. card-on-file), and the US-only geo-block vs.
