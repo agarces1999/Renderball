@@ -107,6 +107,27 @@ export const shareFlows: Flow[] = [
           expect(r.status() === 404, `scene ${scene} should 404, got ${r.status()}`);
         }
 
+        // The unfurl. A shared link's whole job is to be pasted somewhere, and
+        // the preview is what decides whether it looks like a deck or like
+        // nothing at all.
+        const html = await (await page.request.fetch(`${base}/s/${token}`)).text();
+        const ogImage = /<meta property="og:image" content="([^"]+)"/.exec(html)?.[1] ?? "";
+        expect(!!ogImage, "the shared page should declare an og:image");
+        expect(
+          /twitter:card" content="summary_large_image/.test(html),
+          "the card should be the large format, not a thumbnail strip",
+        );
+        const card = await page.request.fetch(ogImage, { failOnStatusCode: false });
+        expect(card.status() === 200, `the link preview image should load, got ${card.status()}`);
+        const bytes = (await card.body()).length;
+        // WhatsApp silently declines previews past a few hundred KB, so the
+        // ceiling is a product requirement, not a nicety.
+        expect(
+          bytes < 600_000,
+          `the preview is ${Math.round(bytes / 1024)}KB — too heavy to unfurl everywhere`,
+        );
+        note(`og:image ${Math.round(bytes / 1024)}KB`);
+
         // A link is read-only: holding one must not open the owner's API.
         const write = await page.request.fetch(`${base}/api/preview/edit-layout`, {
           method: "POST",
@@ -126,13 +147,21 @@ export const shareFlows: Flow[] = [
         const afterFrame = await page.request.fetch(`${base}/api/share/${token}/iframe?scene=0`, {
           failOnStatusCode: false,
         });
+        const afterCard = await page.request.fetch(`${base}/api/share/${token}/thumbnail`, {
+          failOnStatusCode: false,
+        });
         expect(afterPage.status() === 404, `a revoked link must stop opening, got ${afterPage.status()}`);
         expect(
           afterFrame.status() === 404,
           `a revoked link must stop rendering pages, got ${afterFrame.status()} — ` +
             "the page and the frame are separate routes and both have to die",
         );
-        note("revoked: page and frame both 404");
+        expect(
+          afterCard.status() === 404,
+          `a revoked link must stop serving its preview image, got ${afterCard.status()} — ` +
+            "otherwise the deck's first slide outlives the link in every chat it was pasted into",
+        );
+        note("revoked: page, frame and preview all 404");
       } finally {
         await disableShare(scriptId, DEV_OWNER_ID).catch(() => {});
       }
@@ -169,14 +198,23 @@ export const shareFlows: Flow[] = [
         const asFrame = await page.request.fetch(`${base}/api/share/${id}/iframe?scene=0`, {
           failOnStatusCode: false,
         });
+        const asCard = await page.request.fetch(`${base}/api/share/${id}/thumbnail`, {
+          failOnStatusCode: false,
+        });
         if (asPage.status() < 400) leaks.push(`/s/${candidate.slice(0, 24)} → ${asPage.status()}`);
         if (asFrame.status() < 400) {
           leaks.push(`/api/share/${candidate.slice(0, 24)}/iframe → ${asFrame.status()}`);
         }
+        if (asCard.status() < 400) {
+          leaks.push(`/api/share/${candidate.slice(0, 24)}/thumbnail → ${asCard.status()}`);
+        }
         // A 500 is its own failure: it means the input reached something that
         // did not expect it, and it distinguishes real ids from invented ones.
-        if (asPage.status() >= 500 || asFrame.status() >= 500) {
-          leaks.push(`${candidate.slice(0, 24)} crashed (${asPage.status()}/${asFrame.status()})`);
+        if (asPage.status() >= 500 || asFrame.status() >= 500 || asCard.status() >= 500) {
+          leaks.push(
+            `${candidate.slice(0, 24)} crashed ` +
+              `(${asPage.status()}/${asFrame.status()}/${asCard.status()})`,
+          );
         }
       }
       note(`${notTokens.length} non-tokens probed`);

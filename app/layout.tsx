@@ -15,6 +15,15 @@ export const metadata: Metadata = {
       "Draw a box, say what goes there, and a real element appears. On-brand, editable decks in minutes. Editing free; generation metered.",
     siteName: "Renderball",
     type: "website",
+    // The image itself comes from app/opengraph-image.tsx, which Next attaches
+    // to every route that does not declare its own. /s/<token> declares its
+    // own — a shared deck should unfurl as that deck, not as our marketing.
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "Renderball — the AI-native design editor",
+    description:
+      "Draw a box, say what goes there, and a real element appears. On-brand, editable decks in minutes.",
   },
 };
 

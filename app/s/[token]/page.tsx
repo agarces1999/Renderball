@@ -25,11 +25,24 @@ export async function generateMetadata({
 }): Promise<Metadata> {
   const shared = await loadSharedDocument(params.token);
   if (!shared) return { title: "Not found — Renderball" };
+
+  // The unfurl. A shared link exists to be pasted into a chat, and a link that
+  // renders as a blank grey card is one people stop forwarding — so the preview
+  // is the deck's actual first slide, served by the public thumbnail route.
+  const image = `/api/share/${encodeURIComponent(params.token)}/thumbnail`;
   return {
     title: `${shared.title} — Renderball`,
     description: "A presentation made with Renderball.",
-    // A shared link is meant to be pasted into chat, but the deck is the
-    // recipient's business and not search engines'.
+    openGraph: {
+      title: shared.title,
+      description: "A presentation made with Renderball.",
+      siteName: "Renderball",
+      type: "article",
+      images: [{ url: image, width: 1200, height: 675, alt: shared.title }],
+    },
+    twitter: { card: "summary_large_image", title: shared.title, images: [image] },
+    // Unfurling is not indexing. The deck is the recipient's business and not a
+    // search engine's, so the preview is offered and the crawl is refused.
     robots: { index: false, follow: false },
   };
 }
