@@ -191,6 +191,15 @@ real GDPR deletion call.
 
 ## Residual risks to close before taking money (from the completeness audit)
 
+- ✅ **Alerting closed 2026-07-30.** The breaker's marker file is no longer
+  log-only: `lib/alert.ts` posts to `RB_ALERT_WEBHOOK` — any Slack or Discord
+  webhook, no account, no SDK, no key to rotate — on trip AND on recovery, with
+  a 10-minute repeat window so a flapping condition cannot get the channel
+  muted. The pull-side companion is `GET /api/health`: public (a monitor cannot
+  hold a session), 503 when the database is unreachable or generation is down,
+  and deliberately incapable of naming anything inside those dependencies.
+  Point UptimeRobot's free tier at it and the last silent-outage path is shut.
+
 - ✅ **Upstream balance SPOF (learned 2026-07-08) — breaker shipped 2026-07-10.**
   `lib/zai-breaker.ts`: the [1113] Insufficient-balance error trips a circuit
   that fails every spend entrypoint fast with a friendly message BEFORE any

@@ -137,6 +137,34 @@ export const securityFlows: Flow[] = [
   },
 
   {
+    name: "the health endpoint answers a monitor, and gives nothing away",
+    tier: "free",
+    run: async ({ page, base, note }) => {
+      // Public on purpose — a check that needs a session cannot be used by an
+      // uptime monitor. That makes what it does NOT say the important part.
+      const res = await page.request.fetch(`${base}/api/health`, { failOnStatusCode: false });
+      expect([200, 503].includes(res.status()), `/api/health should answer, got ${res.status()}`);
+      const raw = await res.text();
+      const body = JSON.parse(raw) as { status?: string; checks?: Record<string, string> };
+      expect(typeof body.status === "string", "it should report a status");
+      expect(!!body.checks?.database, "it should report on the database");
+      note(`${body.status} — ${Object.entries(body.checks ?? {}).map(([k, v]) => `${k}:${v}`).join(" ")}`);
+
+      // A dependency's reachability is fine to publish; anything about its
+      // contents or credentials is not. Driver errors in particular tend to
+      // carry the connection string.
+      for (const secret of [
+        "postgres://", "postgresql://", "DATABASE_URL", "sk_", "pk_live",
+        "CLERK_SECRET", "neon.tech", "amazonaws", "r2.cloudflarestorage",
+        "LEMONSQUEEZY", "Bearer ",
+      ]) {
+        expect(!raw.includes(secret), `/api/health must not disclose ${secret}`);
+      }
+      expect(raw.length < 1000, `the body should stay small, got ${raw.length} bytes`);
+    },
+  },
+
+  {
     name: "webhooks reject an unsigned request",
     tier: "free",
     run: async ({ page, base, note }) => {

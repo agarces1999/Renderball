@@ -26,6 +26,7 @@
  */
 import { promises as fs } from "fs";
 import path from "path";
+import { sendAlert } from "./alert";
 
 const COOLDOWN_MS = 10 * 60 * 1000; // re-probe every 10 minutes while dry
 
@@ -98,13 +99,23 @@ const trip = (): void => {
   state.trips += 1;
   state.probing = false;
   // ── ALERT SURFACE ──────────────────────────────────────────────────────
-  // Loud, structured, greppable. TODO(launch): page a real channel here the
-  // moment Resend/Sentry credentials exist — this is the production SPOF.
+  // This is THE production single point of failure: an empty upstream balance
+  // stops every generation in the product. It used to be a console line, which
+  // in a container nobody is watching is indistinguishable from silence.
   console.error(
     `[ZAI-BALANCE-CIRCUIT] TRIPPED (count ${state.trips}) at ${new Date().toISOString()} — ` +
-      `all generation is failing fast until the z.ai account is recharged. ` +
-      `Recharge at z.ai, then the breaker self-probes every ${COOLDOWN_MS / 60000} min.`,
+      `all generation is failing fast until the account is recharged. ` +
+      `The breaker self-probes every ${COOLDOWN_MS / 60000} min.`,
   );
+  void sendAlert({
+    key: "llm-balance-breaker",
+    level: "critical",
+    title: "Generation is DOWN — the LLM account is out of balance",
+    detail:
+      `Every build, generate and regenerate is failing fast (trip #${state.trips}). ` +
+      `Recharge the Fireworks account; the breaker retries on its own every ` +
+      `${COOLDOWN_MS / 60000} minutes and recovers without a deploy.`,
+  });
   void fs
     .writeFile(
       markerPath(),
@@ -130,6 +141,14 @@ export const noteZaiSuccess = (): void => {
     state.openedAt = null;
     state.probing = false;
     void fs.rm(markerPath(), { force: true }).catch(() => {});
+    // The all-clear matters as much as the alarm: without it the only way to
+    // know the outage ended is to go and try the product.
+    void sendAlert({
+      key: "llm-balance-recovered",
+      level: "warn",
+      title: "Generation is back — the LLM account is answering again",
+      detail: "The breaker closed on its own. No deploy needed.",
+    });
   }
 };
 
