@@ -212,6 +212,87 @@ export const editorFlows: Flow[] = [
       );
       expect(items.some((i) => /delete/i.test(i)), "the menu should offer Delete");
       expect(items.some((i) => /regenerate/i.test(i)), "the menu should offer Regenerate");
+      expect(items.some((i) => /bring to front/i.test(i)), "the menu should offer Bring to front");
+      expect(items.some((i) => /send to back/i.test(i)), "the menu should offer Send to back");
+      void ids;
+    },
+  },
+
+  {
+    name: "bring to front changes what is painted on top",
+    tier: "free",
+    mutates: true,
+    run: async ({ page, base, note }) => {
+      // The question is NOT whether the manifest changed — it always did. It is
+      // whether the browser paints differently, which for weeks it did not:
+      // generated pieces carry explicit z-index values, and those beat document
+      // order. So this measures the rendered stacking, from the DOM.
+      await openEditor(page, base);
+
+      const stacking = async () =>
+        page.evaluate(() => {
+          const d = (document.querySelector("iframe") as HTMLIFrameElement | null)?.contentDocument;
+          if (!d) return [] as { id: string; z: number; order: number }[];
+          const out: { id: string; z: number; order: number }[] = [];
+          let order = 0;
+          for (const el of Array.from(d.querySelectorAll("[data-piece]"))) {
+            const id = el.getAttribute("data-piece");
+            if (!id) continue;
+            // display:contents on the piece itself — the layer is the wrapper
+            // above it, or the highest z-index among its own children.
+            const wrapper = el.parentElement;
+            const wrapperZ = wrapper ? parseInt(getComputedStyle(wrapper).zIndex || "0", 10) : 0;
+            let childZ = 0;
+            for (const c of Array.from(el.querySelectorAll("*"))) {
+              const z = parseInt(getComputedStyle(c).zIndex || "0", 10);
+              if (Number.isFinite(z) && z > childZ) childZ = z;
+            }
+            out.push({
+              id,
+              z: Math.max(Number.isFinite(wrapperZ) ? wrapperZ : 0, childZ),
+              order: order++,
+            });
+          }
+          return out;
+        });
+
+      const before = await stacking();
+      expect(before.length >= 2, "the slide needs at least two pieces to reorder");
+      // Pick the piece that is currently LOWEST, so "front" has somewhere to go.
+      const lowest = [...before].sort((a, b) => a.z - b.z || a.order - b.order)[0];
+      const topZBefore = Math.max(...before.map((p) => p.z));
+      note(`${lowest.id} at z=${lowest.z}, top of stack z=${topZBefore}`);
+
+      const res = await page.request.fetch(`${base}/api/dev/edit-layout`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        data: { scriptId: devScriptId(), sceneIndex: 0, pieceId: lowest.id, op: "front" },
+        failOnStatusCode: false,
+      });
+      expect(res.status() === 200, `bring to front should succeed, got ${res.status()}`);
+
+      await page.reload({ waitUntil: "domcontentloaded" });
+      await waitForCanvas(page);
+      const after = await stacking();
+
+      // It must still be there. A reorder used to delete the piece outright —
+      // both edit-layout routes fell through to deleteElement for this op.
+      expect(
+        after.some((p) => p.id === lowest.id),
+        `${lowest.id} DISAPPEARED — a reorder must never remove an element`,
+      );
+      expect(
+        after.length === before.length,
+        `the slide lost pieces: ${before.length} → ${after.length}`,
+      );
+
+      const now = after.find((p) => p.id === lowest.id)!;
+      const othersTop = Math.max(...after.filter((p) => p.id !== lowest.id).map((p) => p.z));
+      expect(
+        now.z > othersTop,
+        `${lowest.id} should now be above everything (z=${now.z} vs ${othersTop})`,
+      );
+      note(`now z=${now.z}, everything else ≤ ${othersTop}`);
     },
   },
 

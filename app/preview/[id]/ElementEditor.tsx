@@ -358,7 +358,9 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
   const [hovered, setHovered] = useState<PieceRef | null>(null);
   const [showAll, setShowAll] = useState(defaultShowAll);
   const [allPieces, setAllPieces] = useState<PieceRef[]>([]);
-  const [busy, setBusyState] = useState<null | "regenerate" | "delete" | "move" | "text" | "insert" | "resize" | "undo">(null);
+  const [busy, setBusyState] = useState<
+    null | "regenerate" | "delete" | "move" | "text" | "insert" | "resize" | "undo" | "front" | "back"
+  >(null);
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   // ── add / generate (net-new) ──────────────────────────────────────────────
@@ -1815,6 +1817,30 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
     }
   };
 
+  /**
+   * Bring the selected element to the front, or send it to the back.
+   *
+   * The selection is kept across the reload (reselectIdRef) rather than
+   * cleared: raising something is usually the first of several adjustments,
+   * and losing the selection after each one makes that a chore.
+   */
+  const reorder = async (to: "front" | "back") => {
+    if (!selected || busy) return;
+    setBusy(to === "front" ? "front" : "back");
+    const ok = await post(`${apiBase}/edit-layout`, {
+      scriptId,
+      sceneIndex,
+      pieceId: selected.pieceId,
+      op: to,
+    });
+    setBusy(null);
+    if (ok) {
+      reselectIdRef.current = selected.pieceId;
+      setSelected(null);
+      onChanged();
+    }
+  };
+
   // A live resize drives the box directly; otherwise it's the measured rect plus any
   // in-flight move delta.
   const box =
@@ -2013,17 +2039,32 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
             <div className="px-3 pb-1.5 pt-1 font-mono text-[9.5px] uppercase tracking-[0.14em] text-white/35">
               {menu.kind || "element"}
             </div>
-            {/* Bring to front / Send to back are DELIBERATELY not here yet.
-                The server op (lib/edit/edit-layout.ts reorderElement) is written
-                and unit-tested, and it is correct in isolation — verified against
-                copies of two real decks. But driven through the running server it
-                desynced the manifest from the render on some decks: the piece
-                stayed in Composition.tsx and disappeared from lego/manifest.json.
-                A render-side safety net is in place and did not trip, so the loss
-                happens outside that function and is not yet explained. Reordering
-                is a cosmetic convenience; losing someone's element is not
-                recoverable from the UI, so it stays unexposed until the desync is
-                understood. */}
+            {/* Held back for weeks because a reorder "lost the element". It did:
+                both edit-layout routes validated op "front"/"back" and then fell
+                through their dispatch chain to deleteElement, so the click that
+                was meant to raise a piece deleted it. reorderElement itself was
+                never running. With that fixed, 1,446 reorders across 31 local
+                decks lose nothing, and the render-side safety net still stands
+                behind it. */}
+            <MenuItem
+              onClick={() => {
+                setMenu(null);
+                void reorder("front");
+              }}
+              disabled={!!busy}
+            >
+              Bring to front
+            </MenuItem>
+            <MenuItem
+              onClick={() => {
+                setMenu(null);
+                void reorder("back");
+              }}
+              disabled={!!busy}
+            >
+              Send to back
+            </MenuItem>
+            <div className="my-1 h-px bg-white/8" />
             <MenuItem
               onClick={() => {
                 setMenu(null);

@@ -34,6 +34,18 @@ export interface PieceMeta {
   openTag: string;
   file: string; // relative to genDir/lego/
   offset?: PieceOffset;
+  /**
+   * Explicit stacking layer, set by "bring to front" / "send to back".
+   *
+   * Absent for almost every piece, and that is the point: slot order in the
+   * scene template already decides paint order for anything without an explicit
+   * z-index. But GENERATED pieces routinely carry one — five of eight in the
+   * reference deck do — and an explicit z-index beats document order, so moving
+   * the slot alone changed the manifest and nothing on screen. This is the
+   * escape hatch for that case, applied by the reassembler so it survives a
+   * regenerate exactly like `offset` does.
+   */
+  layer?: number;
 }
 export interface SceneMeta {
   sceneIndex: number;
@@ -102,6 +114,21 @@ export const writeManifest = async (genDir: string, m: Manifest): Promise<void> 
  */
 const wrapOffset = (body: string, off: PieceOffset): string =>
   `<div style={{ position: "absolute", left: ${off.dx}, top: ${off.dy}, right: ${-off.dx}, bottom: ${-off.dy} }}>${body}</div>`;
+
+/**
+ * Wrap a piece in a Section-sized layer with an explicit z-index.
+ *
+ * This one DOES establish a stacking context, unlike wrapOffset above, and that
+ * is deliberate rather than an oversight: it makes the piece a single unit in
+ * the stack, so its internals can no longer interleave with another piece's.
+ * That is precisely what a user means by "send this to the back" — they mean
+ * the whole thing, not most of it.
+ *
+ * Only pieces the user has explicitly reordered get one, so nothing else's
+ * rendering changes.
+ */
+const wrapLayer = (body: string, layer: number): string =>
+  `<div style={{ position: "absolute", inset: 0, zIndex: ${Math.round(layer)} }}>${body}</div>`;
 
 export const writeDecomposed = async (genDir: string, d: Decomposed): Promise<void> => {
   const legoDir = path.join(genDir, LEGO_DIR);
@@ -200,16 +227,27 @@ export const reassembleFromDisk = async (
 ): Promise<string> => {
   const manifest = await readManifest(genDir);
   const offsets = new Map<string, PieceOffset>();
+  const layers = new Map<string, number>();
   for (const s of manifest.scenes)
-    for (const p of s.pieces) if (p.offset) offsets.set(`${s.sceneIndex}:${p.id}`, p.offset);
+    for (const p of s.pieces) {
+      if (p.offset) offsets.set(`${s.sceneIndex}:${p.id}`, p.offset);
+      if (typeof p.layer === "number") layers.set(`${s.sceneIndex}:${p.id}`, p.layer);
+    }
 
   const d = await readDecomposed(genDir);
-  // Apply the caller's body override first, THEN the persistent move offset, so a
-  // regenerated-and-moved piece keeps both. Every piece with no offset is untouched.
+  // Caller's body override first, then the move offset, then the stacking layer
+  // OUTERMOST — the layer has to wrap the offset, or the offset wrapper would
+  // sit outside the stacking context and the z-index would apply to a box that
+  // isn't the one being stacked. A regenerated, moved and reordered piece keeps
+  // all three. Pieces with neither are untouched, byte for byte.
   return reassemble(d, (si, p) => {
-    const base = bodyOf ? bodyOf(si, p) : p.body;
-    const off = offsets.get(`${si}:${p.id}`);
-    return off ? wrapOffset(base, off) : base;
+    const key = `${si}:${p.id}`;
+    let body = bodyOf ? bodyOf(si, p) : p.body;
+    const off = offsets.get(key);
+    if (off) body = wrapOffset(body, off);
+    const layer = layers.get(key);
+    if (typeof layer === "number") body = wrapLayer(body, layer);
+    return body;
   });
 };
 

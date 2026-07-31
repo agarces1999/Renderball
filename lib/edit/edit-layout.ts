@@ -156,11 +156,60 @@ export const deleteElement = async (input: DeleteElementInput): Promise<DeleteEl
 };
 
 // ── z-order ─────────────────────────────────────────────────────────────────
+//
 // Paint order is SLOT order in the scene template ({/*RB:<id>*/} markers), not
 // the order of the manifest's `pieces` array — pieces render as fragments in one
-// stacking context, so whichever slot is emitted last paints on top. Bringing an
-// element forward is therefore moving its marker, and nothing else: no body is
-// touched, no coordinate changes, no neighbour reflows.
+// stacking context, so whichever slot is emitted last paints on top.
+//
+// THAT IS ONLY HALF THE STORY, and the missing half is why this feature sat
+// unshipped: an explicit z-index beats document order, and generated pieces
+// routinely carry one. Measured on the reference deck, five of its eight pieces
+// had `zIndex: 1..5` baked into their bodies by the element-insert path. Moving
+// the marker for any of those changed the manifest, changed the DOM, and
+// changed nothing on screen — the "manifest/render desync" that looked
+// mysterious and was simply CSS.
+//
+// So a reorder does both: it moves the marker AND records an explicit layer
+// that clears (or undercuts) every z-index in the scene. The layer is applied by
+// the reassembler, like a move offset, so it survives a regenerate.
+const zIndexInBody = /(?:zIndex|z-index)\s*[:=]\s*["'{\s]*(-?\d+)/g;
+
+/**
+ * Where explicit layers live, above anything generated code writes.
+ *
+ * A source scan is not sufficient on its own and the QA flow proved it: on the
+ * reference deck the scan found a highest z-index of 5, while the browser
+ * computed 20 for an element whose stacking comes from somewhere the piece
+ * bodies do not show — a stylesheet rule, the scene preamble, a value this
+ * regex cannot see. Anything built from an incomplete scan is a "bring to
+ * front" that lands underneath something.
+ *
+ * So fronting puts the piece in a band that generated code does not use.
+ * Observed z-indexes across every local deck sit in the 1–20 range; a thousand
+ * is not a magic number so much as a different order of magnitude, and the scan
+ * below still raises it if a deck ever exceeds the band.
+ */
+const FRONT_BAND = 1000;
+
+/**
+ * The highest z-index visible in a scene's piece sources.
+ *
+ * Read from the SOURCE because this runs server-side during an edit and there
+ * is no browser. Incomplete by nature — see FRONT_BAND — so it is used only to
+ * RAISE the band, never to set the layer on its own. A regex is enough for
+ * that: matching a number inside a comment or a string is harmless when the
+ * only use is "at least this high".
+ */
+const highestZIndex = (bodies: string[]): number => {
+  let max = 0;
+  for (const body of bodies) {
+    for (const m of body.matchAll(zIndexInBody)) {
+      const n = Number(m[1]);
+      if (Number.isFinite(n) && n > max) max = n;
+    }
+  }
+  return max;
+};
 
 export interface ReorderElementInput {
   genDir: string;
@@ -226,6 +275,33 @@ export const reorderElement = async (
 
     const snapshot = await readManifest(genDir);
     scene.template = without.slice(0, insertAt) + slot + without.slice(insertAt);
+
+    // The half that actually moves pixels. Read every OTHER piece's baked-in
+    // z-index and step outside the range: front clears the highest, back goes
+    // under the lowest. The moved piece's own z-indexes are excluded — it is
+    // being wrapped, so its internals stack inside the new layer and cannot
+    // compete with it.
+    const decomposed = await readDecomposed(genDir);
+    const otherBodies = (decomposed.scenes.find((s) => s.sceneIndex === sceneIndex)?.pieces ?? [])
+      .filter((p) => p.id !== pieceId)
+      .map((p) => p.body);
+    const max = highestZIndex(otherBodies);
+    const target = scene.pieces.find((p) => p.id === pieceId)!;
+    // Existing layers count too, or a second "bring to front" would land level
+    // with the first one and paint order would fall back to document order.
+    const layers = scene.pieces
+      .filter((p) => p.id !== pieceId && typeof p.layer === "number")
+      .map((p) => p.layer as number);
+    //
+    // "Back" clamps at ZERO rather than going negative, and that is a safety
+    // decision, not a rounding one. The Section root is `position: absolute`
+    // with `z-index: auto`, so it does NOT establish a stacking context — a
+    // child at z-index -1 would escape it and paint behind the slide's own
+    // background, which reads as "send to back deleted my element". Zero puts
+    // the piece under everything with a positive z-index, and the slot move
+    // above orders it against the pieces that have none. That is the whole of
+    // what "back" means here, without the disappearing act.
+    target.layer = to === "front" ? Math.max(FRONT_BAND, max, ...layers) + 1 : 0;
 
     const undo = await captureUndo(genDir);
     try {

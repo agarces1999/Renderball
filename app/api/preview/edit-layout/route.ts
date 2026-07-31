@@ -13,7 +13,7 @@ import {
 /**
  * M3 layout-edit endpoint — reposition, resize, or delete one element, NO LLM.
  *
- * POST body: { scriptId, sceneIndex, pieceId, op: "move"|"resize"|"delete", … }
+ * POST body: { scriptId, sceneIndex, pieceId, op: "move"|"resize"|"delete"|"front"|"back", … }
  *   move   → dx/dy pixel delta added to the piece's current offset
  *   resize → x/y/w/h absolute canvas px (the dragged handles); bakes the origin and
  *            clears any move offset so the two can't stack
@@ -30,7 +30,9 @@ export async function POST(request: Request) {
     scriptId?: string;
     sceneIndex?: number;
     pieceId?: string;
-    op?: "move" | "resize" | "delete";
+    // front/back were accepted by the runtime guard but missing HERE, so every
+    // reorder narrowed to "delete" and took the delete branch.
+    op?: "move" | "resize" | "delete" | "front" | "back";
     dx?: number;
     dy?: number;
     x?: number;
@@ -78,7 +80,13 @@ export async function POST(request: Request) {
       ? await moveElement({ genDir, sceneIndex, pieceId, dx: dx as number, dy: dy as number })
       : op === "resize"
         ? await resizeElement({ genDir, sceneIndex, pieceId, x: x as number, y: y as number, w: w as number, h: h as number })
-        : await deleteElement({ genDir, sceneIndex, pieceId });
+        : op === "front" || op === "back"
+          // Ordering the element, not removing it. This chain used to end at
+          // deleteElement for these two ops — a validated "bring to front"
+          // silently deleted the piece, which is exactly the data loss that
+          // kept z-order unshipped.
+          ? await reorderElement({ genDir, sceneIndex, pieceId, to: op })
+          : await deleteElement({ genDir, sceneIndex, pieceId });
 
   const status = result.ok ? 200 : /not found/.test(result.error ?? "") ? 404 : 400;
   if (!result.ok) {
@@ -93,7 +101,7 @@ export async function POST(request: Request) {
   const payload =
     op === "move"
       ? { ok: true, sceneIndex, pieceId, op, offset: (result as { offset?: unknown }).offset }
-      : op === "resize"
+      : op === "resize" || op === "front" || op === "back"
         ? { ok: true, sceneIndex, pieceId, op }
         : { ok: true, sceneIndex, pieceId, op, remaining: (result as { remaining?: number }).remaining };
   return NextResponse.json(payload, { status });

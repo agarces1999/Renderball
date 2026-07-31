@@ -11,7 +11,7 @@ import {
  * Dev-only layout-edit route — headless counterpart to /api/preview/edit-layout for
  * the M3 validation loop (no Clerk session). NODE_ENV-gated (404 in prod).
  *
- * POST body: { scriptId, sceneIndex, pieceId, op: "move"|"resize"|"delete", … }
+ * POST body: { scriptId, sceneIndex, pieceId, op: "move"|"resize"|"delete"|"front"|"back", … }
  */
 export async function POST(request: Request) {
   if (process.env.NODE_ENV === "production") {
@@ -22,7 +22,9 @@ export async function POST(request: Request) {
     scriptId?: string;
     sceneIndex?: number;
     pieceId?: string;
-    op?: "move" | "resize" | "delete";
+    // front/back were accepted by the runtime guard but missing HERE, so every
+    // reorder narrowed to "delete" and took the delete branch.
+    op?: "move" | "resize" | "delete" | "front" | "back";
     dx?: number;
     dy?: number;
     x?: number;
@@ -62,7 +64,14 @@ export async function POST(request: Request) {
       ? await moveElement({ genDir, sceneIndex, pieceId, dx: Number(dx), dy: Number(dy) })
       : op === "resize"
         ? await resizeElement({ genDir, sceneIndex, pieceId, x: Number(x), y: Number(y), w: Number(w), h: Number(h) })
-        : await deleteElement({ genDir, sceneIndex, pieceId });
+        : op === "front" || op === "back"
+          // Ordering the element, not removing it. Both routes validated these
+          // two ops and then fell through this chain to deleteElement — so a
+          // reorder DELETED the piece. That is the whole of the "reordering
+          // desynced the manifest and lost an element" mystery that kept this
+          // feature unshipped: reorderElement was never being called.
+          ? await reorderElement({ genDir, sceneIndex, pieceId, to: op })
+          : await deleteElement({ genDir, sceneIndex, pieceId });
 
   return NextResponse.json(result, { status: result.ok ? 200 : 400 });
 }
