@@ -51,7 +51,8 @@ const deleteDocument = async (page: Page, base: string, id: string): Promise<num
     method: "DELETE",
     failOnStatusCode: false,
   });
-  if (res.status() < 400) created.delete(id);
+  // 404 means it is already gone, which is the state this is trying to reach.
+  if (res.status() < 400 || res.status() === 404) created.delete(id);
   return res.status();
 };
 
@@ -109,12 +110,20 @@ export const accountFlows: Flow[] = [
 
       // It must actually appear in the list — a document that exists only as a
       // redirect target is one the user can never find again.
-      await page.goto(`${base}/documents`, { waitUntil: "domcontentloaded" });
-      const listed = await page.evaluate(
-        (docId) => document.body.innerHTML.includes(docId),
-        id,
+      //
+      // POLLED, not checked once: the gallery is server-rendered and the first
+      // render of a protected page under `next dev` intermittently throws from
+      // inside React, producing an error page with no cards on it. Asserting on
+      // one load turns that into "the document is missing", which is a much
+      // more alarming thing to read than what actually happened.
+      await until(
+        `the new document ${id} appears in the list`,
+        async () => {
+          await page.goto(`${base}/documents`, { waitUntil: "domcontentloaded" });
+          return page.evaluate((docId) => document.body.innerHTML.includes(docId), id);
+        },
+        30_000,
       );
-      expect(listed, `the new document ${id} should appear in the list`);
 
       const status = await deleteDocument(page, base, id);
       expect(status < 400, `deleting should succeed, got ${status}`);
