@@ -184,7 +184,30 @@ export const runFlows = async (opts: RunOptions): Promise<RunSummary> => {
       }
       return { name: flow.name, status: "passed", ms: Date.now() - t0, notes };
     } catch (e) {
-      const reason = e instanceof Error ? e.message : String(e);
+      let reason = e instanceof Error ? e.message : String(e);
+
+      // Tell a broken DEV SERVER apart from a broken product.
+      //
+      // `next dev` compiles incrementally, and enough source edits while it is
+      // running leave its cache inconsistent: routes then fail with
+      // "__webpack_modules__[moduleId] is not a function" or
+      // "Cannot read properties of undefined (reading 'call')" from inside
+      // webpack-runtime, with none of our code in the stack. Three flows
+      // reported that as product failures for four runs while the product was
+      // fine — the fix is one restart, and the suite should say so.
+      const looksLikeStaleBuild = await Promise.all(
+        context.pages().map((p) =>
+          p
+            .evaluate(() => document.body?.innerText ?? "")
+            .then((t) => /__webpack_modules__|webpack-runtime|ChunkLoadError/.test(t))
+            .catch(() => false),
+        ),
+      ).then((hits) => hits.some(Boolean));
+      if (looksLikeStaleBuild || /reading 'call'/.test(reason)) {
+        reason =
+          `${reason}\n        ↳ this looks like a STALE DEV BUILD, not a product bug. ` +
+          `Stop the dev server, delete .next, start it again.`;
+      }
       let screenshot: string | undefined;
       try {
         const pages = context.pages();

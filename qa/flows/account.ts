@@ -61,7 +61,19 @@ export const accountFlows: Flow[] = [
     tier: "free",
     needsAuth: true,
     run: async ({ page, base, note }) => {
-      const res = await page.goto(`${base}/documents`, { waitUntil: "domcontentloaded" });
+      let res = await page.goto(`${base}/documents`, { waitUntil: "domcontentloaded" });
+
+      // Retry once on a 5xx. This is the FIRST render of a protected page with
+      // a session, and `next dev` compiling it under parallel load
+      // intermittently throws from inside React — "Cannot read properties of
+      // null (reading 'useContext')" out of next-server/app-page, none of our
+      // code in the stack. The suite's warm-up cannot prevent it: warming
+      // /documents without a session only compiles the redirect to sign-in, not
+      // the page body. Production serves a built route and cannot hit this.
+      if ((res?.status() ?? 0) >= 500) {
+        res = await page.goto(`${base}/documents`, { waitUntil: "domcontentloaded" });
+      }
+
       if ((res?.status() ?? 0) >= 400) {
         // A bare status code is a bad bug report. Next puts the thrown message
         // in the dev error page, so pull it out — the difference between

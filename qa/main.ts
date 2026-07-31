@@ -10,6 +10,7 @@ import { documentFlows } from "./flows/document";
 import { securityFlows } from "./flows/security";
 import { shareFlows } from "./flows/share";
 import { accountFlows } from "./flows/account";
+import { journeyFlows } from "./flows/journeys";
 import { authenticator, testCredentials } from "./auth";
 
 const BASE = process.env.QA_BASE ?? "http://localhost:3000";
@@ -253,7 +254,7 @@ const main = async (): Promise<void> => {
   const summary = await runFlows({
     base: BASE,
     tier: TIER,
-    flows: [...editorFlows, ...documentFlows, ...securityFlows, ...shareFlows, ...accountFlows],
+    flows: [...editorFlows, ...documentFlows, ...securityFlows, ...shareFlows, ...accountFlows, ...journeyFlows],
     concurrency: CONCURRENCY,
     headless: process.env.QA_HEADED !== "1",
     artifactDir: ARTIFACTS,
