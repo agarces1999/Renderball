@@ -10,6 +10,7 @@ import {
   isBlockedAddress,
   isBlockedIpv4,
   isBlockedIpv6,
+  pinnedLookup,
   SsrfBlockedError,
 } from "./ssrf-guard";
 
@@ -114,6 +115,58 @@ check("assertPublicUrl rejects literal internal IPs without DNS", async () => {
     }
     assert(threw, `${url} must be rejected`);
   }
+});
+
+// ── DNS rebinding ─────────────────────────────────────────────────────────
+//
+// The attack the address check alone does not stop: resolve once for the
+// check, once for the connection, and answer differently the second time. The
+// defence is connecting to the address that was validated, which rests entirely
+// on pinnedLookup being right — and its failure mode is silent. Node calls a
+// lookup function with two different contracts, and answering only one of them
+// makes the connection fall back to a real resolution, reopening the hole with
+// no error anywhere.
+
+check("pinnedLookup answers the `all: true` contract with an array", () => {
+  const pin = { address: "203.0.113.7", family: 4 as const };
+  let got: unknown = null;
+  pinnedLookup(pin)("anything.invalid", { all: true }, ((_e: unknown, a: unknown) => {
+    got = a;
+  }) as never);
+  assert(Array.isArray(got), `all:true must yield an array, got ${JSON.stringify(got)}`);
+  assert(
+    (got as { address: string }[])[0]?.address === pin.address,
+    `the array must carry the pinned address, got ${JSON.stringify(got)}`,
+  );
+});
+
+check("pinnedLookup answers the single-address contract with (address, family)", () => {
+  const pin = { address: "203.0.113.9", family: 4 as const };
+  let addr = "";
+  let fam = 0;
+  pinnedLookup(pin)("anything.invalid", undefined, ((_e: unknown, a: string, f: number) => {
+    addr = a;
+    fam = f;
+  }) as never);
+  assert(addr === pin.address, `address ${addr}`);
+  assert(fam === 4, `family ${fam}`);
+});
+
+check("pinnedLookup ignores the hostname entirely — that IS the defence", () => {
+  const pin = { address: "203.0.113.11", family: 4 as const };
+  const l = pinnedLookup(pin);
+  for (const hostile of ["rebind.attacker.test", "localhost", "metadata.google.internal"]) {
+    let addr = "";
+    l(hostile, undefined, ((_e: unknown, a: string) => {
+      addr = a;
+    }) as never);
+    assert(addr === pin.address, `${hostile} must still resolve to the pin, got ${addr}`);
+  }
+});
+
+check("a literal IP yields no pin — there is no second resolution to subvert", async () => {
+  assert((await assertPublicUrl("http://93.184.215.14/")) === null, "literal IPv4 needs no pin");
+  assert((await assertPublicUrl("http://[2606:2800:21f:cb07::]/")) === null, "literal IPv6 needs no pin");
 });
 
 // Summary line (mirrors sibling tests' style).

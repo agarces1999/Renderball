@@ -235,7 +235,15 @@ real GDPR deletion call.
 - **AI-output moderation.** Hosted MP4s could be used for deceptive ads / impersonation.
   Add a moderation pass on brief input and generated copy.
 - **Captions / a11y.** Output video has no caption track (ADA exposure for customers).
-- **SSRF residual:** DNS-rebinding (resolve-public-then-connect-private) is not closed —
-  needs connect-time IP pinning. Tracked.
+- ✅ **SSRF residual CLOSED 2026-07-31.** DNS-rebinding
+  (resolve-public-then-connect-private) needed connect-time IP pinning, and now
+  has it: `assertPublicUrl` returns the address it validated and `safeFetch`
+  pins the connection to it through an undici dispatcher, so the name is
+  resolved once instead of twice. Host header and TLS SNI keep the hostname, so
+  certificate validation is unaffected — verified against live HTTPS, a
+  cross-scheme redirect chain and a CDN asset. The pinning rests on a lookup
+  shim whose failure mode is silent (answer only one of Node's two calling
+  conventions and it quietly falls back to real DNS), so that is what the new
+  tests pin down.
 - **SVG uploads** can carry inline script; `nosniff` mitigates but the real fix is serving
   uploads from object storage with a download disposition (phase 5).

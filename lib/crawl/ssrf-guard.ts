@@ -1,4 +1,5 @@
 import { lookup } from "node:dns/promises";
+import { Agent, fetch as undiciFetch } from "undici";
 
 /**
  * SSRF guard for the brand crawl.
@@ -16,10 +17,13 @@ import { lookup } from "node:dns/promises";
  * hop (a public host can 302 to an internal one). Only http/https is allowed;
  * `data:` URLs are handled by the callers before they ever reach a fetch.
  *
- * Known residual: DNS rebinding (the name resolves to a public IP at check time
- * and a private IP at connect time) is not closed here — that needs connect-time
- * IP pinning, tracked as a follow-up. This closes the trivially-exploitable
- * "paste an internal URL" and "redirect to internal" vectors.
+ * DNS REBINDING is closed too, and it is the subtle one. Checking a hostname and
+ * then handing that hostname to `fetch` resolves it TWICE, and an attacker who
+ * controls the authoritative DNS can answer public the first time and
+ * 127.0.0.1 the second — the check passes and the connection still lands
+ * inside. So the address validated here is the address connected to: the
+ * resolution result is pinned into the dispatcher, while the Host header and
+ * TLS SNI keep the original hostname so certificate validation is unaffected.
  */
 
 export class SsrfBlockedError extends Error {
@@ -78,11 +82,20 @@ export const isBlockedIpv6 = (ip: string): boolean => {
 export const isBlockedAddress = (ip: string): boolean =>
   ip.includes(":") ? isBlockedIpv6(ip) : isBlockedIpv4(ip);
 
+/** A validated address, kept so the connection can be pinned to it. */
+export interface PinnedAddress {
+  address: string;
+  family: 4 | 6;
+}
+
 /**
  * Throw SsrfBlockedError unless `rawUrl` is an http(s) URL whose hostname
  * resolves exclusively to public, routable addresses.
+ *
+ * Returns the address that was validated, or null when the host was a literal
+ * IP (nothing to pin — there is no second resolution to subvert).
  */
-export const assertPublicUrl = async (rawUrl: string): Promise<void> => {
+export const assertPublicUrl = async (rawUrl: string): Promise<PinnedAddress | null> => {
   let u: URL;
   try {
     u = new URL(rawUrl);
@@ -95,16 +108,16 @@ export const assertPublicUrl = async (rawUrl: string): Promise<void> => {
   let host = u.hostname;
   if (host.startsWith("[") && host.endsWith("]")) host = host.slice(1, -1); // [::1] → ::1
 
-  // Literal IP in the host — check it directly, no DNS.
+  // Literal IP in the host — check it directly, no DNS, nothing to rebind.
   if (parseIpv4(host) || host.includes(":")) {
     if (isBlockedAddress(host)) {
       throw new SsrfBlockedError(`Refusing to fetch private/reserved address: ${host}`);
     }
-    return;
+    return null;
   }
 
   // Hostname — resolve every address it points at and reject if any is internal.
-  let resolved: { address: string }[];
+  let resolved: { address: string; family: number }[];
   try {
     resolved = await lookup(host, { all: true });
   } catch {
@@ -118,13 +131,42 @@ export const assertPublicUrl = async (rawUrl: string): Promise<void> => {
       throw new SsrfBlockedError(`Host ${host} resolves to a private address: ${address}`);
     }
   }
+  // EVERY address passed, so any of them is safe to pin. The first is used, the
+  // same one Node would have picked.
+  const chosen = resolved[0];
+  return { address: chosen.address, family: chosen.family === 6 ? 6 : 4 };
 };
 
 /**
+ * A DNS lookup that always answers with one pre-validated address.
+ *
+ * This is the whole anti-rebinding mechanism. Node's connect path calls
+ * `lookup` with two different contracts depending on the `all` option, so both
+ * are answered — getting that wrong would not fail loudly, it would fall back
+ * to a real resolution and quietly reopen the hole.
+ */
+export const pinnedLookup =
+  (pin: PinnedAddress) =>
+  (
+    _hostname: string,
+    options: { all?: boolean } | undefined,
+    callback: (err: NodeJS.ErrnoException | null, address: never, family?: number) => void,
+  ): void => {
+    if (options?.all) {
+      (callback as unknown as (e: null, a: PinnedAddress[]) => void)(null, [pin]);
+      return;
+    }
+    (callback as unknown as (e: null, a: string, f: number) => void)(null, pin.address, pin.family);
+  };
+
+/**
  * Drop-in replacement for `fetch` that validates the target (and every redirect
- * hop) against {@link assertPublicUrl} before connecting. Redirects are followed
- * manually so each new location is re-checked. `data:` URLs pass through to the
- * native fetch unchanged — there is no SSRF surface there.
+ * hop) against {@link assertPublicUrl} before connecting, and then connects to
+ * the address it validated rather than resolving the name a second time.
+ *
+ * Redirects are followed manually so each new location is re-checked and
+ * re-pinned. `data:` URLs pass through to the native fetch unchanged — there is
+ * no SSRF surface there.
  */
 export const safeFetch = async (
   rawUrl: string,
@@ -134,8 +176,22 @@ export const safeFetch = async (
 
   let url = rawUrl;
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-    await assertPublicUrl(url);
-    const res = await fetch(url, { ...init, redirect: "manual" });
+    const pin = await assertPublicUrl(url);
+    // A per-request dispatcher, not a shared one: each hop pins a different
+    // address, and a cached agent would carry the previous hop's pin.
+    const dispatcher = pin
+      ? new Agent({ connect: { lookup: pinnedLookup(pin) as never } })
+      : undefined;
+    const options = { ...init, redirect: "manual" as const, dispatcher };
+    const res = await (undiciFetch as unknown as (
+      u: string,
+      o: unknown,
+    ) => Promise<Response>)(url, options).finally(() => {
+      // The socket is kept alive by default; closing it means one connection
+      // per hop, which for a crawl of a few dozen assets is the right trade
+      // against leaking pinned agents.
+      void dispatcher?.close().catch(() => {});
+    });
     const status = res.status;
     if (status >= 300 && status < 400) {
       const location = res.headers.get("location");
