@@ -48,6 +48,19 @@ const withFetch = async (
 
 const ok = () => new Response("ok", { status: 200 });
 
+/**
+ * NODE_ENV is read-only in the type system and needs a full descriptor at
+ * runtime — a bare defineProperty without writable/enumerable is rejected.
+ */
+const setNodeEnv = (value: string | undefined): void => {
+  Object.defineProperty(process.env, "NODE_ENV", {
+    value,
+    configurable: true,
+    writable: true,
+    enumerable: true,
+  });
+};
+
 const run = async () => {
   console.log("alerting");
   // EVERY variable that can configure a channel, not just the ones this file
@@ -63,6 +76,7 @@ const run = async () => {
     "SMTP_URL",
     "GMAIL_USER",
     "GMAIL_APP_PASSWORD",
+    "RB_ALERT_FORCE",
   ] as const;
   const saved = Object.fromEntries(KEYS.map((k) => [k, process.env[k]]));
   for (const k of KEYS) delete process.env[k];
@@ -109,6 +123,44 @@ const run = async () => {
       delete process.env.SMTP_URL;
     });
 
+    await check("nothing is delivered outside production without an explicit override", async () => {
+      // The failure this prevents actually happened. lib/resilience.test.ts
+      // trips the spend breaker on purpose, the breaker sends a CRITICAL alert,
+      // and once real credentials sat in .env.local every test run emailed the
+      // founder "Generation is DOWN" — a dozen times in one evening, about a
+      // production site that was completely healthy. An alert channel that
+      // cries wolf from a laptop is worse than no channel: it teaches the one
+      // person who reads it to stop.
+      process.env.RB_ALERT_WEBHOOK = "https://hooks.example.invalid/abc";
+      const savedEnv = process.env.NODE_ENV;
+      const savedForce = process.env.RB_ALERT_FORCE;
+      try {
+        setNodeEnv("development");
+        delete process.env.RB_ALERT_FORCE;
+        resetAlertsForTests();
+        const quiet = await withFetch(ok, () =>
+          sendAlert({ key: "dev", level: "critical", title: "Generation is DOWN" }),
+        );
+        assert(quiet.length === 0, `a laptop must not page anyone, but posted ${quiet.length} times`);
+
+        // …unless someone explicitly asks for it, which is how the channel gets
+        // verified in the first place (scripts/test-alert.mjs).
+        process.env.RB_ALERT_FORCE = "1";
+        resetAlertsForTests();
+        const forced = await withFetch(ok, () =>
+          sendAlert({ key: "dev", level: "critical", title: "Generation is DOWN" }),
+        );
+        assert(forced.length === 1, "RB_ALERT_FORCE must still deliver");
+      } finally {
+        setNodeEnv(savedEnv);
+        if (savedForce === undefined) delete process.env.RB_ALERT_FORCE;
+        else process.env.RB_ALERT_FORCE = savedForce;
+        delete process.env.RB_ALERT_WEBHOOK;
+      }
+    });
+
+    // The remaining cases exercise DELIVERY, so they need the override on.
+    process.env.RB_ALERT_FORCE = "1";
     process.env.RB_ALERT_WEBHOOK = "https://hooks.example.invalid/abc";
 
     await check("a configured webhook receives the alert", async () => {

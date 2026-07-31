@@ -103,6 +103,18 @@ export const sendAlert = async (alert: Alert): Promise<void> => {
   if (shouldSuppress(alert.key, now)) return;
   lastSent.set(alert.key, now);
 
+  // DELIVERY IS A PRODUCTION CONCERN. A developer's laptop trips the breaker
+  // for all sorts of ordinary reasons — an expired key, an offline moment, a
+  // test that trips it deliberately — and none of them mean the live site is
+  // down. Sending anyway produced a dozen "Generation is DOWN" emails in one
+  // evening about a perfectly healthy production site, which is precisely how
+  // an alert channel becomes something you learn to ignore.
+  //
+  // The log above still happens everywhere. RB_ALERT_FORCE is the deliberate
+  // override, used by scripts/test-alert.mjs so the channel can still be
+  // verified from a laptop.
+  if (process.env.NODE_ENV !== "production" && process.env.RB_ALERT_FORCE !== "1") return;
+
   // Both channels, independently. A failure in one must not skip the other —
   // the whole point is that at least one message arrives.
   await Promise.all([sendEmail(alert), postWebhook(alert)]);

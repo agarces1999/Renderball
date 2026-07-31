@@ -23,6 +23,27 @@ if (existsSync(envFile)) {
   }
 }
 
+// STRIP THE ALERT CHANNELS. Learned the embarrassing way: lib/resilience.test.ts
+// trips the spend breaker on purpose to prove the breaker works, and the breaker
+// sends a CRITICAL alert. The moment real Gmail credentials landed in
+// .env.local, every test run emailed the founder "Generation is DOWN" — a dozen
+// times in one evening, about a production site that was perfectly healthy.
+//
+// A test suite must not be able to page anyone. Removing the credentials is
+// stronger than a flag some future runner forgets to set: with nothing
+// configured, lib/alert.ts is inert by construction. Tests that need to exercise
+// the sending path set their own fake values (see lib/alert.test.ts).
+for (const key of [
+  "RB_ALERT_WEBHOOK",
+  "RB_ALERT_EMAIL",
+  "RB_ALERT_FROM",
+  "SMTP_URL",
+  "GMAIL_USER",
+  "GMAIL_APP_PASSWORD",
+]) {
+  delete process.env[key];
+}
+
 // Dependency-free recursive scan for *.test.ts under a root.
 const findTests = (dir) => {
   const out = [];

@@ -29,6 +29,10 @@ if (existsSync(envFile)) {
   }
 }
 
+// The whole point of this script is to actually send one, so it opts out of the
+// "only deliver in production" rule that keeps a laptop from paging anyone.
+process.env.RB_ALERT_FORCE = "1";
+
 const work = join(process.cwd(), "node_modules", ".cache", "rb-alert");
 mkdirSync(work, { recursive: true });
 const built = await esbuild.build({

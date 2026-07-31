@@ -32,6 +32,21 @@ if (existsSync(envFile)) {
   }
 }
 
+// The QA process must not be able to page anyone either — see the same block in
+// scripts/run-tests.mjs for what happens when it can. (The SERVER under test
+// keeps its own configuration; this only disarms alerts raised inside the
+// runner.)
+for (const key of [
+  "RB_ALERT_WEBHOOK",
+  "RB_ALERT_EMAIL",
+  "RB_ALERT_FROM",
+  "SMTP_URL",
+  "GMAIL_USER",
+  "GMAIL_APP_PASSWORD",
+]) {
+  delete process.env[key];
+}
+
 const work = join(process.cwd(), "node_modules", ".cache", "rb-qa");
 mkdirSync(work, { recursive: true });
 
