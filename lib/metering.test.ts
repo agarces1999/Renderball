@@ -10,6 +10,8 @@ import {
   decideTokenGate,
   computeBillableDelta,
   formatTokens,
+  meterUnitTokens,
+  toBillableUnits,
 } from "./metering";
 import { EMPTY_USAGE } from "./usage";
 
@@ -162,6 +164,98 @@ check("formatTokens: friendly figures for allowance copy", () => {
   assert(formatTokens(2_500_000) === "2.5M", formatTokens(2_500_000));
   assert(formatTokens(500_000) === "500k", formatTokens(500_000));
   assert(formatTokens(1_234) === "1234", formatTokens(1_234));
+});
+
+// ── billing units ─────────────────────────────────────────────────────────
+//
+// The unit exists because a token is worth about $0.00001 at a 3x markup and
+// most billing forms will not accept a price that small. Pricing per 1,000
+// tokens fixes that, and introduces the only real risk here: rounding. Getting
+// it wrong is either a permanent silent undercharge or a 1000x invoice.
+
+check("the unit defaults to raw tokens, and refuses nonsense", () => {
+  const saved = process.env.RB_METER_UNIT_TOKENS;
+  try {
+    for (const [raw, expected] of [
+      [undefined, 1],
+      ["", 1],
+      ["1", 1],
+      ["1000", 1000],
+      ["1000.9", 1000], // floored, never rounded up into an overcharge
+      ["0", 1], // would divide everything to zero — refuse it
+      ["-5", 1],
+      ["abc", 1],
+    ] as [string | undefined, number][]) {
+      if (raw === undefined) delete process.env.RB_METER_UNIT_TOKENS;
+      else process.env.RB_METER_UNIT_TOKENS = raw;
+      assert(
+        meterUnitTokens() === expected,
+        `RB_METER_UNIT_TOKENS=${JSON.stringify(raw)} should give ${expected}, got ${meterUnitTokens()}`,
+      );
+    }
+  } finally {
+    if (saved === undefined) delete process.env.RB_METER_UNIT_TOKENS;
+    else process.env.RB_METER_UNIT_TOKENS = saved;
+  }
+});
+
+check("a unit of 1 reports tokens unchanged", () => {
+  for (const tokens of [0, 1, 999, 1_000_000]) {
+    const r = toBillableUnits({ tokens, remainder: 0, unit: 1 });
+    assert(r.units === tokens, `${tokens} tokens → ${r.units} units`);
+    assert(r.newRemainder === 0, "a unit of 1 can never leave a remainder");
+  }
+});
+
+check("partial units are carried, not rounded away", () => {
+  // The failure this prevents: every op under 1,000 tokens billing as zero,
+  // forever, on a product whose common operations are small.
+  const a = toBillableUnits({ tokens: 400, remainder: 0, unit: 1000 });
+  assert(a.units === 0 && a.newRemainder === 400, `first: ${JSON.stringify(a)}`);
+
+  const b = toBillableUnits({ tokens: 400, remainder: a.newRemainder, unit: 1000 });
+  assert(b.units === 0 && b.newRemainder === 800, `second: ${JSON.stringify(b)}`);
+
+  const c = toBillableUnits({ tokens: 400, remainder: b.newRemainder, unit: 1000 });
+  assert(c.units === 1 && c.newRemainder === 200, `third should finally bill: ${JSON.stringify(c)}`);
+});
+
+check("nothing is created or destroyed by the conversion", () => {
+  // The invariant that makes the whole scheme safe: units*unit + remainder
+  // always equals what went in. Under-report and we lose revenue; over-report
+  // and we overcharge a customer, which is far worse.
+  const unit = 1000;
+  let remainder = 0;
+  let reportedUnits = 0;
+  let fed = 0;
+  for (const tokens of [1, 999, 1000, 1001, 2500, 7, 0, 123_456, 999_999]) {
+    fed += tokens;
+    const r = toBillableUnits({ tokens, remainder, unit });
+    reportedUnits += r.units;
+    remainder = r.newRemainder;
+    assert(remainder >= 0 && remainder < unit, `remainder out of range: ${remainder}`);
+  }
+  assert(
+    reportedUnits * unit + remainder === fed,
+    `conservation broken: ${reportedUnits}*${unit} + ${remainder} ≠ ${fed}`,
+  );
+});
+
+check("a huge single op converts exactly", () => {
+  // A full deck build is hundreds of thousands of tokens in one row.
+  const r = toBillableUnits({ tokens: 333_333, remainder: 0, unit: 1000 });
+  assert(r.units === 333, `units ${r.units}`);
+  assert(r.newRemainder === 333, `remainder ${r.newRemainder}`);
+});
+
+check("negative or fractional input cannot produce a negative charge", () => {
+  for (const bad of [-100, -1, 0.5]) {
+    const r = toBillableUnits({ tokens: bad, remainder: 0, unit: 1000 });
+    assert(r.units >= 0, `units went negative for ${bad}`);
+    assert(r.newRemainder >= 0, `remainder went negative for ${bad}`);
+  }
+  const r = toBillableUnits({ tokens: 100, remainder: -50, unit: 1000 });
+  assert(r.newRemainder === 100, `a corrupt remainder must not subtract: ${r.newRemainder}`);
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

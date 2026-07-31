@@ -166,7 +166,17 @@ model TokenUsage {
   ownerId      String   @id
   owner        User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
   totalTokens  BigInt   @default(0) // lifetime counted tokens (input + output)
-  billedTokens BigInt   @default(0) // overage tokens already handed to the Stripe outbox
+  billedTokens BigInt   @default(0) // overage tokens already handed to the outbox
+
+  /// Tokens that did not add up to a whole billing unit yet.
+  ///
+  /// A processor bills in integer quantities. If the unit is 1,000 tokens
+  /// (RB_METER_UNIT_TOKENS) then an outbox row of 1,500 reports 1 unit and
+  /// leaves 500 here to join the next one. Without this, every partial unit
+  /// would be rounded away — a steady, invisible undercharge on exactly the
+  /// small frequent operations the product is built around.
+  remainderTokens Int   @default(0)
+
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 }

@@ -143,9 +143,22 @@ Known bounded edge cases (accepted for launch, both revenue-safe):
 1. In Lemon Squeezy: create a Subscription product with **"Usage is metered"
    ON**, priced per unit. Rate math: blended COGS today is ≈ **$3.1/M counted
    tokens** (P1 deck build: 257k in + 76k out = $1.04 at Fireworks fast-router
-   rates), so e.g. $10/M ≈ 3.2× markup, $15/M ≈ 4.8×. Founder call. Note the
-   unit is ONE TOKEN, so the per-unit price is the rate ÷ 1,000,000 — get this
-   wrong by six orders of magnitude and the first invoice will say so.
+   rates), so e.g. $10/M ≈ 3.2× markup, $15/M ≈ 4.8×. Founder call.
+
+   **Pick the unit here, and it is the one number that must not be wrong.**
+   At $10/M a single token is $0.00001, and most billing forms will not accept
+   a price with five decimal places. If it refuses:
+
+   - price the unit **per 1,000 tokens** instead ($0.01 at that rate), and
+   - set **`RB_METER_UNIT_TOKENS=1000`**.
+
+   `lib/metering.ts` then converts before reporting, carrying partial units on
+   `TokenUsage.remainderTokens` so small operations accumulate instead of each
+   rounding to zero. Conservation is unit-tested: reported units × unit +
+   remainder always equals the tokens fed in.
+
+   The two settings must agree. A per-1,000 price with the flag unset bills
+   **1000×**; a per-token price with the flag set bills 1/1000th.
 2. Set the four `LEMONSQUEEZY_*` vars (per `.env.example`) and register the
    webhook at `<APP_URL>/api/webhooks/lemonsqueezy` with every
    `subscription_*` event.

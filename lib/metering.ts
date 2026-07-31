@@ -278,6 +278,45 @@ export const tokenMeterEventName = (): string =>
   process.env.STRIPE_TOKEN_METER_EVENT || "renderball_tokens";
 
 /**
+ * How many tokens make up ONE billable unit.
+ *
+ * The product prices per token, but a processor bills integer quantities of
+ * whatever unit its price is denominated in — and at a ~3x markup a token is
+ * worth $0.00001, which most billing forms will not accept (two to four decimal
+ * places is typical). Setting this to 1000 lets the price be per-1,000-tokens
+ * (a workable $0.01) while nothing else in the system changes: the counter, the
+ * allowance and the watermark all still speak tokens.
+ *
+ * Default 1 — report raw tokens — so this is inert unless the processor forced
+ * the issue. Getting it wrong is a 1000x invoice, so it is read once, here, and
+ * anything unusable falls back to 1 rather than to a guess.
+ */
+export const meterUnitTokens = (): number => {
+  const raw = Number(process.env.RB_METER_UNIT_TOKENS);
+  return Number.isFinite(raw) && raw >= 1 ? Math.floor(raw) : 1;
+};
+
+/**
+ * PURE: convert tokens to whole billable units, keeping the change.
+ *
+ * `remainder` is the owner's leftover from previous reports. Returns the units
+ * to send now and the leftover to store — so a stream of small operations
+ * eventually bills for all of them instead of rounding each one to zero.
+ *
+ * Total is conserved by construction: units * unit + newRemainder always equals
+ * remainder + tokens.
+ */
+export const toBillableUnits = (args: {
+  tokens: number;
+  remainder: number;
+  unit: number;
+}): { units: number; newRemainder: number } => {
+  const unit = Math.max(1, Math.floor(args.unit));
+  const pending = Math.max(0, Math.floor(args.tokens)) + Math.max(0, Math.floor(args.remainder));
+  return { units: Math.floor(pending / unit), newRemainder: pending % unit };
+};
+
+/**
  * Flush pending outbox rows to whichever processor is live.
  *
  * The outbox itself is provider-agnostic — a row is "this owner owes for N
@@ -309,7 +348,7 @@ export const flushMeterOutbox = async (limit = 25): Promise<{ sent: number; fail
     if (pending.length === 0) return { sent, failed };
 
     const owners = [...new Set(pending.map((p) => p.ownerId))];
-    const [users, subs] = await Promise.all([
+    const [users, subs, usage] = await Promise.all([
       prisma.user.findMany({
         where: { id: { in: owners } },
         select: { id: true, stripeCustomerId: true },
@@ -320,33 +359,64 @@ export const flushMeterOutbox = async (limit = 25): Promise<{ sent: number; fail
             select: { userId: true, lemonItemId: true },
           })
         : Promise.resolve([] as { userId: string; lemonItemId: string | null }[]),
+      prisma.tokenUsage.findMany({
+        where: { ownerId: { in: owners } },
+        select: { ownerId: true, remainderTokens: true },
+      }),
     ]);
     const customerOf = new Map(users.map((u) => [u.id, u.stripeCustomerId]));
     const itemOf = new Map(subs.map((s) => [s.userId, s.lemonItemId]));
+    // Carried across rows within this batch: several rows for one owner must
+    // accumulate towards a unit rather than each rounding to zero on its own.
+    const remainderOf = new Map(usage.map((u) => [u.ownerId, u.remainderTokens]));
 
     const eventName = tokenMeterEventName();
+    const unit = meterUnitTokens();
     for (const row of pending) {
       try {
-        if (provider === "lemonsqueezy") {
-          const itemId = itemOf.get(row.ownerId);
-          if (!itemId) throw new Error("owner has no Lemon Squeezy subscription item yet");
-          await reportLemonUsage(itemId, row.tokens);
-        } else {
-          const customerId = customerOf.get(row.ownerId);
-          if (!customerId) throw new Error("owner has no stripeCustomerId yet");
-          await getStripe().billing.meterEvents.create({
-            event_name: eventName,
-            identifier: row.id, // Stripe-side idempotency
-            payload: {
-              stripe_customer_id: customerId,
-              value: String(row.tokens),
-            },
-          });
+        const { units, newRemainder } = toBillableUnits({
+          tokens: row.tokens,
+          remainder: remainderOf.get(row.ownerId) ?? 0,
+          unit,
+        });
+
+        // Below one whole unit: nothing to report yet, but the row is done —
+        // its tokens live on in the remainder and bill with the next one.
+        if (units > 0) {
+          if (provider === "lemonsqueezy") {
+            const itemId = itemOf.get(row.ownerId);
+            if (!itemId) throw new Error("owner has no Lemon Squeezy subscription item yet");
+            await reportLemonUsage(itemId, units);
+          } else {
+            const customerId = customerOf.get(row.ownerId);
+            if (!customerId) throw new Error("owner has no stripeCustomerId yet");
+            await getStripe().billing.meterEvents.create({
+              event_name: eventName,
+              identifier: row.id, // Stripe-side idempotency
+              payload: {
+                stripe_customer_id: customerId,
+                value: String(units),
+              },
+            });
+          }
         }
+
+        // Only after a successful report. A failure above leaves the row
+        // pending AND the remainder untouched, so the retry is exact.
         await prisma.meterEventOutbox.update({
           where: { id: row.id },
           data: { status: "sent", sentAt: new Date() },
         });
+        if (unit > 1) {
+          await prisma.tokenUsage
+            .update({ where: { ownerId: row.ownerId }, data: { remainderTokens: newRemainder } })
+            .catch((e) => {
+              // Losing the remainder undercharges by less than one unit; losing
+              // the whole flush would be worse, so this is logged, not thrown.
+              console.warn(`[metering] remainder not persisted for ${row.ownerId}:`, e);
+            });
+        }
+        remainderOf.set(row.ownerId, newRemainder);
         sent++;
       } catch (err) {
         failed++;
