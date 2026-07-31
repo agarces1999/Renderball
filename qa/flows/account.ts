@@ -62,7 +62,19 @@ export const accountFlows: Flow[] = [
     needsAuth: true,
     run: async ({ page, base, note }) => {
       const res = await page.goto(`${base}/documents`, { waitUntil: "domcontentloaded" });
-      expect((res?.status() ?? 0) < 400, `/documents should load, got ${res?.status()}`);
+      if ((res?.status() ?? 0) >= 400) {
+        // A bare status code is a bad bug report. Next puts the thrown message
+        // in the dev error page, so pull it out — the difference between
+        // "/documents got a 500" and knowing which query threw.
+        const detail = await page
+          .evaluate(() => {
+            const text = document.body.innerText.replace(/\s+/g, " ").trim();
+            const stack = document.querySelector("#__next_error__, pre")?.textContent ?? "";
+            return (stack || text).slice(0, 400);
+          })
+          .catch(() => "");
+        expect(false, `/documents should load, got ${res?.status()}${detail ? ` — ${detail}` : ""}`);
+      }
       expect(
         !/sign-in|sign-up/.test(page.url()),
         `a signed-in user should stay on /documents, landed on ${page.url()}`,

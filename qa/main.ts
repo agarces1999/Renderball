@@ -176,6 +176,49 @@ const restoreFixture = async (id: string): Promise<boolean> => {
   return true;
 };
 
+/**
+ * Compile every page the suite drives, one at a time, before any flow starts.
+ *
+ * `next dev` compiles routes on first request, and compiling several at once
+ * under parallel load intermittently throws from inside React itself —
+ * "Cannot read properties of null (reading 'useContext')" out of
+ * next-server/app-page, with none of our own code in the stack. The flow that
+ * happened to trigger it reported a 500 and looked like a product bug; it moved
+ * between flows run to run and never reproduced twice in the same place.
+ *
+ * Production serves pre-built routes and cannot hit this, so warming is the
+ * honest fix rather than a retry: scripts/dev.mjs already does the same thing
+ * for the heavy API routes at startup.
+ *
+ * Best-effort throughout — a warm-up that fails must never stop the suite.
+ */
+const warmRoutes = async (base: string, scriptId: string): Promise<number> => {
+  const routes = [
+    "/",
+    "/sign-in",
+    "/documents",
+    "/account",
+    "/billing",
+    "/api/health",
+    "/api/usage",
+    `/dev/edit/${scriptId}`,
+    `/dev/preview/${scriptId}`,
+    "/s/warmup-not-a-real-token-0000000000000",
+  ];
+  let compiled = 0;
+  for (const route of routes) {
+    try {
+      // The status is irrelevant — a 404 or a redirect to sign-in compiles the
+      // route just as well as a 200 does.
+      await fetch(`${base}${route}`, { signal: AbortSignal.timeout(120_000) });
+      compiled++;
+    } catch {
+      /* a route that will not warm still gets its chance in the flow itself */
+    }
+  }
+  return compiled;
+};
+
 const main = async (): Promise<void> => {
   const scriptId = await resolveDevScript();
   if (!scriptId) {
@@ -202,6 +245,9 @@ const main = async (): Promise<void> => {
     `  account:  ${creds ? creds.email : "none — signed-in flows will skip (set QA_TEST_EMAIL / QA_TEST_PASSWORD)"}`,
   );
   if (TIER === "free") console.log("  (free tier: no model calls, nothing billed)");
+
+  const warmed = await warmRoutes(BASE, scriptId);
+  console.log(`  warmed:   ${warmed} routes compiled before the first flow`);
   console.log("");
 
   const summary = await runFlows({
