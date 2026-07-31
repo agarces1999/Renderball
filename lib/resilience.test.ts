@@ -20,7 +20,7 @@ import os from "os";
 import { withDbRetry } from "./db";
 import { persistGenDir, hydrateGenDir } from "./render/gen-store";
 import { isStorageConfigured } from "./storage/r2";
-import { takeRegenSlot } from "./edit/op-cap";
+import { takeRegenSlot, resetOpCapForTests } from "./edit/op-cap";
 import {
   assertZaiAvailable,
   isBalanceError,
@@ -202,13 +202,13 @@ const run = async () => {
 
   // ── spend limits ──────────────────────────────────────────────────────────
 
-  await check("the per-owner cap eventually refuses, and says when to retry", () => {
+  await check("the per-owner cap eventually refuses, and says when to retry", async () => {
     const owner = `capuser_${ulid()}`;
     let allowed = 0;
     let refusal: { allowed: boolean; retryAfterMin?: number } | null = null;
     // Take slots until refused. The cap is per hour, so this cannot run away.
     for (let i = 0; i < 500; i++) {
-      const r = takeRegenSlot(owner);
+      const r = await takeRegenSlot(owner);
       if (r.allowed) { allowed++; continue; }
       refusal = r;
       break;
@@ -221,11 +221,28 @@ const run = async () => {
     );
   });
 
-  await check("one owner's cap does not affect another", () => {
+  await check("one owner's cap does not affect another", async () => {
     const a = `capA_${ulid()}`;
     const b = `capB_${ulid()}`;
-    for (let i = 0; i < 500; i++) if (!takeRegenSlot(a).allowed) break;
-    assert(takeRegenSlot(b).allowed, "exhausting one account must not lock out everyone else");
+    for (let i = 0; i < 500; i++) if (!(await takeRegenSlot(a)).allowed) break;
+    assert((await takeRegenSlot(b)).allowed, "exhausting one account must not lock out everyone else");
+  });
+
+  await check("the cap SURVIVES a restart — the whole point of moving it off the heap", async () => {
+    // The in-process version reset on every deploy, and this project ships
+    // several times a day, so the brake was mostly not applied and anyone who
+    // noticed could simply wait for the next deploy.
+    const owner = `capsurvive_${ulid()}`;
+    for (let i = 0; i < 500; i++) if (!(await takeRegenSlot(owner)).allowed) break;
+    const refusedBefore = await takeRegenSlot(owner);
+    assert(!refusedBefore.allowed, "precondition: the owner is capped");
+
+    resetOpCapForTests(); // everything a process restart would clear
+    const refusedAfter = await takeRegenSlot(owner);
+    assert(
+      !refusedAfter.allowed,
+      "a restart must NOT hand the account a fresh allowance — the window is in the database",
+    );
   });
 
   // ── the write barrier ─────────────────────────────────────────────────────

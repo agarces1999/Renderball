@@ -162,6 +162,26 @@ model UsageRecord {
 // LLM call site; deterministic edits never touch it. The 1M free allowance is
 // enforced against totalTokens app-side; Stripe only ever sees overage.
 // BigInt: a heavy account crosses Int4's 2.1B within normal product life.
+/// One LLM-spending editor operation, for the per-owner hourly brake.
+///
+/// A row per op rather than a counter, because the window slides: "30 in the
+/// last hour" needs to know WHEN, and a counter would either reset on the hour
+/// (letting someone burst 60 across the boundary) or need a second column to
+/// track the reset. Rows are pruned as they age out.
+///
+/// It lives in Postgres because the in-process version it replaces reset on
+/// every deploy — which, shipping several times a day, meant the brake was
+/// mostly off — and could not see a second container.
+model OpWindow {
+  id      String   @id @default(cuid())
+  ownerId String
+  op      String
+  at      DateTime @default(now())
+
+  @@index([ownerId, op, at])
+  @@index([at])
+}
+
 model TokenUsage {
   ownerId      String   @id
   owner        User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)

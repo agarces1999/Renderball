@@ -52,7 +52,7 @@ export async function POST(request: Request) {
 
   // Per-owner hourly cap — this route checks auth but not entitlement, so a
   // scripted loop was unbounded GLM spend (launch audit P0).
-  const cap = takeRegenSlot(user.id);
+  const cap = await takeRegenSlot(user.id);
   if (!cap.allowed) {
     return NextResponse.json(
       { error: `Regeneration limit reached for this hour — try again in ~${cap.retryAfterMin} min.` },

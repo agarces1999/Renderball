@@ -196,8 +196,13 @@ Fill in [.env.example](../.env.example) → `.env.local`. Create these accounts;
       it returns 503 when the database is unreachable or generation is down).
 - [ ] **Resend** — API key + verified sending domain. Needed for receipts and
       any transactional mail; nothing sends email today.
-- [ ] **Upstash Redis** — REST url + token. Rate limits are in-process only, so
-      they reset on every deploy and are not shared across containers.
+- [x] ~~**Upstash Redis**~~ — NOT NEEDED (2026-07-31). The per-owner hourly cap
+      on LLM operations moved from process memory to Postgres, which already
+      survives deploys and is already shared by every container. It degrades to
+      the old in-process window if the database is unreachable, so a Neon
+      cold-wake cannot remove the brake or block editing. Redis would buy
+      atomicity on a limit whose job is bounding a runaway loop, not enforcing
+      an exact quota — not worth an account.
 - [ ] **Sentry + PostHog** — DSN + project key. Less urgent now that the alert
       webhook exists, but there is still no error aggregation or product
       analytics.

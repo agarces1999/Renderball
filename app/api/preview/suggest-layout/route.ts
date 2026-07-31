@@ -61,7 +61,7 @@ export async function POST(request: Request) {
   if (!gate.allowed) {
     return NextResponse.json({ error: gate.reason ?? "token allowance exhausted" }, { status: 402 });
   }
-  const cap = takeRegenSlot(user.id);
+  const cap = await takeRegenSlot(user.id);
   if (!cap.allowed) {
     return NextResponse.json(
       { error: `Generation limit reached for this hour — try again in ~${cap.retryAfterMin} min.` },
