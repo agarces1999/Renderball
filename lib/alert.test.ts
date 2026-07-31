@@ -50,13 +50,22 @@ const ok = () => new Response("ok", { status: 200 });
 
 const run = async () => {
   console.log("alerting");
-  const saved = {
-    webhook: process.env.RB_ALERT_WEBHOOK,
-    email: process.env.RB_ALERT_EMAIL,
-    smtp: process.env.SMTP_URL,
-  };
-  delete process.env.RB_ALERT_EMAIL;
-  delete process.env.SMTP_URL;
+  // EVERY variable that can configure a channel, not just the ones this file
+  // knew about when it was written. The runner loads .env.local, so the moment
+  // a developer configures alerting for real the "nothing configured" cases
+  // start passing against their live settings and assert nothing — which is
+  // exactly what happened when GMAIL_USER / GMAIL_APP_PASSWORD were added as a
+  // second way in and this list was not updated.
+  const KEYS = [
+    "RB_ALERT_WEBHOOK",
+    "RB_ALERT_EMAIL",
+    "RB_ALERT_FROM",
+    "SMTP_URL",
+    "GMAIL_USER",
+    "GMAIL_APP_PASSWORD",
+  ] as const;
+  const saved = Object.fromEntries(KEYS.map((k) => [k, process.env[k]]));
+  for (const k of KEYS) delete process.env[k];
 
   try {
     await check("with nothing configured, alerting is inert but still logs", async () => {
@@ -177,13 +186,11 @@ const run = async () => {
       assert(calls.length === 1, "a 500 from the channel is logged, not retried");
     });
   } finally {
-    const restore = (k: string, v: string | undefined) => {
+    for (const k of KEYS) {
+      const v = saved[k];
       if (v === undefined) delete process.env[k];
       else process.env[k] = v;
-    };
-    restore("RB_ALERT_WEBHOOK", saved.webhook);
-    restore("RB_ALERT_EMAIL", saved.email);
-    restore("SMTP_URL", saved.smtp);
+    }
   }
 
   console.log(`\n  ${passed} passed, ${failed} failed`);
