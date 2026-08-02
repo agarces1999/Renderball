@@ -482,6 +482,10 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
   const lastClickRef = useRef<{ t: number; x: number; y: number } | null>(null);
   const DOUBLE_CLICK_MS = 450;
   const DOUBLE_CLICK_SLOP = 6;
+  /** The press in progress qualifies as a double-click IF it never travels. */
+  const secondPressRef = useRef(false);
+  /** Same, for a press that landed inside the frame rather than on the overlay. */
+  const pendingIframeDblRef = useRef<{ piece: Element; target: HTMLElement; x: number; y: number } | null>(null);
   const dragHandlersRef = useRef<{ move: (e: MouseEvent) => void; up: (e: MouseEvent) => void } | null>(null);
   const [dragDelta, setDragDelta] = useState<{ dx: number; dy: number } | null>(null);
 
@@ -879,6 +883,9 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
         const x = host.left + e.clientX;
         const y = host.top + e.clientY;
         lastClickRef.current = { t: Date.now(), x, y };
+        // Deferred to mouseup for the same reason as the overlay path above: a
+        // press that is about to become a drag looks identical to one that is
+        // about to become a double-click, until it moves.
         if (
           prev &&
           Date.now() - prev.t < DOUBLE_CLICK_MS &&
@@ -886,11 +893,7 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
           Math.abs(y - prev.y) <= DOUBLE_CLICK_SLOP &&
           collectEditableFields(piece).length > 0
         ) {
-          lastClickRef.current = null;
-          e.preventDefault();
-          e.stopPropagation();
-          startTextFields(piece, target as HTMLElement);
-          return;
+          pendingIframeDblRef.current = { piece, target: target as HTMLElement, x: e.clientX, y: e.clientY };
         }
       }
 
@@ -904,6 +907,22 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
       setMarquee({ x0: p.x, y0: p.y, x1: e.clientX, y1: e.clientY });
     };
     const onUp = (e: MouseEvent) => {
+      // A press on a piece that never travelled, soon after a click in the same
+      // place, is a double-click — decided here rather than on mousedown, where
+      // it is indistinguishable from the start of a drag.
+      const dbl = pendingIframeDblRef.current;
+      pendingIframeDblRef.current = null;
+      if (dbl) {
+        const moved =
+          Math.abs(e.clientX - dbl.x) > DOUBLE_CLICK_SLOP ||
+          Math.abs(e.clientY - dbl.y) > DOUBLE_CLICK_SLOP;
+        if (!moved && !editingRef.current && !busyRef.current) {
+          lastClickRef.current = null;
+          startTextFields(dbl.piece, dbl.target);
+          return;
+        }
+      }
+
       const p = pendingMarqueeRef.current;
       pendingMarqueeRef.current = null;
       if (!p) return;
@@ -1452,20 +1471,23 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
     if (!selected || busy) return;
     e.preventDefault();
 
-    // Second press of a double-click? Open the text instead of starting a drag.
-    // This is the half of the gesture that arrives after the selection mounted
-    // this surface, so it is the one that has to notice.
+    // Is this the second press of a double-click? Note it, but DO NOT act yet.
+    //
+    // Acting here — on mousedown — was wrong, and only a test that behaved like
+    // a person caught it: select an element, then press again to drag it, and
+    // the editor opened a text-edit session instead of moving anything. That is
+    // an ordinary way to use a canvas, and the press had not yet travelled, so
+    // there was no way to tell a double-click from the start of a drag.
+    //
+    // Mouseup knows. A press that travels is a drag; a press that does not,
+    // soon after a click in the same spot, is a double-click.
     const prev = lastClickRef.current;
     lastClickRef.current = { t: Date.now(), x: e.clientX, y: e.clientY };
-    if (
-      prev &&
+    secondPressRef.current =
+      !!prev &&
       Date.now() - prev.t < DOUBLE_CLICK_MS &&
       Math.abs(e.clientX - prev.x) <= DOUBLE_CLICK_SLOP &&
-      Math.abs(e.clientY - prev.y) <= DOUBLE_CLICK_SLOP
-    ) {
-      lastClickRef.current = null; // a triple-click must not open a third session
-      if (openTextSessionAt(e.clientX, e.clientY)) return;
-    }
+      Math.abs(e.clientY - prev.y) <= DOUBLE_CLICK_SLOP;
 
     dragRef.current = { startX: e.clientX, startY: e.clientY, scale: canvasScale() };
     draggingRef.current = false;
@@ -1482,11 +1504,19 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
       detachDrag();
       const d = dragRef.current;
       const dragged = draggingRef.current;
+      const wasSecondPress = secondPressRef.current;
       dragRef.current = null;
       draggingRef.current = false;
+      secondPressRef.current = false;
       if (!d || !selected || !dragged) {
         setDragDelta(null);
-        return; // a press that never travelled — leave it to be a click
+        // It never travelled. If it was the second press of a double-click,
+        // NOW it is unambiguous — a drag would have moved by here.
+        if (wasSecondPress) {
+          lastClickRef.current = null; // a triple-click must not open a third
+          openTextSessionAt(ev.clientX, ev.clientY);
+        }
+        return;
       }
       const scale = d.scale || 1;
       const dx = Math.round((ev.clientX - d.startX) / scale);

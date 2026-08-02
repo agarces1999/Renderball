@@ -36,6 +36,7 @@ import {
   textPoint,
   tool,
   waitForCanvas,
+  waitIdle,
 } from "../editor";
 
 /** Documents these journeys create, removed even if a step fails. */
@@ -169,8 +170,7 @@ export const journeyFlows: Flow[] = [
           await page.mouse.move(start!.x + start!.width / 2 + i * 6, start!.y + start!.height / 2 - i * 4);
         }
         await page.mouse.up();
-        await page.waitForTimeout(2500);
-        await waitForCanvas(page);
+        await waitIdle(page);
         note(`dragged ${target}`);
 
         // ── 4. Resize it by a grip ─────────────────────────────────────────
@@ -186,8 +186,7 @@ export const journeyFlows: Flow[] = [
         await page.mouse.down();
         for (let i = 1; i <= 8; i++) await page.mouse.move(gb!.x + gb!.width / 2 + i * 10, gb!.y + gb!.height / 2);
         await page.mouse.up();
-        await page.waitForTimeout(3000);
-        await waitForCanvas(page);
+        await waitIdle(page);
         const after = await pieceBox(page, again);
         note(`resized ${again}: ${Math.round(box?.width ?? 0)} → ${Math.round(after?.width ?? 0)}px`);
 
@@ -237,8 +236,7 @@ export const journeyFlows: Flow[] = [
           const countBefore = (await pieceIds(page)).length;
           await page.getByRole("menuitem", { name: "Bring to front" }).click();
           used("Bring to front");
-          await page.waitForTimeout(3000);
-          await waitForCanvas(page);
+          await waitIdle(page);
           expect(
             (await pieceIds(page)).length === countBefore,
             "bringing an element to the front must not lose it",
@@ -250,16 +248,17 @@ export const journeyFlows: Flow[] = [
         const beforeUndo = (await pieceIds(page)).length;
         await tool(page, "Undo").click();
         used("Undo the last edit");
-        await page.waitForTimeout(4000);
-        await waitForCanvas(page);
+        await waitIdle(page);
         note(`undo: ${beforeUndo} → ${(await pieceIds(page)).length} pieces`);
 
         // ── 8. Page operations, from the Page tab ──────────────────────────
         const pageCount = async () =>
           page.evaluate(() => document.querySelectorAll('[data-rb-page], aside button[class*="rounded"]').length);
         // The rail has its own add button, distinct from the panel's.
-        const railAdd = page.getByRole("button", { name: "Add a slide", exact: true }).first();
-        if (await railAdd.isVisible().catch(() => false)) {
+        // Located by title, not accessible name: the button's only content is
+        // a "+" glyph, so its name resolves inconsistently.
+        const railAdd = page.locator('button[title="Add a slide"]').first();
+        if (await railAdd.waitFor({ state: "visible", timeout: 10_000 }).then(() => true).catch(() => false)) {
           await railAdd.click();
           used("Add a slide");
           await page.waitForTimeout(2500);
@@ -306,8 +305,16 @@ export const journeyFlows: Flow[] = [
         if (await shareBtn.isVisible().catch(() => false)) {
           await shareBtn.click();
           used("Share");
+          // waitFor, not isVisible: the panel fetches its share state first and
+          // shows "Checking…", so an immediate visibility check answers false
+          // and the button never gets clicked. Same mistake as the Clerk
+          // verification field — isVisible({timeout}) does not poll.
           const create = page.getByRole("button", { name: /create a link/i }).first();
-          if (await create.isVisible().catch(() => false)) await create.click();
+          const needsCreating = await create
+            .waitFor({ state: "visible", timeout: 15_000 })
+            .then(() => true)
+            .catch(() => false);
+          if (needsCreating) await create.click();
           const field = page.getByRole("textbox", { name: /public link/i }).first();
           await field.waitFor({ state: "visible", timeout: 20_000 });
           const url = await field.inputValue();
@@ -452,8 +459,7 @@ export const journeyFlows: Flow[] = [
         await page.mouse.down();
         for (let i = 1; i <= 8; i++) await page.mouse.move(gb!.x + gb!.width / 2 + i * 9, gb!.y + gb!.height / 2);
         await page.mouse.up();
-        await page.waitForTimeout(3000);
-        await waitForCanvas(page);
+        await waitIdle(page);
         const after = await pieceBox(page, target);
         note(`resized ${target}: ${Math.round(before?.width ?? 0)} → ${Math.round(after?.width ?? 0)}px`);
 

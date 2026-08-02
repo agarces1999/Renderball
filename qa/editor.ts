@@ -273,6 +273,33 @@ export const waitForCanvas = async (page: Page): Promise<void> => {
   await until("the canvas renders at least one piece", async () => (await pieceIds(page)).length > 0, 30000);
 };
 
+/**
+ * Wait until the editor is not doing anything.
+ *
+ * Every mutating gesture — drag, resize, generate, page op — ends with a POST
+ * and a canvas reload, and a click during that window lands on a document
+ * about to be replaced and is simply lost. A fixed `waitForTimeout` after each
+ * gesture is a guess: measured, the same click failed 1.2 seconds after a drag
+ * and succeeded after six. That guess is what made the journey look like a
+ * product bug ("clicking an element no longer selects it") when the product was
+ * fine and the test was early.
+ *
+ * `data-rb-busy` carries the editor's own in-flight state, so this asks the
+ * editor rather than the clock.
+ */
+export const waitIdle = async (page: Page, timeoutMs = 45000): Promise<void> => {
+  await until(
+    "the editor stops working",
+    async () =>
+      page.evaluate(() => {
+        const root = document.querySelector("[data-rb-busy]");
+        return !root || (root.getAttribute("data-rb-busy") ?? "") === "";
+      }),
+    timeoutMs,
+  );
+  await waitForCanvas(page);
+};
+
 /** The inline error toast, if one is showing. */
 export const errorToast = async (page: Page): Promise<string | null> =>
   page.evaluate(() => {
