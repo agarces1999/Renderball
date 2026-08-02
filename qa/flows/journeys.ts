@@ -104,11 +104,20 @@ const drawAndGenerate = async (
   return (await pieceIds(page)).length - before;
 };
 
-/** Click a panel tab by its label. */
-const panelTab = async (page: Page, name: "copy" | "page" | "brand"): Promise<void> => {
-  await page.getByRole("button", { name, exact: true }).first().click();
+/**
+ * Click a panel tab, if this document has it.
+ *
+ * A BLANK document shows only Page and Brand — there is no bound copy to
+ * list, so no Copy tab. Assuming all three exist made the journey fail on a
+ * document that was behaving perfectly.
+ */
+const panelTab = async (page: Page, name: "copy" | "page" | "brand"): Promise<boolean> => {
+  const tab = page.getByRole("button", { name, exact: true }).first();
+  if (!(await tab.isVisible().catch(() => false))) return false;
+  await tab.click();
   used(name);
   await page.waitForTimeout(400);
+  return true;
 };
 
 export const journeyFlows: Flow[] = [

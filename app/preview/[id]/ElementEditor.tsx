@@ -455,6 +455,8 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
   };
   // Piece to re-select after the post-edit reload (move/regenerate keep selection).
   const reselectIdRef = useRef<string | null>(null);
+  /** In-flight generate, so Cancel can actually abandon it. */
+  const generateAbortRef = useRef<AbortController | null>(null);
   const textTargetRef = useRef<TextTarget | null>(null);
   // Active multi-field edit session's finisher (Done button / unmount call it).
   const finishSessionRef = useRef<((save: boolean) => void) | null>(null);
@@ -535,13 +537,18 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
   };
 
   const postJson = useCallback(
-    async (url: string, body: unknown): Promise<{ ok: boolean; json: Record<string, unknown> }> => {
+    async (
+      url: string,
+      body: unknown,
+      signal?: AbortSignal,
+    ): Promise<{ ok: boolean; json: Record<string, unknown> }> => {
       setError(null);
       try {
         const res = await fetch(url, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body),
+          signal,
         });
         const json = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
         if (!res.ok || !json.ok) {
@@ -550,7 +557,11 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
         }
         return { ok: true, json: json as Record<string, unknown> };
       } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
+        // An abort is the user pressing Cancel. Reporting it as a failure
+        // would put a red error under a box they deliberately abandoned.
+        if (!(e instanceof DOMException && e.name === "AbortError")) {
+          setError(e instanceof Error ? e.message : String(e));
+        }
         return { ok: false, json: {} };
       }
     },
@@ -573,7 +584,11 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
         }
         return { ok: true, json: json as Record<string, unknown> };
       } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
+        // An abort is the user pressing Cancel. Reporting it as a failure
+        // would put a red error under a box they deliberately abandoned.
+        if (!(e instanceof DOMException && e.name === "AbortError")) {
+          setError(e instanceof Error ? e.message : String(e));
+        }
         return { ok: false, json: {} };
       }
     },
@@ -1238,13 +1253,26 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
     const p0 = overlayToCanvas(genBox.left, genBox.top);
     const p1 = overlayToCanvas(genBox.left + genBox.width, genBox.top + genBox.height);
     const bounds = clampBounds({ x: p0.x, y: p0.y, w: p1.x - p0.x, h: p1.y - p0.y });
+
+    // A generate can stall — a slow model, a lost connection, a request that
+    // never comes back. When it did, the editor was WEDGED: the overlay said
+    // "Generating…" indefinitely and Cancel was disabled while busy, so the
+    // only way out was reloading the page and losing the drawn box. Whatever
+    // caused the stall, being unable to abandon it is its own bug.
+    const controller = new AbortController();
+    generateAbortRef.current = controller;
     setBusy("insert");
-    const { ok, json } = await postJson(`${apiBase}/insert-element`, {
-      scriptId,
-      sceneIndex,
-      bounds,
-      ...(genKind === "image" ? { mode: "generate-image", prompt } : { mode: "generate", prompt }),
-    });
+    const { ok, json } = await postJson(
+      `${apiBase}/insert-element`,
+      {
+        scriptId,
+        sceneIndex,
+        bounds,
+        ...(genKind === "image" ? { mode: "generate-image", prompt } : { mode: "generate", prompt }),
+      },
+      controller.signal,
+    );
+    generateAbortRef.current = null;
     setBusy(null);
     if (ok) {
       const pid = json.pieceId;
@@ -1254,6 +1282,16 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
       setTool(null);
       onChanged();
     }
+  };
+
+  /** Abandon an in-flight generate and give the canvas back to the user. */
+  const cancelGenerate = () => {
+    generateAbortRef.current?.abort();
+    generateAbortRef.current = null;
+    setBusy(null);
+    setGenBox(null);
+    setGenPrompt("");
+    setTool(null);
   };
 
   /**
@@ -2281,15 +2319,13 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
             </button>
             <button
               type="button"
-              onClick={() => {
-                setGenBox(null);
-                setGenPrompt("");
-                setTool(null);
-              }}
-              disabled={!!busy}
-              className={`${HIT} ${R_SM} px-2 text-[11px] font-medium text-white/70 hover:bg-white/10 disabled:opacity-50`}
+              onClick={cancelGenerate}
+              // NOT disabled while busy. Cancel is the one control that has to
+              // work when everything else is stuck — disabling it during a
+              // generate left a stalled request with no way out but a reload.
+              className={`${HIT} ${R_SM} px-2 text-[11px] font-medium text-white/70 hover:bg-white/10`}
             >
-              Cancel
+              {busy === "insert" ? "Stop" : "Cancel"}
             </button>
           </form>
         </>
