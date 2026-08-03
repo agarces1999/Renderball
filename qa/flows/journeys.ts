@@ -33,6 +33,7 @@ import {
   pickEditablePiece,
   pickTextPiece,
   selectPiece,
+  selectedPiece,
   textPoint,
   tool,
   waitForCanvas,
@@ -174,8 +175,13 @@ export const journeyFlows: Flow[] = [
         note(`dragged ${target}`);
 
         // ── 4. Resize it by a grip ─────────────────────────────────────────
-        const again = await pickEditablePiece(page);
-        await selectPiece(page, again);
+        const asked = await pickEditablePiece(page);
+        await selectPiece(page, asked);
+        // Measure what is ACTUALLY selected, not what was aimed at: a click can
+        // land on an ancestor or a nested child, and selectPiece only asserts
+        // that SOMETHING got selected. Measuring the wrong element made a
+        // working resize report "423 → 423px" and look like a broken feature.
+        const again = (await selectedPiece(page)) ?? asked;
         const box = await pieceBox(page, again);
         const grip = page.getByRole("slider", { name: "Resize e" });
         await grip.waitFor({ state: "visible", timeout: 15_000 });
@@ -189,6 +195,11 @@ export const journeyFlows: Flow[] = [
         await waitIdle(page);
         const after = await pieceBox(page, again);
         note(`resized ${again}: ${Math.round(box?.width ?? 0)} → ${Math.round(after?.width ?? 0)}px`);
+        expect(
+          Math.round(after?.width ?? 0) !== Math.round(box?.width ?? 0),
+          `dragging the east grip did not change ${again}'s width ` +
+            `(${Math.round(box?.width ?? 0)}px before and after) — the grip moved but the element did not`,
+        );
 
         // ── 5. Retype the copy, and format it ──────────────────────────────
         const textTarget = await pickTextPiece(page).catch(() => null);
