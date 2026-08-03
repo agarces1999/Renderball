@@ -4,6 +4,29 @@ AI-native design generation (pivoted 2026-07-23; formerly video-first). A brief
 becomes an on-brand, editable, multi-format design document — wedge format:
 presentation decks. Next.js 14 + Remotion + TypeScript + Tailwind.
 
+## Check before you assert (founder call 2026-08-03)
+State hypotheses as hypotheses. Say "my guess is X, here is what would confirm
+it" — then go and confirm it. Do not state a conclusion at the point where you
+only have a theory and correct it later; the word "actually" arriving in a
+summary is the tell.
+
+Two specific rules, both learned the expensive way in one session:
+
+- **Never declare a dead end without testing it.** "This needs another paid
+  build to investigate" was said about a bug whose evidence was already sitting
+  in `src/generated` — 14 of 106 decks carried it, and a two-minute script found
+  them. A dead end is a claim like any other and needs the same evidence.
+- **"Did not reproduce" is not "not real."** A bug closed after three clean
+  re-runs came back the next day on a different route. Say what was observed.
+
+Why it matters: a founder cannot tell from the outside which of your
+conclusions are load-bearing. If some evaporate, all of them have to be held
+loosely, and that costs far more than the time saved by answering fast.
+
+The method that has actually worked in this codebase is measurement — probe
+with a real script, read the real bytes, drive the real browser — and every
+hard bug here was found that way, not by reading code and reasoning.
+
 ## Pivot (2026-07-23) — read first
 Read `docs/PIVOT.md` before any product or engine work. It holds the locked
 decisions (decks-first wedge; video shelved NOT deleted; name stays Renderball;
