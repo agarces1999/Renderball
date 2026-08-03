@@ -60,7 +60,7 @@ export const editPieceText = async (input: EditPieceTextInput): Promise<EditPiec
     const undo = await captureUndo(genDir);
     try {
       await writePieceBody(genDir, pieceId, newBody);
-      const res = await commitGenDir(genDir, "text edit");
+      const res = await commitGenDir(genDir, "text edit", { checkRender: true });
       if (!res.ok) {
         await writePieceBody(genDir, pieceId, oldBody); // roll back
         return { ok: false, error: res.error };

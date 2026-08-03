@@ -133,7 +133,7 @@ export const applyBrandToDocument = async (
 
     // 3. Rebuild Composition.tsx from the re-skinned sources. commitGenDir
     //    compile-verifies before writing and republishes to durable storage.
-    const committed = await commitGenDir(genDir, "brand");
+    const committed = await commitGenDir(genDir, "brand", { checkRender: true });
     if (!committed.ok) {
       await commitUndo(genDir, undo, "brand-failed");
       return { ok: false, changes: [], error: committed.error };

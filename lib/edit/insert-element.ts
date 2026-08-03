@@ -123,7 +123,7 @@ export interface InsertElementResult {
 }
 
 /** The shared reassemble → finalize → compile-check → write barrier (lib/edit/commit.ts). */
-const commit = (genDir: string) => commitGenDir(genDir, "inserted element");
+const commit = (genDir: string) => commitGenDir(genDir, "inserted element", { checkRender: true });
 
 /** Highest zIndex among a scene's piece bodies (excluding chrome), so a new piece
  *  sits above content. Chrome is not offset-wrapped and keeps its DOM-last paint. */
