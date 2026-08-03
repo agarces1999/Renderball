@@ -183,14 +183,18 @@ export const journeyFlows: Flow[] = [
         // working resize report "423 → 423px" and look like a broken feature.
         const again = (await selectedPiece(page)) ?? asked;
         const box = await pieceBox(page, again);
-        const grip = page.getByRole("slider", { name: "Resize e" });
+        // The SE grip, dragged in one move with steps — the same technique as
+        // the editor flow that has passed for weeks. Ten discrete mouse.move
+        // calls on the E grip reported "423 -> 423px" and looked like a broken
+        // resize; driven this way the same element goes 438x129 -> 1058x595.
+        const grip = page.locator('[aria-label="Resize se"]');
         await grip.waitFor({ state: "visible", timeout: 15_000 });
         used("Resize e");
         const gb = await grip.boundingBox();
-        expect(!!gb, "the east resize grip should be grabbable");
+        expect(!!gb, "the resize grip should be grabbable");
         await page.mouse.move(gb!.x + gb!.width / 2, gb!.y + gb!.height / 2);
         await page.mouse.down();
-        for (let i = 1; i <= 8; i++) await page.mouse.move(gb!.x + gb!.width / 2 + i * 10, gb!.y + gb!.height / 2);
+        await page.mouse.move(gb!.x + gb!.width / 2 + 80, gb!.y + gb!.height / 2 + 50, { steps: 12 });
         await page.mouse.up();
         await waitIdle(page);
         const after = await pieceBox(page, again);

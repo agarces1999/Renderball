@@ -19,6 +19,7 @@ import {
   selectPiece,
   tool,
   waitForCanvas,
+  waitIdle,
 } from "../editor";
 
 /**
@@ -150,6 +151,53 @@ export const editorFlows: Flow[] = [
       await until(`${target} is back`, async () => (await pieceIds(page)).includes(target), 25000);
       note(`restored ${target}`);
       expect((await pieceIds(page)).length === before.length, "undo should restore the piece count");
+    },
+  },
+
+  {
+    // The pair matters: resize on its own has passed for weeks, and Journey B
+    // reported a resize doing nothing on an element it had just dragged. This
+    // asks whether MOVING FIRST is what breaks it, using the same helpers as
+    // the flow below so the two results are directly comparable.
+    name: "resizing still works after the element has been moved",
+    mutates: true,
+    tier: "free",
+    run: async ({ page, base, note }) => {
+      await openEditor(page, base);
+      const target = await pickEditablePiece(page);
+      await selectPiece(page, target);
+
+      const start = await pieceBox(page, target);
+      expect(!!start, "the piece should be measurable before moving");
+      await page.mouse.move(start!.x + start!.width / 2, start!.y + start!.height / 2);
+      await page.mouse.down();
+      await page.mouse.move(start!.x + start!.width / 2 + 60, start!.y + start!.height / 2 + 40, { steps: 12 });
+      await page.mouse.up();
+      await waitIdle(page);
+      note(`moved ${target}`);
+
+      await selectPiece(page, target);
+      const before = await pieceBox(page, target);
+      const grip = page.locator('[aria-label="Resize se"]');
+      await grip.waitFor({ state: "visible", timeout: 10000 });
+      const g = await grip.boundingBox();
+      expect(!!g, "the grip should be there after a move too");
+      await page.mouse.move(g!.x + g!.width / 2, g!.y + g!.height / 2);
+      await page.mouse.down();
+      await page.mouse.move(g!.x + g!.width / 2 + 80, g!.y + g!.height / 2 + 50, { steps: 12 });
+      await page.mouse.up();
+
+      await until(
+        "the moved element's size changes",
+        async () => {
+          const after = await pieceBox(page, target);
+          if (!after) return false;
+          return Math.abs(after.width - before!.width) > 4 || Math.abs(after.height - before!.height) > 4;
+        },
+        45000,
+      );
+      const after = await pieceBox(page, target);
+      note(`${Math.round(before!.width)}x${Math.round(before!.height)} -> ${Math.round(after!.width)}x${Math.round(after!.height)}`);
     },
   },
 
