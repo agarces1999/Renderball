@@ -43,6 +43,120 @@ interface InUse {
   colors: { hex: string; count: number }[];
 }
 
+/**
+ * Curated stacks for the type dropdowns, each rendered IN ITS OWN FACE so
+ * choosing a font means seeing it (founder call 2026-08-03 — the raw
+ * font-family strings meant nothing to anyone who is not a developer). Every
+ * stack ends in a generic family, so a machine without the first choice still
+ * renders something close. Geist and Cabinet Grotesk are loaded by the app
+ * itself, so their previews are faithful; the rest are system faces.
+ */
+const FONT_OPTIONS: { label: string; stack: string; kind: "sans" | "serif" | "mono" }[] = [
+  { label: "Geist", stack: '"Geist", system-ui, sans-serif', kind: "sans" },
+  { label: "Cabinet Grotesk", stack: '"Cabinet Grotesk", "Geist", system-ui, sans-serif', kind: "sans" },
+  { label: "Helvetica", stack: '"Helvetica Neue", Helvetica, Arial, sans-serif', kind: "sans" },
+  { label: "Futura", stack: 'Futura, "Century Gothic", "Trebuchet MS", sans-serif', kind: "sans" },
+  { label: "Gill Sans", stack: '"Gill Sans", "Gill Sans MT", Calibri, sans-serif', kind: "sans" },
+  { label: "Verdana", stack: "Verdana, Geneva, sans-serif", kind: "sans" },
+  { label: "Georgia", stack: 'Georgia, "Times New Roman", serif', kind: "serif" },
+  { label: "Palatino", stack: 'Palatino, "Palatino Linotype", "Book Antiqua", serif', kind: "serif" },
+  { label: "Garamond", stack: 'Garamond, "Apple Garamond", "Times New Roman", serif', kind: "serif" },
+  { label: "Times", stack: '"Times New Roman", Times, serif', kind: "serif" },
+  { label: "Geist Mono", stack: '"Geist Mono", ui-monospace, monospace', kind: "mono" },
+  { label: "Menlo", stack: 'Menlo, Monaco, "Courier New", monospace', kind: "mono" },
+  { label: "Courier", stack: '"Courier New", Courier, monospace', kind: "mono" },
+];
+
+const normStack = (s: string) => s.toLowerCase().replace(/["'\s]/g, "");
+const firstFamily = (s: string) => s.split(",")[0]?.replace(/["']/g, "").trim() || "";
+
+/**
+ * One type slot as a dropdown that previews every option in its own face.
+ * Expands INLINE (an accordion, not an overlay) — the panel is narrow and
+ * scrollable, and an overlay popover would clip against it. "Custom stack"
+ * keeps the old raw input reachable for anyone pasting a corporate webfont.
+ */
+function FontSelect({
+  slot,
+  value,
+  onChange,
+}: {
+  slot: "display" | "body" | "mono";
+  value: string;
+  onChange: (stack: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [custom, setCustom] = useState(false);
+  // Mono choices lead the mono slot; everything stays reachable everywhere.
+  const options = [...FONT_OPTIONS].sort((a, b) => {
+    const w = (o: { kind: string }) => (slot === "mono" ? (o.kind === "mono" ? 0 : 1) : o.kind === "mono" ? 1 : 0);
+    return w(a) - w(b);
+  });
+  const match = options.find((o) => normStack(o.stack) === normStack(value));
+
+  return (
+    <div className="mt-0.5">
+      <button
+        type="button"
+        data-rb-font-slot={slot}
+        aria-expanded={open}
+        onClick={() => {
+          setOpen(!open);
+          setCustom(false);
+        }}
+        className="flex w-full items-center justify-between rounded-md border border-hairline bg-surface px-2 py-1.5 text-left text-[13px] text-ink outline-none transition-colors hover:border-hairline-strong focus:border-accent-line"
+        style={{ fontFamily: value || undefined }}
+      >
+        <span className="truncate">{match?.label ?? (value ? firstFamily(value) : "Choose a font")}</span>
+        <span className={`ml-2 shrink-0 text-[9px] text-faint transition-transform ${open ? "rotate-180" : ""}`}>▼</span>
+      </button>
+
+      {open && (
+        <div className="mt-1 overflow-hidden rounded-md border border-hairline bg-surface">
+          {options.map((o) => (
+            <button
+              key={o.label}
+              type="button"
+              data-rb-font-option={o.label}
+              onClick={() => {
+                onChange(o.stack);
+                setOpen(false);
+              }}
+              className={`flex w-full items-baseline justify-between px-2 py-1.5 text-left transition-colors hover:bg-surface-2 ${
+                match?.label === o.label ? "bg-surface-2" : ""
+              }`}
+            >
+              <span className="text-[13.5px] text-ink" style={{ fontFamily: o.stack }}>
+                {o.label}
+              </span>
+              <span className="ml-2 shrink-0 text-[11px] text-faint" style={{ fontFamily: o.stack }}>
+                Aa Bb 123
+              </span>
+            </button>
+          ))}
+          <button
+            type="button"
+            onClick={() => setCustom(!custom)}
+            className="w-full border-t border-hairline px-2 py-1.5 text-left font-mono text-[10.5px] text-muted transition-colors hover:bg-surface-2"
+          >
+            Custom stack…
+          </button>
+          {custom && (
+            <input
+              type="text"
+              value={value}
+              onChange={(e) => onChange(e.target.value)}
+              placeholder='"Inter", sans-serif'
+              autoFocus
+              className="w-full border-t border-hairline bg-surface px-2 py-1.5 font-mono text-[11px] text-ink outline-none"
+            />
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 const ROLES: { key: Role; label: string }[] = [
   { key: "accent", label: "Accent" },
   { key: "canvas", label: "Background" },
@@ -214,20 +328,18 @@ export function BrandPanel({
       <section>
         <h3 className="mb-2 text-[12.5px] font-semibold text-ink">Type</h3>
         {(["display", "body", "mono"] as const).map((slot) => (
-          <label key={slot} className="mb-1.5 block">
+          <div key={slot} className="mb-1.5">
             <span className="font-mono text-[9.5px] uppercase tracking-[0.14em] text-faint">
               {slot}
             </span>
-            <input
-              type="text"
+            <FontSelect
+              slot={slot}
               value={brand.fonts[slot] ?? inUse?.fonts?.[slot] ?? ""}
-              onChange={(e) =>
-                setBrand({ ...brand, fonts: { ...brand.fonts, [slot]: e.target.value } })
+              onChange={(stack) =>
+                setBrand({ ...brand, fonts: { ...brand.fonts, [slot]: stack } })
               }
-              placeholder='"Inter", sans-serif'
-              className="mt-0.5 w-full rounded-md border border-hairline bg-surface px-2 py-1.5 text-[11.5px] text-ink outline-none focus:border-accent-line"
             />
-          </label>
+          </div>
         ))}
       </section>
 

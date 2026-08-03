@@ -104,6 +104,96 @@ export const inferAccent = (source: string): string | undefined =>
     );
   })?.hex;
 
+/**
+ * Where the PAGE background actually lives.
+ *
+ * A founder test found Background permanently dead ("not in this deck"): the
+ * role only resolved from PALETTE keys literally named `canvas`/`canvasAlt`,
+ * and even those were dropped when their value was white — STRUCTURAL treats
+ * pure white as untouchable because a GLOBAL swap of #ffffff would recolour
+ * every white headline in the deck. Both restrictions are artefacts of
+ * substitution-by-value; the page background is a POSITION, not a value. So
+ * the canvas role resolves from where backgrounds are painted, and is applied
+ * (see reskinComposition) only at those positions — which makes white safe.
+ *
+ *   keyed — PALETTE keys whose NAME declares background semantics. Rewriting
+ *           the const's value is safe and keeps every reader coherent,
+ *           including knockout text that deliberately matches the page.
+ *   paint — values found at SECTION_FRAME paint sites: the frame const's own
+ *           `background:` and per-section `...SECTION_FRAME, background:`
+ *           overrides (117 of 132 stored decks carry the frame). These may be
+ *           `PALETTE.someKey` refs (a deck that paints with PALETTE.white
+ *           must NOT have `white` itself rewritten — text uses it too) or
+ *           quoted hex literals; both are only ever touched in background
+ *           position.
+ */
+const CANVAS_KEY_RE = /^(canvas|canvasAlt|bg|background|paper|page)$/;
+export interface CanvasPaint {
+  /** PALETTE key names with background semantics, e.g. ["canvas"]. */
+  keyed: string[];
+  /** Paint-site values, verbatim: a "PALETTE.key" ref, a "#hex" literal, or —
+   *  for gradient pages — the whole quoted/template value as it appears in the
+   *  source, so application can replace exactly that expression. */
+  paint: string[];
+  /** Current page colours, best guess first — for display and enablement. */
+  hexes: string[];
+}
+export const findCanvasPaint = (source: string): CanvasPaint => {
+  const palette = parsePaletteConst(source);
+  const keyed: string[] = [];
+  const paint: string[] = [];
+  const hexes: string[] = [];
+  const seenHex = (h?: string) => {
+    const x = h && expand(h.toLowerCase());
+    if (x && isHex(x) && !hexes.includes(x)) hexes.push(x);
+  };
+
+  for (const [key, hex] of Object.entries(palette)) {
+    if (!CANVAS_KEY_RE.test(key)) continue;
+    keyed.push(key);
+    seenHex(hex);
+  }
+
+  // Paint sites. `[^{}]` keeps each match inside ONE object literal, so a
+  // frame const with no background cannot swallow the file up to someone
+  // else's declaration.
+  const VALUE =
+    `(?:PALETTE\\.(\\w+)` +
+    `|["'](#[0-9a-fA-F]{3,8})["']` +
+    // Gradient pages: capture the WHOLE value expression verbatim (template
+    // literal or quoted gradient) — flattening it to the user's flat colour is
+    // exactly what picking a colour means on a gradient page.
+    `|(\`[^\`\n]{0,600}\`)` +
+    `|(["'][^"'\n]{0,60}?gradient[^"'\n]{0,500}?["']))`;
+  const sites = [
+    new RegExp(`\\bSECTION_FRAME[^=\\n]{0,40}=\\s*\\{[^{}]{0,800}?background(?:Color)?:\\s*${VALUE}`, "g"),
+    new RegExp(`\\.\\.\\.\\s*SECTION_FRAME\\s*,[^{}]{0,240}?background(?:Color)?:\\s*${VALUE}`, "g"),
+  ];
+  for (const re of sites) {
+    for (const m of source.matchAll(re)) {
+      const [, key, hex, tmpl, grad] = m;
+      if (key) {
+        if (!CANVAS_KEY_RE.test(key)) {
+          const ref = `PALETTE.${key}`;
+          if (!paint.includes(ref)) paint.push(ref);
+        }
+        seenHex(palette[key]);
+      } else if (hex && hex.length >= 4) {
+        const lit = expand(hex.toLowerCase());
+        if (!paint.includes(lit)) paint.push(lit);
+        seenHex(lit);
+      } else if (tmpl || grad) {
+        const verbatim = (tmpl ?? grad)!;
+        if (!paint.includes(verbatim)) paint.push(verbatim);
+        // Swatch shows the gradient's first stop — close enough to identify it.
+        seenHex(verbatim.match(/#[0-9a-fA-F]{6}\b/)?.[0]);
+        for (const k of verbatim.matchAll(/PALETTE\.(\w+)/g)) seenHex(palette[k[1]]);
+      }
+    }
+  }
+  return { keyed, paint, hexes };
+};
+
 /** Read the canonical `const PALETTE = { role: "#hex", … }` block if present. */
 export const parsePaletteConst = (source: string): Record<string, string> => {
   const start = source.search(/^const PALETTE\s*=\s*\{/m);
@@ -149,11 +239,15 @@ export const parseFontConsts = (
  * const says. Anything we cannot identify is left alone — a wrong guess here
  * recolours something the user did not ask to change.
  */
-export const resolveRoleColors = (
-  source: string,
-): Partial<Record<PaletteRole, string[]>> => {
+export interface ResolvedRoles extends Partial<Record<PaletteRole, string[]>> {
+  /** The page background, resolved by POSITION — see findCanvasPaint. Kept off
+   *  the plain role map so it can never reach the global literal swap. */
+  canvasPaint?: CanvasPaint;
+}
+
+export const resolveRoleColors = (source: string): ResolvedRoles => {
   const palette = parsePaletteConst(source);
-  const out: Partial<Record<PaletteRole, string[]>> = {};
+  const out: ResolvedRoles = {};
 
   const add = (role: PaletteRole, hex?: string) => {
     if (!hex || !isHex(hex) || STRUCTURAL.has(hex.toLowerCase())) return;
@@ -162,14 +256,22 @@ export const resolveRoleColors = (
     out[role] = list;
   };
 
+  // The page background resolves by POSITION in both branches, and stays out
+  // of the value-substitution map entirely — a white page must be editable
+  // without turning every white headline beige. `canvas` itself carries the
+  // current hexes purely so callers (the brand panel) can show and enable it.
+  const paint = findCanvasPaint(source);
+  if (paint.keyed.length + paint.paint.length > 0) {
+    out.canvasPaint = paint;
+    if (paint.hexes.length > 0) out.canvas = [...paint.hexes];
+  }
+
   if (Object.keys(palette).length > 0) {
     // Canonical: accent has several tonal siblings (accentBright, accentSoft…)
     // but only the solid hex ones can be substituted safely — the rgba()
     // variants carry their own alpha and are regenerated from the base.
     add("accent", palette.accent);
     add("accent", palette.accentBright);
-    add("canvas", palette.canvas);
-    add("canvas", palette.canvasAlt);
     add("ink", palette.ink ?? palette.text ?? palette.fg);
     add("muted", palette.muted ?? palette.textMuted);
     add("surface", palette.surface ?? palette.card);
@@ -233,15 +335,62 @@ export const reskinComposition = (
    * more than one fragment MUST resolve against the full composition and pass
    * the result here.
    */
-  roleMap?: Partial<Record<PaletteRole, string[]>>,
+  roleMap?: ResolvedRoles,
 ): ReskinResult => {
   let code = source;
   const changes: ReskinChange[] = [];
 
   // ── colours ───────────────────────────────────────────────────────────
   const roles = roleMap ?? resolveRoleColors(source);
+
+  // The page background first, and by POSITION, never by value — swapping a
+  // white page's #ffffff globally would recolour every white headline. Two
+  // moves, matched to how the deck paints (see findCanvasPaint):
+  //   1. background-semantic PALETTE keys get their const VALUE rewritten, so
+  //      every reader — including knockout text that matches the page — stays
+  //      coherent;
+  //   2. paint-site values (a PALETTE.someKey ref or a quoted hex after
+  //      `background:`) are rewritten IN PLACE, leaving the key's other uses
+  //      alone.
+  const canvasTarget = brand.palette?.canvas;
+  const paint = roles.canvasPaint;
+  if (canvasTarget && isHex(canvasTarget) && paint) {
+    const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    let occurrences = 0;
+
+    for (const key of paint.keyed) {
+      const declRe = new RegExp(`(\\b${esc(key)}\\s*:\\s*")#[0-9a-fA-F]{3,8}(")`, "g");
+      code = code.replace(declRe, (_m, head: string, tail: string) => {
+        occurrences++;
+        return `${head}${canvasTarget}${tail}`;
+      });
+    }
+
+    const alts = paint.paint.map((p) =>
+      p.startsWith("#") ? `["']${esc(p)}["']` : p.startsWith("PALETTE.") ? `${esc(p)}\\b` : esc(p),
+    );
+    if (alts.length > 0) {
+      const siteRe = new RegExp(`(background(?:Color)?:\\s*)(?:${alts.join("|")})`, "gi");
+      code = code.replace(siteRe, (_m, head: string) => {
+        occurrences++;
+        return `${head}"${canvasTarget}"`;
+      });
+    }
+
+    if (occurrences > 0) {
+      changes.push({
+        kind: "color",
+        role: "canvas",
+        from: paint.hexes.join(" "),
+        to: canvasTarget,
+        occurrences,
+      });
+    }
+  }
+
   for (const [role, target] of Object.entries(brand.palette ?? {})) {
     if (!isHex(target)) continue;
+    if (role === "canvas") continue; // handled positionally above
     const current = roles[role as PaletteRole] ?? [];
     for (const from of current) {
       if (from === target.toLowerCase()) continue;

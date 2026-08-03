@@ -1767,9 +1767,22 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
 
   // ---- resize -------------------------------------------------------------
   /** Drag one of the 8 grips. The box is tracked in overlay px for a live preview,
-   *  then converted to absolute canvas px once, on release. */
-  const onResizeStart = (e: React.MouseEvent, dir: HandleDir) => {
+   *  then converted to absolute canvas px once, on release.
+   *
+   *  The shield below (`resizeBox && …`) exists because of a bug a founder
+   *  found by hand: EXPANDING an element did nothing while contracting worked.
+   *  Dragging a grip outward immediately leaves the 10px grip and the
+   *  selection box, putting the cursor over the canvas IFRAME — which swallows
+   *  mouse events, so the window mouseup that commits the resize never fired.
+   *  Contracting keeps the cursor over the selection overlay, so only one
+   *  direction died. The move drag already mounts a full-screen shield for
+   *  exactly this; resize was missing its own. Unlike move, the shield mounts
+   *  on mousedown — a grip press is never a click or double-click, so there is
+   *  no gesture to preserve by waiting for travel. */
+  const resizeCursorRef = useRef<string>("nwse-resize");
+  const onResizeStart = (e: React.MouseEvent, dir: HandleDir, cursor: string) => {
     if (!box || busy) return;
+    resizeCursorRef.current = cursor;
     e.preventDefault();
     e.stopPropagation();
     const start = { x: e.clientX, y: e.clientY, ...box };
@@ -1801,14 +1814,20 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
       window.removeEventListener("mousemove", move);
       window.removeEventListener("mouseup", up);
       const final = resizeRef.current;
+      // Always drop the live preview + shield, even when there is nothing to
+      // commit — a stuck full-screen shield would make the whole editor dead.
       if (final && selected) void commitResize(final);
+      else setResizeBox(null);
     };
     window.addEventListener("mousemove", move);
     window.addEventListener("mouseup", up);
   };
 
   const commitResize = async (b: { left: number; top: number; width: number; height: number }) => {
-    if (!selected) return;
+    if (!selected) {
+      setResizeBox(null);
+      return;
+    }
     const pieceId = selected.pieceId;
     const p0 = overlayToCanvas(b.left, b.top);
     const p1 = overlayToCanvas(b.left + b.width, b.top + b.height);
@@ -1983,6 +2002,13 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
           fast drag that escaped the handle used to stall mid-gesture) */}
       {dragDelta && (
         <div style={{ position: "fixed", inset: 0, zIndex: 60, cursor: "move", pointerEvents: "auto" }} />
+      )}
+      {/* resize shield: same reason, resize gesture. Without it, dragging a grip
+          OUTWARD (expanding) left the grip and landed on the iframe, which
+          swallowed the mouseup — so expanding silently did nothing while
+          contracting worked. */}
+      {resizeBox && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 60, cursor: resizeCursorRef.current, pointerEvents: "auto" }} />
       )}
 
       <style dangerouslySetInnerHTML={{ __html: ORB_KEYFRAMES }} />
@@ -2462,7 +2488,7 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
                   role="slider"
                   aria-label={`Resize ${dir}`}
                   aria-valuenow={mid ? Math.round(box.width) : Math.round(box.height)}
-                  onMouseDown={(e) => onResizeStart(e, dir)}
+                  onMouseDown={(e) => onResizeStart(e, dir, cursor)}
                   style={{
                     position: "absolute",
                     left: x - 5,

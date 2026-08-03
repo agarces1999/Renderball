@@ -54,7 +54,7 @@ export async function GET(request: Request) {
   const roles = resolveRoleColors(source);
   const inUse = {
     palette: Object.fromEntries(
-      Object.entries(roles).map(([role, hexes]) => [role, hexes?.[0]]),
+      Object.entries(roles).flatMap(([role, v]) => (Array.isArray(v) ? [[role, v[0]]] : [])),
     ),
     fonts: parseFontConsts(source),
     // Top colours regardless of role, so the picker can offer the document's

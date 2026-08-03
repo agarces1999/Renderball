@@ -17,6 +17,22 @@ import {
  * pinned here with the shapes real builds actually emit.
  */
 
+
+/**
+ * The page background is edited by POSITION, never by global value swap —
+ * founder-found (2026-08-03): Background read "not in this deck" on nearly
+ * every deck, because white is STRUCTURAL and most decks paint the page with
+ * a key named for its colour (PALETTE.white), not for its role.
+ */
+const FRAME_DECK = `
+const PALETTE = { white: "#ffffff", ink: "#1a2332", navy: "#21296a" } as const;
+const SECTION_FRAME: React.CSSProperties = { position: "absolute", width: 1920, background: PALETTE.white };
+export const Section0 = () => (
+  <div style={{ ...SECTION_FRAME, background: PALETTE.white }}>
+    <h1 style={{ color: PALETTE.white, background: PALETTE.navy }}>knockout</h1>
+  </div>
+);`;
+
 const tests: Array<[string, () => void]> = [];
 const test = (name: string, fn: () => void) => tests.push([name, fn]);
 
@@ -166,6 +182,45 @@ test("accepts real brand input", () => {
 test("guidelines are bounded (they are pasted into every regen prompt)", () => {
   const v = validateBrandInput({ guidelines: "x".repeat(10_000) });
   assert.equal((v.brand.guidelines ?? "").length, 4000);
+});
+
+test("a white page painted with PALETTE.white becomes editable — at paint sites only", () => {
+  const roles = resolveRoleColors(FRAME_DECK);
+  assert.equal(roles.canvas?.[0], "#ffffff", "the Background swatch can show the real page colour");
+  const r = reskinComposition(FRAME_DECK, brandOf({ palette: { canvas: "#f4ede3" } }), roles);
+  assert.match(r.code, /background: "#f4ede3"/, "the page is repainted");
+  assert.doesNotMatch(r.code, /background: PALETTE\.white/, "both paint sites were rewritten");
+  assert.match(r.code, /color: PALETTE\.white/, "white TEXT is untouched");
+  assert.match(r.code, /white: "#ffffff"/, "the palette const is untouched");
+  assert.match(r.code, /background: PALETTE\.navy/, "non-page backgrounds are untouched");
+  assert.equal(r.changes.filter((c) => c.role === "canvas").length, 1);
+});
+
+test("a background-SEMANTIC key is rewritten at the const, so knockout readers follow", () => {
+  const src = `
+const PALETTE = { canvas: "#0b0e14", accent: "#00c28a" } as const;
+const SECTION_FRAME = { position: "absolute", background: PALETTE.canvas };
+export const S = () => <p style={{ color: PALETTE.canvas }}>matches the page</p>;`;
+  const roles = resolveRoleColors(src);
+  const r = reskinComposition(src, brandOf({ palette: { canvas: "#f4ede3" } }), roles);
+  assert.match(r.code, /canvas: "#f4ede3"/, "the const value carries the new page colour");
+  assert.match(r.code, /color: PALETTE\.canvas/, "readers keep following the const");
+});
+
+test("a gradient page flattens to the picked colour without touching inner gradients", () => {
+  const src = `
+const PALETTE = { primary: "#8b0000" } as const;
+const SECTION_FRAME = { position: "absolute", width: 1920 };
+export const S = () => (
+  <div style={{ ...SECTION_FRAME, background: \`radial-gradient(120% 80%, \${PALETTE.primary} 0%, #2a0408 100%)\` }}>
+    <div style={{ background: "repeating-linear-gradient(0deg, transparent, #333 2px)" }} />
+  </div>
+);`;
+  const roles = resolveRoleColors(src);
+  assert.ok(roles.canvas?.length, "a gradient page still enables the Background swatch");
+  const r = reskinComposition(src, brandOf({ palette: { canvas: "#f4ede3" } }), roles);
+  assert.match(r.code, /background: "#f4ede3"/, "the page is now flat");
+  assert.match(r.code, /repeating-linear-gradient/, "the decorative overlay inside the slide survives");
 });
 
 let pass = 0;

@@ -46,7 +46,9 @@ export async function GET(request: Request) {
 
   const roles = resolveRoleColors(source);
   const inUse = {
-    palette: Object.fromEntries(Object.entries(roles).map(([role, hexes]) => [role, hexes?.[0]])),
+    palette: Object.fromEntries(
+      Object.entries(roles).flatMap(([role, v]) => (Array.isArray(v) ? [[role, v[0]]] : [])),
+    ),
     fonts: parseFontConsts(source),
     colors: colorsInUse(source).slice(0, 12),
   };
