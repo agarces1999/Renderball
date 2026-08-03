@@ -364,8 +364,9 @@ export const journeyFlows: Flow[] = [
         await page.goto(`${base}/documents`, { waitUntil: "domcontentloaded" });
         const card = page.locator(`[data-rb-delete-document]`).first();
         if (await card.isVisible().catch(() => false)) {
-          page.once("dialog", (d) => void d.accept());
+          // Our own confirmation now, not window.confirm — no dialog to accept.
           await card.click();
+          await page.locator("[data-rb-confirm-delete]").first().click();
           used("Delete document");
           await page.waitForTimeout(3000);
           note("deleted a document from the gallery");

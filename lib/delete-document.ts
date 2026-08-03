@@ -59,30 +59,27 @@ export const deleteDocument = async (
 
   const { id: projectId, scriptId } = project;
 
-  let storageDeleted: number | null = null;
-  const storageFailures: string[] = [];
-  if (isStorageConfigured()) {
-    storageDeleted = 0;
-    const prefixes = [`uploads/${projectId}/`, ...(scriptId ? [`renders/${scriptId}`] : [])];
-    for (const prefix of prefixes) {
-      try {
-        storageDeleted += await deletePrefix(prefix);
-      } catch (err) {
-        storageFailures.push(prefix);
-        console.error(`[delete-document] deletePrefix("${prefix}") failed — SWEEP LATER:`, err);
-      }
-    }
-  }
-
-  // No FK from Project to ScriptDoc, so nothing cascades here.
+  // THE ROWS FIRST. Deleting the database rows is what makes the document
+  // disappear for the user; everything else is housekeeping they cannot see.
+  //
+  // Storage used to be cleaned FIRST, and awaited: listing and deleting R2
+  // objects is several network round trips to Cloudflare, and the user watched
+  // a spinner through all of them before the card went away. Nothing about that
+  // ordering was load-bearing — a storage failure was already caught and logged
+  // rather than blocking the delete.
+  //
+  // No FK from Project to ScriptDoc, so nothing cascades to it.
   if (scriptId) {
     await prisma.scriptDoc.deleteMany({ where: { id: scriptId } }).catch((err) => {
       console.error(`[delete-document] scriptDoc ${scriptId} not deleted:`, err);
     });
   }
-
   await prisma.project.delete({ where: { id: projectId } });
 
+  // Everything below is invisible to the user, so it happens after we answer.
+  // Orphaned objects are a sweep job; a slow delete is a bad product.
+  // Local disk is milliseconds and the caller can observe it, so it stays
+  // awaited. Only the NETWORK goes to the background.
   if (scriptId) {
     await rmrf(path.join(process.cwd(), "src", "generated", scriptId));
     await rmrf(path.join(process.cwd(), ".data", "renders", `${scriptId}.mp4`));
@@ -93,5 +90,19 @@ export const deleteDocument = async (
   await rmrf(path.join(process.cwd(), ".data", "briefs", `${projectId}.json`));
   await rmrf(path.join(process.cwd(), "public", "uploads", projectId));
 
-  return { projectId, scriptId, storageDeleted, storageFailures };
+  // R2 is several round trips to Cloudflare and nothing the user can see.
+  // Orphaned objects are a sweep job; a slow delete is a bad product.
+  if (isStorageConfigured()) {
+    void (async () => {
+      for (const prefix of [`uploads/${projectId}/`, ...(scriptId ? [`renders/${scriptId}`] : [])]) {
+        try {
+          await deletePrefix(prefix);
+        } catch (err) {
+          console.error(`[delete-document] deletePrefix("${prefix}") failed — SWEEP LATER:`, err);
+        }
+      }
+    })().catch(() => {});
+  }
+
+  return { projectId, scriptId, storageDeleted: null, storageFailures: [] };
 };
