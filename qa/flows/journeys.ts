@@ -449,18 +449,48 @@ export const journeyFlows: Flow[] = [
 
         // 3. Look at what was built, page by page, the way anyone would.
         await page.goto(`${base}/preview/${id}`, { waitUntil: "domcontentloaded" });
+
+        // EVERY page, not just the first. A build reported success and shipped
+        // a slide that rendered React's "Element type is invalid" instead of
+        // content — the customer pays, waits five minutes, and gets a dead
+        // slide that export, share and the link preview all inherit. The SSR
+        // gate renders each scene and catches throws, so whatever produced it
+        // diverges between that sandbox and the browser; until that is found,
+        // this is what notices.
+        const pageErrorOn = async (): Promise<string | null> =>
+          page.evaluate(() => {
+            const d = (document.querySelector("iframe") as HTMLIFrameElement | null)?.contentDocument;
+            const text = (d?.body?.innerText ?? "") + " " + document.body.innerText;
+            const m = /(Render error:[^\n]{0,200}|Element type is invalid[^\n]{0,160})/.exec(text);
+            return m ? m[1] : null;
+          });
+
+        const broken: string[] = [];
+        const rail = page.locator("aside button").filter({ hasText: /^\s*0\d/ });
+        const pageCount = Math.max(1, await rail.count());
+        for (let i = 0; i < pageCount; i++) {
+          if (i > 0) {
+            await rail.nth(i).click();
+            await page.waitForTimeout(2500);
+          }
+          await waitForCanvas(page).catch(() => {});
+          const err = await pageErrorOn();
+          if (err) broken.push(`page ${i + 1}: ${err.slice(0, 120)}`);
+        }
+        note(`checked ${pageCount} pages${broken.length ? ` — ${broken.length} BROKEN` : " — all render"}`);
+        expect(
+          broken.length === 0,
+          `the build reported success but shipped ${broken.length} unrenderable slide(s): ${broken.join(" | ")}`,
+        );
+
+        await rail.first().click().catch(() => {});
+        await page.waitForTimeout(2000);
         await waitForCanvas(page);
         const first = await pieceIds(page);
         expect(first.length >= 3, `a built slide should have several elements, has ${first.length}`);
 
-        const rail = page.locator("aside button").filter({ hasText: /^\s*0?2/ }).first();
-        if (await rail.isVisible().catch(() => false)) {
-          await rail.click();
-          used("slide rail");
-          await page.waitForTimeout(2500);
-          await waitForCanvas(page);
-          note(`page 1: ${first.length} elements → page 2: ${(await pieceIds(page)).length}`);
-        }
+        // The every-page loop above already walked the rail.
+        used("slide rail");
 
         // 4. Fix things BY HAND — the reason to use this instead of a generator.
         const target = await pickEditablePiece(page);
