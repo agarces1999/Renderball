@@ -405,7 +405,11 @@ export const journeyFlows: Flow[] = [
             headers: { "Content-Type": "application/json" },
             data: { scriptId: id, prompt: brief, pages: 4 },
             failOnStatusCode: false,
-            timeout: 300_000,
+            // Ten minutes, not five. A 4-page outline is a large single model
+            // call and five minutes was a guess that turned out to be the
+            // thing under test — the run failed on the timeout with no usage
+            // recorded, which does not distinguish "slow" from "stalled".
+            timeout: 600_000,
           });
           expect(
             outline.status() === 200,
