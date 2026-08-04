@@ -32,8 +32,28 @@ HARD RULES:
 
 // Long inlined data-URIs are elided from READ-ONLY sibling context (measured ~130k
 // junk tokens per call on image-heavy scenes) — same rationale as regenerate-piece.
-const siblingLine = (p: DecomposedPiece): string =>
-  `- ${p.id} (${p.kind}): ${elideDataUris(p.body).replace(/\s+/g, " ").trim().slice(0, 150)}`;
+/**
+ * Digest a sibling's body for prompt context — truncated at a WORD boundary,
+ * never mid-token.
+ *
+ * The naive slice(0, 150) cut JSX mid-attribute ("…color: PALETTE.muted, fontFam"),
+ * and the Fireworks glm-5p2-fast router HANGS server-side — no response
+ * headers, ever — on prompts that combine a create-JSX instruction with such
+ * a dangling fragment (bisected to the byte, 2026-08-04; clean truncation of
+ * the same text answers in ~1s). The blank template's hint piece happened to
+ * cut at exactly such a spot, which made every first insert on a new document
+ * a guaranteed 10-minute stall — and the same roulette explains the
+ * intermittent generate stalls on built decks (task #52). An ellipsis marks
+ * the cut so the model knows it is looking at a fragment.
+ */
+const digest = (body: string, max = 150): string => {
+  const flat = elideDataUris(body).replace(/\s+/g, " ").trim();
+  if (flat.length <= max) return flat;
+  const cut = flat.slice(0, max);
+  const atWord = cut.slice(0, Math.max(cut.lastIndexOf(" "), 40));
+  return `${atWord} …`;
+};
+const siblingLine = (p: DecomposedPiece): string => `- ${p.id} (${p.kind}): ${digest(p.body)}`;
 
 export interface GenPieceInput {
   /** The decomposed module preamble (the frozen design system) — read-only context. */
@@ -80,7 +100,8 @@ export const generatePiece = async (input: GenPieceInput): Promise<GenPieceResul
   try {
     response = await withTransientRetry("generate-piece", () =>
       client.messages
-        .stream({
+        .stream(
+        {
           model,
           max_tokens: 4000,
           // The preamble is per-video constant → a CACHED system block, so iterative
@@ -103,7 +124,15 @@ export const generatePiece = async (input: GenPieceInput): Promise<GenPieceResul
             },
           ],
           messages: [{ role: "user", content: user }],
-        })
+        },
+          // INTERACTIVE cap. Without it this inherited the transport's 600s
+          // build-stage default — so one stalled connection meant a user (and
+          // the QA journey) staring at "Generating…" for up to ten minutes.
+          // A timed-out attempt aborts, which withTransientRetry already
+          // classifies as transient, so a stall now self-heals on the retry
+          // instead of wedging the editor.
+          { timeout: 120_000 },
+        )
         .finalMessage(),
     );
   } catch (err) {
