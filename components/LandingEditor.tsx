@@ -9,6 +9,7 @@ import {
   SandboxHint,
   SandboxLayer,
   useSandbox,
+  SandboxPanel,
 } from "./LandingSandbox";
 import { DEMO_DECKS, type DemoSlide } from "./demo-decks";
 
@@ -249,7 +250,7 @@ export function LandingEditor() {
               className={`relative flex-1 overflow-hidden rounded-xl border border-hairline bg-surface shadow-[0_30px_80px_-40px_rgba(18,26,43,0.45)] ${
                 sb.drawing ? "select-none" : ""
               }`}
-              style={{ touchAction: sb.drawing ? "none" : undefined }}
+              style={{ touchAction: sb.drawing ? "none" : "pan-y" }}
               onPointerDown={sb.onPointerDown}
               onPointerMove={sb.onPointerMove}
               onPointerUp={sb.onPointerUp}
@@ -1127,6 +1128,12 @@ function StaticEditor() {
           <SlideFrame slide={heroSlide} />
         </div>
       )}
+
+      {/* The gesture itself, not just pictures of it — the bounded sandbox
+          (draw → pick → materialize) that the scroll branch performs. This
+          mount was lost when the previous landing was retired; phones showed
+          the promise and never the product. */}
+      <SandboxPanel />
 
       {/* The hero already told section 1; the rest follow it. */}
       <div className="mt-10 space-y-8">

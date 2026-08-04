@@ -1,3 +1,4 @@
+import { DeleteAccountSection } from "./DeleteAccountSection";
 import { UserProfile } from "@clerk/nextjs";
 import { AppShellServer } from "../../components/AppShellServer";
 import { getCurrentUser } from "../../lib/auth";
@@ -72,6 +73,7 @@ export default async function AccountPage() {
           />
         ) : null}
         <UserProfile routing="hash" />
+        <DeleteAccountSection />
       </div>
     </AppShellServer>
   );

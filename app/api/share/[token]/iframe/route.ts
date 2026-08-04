@@ -32,13 +32,13 @@ import { renderSceneDoc } from "../../../../../lib/render/scene-iframe";
  * because the framed document does not load the app stylesheet. The
  * data-share-gone attribute lets the same-origin parent detect this state.
  */
-const goneDoc = () =>
+const quietDoc = (title: string, message: string, status: number) =>
   new NextResponse(
     `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<title>This link is no longer active</title>
+<title>${title}</title>
 <style>
   html, body { height: 100%; margin: 0; }
   body {
@@ -54,12 +54,21 @@ const goneDoc = () =>
 </head>
 <body data-share-gone>
 <main>
-  <h1>This link is no longer active</h1>
-  <p>Ask whoever sent it for a fresh one, or <a href="/" target="_top">make your own deck with Renderball</a>.</p>
+  <h1>${title}</h1>
+  <p>${message}</p>
 </main>
 </body>
 </html>`,
-    { status: 404, headers: compositionDocHeaders() },
+    { status, headers: compositionDocHeaders() },
+  );
+
+// Token invalid or out of range — deliberately identical for both, so a
+// revoked link and a never-valid one cannot be told apart.
+const goneDoc = () =>
+  quietDoc(
+    "This link is no longer active",
+    `Ask whoever sent it for a fresh one, or <a href="/" target="_top">make your own deck with Renderball</a>.`,
+    404,
   );
 
 export async function GET(request: Request, { params }: { params: { token: string } }) {
@@ -75,7 +84,18 @@ export async function GET(request: Request, { params }: { params: { token: strin
 
   // Always settled: a viewer is reading a document, not watching it assemble.
   const result = await renderSceneDoc(shared.scriptId, sceneIndex, shared.script, { settle: true });
-  if (!result.ok) return goneDoc();
+  // A render failure is ONE page having trouble, not a dead link — the shared
+  // goneDoc copy ("no longer active") told recipients the sender revoked a
+  // link that works fine one arrow-press away. Distinct copy, same chrome.
+  // Token-validity indistinguishability is untouched: this branch only exists
+  // AFTER the token resolved.
+  if (!result.ok) {
+    return quietDoc(
+      "This page couldn\u2019t be shown",
+      "The rest of the deck is still here \u2014 use the arrows to keep reading, or try this page again in a moment.",
+      500,
+    );
+  }
 
   return new NextResponse(result.html, { headers: compositionDocHeaders() });
 }

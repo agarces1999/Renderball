@@ -1,6 +1,7 @@
 import { AppShellServer } from "../../components/AppShellServer";
 import { getCurrentUser } from "../../lib/auth";
 import { getUsageSummary } from "../../lib/entitlement";
+import { checkTokenAllowance } from "../../lib/metering";
 import { isBillingLive } from "../../lib/billing-provider";
 import { SubscribeButton, ManageBillingButton } from "./CheckoutButtons";
 
@@ -35,12 +36,22 @@ function MeterRow({ label, used, limit }: { label: string; used: number; limit: 
  */
 export const dynamic = "force-dynamic";
 
-export default async function BillingPage() {
+export default async function BillingPage({
+  searchParams,
+}: {
+  searchParams?: { checkout?: string };
+}) {
   // The meter reads the SAME counts the metering gate enforces — the user sees
   // exactly the numbers that gate their next generate/build (previously the
   // cap was only discoverable by slamming into it).
   const user = await getCurrentUser();
   const usage = user ? await getUsageSummary(user.id) : null;
+  const tokens = user ? await checkTokenAllowance(user.id).catch(() => null) : null;
+  // The checkout redirect lands on ?checkout=success BEFORE the webhook has
+  // confirmed the subscription — without this strip a just-paid user saw
+  // "Free" and a Subscribe button and reasonably concluded the payment
+  // vanished.
+  const justPaid = searchParams?.checkout === "success" && usage?.plan !== "subscription";
   return (
     <AppShellServer>
       <div className="mx-auto max-w-3xl px-6 py-10">
@@ -48,26 +59,50 @@ export default async function BillingPage() {
           Billing
         </h1>
         <p className="mb-8 text-[14.5px] leading-relaxed text-muted">
-          Manage your plan and payment method.
+          Editing is free. Generation is metered per token.
         </p>
+
+        {justPaid && (
+          <div className="mb-5 rounded-lg border border-accent-line bg-accent-soft/40 px-5 py-4">
+            <p className="text-[14px] font-medium text-ink">Payment received.</p>
+            <p className="mt-1 text-[13px] leading-relaxed text-ink-soft">
+              Your metered plan activates the moment our payment processor
+              confirms it — usually under a minute. Refresh this page to see it.
+            </p>
+          </div>
+        )}
 
         <div className="rounded-lg border border-hairline bg-surface p-6">
           <div className="mb-1 font-mono text-[11px] uppercase tracking-[0.14em] text-muted">
-            Current plan
+            Your usage this month
           </div>
           <div className="flex items-baseline gap-2">
             <span className="font-display text-[26px] font-semibold tracking-tight text-ink">
-              {usage?.plan === "subscription" ? "Subscription" : "Free"}
+              {usage?.plan === "subscription" ? "Metered plan" : "Free allowance"}
             </span>
           </div>
+          {tokens && (
+            <div className="mt-5">
+              <MeterRow
+                label="Generation tokens"
+                used={tokens.usedTokens}
+                limit={tokens.freeTokens}
+              />
+              <p className="mt-1.5 font-mono text-[10.5px] text-faint">
+                {Math.max(0, tokens.freeTokens - tokens.usedTokens).toLocaleString()} free tokens left · editing never counts
+              </p>
+            </div>
+          )}
           {usage ? (
             <div className="mt-5 space-y-4">
               <MeterRow label="Outlines generated" used={usage.generate.used} limit={usage.generate.limit} />
               <MeterRow label="Documents built" used={usage.build.used} limit={usage.build.limit} />
             </div>
           ) : (
+            // This page is sign-in gated, so a missing summary is a hiccup on
+            // OUR side, never something to ask the user to fix.
             <p className="mt-2 text-[13px] text-muted">
-              Sign in to see your usage.
+              Usage is momentarily unavailable — refresh in a minute.
             </p>
           )}
         </div>

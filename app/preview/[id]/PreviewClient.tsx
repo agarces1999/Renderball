@@ -234,7 +234,13 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
       const res = await fetch(`/api/preview/${scriptId}/export?${qs}`);
       if (!res.ok) {
         const txt = (await res.text()).trim();
-        setExportError(txt || `export failed (${res.status})`);
+        let friendly: string | null = null;
+        try {
+          friendly = (JSON.parse(txt) as { error?: string }).error ?? null;
+        } catch {
+          /* non-JSON body — fall through to the raw text */
+        }
+        setExportError(friendly ?? (txt || `export failed (${res.status})`));
         return;
       }
       const blob = await res.blob();

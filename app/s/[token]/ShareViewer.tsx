@@ -27,14 +27,29 @@ export function ShareViewer({
   pages: { label: string }[];
 }) {
   const [index, setIndex] = useState(0);
+  const [loading, setLoading] = useState(false);
+  const [touchStart, setTouchStart] = useState<{ x: number; y: number } | null>(null);
+  // The swipe layer exists only on touch devices — on a desktop it would sit
+  // between the mouse and the slide, silently breaking text selection.
+  const [isTouch, setIsTouch] = useState(false);
+  useEffect(() => setIsTouch("ontouchstart" in window || navigator.maxTouchPoints > 0), []);
   const total = pages.length;
 
   const go = useCallback(
     (next: number) => setIndex((i) => Math.max(0, Math.min(total - 1, next === -1 ? i : next))),
     [total],
   );
-  const prev = useCallback(() => setIndex((i) => Math.max(0, i - 1)), []);
-  const next = useCallback(() => setIndex((i) => Math.min(total - 1, i + 1)), [total]);
+  const turn = useCallback(
+    (to: (i: number) => number) =>
+      setIndex((i) => {
+        const n = to(i);
+        if (n !== i) setLoading(true);
+        return n;
+      }),
+    [],
+  );
+  const prev = useCallback(() => turn((i) => Math.max(0, i - 1)), [turn]);
+  const next = useCallback(() => turn((i) => Math.min(total - 1, i + 1)), [total, turn]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -100,7 +115,37 @@ export function ShareViewer({
             key={index}
             src={`/api/share/${encodeURIComponent(token)}/iframe?scene=${index}`}
             title={`${title} — page ${index + 1} of ${total}`}
+            onLoad={() => setLoading(false)}
             style={{ position: "absolute", inset: 0, width: "100%", height: "100%", border: 0 }}
+          />
+          {loading && (
+            <div className="absolute inset-0 flex items-center justify-center bg-surface">
+              <span className="font-mono text-[12px] text-faint">
+                {index + 1} / {total}
+              </span>
+            </div>
+          )}
+          <div
+            // Touch layer: horizontal swipes page the deck. Mouse users click
+            // straight through (pointer-events only for touch via handlers on
+            // an always-mounted layer that ignores mouse events).
+            className="absolute inset-0"
+            style={{ touchAction: "pan-y", pointerEvents: isTouch ? "auto" : "none" }}
+            onTouchStart={(e) => {
+              const t = e.touches[0];
+              if (t) setTouchStart({ x: t.clientX, y: t.clientY });
+            }}
+            onTouchEnd={(e) => {
+              const start = touchStart;
+              setTouchStart(null);
+              const t = e.changedTouches[0];
+              if (!start || !t) return;
+              const dx = t.clientX - start.x;
+              const dy = t.clientY - start.y;
+              if (Math.abs(dx) < 48 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
+              if (dx < 0) next();
+              else prev();
+            }}
           />
         </div>
       </main>

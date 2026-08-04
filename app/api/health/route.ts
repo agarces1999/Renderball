@@ -78,6 +78,13 @@ export async function GET() {
     generation: breaker.open ? ("down" as CheckState) : ("ok" as CheckState),
     billing: billingProvider() === "none" ? ("not-configured" as CheckState) : ("ok" as CheckState),
     alerting: isAlertingConfigured() ? ("ok" as CheckState) : ("not-configured" as CheckState),
+    // Without this secret, deleting an account in Clerk's own UI silently
+    // keeps every document — the sync path is env-gated off. Self-serve
+    // deletion (POST /api/account/delete) works regardless; this flags the
+    // Clerk-side path.
+    clerkWebhook: process.env.CLERK_WEBHOOK_SIGNING_SECRET
+      ? ("ok" as CheckState)
+      : ("not-configured" as CheckState),
   };
 
   // Only the database and generation can fail this check. "not-configured" is a

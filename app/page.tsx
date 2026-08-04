@@ -138,7 +138,7 @@ function Pricing() {
               Open the editor
             </Link>
             <p className="mt-3 text-center font-mono text-[11px] text-faint">
-              Metered billing via Stripe · usage visible on your account
+              Metered billing · usage always visible on your account
             </p>
           </div>
         </div>
@@ -155,11 +155,11 @@ function Faq() {
     },
     {
       q: "How does it stay on my brand?",
-      a: "Paste your website. Renderball extracts your logo, palette, and fonts, reads your design language, and sets every generated slide in it. You confirm the brand kit before anything is generated.",
+      a: "Paste your website. Renderball extracts your logo, palette, and fonts, reads your design language, and sets every generated slide in it. You approve the outline before anything is designed — and every element stays editable after.",
     },
     {
       q: "How long does a deck take?",
-      a: "About five minutes from URL to exported deck — the receipt on this page (4:37, five slides) is a real recorded session, not a promise.",
+      a: "About five minutes from brief to exported deck for a typical five-page deck — and single elements regenerate in seconds while you edit.",
     },
     {
       q: "What does it cost?",
@@ -245,7 +245,7 @@ function SiteFooter() {
             Contact
           </Link>
           <a href="mailto:support@renderball.com" className="transition-colors hover:text-ink">
-            Contact
+            support@renderball.com
           </a>
         </nav>
         <p className="font-mono text-[11px] text-faint">© 2026 Renderball</p>

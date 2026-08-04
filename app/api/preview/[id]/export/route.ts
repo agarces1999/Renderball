@@ -29,14 +29,32 @@ export async function GET(request: Request, { params }: { params: { id: string }
         ? await exportDeckPdf(scriptId, script)
         : null;
   if (result === null) {
-    return new NextResponse(`unknown format "${format}" — use pdf or png`, { status: 400 });
+    return NextResponse.json({ error: `unknown format "${format}" — use pdf or png` }, { status: 400 });
   }
-  if (!result.ok) return new NextResponse(result.message, { status: result.status });
+  if (!result.ok) {
+    // The renderer's message is wire truth ("Playwright timed out …") — log it
+    // here, say something a person can act on in the response.
+    console.error(`[export] ${format} failed for ${scriptId}: ${result.message}`);
+    return NextResponse.json(
+      { error: "The export didn't finish — try again in a moment. If it keeps failing, email support@renderball.com." },
+      { status: result.status },
+    );
+  }
+
+  // Files are named after the DECK, not its database id — "q3-investor-update.pdf"
+  // is a file someone can find again; a 26-character ULID is not.
+  const ext = result.filename.split(".").pop() ?? (format === "png" ? "png" : "pdf");
+  const slug = (script.brief?.purpose ?? "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/(^-|-$)/g, "")
+    .slice(0, 60);
+  const filename = `${slug || "renderball-deck"}.${ext}`;
 
   return new NextResponse(new Uint8Array(result.data), {
     headers: {
       "Content-Type": result.contentType,
-      "Content-Disposition": `attachment; filename="${result.filename}"`,
+      "Content-Disposition": `attachment; filename="${filename}"`,
       "Cache-Control": "no-store",
     },
   });

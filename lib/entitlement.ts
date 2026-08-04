@@ -17,6 +17,7 @@
  * decideEntitlement is pure (unit-tested); the Prisma IO wraps it.
  */
 import { prisma } from "./db";
+import { isBillingLive } from "./billing-provider";
 import { DEV_OWNER_ID } from "./store";
 
 export type MeteredOp = "generate" | "build";
@@ -73,7 +74,13 @@ export const decideEntitlement = (
       limit,
       reason:
         plan === "free"
-          ? `Free plan limit reached (${limit} ${noun}/month). Upgrade to keep creating.`
+          ? // Usage language, and only sell a way out that exists: while
+            // metered billing is not live there is nothing to "upgrade" to,
+            // and the old copy marched people to a page with no pay button.
+            `You've used this month's free allowance (${limit} ${noun}). ` +
+            (isBillingLive()
+              ? "Add a payment method on the billing page to keep creating."
+              : "It resets on the 1st — or email support@renderball.com and we'll raise it.")
           : `Monthly limit reached (${limit} ${noun}). It resets on the 1st — or contact us to raise it.`,
     };
   }
