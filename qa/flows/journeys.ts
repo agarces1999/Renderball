@@ -646,7 +646,20 @@ export const journeyFlows: Flow[] = [
         await page.mouse.up();
         await waitIdle(page);
         const after = await pieceBox(page, target);
-        note(`resized ${target}: ${Math.round(before?.width ?? 0)} → ${Math.round(after?.width ?? 0)}px`);
+        const w0 = Math.round(before?.width ?? 0);
+        const w1 = Math.round(after?.width ?? 0);
+        // pieceBox unions the piece's DESCENDANTS, so a text piece whose copy
+        // reflows inside a wider wrapper measures identically before and
+        // after — "453 → 453px" is that artifact, not a broken resize (the
+        // assertion that actually guards resize, in both directions, lives in
+        // journey B on a piece picked for having measurable geometry). Said
+        // out loud here because a passing run that prints an unchanged number
+        // reads as a silent failure.
+        note(
+          w0 === w1
+            ? `resized ${target}: content reflowed within ${w1}px — resize itself is asserted in journey B`
+            : `resized ${target}: ${w0} → ${w1}px`,
+        );
 
         // 5. Export what came out (the PNG button is exercised by
         //    JOURNEY B at smoke tier, where the coverage gate runs).
