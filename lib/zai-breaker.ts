@@ -80,6 +80,23 @@ export const isBalanceError = (err: unknown): boolean => {
   const status = (err as { status?: unknown } | null)?.status;
   if (typeof status === "number" && status === 402) return true;
 
+  // 412 is the OTHER Fireworks account-dry signal, and it is the one that
+  // actually fired in production (2026-08-04, verbatim):
+  //   "cast HTTP 412: Account alfonso-… is suspended, possibly due to
+  //    reaching the monthly spending limit or failure to pay past invoices."
+  // The breaker knew only 402, so a fully suspended account tripped nothing:
+  // no circuit, no alert, and the build pipeline quietly shipped a deck with
+  // blank stubs where two scenes should have been. Paired with a body word so
+  // an unrelated precondition failure cannot take all generation down — the
+  // same caution the 429 branch below is built on.
+  if (
+    typeof status === "number" &&
+    status === 412 &&
+    /suspend|spending limit|past invoice|billing|unpaid/i.test(msg)
+  ) {
+    return true;
+  }
+
   // Deliberately NOTHING for 429. Every 429 vocabulary a provider actually
   // emits for ordinary throttling contains money/quota words — measured:
   // "Quota exceeded for requests per minute", "Rate limit reached for model;

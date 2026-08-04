@@ -8,7 +8,7 @@ import { applyChoreography, throughlineAnchorFor } from "./choreograph";
 import { AdaptiveGate, mapWithGate, isOverloadSignal } from "./adaptive-gate";
 import { fillLimiter } from "./account-limiter";
 import { BuildTimeline } from "./build-timeline";
-import { noteZaiError, noteZaiSuccess } from "../zai-breaker";
+import { isBalanceError, noteZaiError, noteZaiSuccess } from "../zai-breaker";
 import { exemplarPromptBlock } from "./exemplars";
 import {
   densityFailuresByScene,
@@ -3088,6 +3088,13 @@ const fillSectionBlock = async (
       `[pipeline] fillSectionBlock(${sectionName}) failed after retries:`,
       err instanceof Error ? err.message : err,
     );
+    // An account-dry error is NOT a content failure. Swallowing it into "no
+    // block" is how a suspended Fireworks account (2026-08-04) produced a
+    // "successful" build with two blank scenes: the scoped retry that is
+    // supposed to regenerate stubs also could not call the model, and the
+    // pipeline assembled the stubs anyway. Re-thrown so the build fails
+    // honestly and the user's document survives to be built after a recharge.
+    if (isBalanceError(err)) throw err;
     return { block: null, usage: EMPTY_USAGE };
   }
 };

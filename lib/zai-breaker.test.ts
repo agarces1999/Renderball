@@ -27,6 +27,22 @@ const THE_REAL_1113 =
 
 console.log("zai-breaker");
 
+check("isBalanceError: the real Fireworks 412 suspension (production, 2026-08-04)", () => {
+  // Verbatim from the logs the night the account went down mid-build.
+  const suspended = Object.assign(
+    new Error(
+      "cast HTTP 412: Account alfonso-qlv88xipnger is suspended, possibly due to reaching the monthly spending limit or failure to pay past invoices. Please go to https://fireworks.ai/account/billing for more information.",
+    ),
+    { status: 412 },
+  );
+  assert(isBalanceError(suspended), "a suspended account MUST trip the breaker");
+  // A 412 that is not about money must not take generation down.
+  const precondition = Object.assign(new Error("cast HTTP 412: precondition failed on model revision"), {
+    status: 412,
+  });
+  assert(!isBalanceError(precondition), "an unrelated 412 is not an account-dry signal");
+});
+
 check("isBalanceError: the real 1113 string yes; overload/network/1302 no", () => {
   assert(isBalanceError(new Error(THE_REAL_1113)), "verbatim production 1113");
   assert(!isBalanceError(new Error('{"type":"overloaded_error","code":"500"}')), "overload is not balance");
