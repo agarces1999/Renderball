@@ -10,6 +10,7 @@
 // filesystem fact, not a prompt request.
 //
 import { MODELS } from "../anthropic";
+import { promptDigest } from "../llm/safe-truncate";
 import { getBuildClient } from "../llm/build-client";
 import { withTransientRetry } from "./transient-retry";
 import { stripCodeFence, elideDataUris } from "./code-extraction";
@@ -32,28 +33,10 @@ HARD RULES:
 // summaries) — measured 97% of Arc's 505KB preamble was base64 ≈ ~130k junk
 // tokens per regen. Never elided from the piece body itself: the model re-emits
 // the body, and an elided URI there would ship a broken image.
-/**
- * Digest a sibling's body for prompt context — truncated at a WORD boundary,
- * never mid-token.
- *
- * The naive slice(0, 150) cut JSX mid-attribute ("…color: PALETTE.muted, fontFam"),
- * and the Fireworks glm-5p2-fast router HANGS server-side — no response
- * headers, ever — on prompts that combine a create-JSX instruction with such
- * a dangling fragment (bisected to the byte, 2026-08-04; clean truncation of
- * the same text answers in ~1s). The blank template's hint piece happened to
- * cut at exactly such a spot, which made every first insert on a new document
- * a guaranteed 10-minute stall — and the same roulette explains the
- * intermittent generate stalls on built decks (task #52). An ellipsis marks
- * the cut so the model knows it is looking at a fragment.
- */
-const digest = (body: string, max = 150): string => {
-  const flat = elideDataUris(body).replace(/\s+/g, " ").trim();
-  if (flat.length <= max) return flat;
-  const cut = flat.slice(0, max);
-  const atWord = cut.slice(0, Math.max(cut.lastIndexOf(" "), 40));
-  return `${atWord} …`;
-};
-const siblingLine = (p: DecomposedPiece): string => `- ${p.id} (${p.kind}): ${digest(p.body)}`;
+/** Sibling context for the prompt — word-boundary truncated, never mid-token
+ *  (lib/llm/safe-truncate.ts explains why that is load-bearing). */
+const siblingLine = (p: DecomposedPiece): string =>
+  `- ${p.id} (${p.kind}): ${promptDigest(elideDataUris(p.body))}`;
 
 export interface RegenPieceInput {
   /** The decomposed module preamble (the frozen design system) — read-only context. */

@@ -44,6 +44,7 @@
 import type { Script, ElementSpec } from "../../src/schema";
 import type { Theme, SceneManifest, Piece } from "../edit/piece-model";
 import { castCall, isFireworksModel, type CastEffort } from "../llm/cast-provider";
+import { promptDigest } from "../llm/safe-truncate";
 import { composeSceneLayout, CANVAS, type Aspect, type ElementSlot, type ScenePlan } from "./layout-composer";
 import { selectThroughlineAnchor } from "./throughline-anchor";
 import { normalizeElementColors, assessAccentPresence, hexToRgb, rgbToHsl, isNeutral } from "./normalize-element";
@@ -2140,7 +2141,12 @@ const elementBrief = (args: {
   const lines: string[] = [
     `CREATE this element — scene ${sceneIndex} ("${scene.label}", register ${register}), piece id "${pieceId}", kind "${slot.kind}".`,
     `Scene intent: ${scene.description ?? scene.label}`,
-    `Visual concept (this element's role within it): ${String(scene.visual_concept ?? "").slice(0, 600)}`,
+    // Word-boundary cut, NOT slice(): this line sits directly under a "CREATE
+    // this element" instruction, which is exactly the shape that hangs the
+    // Fireworks router forever when the fragment ends mid-token (see
+    // lib/llm/safe-truncate.ts). The 37/56/66-minute builds in this repo's
+    // history are this bug, not a speed problem.
+    `Visual concept (this element's role within it): ${promptDigest(scene.visual_concept ?? "", 600)}`,
     `BOUNDS: your wrapper is ${b.w}×${b.h}px at canvas (${b.x},${b.y})${slot.kind === "text" ? " — width is a MAX, height flows" : ""}. Fill it.`,
     `PALETTE ROLES you may paint with: ${slot.paletteRoles.map((r) => `${r} → ${tokenForRole(theme, r)}`).join(", ")}.`,
   ];

@@ -577,12 +577,13 @@ export const journeyFlows: Flow[] = [
             if (job.status === "failed") throw new Error(`the build failed: ${job.error ?? "no reason given"}`);
             return job.status === "done";
           },
-          // 75 min, from MEASUREMENT not hope: a 4-page build on 2026-08-04
-          // spent 36.7 minutes in design:fills alone and entered the
-          // gate-retry phase at 37.4 — the 45-minute budget expired
-          // mid-gates and reported a working build as a failure. The wait
-          // must exceed reality or the journey tests the timeout.
-          75 * 60_000,
+          // 25 min. The BASELINE is 4-7 (src/generated/*/build-timeline.json,
+          // design:fills 55-88s for five scenes), so a build that runs past
+          // this is not "slow" — it is stalling, and the journey SHOULD fail
+          // and say so. An earlier version of this comment raised the budget
+          // to 75 minutes to accommodate a stalled build; that would have
+          // hidden the very bug it was accommodating.
+          25 * 60_000,
         );
         note(`built in ${Math.round((Date.now() - began) / 60_000)} min`);
 
