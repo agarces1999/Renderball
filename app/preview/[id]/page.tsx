@@ -6,7 +6,7 @@ import { getCurrentUser } from "../../../lib/auth";
 import { loadScript, loadBriefByScriptId } from "../../../lib/store";
 import { AppHeader } from "../../../components/AppHeader";
 import { hydrateGenDir } from "../../../lib/render/gen-store";
-import { isBlankScript } from "../../../lib/documents/blank-document";
+import { isBlankDocument } from "../../../lib/documents/blank-document";
 import { PreviewClient } from "./PreviewClient";
 import { BuildPreviewClient } from "./BuildPreviewClient";
 
@@ -84,6 +84,15 @@ export default async function PreviewPage({
         scriptId={params.id}
         script={script}
         initialWarnings={initialWarnings}
+        // A blank document HAS a composition (blankScript synthesises one), so
+        // it reaches THIS branch — omitting the prop here is exactly how the
+        // "how do you want to start?" panel silently vanished when decks moved
+        // onto the shell: the prop stayed behind on the legacy branch below.
+        // Founder-found (2026-08-03): "no clear way to get it generated".
+        // STRUCTURAL blankness, not script blankness — hand edits never touch
+        // scene descriptions, so isBlankScript alone reopened the wizard over
+        // decks people had already built by hand.
+        isBlank={await isBlankDocument(path.dirname(compPath), script)}
       />
     );
   }
@@ -122,7 +131,7 @@ export default async function PreviewPage({
             scriptId={params.id}
             script={script}
             initialWarnings={initialWarnings}
-            isBlank={isBlankScript(script)}
+            isBlank={await isBlankDocument(path.dirname(compPath), script)}
           />
         </main>
       )}

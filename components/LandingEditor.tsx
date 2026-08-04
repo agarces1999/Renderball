@@ -357,7 +357,7 @@ function SlideRail({ active, onJump }: { active: number; onJump: (i: number) => 
           Log in
         </Link>
         <Link
-          href="/api/documents/new"
+          href="/api/documents/new" prefetch={false}
           className="rounded-md bg-accent px-3 py-1.5 text-center text-[12.5px] font-semibold text-accent-ink transition-all hover:brightness-110"
         >
           Open the editor
@@ -1036,7 +1036,7 @@ function SlideFrame({
           }}
         >
           <Link
-            href="/api/documents/new"
+            href="/api/documents/new" prefetch={false}
             aria-label="Open the editor"
             className="pointer-events-auto absolute block rounded-full outline-offset-8 focus-visible:outline focus-visible:outline-4 focus-visible:outline-[color:var(--accent)]"
             style={{
@@ -1084,7 +1084,7 @@ function ClaimBar({
         </p>
       </div>
       <Link
-        href="/api/documents/new"
+        href="/api/documents/new" prefetch={false}
         className="mt-1 shrink-0 rounded-md bg-accent px-5 py-2.5 text-[13.5px] font-semibold text-accent-ink transition-all hover:brightness-110"
       >
         Open the editor
@@ -1112,7 +1112,7 @@ function StaticEditor() {
       <p className="mt-5 text-[15px] leading-relaxed text-ink-soft">{hero.body}</p>
       <div className="mt-6 flex flex-wrap items-center gap-3">
         <Link
-          href="/api/documents/new"
+          href="/api/documents/new" prefetch={false}
           className="rounded-md bg-accent px-6 py-3 text-[14.5px] font-semibold text-accent-ink"
         >
           Open the editor

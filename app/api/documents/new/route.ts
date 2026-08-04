@@ -42,7 +42,19 @@ export const dynamic = "force-dynamic";
 const redirectTo = (path: string): NextResponse =>
   new NextResponse(null, { status: 303, headers: { Location: path } });
 
-export async function GET() {
+export async function GET(request: Request) {
+  // NEVER create on a prefetch. In production the App Router prefetches any
+  // same-origin Link the moment it scrolls into view — with session cookies —
+  // and every "New document" button is such a Link. Before this guard, a
+  // signed-in user minted a phantom document (DB rows, disk, R2) just by
+  // LOOKING at a page with the button on it; dev never shows this because
+  // viewport prefetch is disabled outside production. The links also carry
+  // prefetch={false} now, but a route with side effects must refuse on its
+  // own. Only the Next-Router-Prefetch header is checked — a real click-through
+  // navigation sends RSC:1 WITHOUT it, and that is the legitimate create.
+  if (request.headers.get("next-router-prefetch") === "1") {
+    return new NextResponse(null, { status: 204 });
+  }
   const user = await getCurrentUser();
   if (!user) {
     // Same posture as the protected pages: sign in, then come back here.

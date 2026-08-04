@@ -94,6 +94,14 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
   const [regenAsk, setRegenAsk] = useState(false);
   const [regenInstruction, setRegenInstruction] = useState("");
   const [mp4State, setMp4State] = useState<Mp4State>({ kind: "idle" });
+  // PDF/PNG export is a multi-second server-side render. The buttons carry
+  // their own busy state, and a failure lands here — never as a navigation
+  // away from the editor to the raw response body.
+  const [exporting, setExporting] = useState<"pdf" | "png" | null>(null);
+  const [exportError, setExportError] = useState<string | null>(null);
+  // 402 from the metering gate — a plan limit, not a failure. The way forward
+  // is /billing, so it gets its own quiet surface instead of the red strip.
+  const [regenLimit, setRegenLimit] = useState<string | null>(null);
   const [warnings, setWarnings] = useState<PreviewWarnings | null>(
     (initialWarnings as PreviewWarnings | null) ?? null,
   );
@@ -124,6 +132,10 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
     // The typed instruction is about ONE scene — a new scene gets a fresh ask.
     setRegenAsk(false);
     setRegenInstruction("");
+    // Errors describe an op on the page just left — they must not follow the
+    // user onto a page they say nothing about.
+    setRegenError(null);
+    setPageError(null);
   };
 
   const handleRegenerate = async () => {
@@ -131,6 +143,7 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
     if (!instruction) return;
     setRegenerating(true);
     setRegenError(null);
+    setRegenLimit(null);
     try {
       const res = await fetch("/api/preview/regenerate-scene", {
         method: "POST",
@@ -138,8 +151,23 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
         body: JSON.stringify({ scriptId, sceneIndex, instruction }),
       });
       if (!res.ok) {
+        // The route answers JSON ({"error": "..."}) with a human-written
+        // message for the designed outcomes (hourly cap, breaker, tokens) —
+        // surface that sentence, never the wire format.
         const txt = await res.text();
-        throw new Error(`regen failed (${res.status}): ${txt}`);
+        let friendly: string | null = null;
+        try {
+          friendly = (JSON.parse(txt) as { error?: string }).error ?? null;
+        } catch {
+          /* non-JSON body — fall through to the raw text */
+        }
+        if (res.status === 402) {
+          setRegenLimit(
+            friendly ?? "This document has used its included tokens.",
+          );
+          return;
+        }
+        throw new Error(friendly ?? (txt || `regeneration failed (${res.status})`));
       }
       const json = (await res.json()) as {
         ok: true;
@@ -164,7 +192,16 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
       });
       if (!res.ok) {
         const txt = await res.text();
-        setMp4State({ kind: "error", message: `${res.status}: ${txt}` });
+        let friendly: string | null = null;
+        try {
+          friendly = (JSON.parse(txt) as { error?: string }).error ?? null;
+        } catch {
+          /* non-JSON body — fall through to the raw text */
+        }
+        setMp4State({
+          kind: "error",
+          message: friendly ?? (txt || `render failed (${res.status})`),
+        });
         return;
       }
       const json = (await res.json()) as {
@@ -179,6 +216,42 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
         kind: "error",
         message: e instanceof Error ? e.message : String(e),
       });
+    }
+  };
+
+  // Fetch-driven export. The route SSRs every page through a headless browser
+  // (multi-second) and, on failure, answers plain text with no attachment
+  // header — a bare <a> would navigate the editor away to that text. Fetching
+  // keeps the user in place: a busy label while it renders, a dismissible
+  // message if it fails, a normal download if it succeeds.
+  const handleExport = async (format: "pdf" | "png") => {
+    if (exporting) return;
+    setExportError(null);
+    setExporting(format);
+    try {
+      const qs =
+        format === "png" ? `format=png&scene=${sceneIndex}` : "format=pdf";
+      const res = await fetch(`/api/preview/${scriptId}/export?${qs}`);
+      if (!res.ok) {
+        const txt = (await res.text()).trim();
+        setExportError(txt || `export failed (${res.status})`);
+        return;
+      }
+      const blob = await res.blob();
+      const name =
+        res.headers
+          .get("content-disposition")
+          ?.match(/filename="([^"]+)"/)?.[1] ?? `${scriptId}.${format}`;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = name;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setExportError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setExporting(null);
     }
   };
 
@@ -242,10 +315,14 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
     canUndo: false,
     busy: null,
   });
+  // One busy flag for the whole shell: element edits, regen, and page ops all
+  // rewrite state under the canvas, so every structural control gates on it —
+  // a page op mid-regen would land the regen on whatever page took its index.
+  const shellBusy = !!ed.busy || regenerating || pageBusy;
   const controls: EditorToolController = {
     tool: ed.tool,
     canUndo: ed.canUndo,
-    busy: !!ed.busy || regenerating || pageBusy,
+    busy: shellBusy,
     select: () => {
       if (ed.tool === "generate") editorRef.current?.toggleGenerate();
     },
@@ -266,17 +343,32 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
           slides={doc.scenes.map((s) => ({ label: s.label ?? "Slide" }))}
           active={sceneIndex}
           onSelect={selectScene}
-          onAddSlide={() => void pageOp({ op: "add", after: sceneIndex })}
+          onAddSlide={() => {
+            if (!shellBusy) void pageOp({ op: "add", after: sceneIndex });
+          }}
           width={dims.width}
           height={dims.height}
-          status={ed.busy || regenerating || pageBusy ? "saving" : "saved"}
+          status={shellBusy ? "saving" : "saved"}
           controls={controls}
           actions={
             <>
+              {/* While the document is still blank, the full-deck path stays
+                  one click away even after the start panel was dismissed —
+                  dismissing an empty state must not bury the product's
+                  expensive-but-headline capability. */}
+              {isBlank && !showBlankPanel && (
+                <button
+                  type="button"
+                  onClick={() => setShowBlankPanel(true)}
+                  className="rounded-md border border-accent-line bg-accent-soft px-3 py-1.5 text-[12px] font-medium text-ink transition-all hover:brightness-105"
+                >
+                  Generate every page
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => setRegenAsk((a) => !a)}
-                disabled={regenerating}
+                disabled={shellBusy}
                 className={cn(
                   "rounded-md border px-3 py-1.5 text-[12px] transition-colors disabled:opacity-50",
                   regenAsk
@@ -287,18 +379,29 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
                 {regenerating ? "Regenerating…" : "Regenerate"}
               </button>
               <ShareButton scriptId={scriptId} />
-              <a
-                href={`/api/preview/${scriptId}/export?format=png&scene=${sceneIndex}`}
-                className="rounded-md border border-hairline-strong bg-surface px-3 py-1.5 text-[12px] text-ink transition-colors hover:bg-surface-2"
+              <button
+                type="button"
+                onClick={() => void handleExport("png")}
+                disabled={exporting !== null}
+                className="rounded-md border border-hairline-strong bg-surface px-3 py-1.5 text-[12px] text-ink transition-colors hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-60"
               >
-                PNG
-              </a>
-              <a
-                href={`/api/preview/${scriptId}/export?format=pdf`}
-                className="inline-flex items-center gap-2 rounded-md bg-accent px-4 py-1.5 text-[12px] font-semibold text-accent-ink transition-all hover:brightness-110"
+                {exporting === "png" ? "Exporting…" : "PNG"}
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleExport("pdf")}
+                disabled={exporting !== null}
+                className="inline-flex items-center gap-2 rounded-md bg-accent px-4 py-1.5 text-[12px] font-semibold text-accent-ink transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
               >
-                Export PDF →
-              </a>
+                {exporting === "pdf" ? (
+                  <>
+                    <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-accent-ink" />
+                    Exporting PDF…
+                  </>
+                ) : (
+                  "Export PDF →"
+                )}
+              </button>
             </>
           }
           banner={
@@ -310,6 +413,14 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
               onRegenCancel={() => setRegenAsk(false)}
               regenError={regenError}
               pageError={pageError}
+              onErrorDismiss={() => {
+                setRegenError(null);
+                setPageError(null);
+              }}
+              regenLimit={regenLimit}
+              onLimitDismiss={() => setRegenLimit(null)}
+              exportError={exportError}
+              onExportDismiss={() => setExportError(null)}
               structural={warnings?.structural_unresolved ?? null}
               warnings={hasWarnings ? warnings : null}
             />
@@ -338,13 +449,16 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
               </div>
               <div className="min-h-0 flex-1 overflow-y-auto">
                 {panelTab === "brand" ? (
-                  <BrandPanel scriptId={scriptId} />
+                  <BrandPanel
+                    scriptId={scriptId}
+                    onApplied={() => setReloadKey((k) => k + 1)}
+                  />
                 ) : (
                   <DeckPagePanel
                     index={sceneIndex}
                     total={doc.scenes.length}
                     description={currentScene?.description ?? null}
-                    busy={pageBusy}
+                    busy={shellBusy}
                     onOp={(op) => void pageOp(op)}
                   />
                 )}
@@ -576,18 +690,31 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
         <div className="ml-auto flex items-center gap-2">
           {isDeck ? (
             <>
-              <a
-                href={`/api/preview/${scriptId}/export?format=png&scene=${sceneIndex}`}
-                className="rounded-md border border-hairline-strong bg-surface px-4 py-2 text-[13px] text-ink transition-colors hover:bg-surface-2"
+              <button
+                type="button"
+                onClick={() => void handleExport("png")}
+                disabled={exporting !== null}
+                className="rounded-md border border-hairline-strong bg-surface px-4 py-2 text-[13px] text-ink transition-colors hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-60"
               >
-                Page {sceneIndex + 1} PNG
-              </a>
-              <a
-                href={`/api/preview/${scriptId}/export?format=pdf`}
-                className="inline-flex items-center gap-2 rounded-md bg-accent px-5 py-2 text-[13px] font-semibold text-accent-ink transition-all hover:brightness-110"
+                {exporting === "png"
+                  ? "Exporting…"
+                  : `Page ${sceneIndex + 1} PNG`}
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleExport("pdf")}
+                disabled={exporting !== null}
+                className="inline-flex items-center gap-2 rounded-md bg-accent px-5 py-2 text-[13px] font-semibold text-accent-ink transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
               >
-                Export PDF →
-              </a>
+                {exporting === "pdf" ? (
+                  <>
+                    <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-accent-ink" />
+                    Exporting PDF…
+                  </>
+                ) : (
+                  "Export PDF →"
+                )}
+              </button>
             </>
           ) : mp4State.kind === "done" ? (
             <a
@@ -624,6 +751,22 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
         </div>
       )}
 
+      {exportError && (
+        <ErrorStrip
+          message={exportError}
+          onDismiss={() => setExportError(null)}
+          className="mb-4"
+        />
+      )}
+
+      {regenLimit && (
+        <LimitStrip
+          message={regenLimit}
+          onDismiss={() => setRegenLimit(null)}
+          className="mb-4"
+        />
+      )}
+
       {warnings?.structural_unresolved &&
       warnings.structural_unresolved.length > 0 ? (
         <StructuralPanel issues={warnings.structural_unresolved} />
@@ -632,9 +775,11 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
       {hasWarnings ? <WarningsPanel warnings={warnings!} /> : null}
 
       {regenError && (
-        <div className="mb-4 whitespace-pre-wrap rounded-md border border-red-500/30 bg-red-500/5 p-4 font-mono text-[12px] text-red-500">
-          {regenError}
-        </div>
+        <ErrorStrip
+          message={regenError}
+          onDismiss={() => setRegenError(null)}
+          className="mb-4"
+        />
       )}
 
       {/* Current page/scene meta — deck pages have no meaningful duration */}
@@ -677,6 +822,11 @@ function DeckBanner({
   onRegenCancel,
   regenError,
   pageError,
+  onErrorDismiss,
+  regenLimit,
+  onLimitDismiss,
+  exportError,
+  onExportDismiss,
   structural,
   warnings,
 }: {
@@ -687,6 +837,11 @@ function DeckBanner({
   onRegenCancel: () => void;
   regenError: string | null;
   pageError: string | null;
+  onErrorDismiss: () => void;
+  regenLimit: string | null;
+  onLimitDismiss: () => void;
+  exportError: string | null;
+  onExportDismiss: () => void;
   structural: string[] | null;
   warnings: PreviewWarnings | null;
 }) {
@@ -694,6 +849,8 @@ function DeckBanner({
     regenAsk ||
     regenError ||
     pageError ||
+    regenLimit ||
+    exportError ||
     (structural && structural.length > 0) ||
     warnings;
   if (!anything) return null;
@@ -729,13 +886,96 @@ function DeckBanner({
           </button>
         </form>
       )}
+      {regenLimit && (
+        <LimitStrip message={regenLimit} onDismiss={onLimitDismiss} />
+      )}
       {structural && structural.length > 0 && <StructuralPanel issues={structural} />}
       {warnings && <WarningsPanel warnings={warnings} />}
       {(pageError || regenError) && (
-        <div className="whitespace-pre-wrap rounded-md border border-red-500/30 bg-red-500/5 p-3 font-mono text-[12px] text-red-500">
-          {pageError ?? regenError}
-        </div>
+        <ErrorStrip
+          message={(pageError ?? regenError)!}
+          onDismiss={onErrorDismiss}
+        />
       )}
+      {exportError && (
+        <ErrorStrip message={exportError} onDismiss={onExportDismiss} />
+      )}
+    </div>
+  );
+}
+
+/**
+ * Red error surface with a dismiss control — an error must never park itself
+ * over the work with no way to close it.
+ */
+function ErrorStrip({
+  message,
+  onDismiss,
+  className,
+}: {
+  message: string;
+  onDismiss: () => void;
+  className?: string;
+}) {
+  return (
+    <div
+      className={cn(
+        "flex items-start justify-between gap-3 rounded-md border border-red-500/30 bg-red-500/5 p-3",
+        className,
+      )}
+    >
+      <div className="whitespace-pre-wrap font-mono text-[12px] text-red-500">
+        {message}
+      </div>
+      <button
+        type="button"
+        onClick={onDismiss}
+        aria-label="Dismiss"
+        className="shrink-0 rounded px-1 text-[14px] leading-none text-red-500/70 transition-colors hover:text-red-500"
+      >
+        ×
+      </button>
+    </div>
+  );
+}
+
+/**
+ * Out of tokens is a plan limit, not a failure — quiet accent surface with
+ * the way forward (/billing), mirroring BuildPreviewClient's limit screen.
+ */
+function LimitStrip({
+  message,
+  onDismiss,
+  className,
+}: {
+  message: string;
+  onDismiss: () => void;
+  className?: string;
+}) {
+  return (
+    <div
+      className={cn(
+        "flex flex-wrap items-center justify-between gap-3 rounded-md border border-accent-line bg-accent-soft p-3",
+        className,
+      )}
+    >
+      <span className="text-[13px] text-ink">{message}</span>
+      <span className="flex shrink-0 items-center gap-3">
+        <Link
+          href="/billing"
+          className="rounded-md bg-accent px-3 py-1.5 text-[12px] font-semibold text-accent-ink transition-all hover:brightness-110"
+        >
+          See plans →
+        </Link>
+        <button
+          type="button"
+          onClick={onDismiss}
+          aria-label="Dismiss"
+          className="rounded px-1 text-[14px] leading-none text-muted transition-colors hover:text-ink"
+        >
+          ×
+        </button>
+      </span>
     </div>
   );
 }

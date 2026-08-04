@@ -251,10 +251,23 @@ const main = async (): Promise<void> => {
   console.log(`  warmed:   ${warmed} routes compiled before the first flow`);
   console.log("");
 
+  // QA_ONLY=<substring> reruns just the flows whose names match — so verifying
+  // one failure costs one flow (and, for a journey, one generation) instead of
+  // the whole suite. Case-insensitive; comma-separates multiple substrings.
+  const all = [...editorFlows, ...documentFlows, ...securityFlows, ...shareFlows, ...accountFlows, ...journeyFlows];
+  const only = (process.env.QA_ONLY ?? "")
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+  const flows = only.length
+    ? all.filter((f) => only.some((s) => f.name.toLowerCase().includes(s)))
+    : all;
+  if (only.length) console.log(`  QA_ONLY: ${flows.length} of ${all.length} flows match [${only.join(", ")}]\n`);
+
   const summary = await runFlows({
     base: BASE,
     tier: TIER,
-    flows: [...editorFlows, ...documentFlows, ...securityFlows, ...shareFlows, ...accountFlows, ...journeyFlows],
+    flows,
     concurrency: CONCURRENCY,
     headless: process.env.QA_HEADED !== "1",
     artifactDir: ARTIFACTS,

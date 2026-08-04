@@ -165,82 +165,141 @@ const ROLES: { key: Role; label: string }[] = [
   { key: "line", label: "Lines" },
 ];
 
+/** Where a piece of feedback belongs, so it renders next to the control that
+ *  produced it — the panel is far taller than its viewport, so a single
+ *  message at the bottom is invisible from wherever the user just clicked. */
+type FeedbackScope = "apply" | "materials" | "guidelines";
+
 export function BrandPanel({
   scriptId,
   // Which API to talk to. Defaults to the Clerk-protected production routes;
   // the dev harness passes "/api/dev" so the panel can be driven — and QA'd —
   // without a session.
   apiBase = "/api/preview",
+  // Called after a successful apply so the host can refresh its canvas in
+  // place; without it the panel falls back to a full reload.
+  onApplied,
 }: {
   scriptId: string;
   apiBase?: string;
+  onApplied?: () => void;
 }) {
   const [brand, setBrand] = useState<DocumentBrand | null>(null);
   const [inUse, setInUse] = useState<InUse | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
-  const [note, setNote] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<{
+    scope: FeedbackScope;
+    kind: "ok" | "error";
+    text: string;
+  } | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  // The server's last-saved brand, tracked apart from staged edits. Materials
+  // actions (use/clear logo, remove a file) build on THIS, never on `brand`,
+  // so clicking them can neither silently apply nor destroy colour, type or
+  // guidelines picks the user hasn't saved yet.
+  const savedRef = useRef<DocumentBrand | null>(null);
+
+  const load = useCallback(async () => {
+    setLoadError(null);
+    try {
+      const r = await fetch(`${apiBase}/brand?scriptId=${encodeURIComponent(scriptId)}`);
+      if (!r.ok) {
+        setLoadError("The brand couldn’t be loaded.");
+        return;
+      }
+      const d = await r.json();
+      savedRef.current = d.brand;
+      setBrand(d.brand);
+      setInUse(d.inUse);
+    } catch {
+      setLoadError("The brand couldn’t be loaded.");
+    }
+  }, [scriptId, apiBase]);
 
   useEffect(() => {
-    let alive = true;
-    (async () => {
-      try {
-        const r = await fetch(`${apiBase}/brand?scriptId=${encodeURIComponent(scriptId)}`);
-        if (!r.ok) return;
-        const d = await r.json();
-        if (!alive) return;
-        setBrand(d.brand);
-        setInUse(d.inUse);
-      } catch {
-        /* panel is additive — never break the editor */
-      }
-    })();
-    return () => {
-      alive = false;
-    };
-  }, [scriptId]);
+    void load();
+  }, [load]);
 
   /** Save + apply. `apply:false` stores guidance that only affects future
    *  generation, so it costs nothing and changes nothing on canvas. */
   const save = useCallback(
-    async (next: DocumentBrand, apply: boolean, label: string) => {
+    async (next: DocumentBrand, apply: boolean, label: string, scope: FeedbackScope, savedText?: string) => {
       setBusy(label);
-      setError(null);
-      setNote(null);
+      setFeedback(null);
+      // A cleared font field means "unset that slot", not an invalid value —
+      // left in, it would reject the whole save, colour edits included.
+      const fonts = { ...next.fonts };
+      for (const slot of ["display", "body", "mono"] as const) {
+        const v = fonts[slot];
+        if (v !== undefined && v.trim() === "") delete fonts[slot];
+      }
+      // Keeps Apply disabled through the fallback reload, so a second click
+      // can't race a new PUT against the pending navigation.
+      let reloading = false;
       try {
         const r = await fetch(`${apiBase}/brand`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ scriptId, brand: next, apply }),
+          body: JSON.stringify({ scriptId, brand: { ...next, fonts }, apply }),
         });
         const d = await r.json().catch(() => null);
         if (!r.ok) {
-          setError(d?.error ?? "could not save");
+          setFeedback({ scope, kind: "error", text: d?.error ?? "could not save" });
           return;
         }
-        setBrand(d.brand);
+        savedRef.current = d.brand;
+        // Take only the server-owned fields; wholesale replacement would
+        // clobber staged edits (a logo save is built on the last-saved brand,
+        // and the user may have kept typing while the request was in flight).
+        setBrand((prev) =>
+          prev ? { ...prev, assets: d.brand.assets, logo: d.brand.logo } : d.brand,
+        );
         if (apply) {
           const n = (d.changes ?? []).length;
-          setNote(n > 0 ? `Applied — ${n} change${n === 1 ? "" : "s"}. Reloading…` : "No change to apply.");
-          // The canvas is an iframe rendered server-side; a reload is the
-          // honest way to show the new source rather than faking it.
-          if (n > 0) setTimeout(() => window.location.reload(), 700);
+          if (n > 0) {
+            if (onApplied) {
+              setFeedback({
+                scope,
+                kind: "ok",
+                text: `Applied — ${n} change${n === 1 ? "" : "s"}.`,
+              });
+              onApplied();
+              // The document's sources just changed; refresh what "in use" shows.
+              void load();
+            } else {
+              // The canvas is an iframe rendered server-side; without a host
+              // to refresh it, a reload is the honest way to show new source.
+              reloading = true;
+              setFeedback({
+                scope,
+                kind: "ok",
+                text: `Applied — ${n} change${n === 1 ? "" : "s"}. Reloading…`,
+              });
+              setTimeout(() => window.location.reload(), 700);
+            }
+          } else {
+            setFeedback({
+              scope,
+              kind: "ok",
+              text: "Saved — nothing on the pages needed to change.",
+            });
+          }
         } else {
-          setNote("Saved.");
+          setFeedback({ scope, kind: "ok", text: savedText ?? "Saved." });
         }
       } catch {
-        setError("network error");
+        setFeedback({ scope, kind: "error", text: "network error" });
       } finally {
-        setBusy(null);
+        if (!reloading) setBusy(null);
       }
     },
-    [scriptId],
+    [scriptId, apiBase, onApplied, load],
   );
 
   const upload = async (file: File) => {
     setBusy("upload");
-    setError(null);
+    setFeedback(null);
     try {
       const fd = new FormData();
       fd.set("file", file);
@@ -248,27 +307,99 @@ export function BrandPanel({
       const r = await fetch(`${apiBase}/brand/asset`, { method: "POST", body: fd });
       const d = await r.json().catch(() => null);
       if (!r.ok) {
-        setError(d?.error ?? "upload failed");
+        setFeedback({ scope: "materials", kind: "error", text: d?.error ?? "upload failed" });
         return;
       }
-      setBrand(d.brand);
-      setNote(`Added ${d.asset.name}.`);
+      savedRef.current = d.brand;
+      setBrand((prev) =>
+        prev ? { ...prev, assets: d.brand.assets, logo: d.brand.logo } : d.brand,
+      );
+      setFeedback({ scope: "materials", kind: "ok", text: `Added ${d.asset.name}.` });
     } catch {
-      setError("upload failed");
+      setFeedback({ scope: "materials", kind: "error", text: "upload failed" });
     } finally {
       setBusy(null);
       if (fileRef.current) fileRef.current.value = "";
     }
   };
 
+  const removeAsset = async (asset: BrandAsset) => {
+    setBusy(`remove:${asset.ref}`);
+    setFeedback(null);
+    try {
+      const r = await fetch(
+        `${apiBase}/brand/asset?scriptId=${encodeURIComponent(scriptId)}&ref=${encodeURIComponent(asset.ref)}`,
+        { method: "DELETE" },
+      );
+      const d = await r.json().catch(() => null);
+      if (!r.ok) {
+        setFeedback({ scope: "materials", kind: "error", text: d?.error ?? "could not remove" });
+        return;
+      }
+      savedRef.current = d.brand;
+      setBrand((prev) =>
+        prev ? { ...prev, assets: d.brand.assets, logo: d.brand.logo } : d.brand,
+      );
+      setFeedback({ scope: "materials", kind: "ok", text: `Removed ${asset.name}.` });
+    } catch {
+      setFeedback({ scope: "materials", kind: "error", text: "could not remove" });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const feedbackAt = (scope: FeedbackScope) =>
+    feedback?.scope === scope ? (
+      <p
+        role="status"
+        className={`mt-1.5 font-mono text-[11px] ${feedback.kind === "error" ? "text-red-500" : "text-accent-text"}`}
+      >
+        {feedback.text}
+      </p>
+    ) : null;
+
   if (!brand) {
     return (
-      <div className="p-4 font-mono text-[11px] text-faint">Loading brand…</div>
+      <div className="flex flex-col items-start gap-2 p-4">
+        {loadError ? (
+          <>
+            <p className="font-mono text-[11px] text-faint">{loadError}</p>
+            <button
+              type="button"
+              onClick={() => void load()}
+              className="rounded-md border border-hairline-strong bg-surface px-3 py-1.5 text-[12px] text-ink transition-colors hover:bg-surface-2"
+            >
+              Try again
+            </button>
+          </>
+        ) : (
+          <p className="font-mono text-[11px] text-faint">Loading brand…</p>
+        )}
+      </div>
     );
   }
 
   const setRole = (role: Role, hex: string) =>
     setBrand({ ...brand, palette: { ...brand.palette, [role]: hex } });
+
+  // Setting the logo persists AND applies in one step — the swap is
+  // deterministic and free, so the panel's "applies instantly" promise holds.
+  // Built on the last-saved brand, not the staged one, so the click can't
+  // silently commit colour or type picks the user hasn't applied.
+  const setLogo = (ref: string) =>
+    save({ ...(savedRef.current ?? brand), logo: ref }, true, "logo", "materials");
+
+  // Clearing can't apply: the rewrite only swaps a logo it has a replacement
+  // for — there is no removal path for slides already carrying the mark. So
+  // this saves without applying and says exactly that.
+  const clearLogo = () =>
+    save(
+      { ...(savedRef.current ?? brand), logo: undefined },
+      false,
+      "logo",
+      "materials",
+      "Cleared — existing slides keep the mark; it won’t be used from here on.",
+    );
 
   return (
     <div className="flex h-full flex-col gap-5 overflow-y-auto p-4">
@@ -343,14 +474,17 @@ export function BrandPanel({
         ))}
       </section>
 
-      <button
-        type="button"
-        onClick={() => save(brand, true, "apply")}
-        disabled={!!busy}
-        className="rounded-md bg-accent px-3 py-2 text-[12.5px] font-semibold text-accent-ink transition-all hover:brightness-110 disabled:opacity-50"
-      >
-        {busy === "apply" ? "Applying…" : "Apply to this deck · free"}
-      </button>
+      <div>
+        <button
+          type="button"
+          onClick={() => save(brand, true, "apply", "apply")}
+          disabled={!!busy}
+          className="w-full rounded-md bg-accent px-3 py-2 text-[12.5px] font-semibold text-accent-ink transition-all hover:brightness-110 disabled:opacity-50"
+        >
+          {busy === "apply" ? "Applying…" : "Apply to this deck · free"}
+        </button>
+        {feedbackAt("apply")}
+      </div>
 
       {/* ── materials ───────────────────────────────────────────────── */}
       <section>
@@ -377,11 +511,38 @@ export function BrandPanel({
                 </span>
               )}
               <span className="flex-1 truncate text-[11.5px] text-ink">{a.name}</span>
-              {brand.logo === a.ref && (
-                <span className="rounded-sm bg-accent-soft px-1.5 py-0.5 font-mono text-[9px] text-accent-text">
-                  logo
-                </span>
+              {brand.logo === a.ref ? (
+                <button
+                  type="button"
+                  onClick={() => clearLogo()}
+                  disabled={!!busy}
+                  title="Stop using as the logo from here on — existing slides keep it"
+                  className="shrink-0 rounded-sm bg-accent-soft px-1.5 py-0.5 font-mono text-[9px] text-accent-text transition-opacity hover:opacity-70 disabled:opacity-50"
+                >
+                  logo ×
+                </button>
+              ) : (
+                a.mime.startsWith("image/") && (
+                  <button
+                    type="button"
+                    onClick={() => setLogo(a.ref)}
+                    disabled={!!busy}
+                    className="shrink-0 rounded-sm border border-hairline px-1.5 py-0.5 font-mono text-[9px] text-muted transition-colors hover:border-hairline-strong hover:text-ink disabled:opacity-50"
+                  >
+                    Use as logo
+                  </button>
+                )
               )}
+              <button
+                type="button"
+                onClick={() => void removeAsset(a)}
+                disabled={!!busy}
+                aria-label={`Remove ${a.name}`}
+                title="Remove from brand materials"
+                className="shrink-0 rounded px-1 font-mono text-[12px] leading-none text-faint transition-colors hover:text-ink disabled:opacity-50"
+              >
+                ×
+              </button>
             </div>
           ))}
           {brand.assets.length === 0 && (
@@ -398,6 +559,7 @@ export function BrandPanel({
           }}
           className="mt-2 w-full text-[11px] text-muted file:mr-2 file:rounded-md file:border file:border-hairline-strong file:bg-surface file:px-2.5 file:py-1 file:text-[11px] file:text-ink"
         />
+        {feedbackAt("materials")}
       </section>
 
       {/* ── guidelines ──────────────────────────────────────────────── */}
@@ -417,16 +579,14 @@ export function BrandPanel({
         />
         <button
           type="button"
-          onClick={() => save(brand, false, "guidelines")}
+          onClick={() => save(brand, false, "guidelines", "guidelines")}
           disabled={!!busy}
           className="mt-1.5 rounded-md border border-hairline-strong bg-surface px-3 py-1.5 text-[12px] text-ink transition-colors hover:bg-surface-2 disabled:opacity-50"
         >
           {busy === "guidelines" ? "Saving…" : "Save guidelines"}
         </button>
+        {feedbackAt("guidelines")}
       </section>
-
-      {note && <p className="font-mono text-[11px] text-accent-text">{note}</p>}
-      {error && <p className="font-mono text-[11px] text-red-500">{error}</p>}
     </div>
   );
 }

@@ -66,7 +66,10 @@ const discard = async (page: Page, base: string, id: string): Promise<void> => {
     method: "DELETE",
     failOnStatusCode: false,
   });
-  if (res.status() < 400) created.delete(id);
+  // 404 counts as CLEANED: if an earlier discard's response was lost after
+  // its delete landed (crash, reset), the retry finds nothing — and for a
+  // cleanup, already-gone is the goal state, not a failure.
+  if (res.status() < 400 || res.status() === 404) created.delete(id);
 };
 
 /** Every control this file has touched, for the coverage check at the end. */
@@ -98,10 +101,13 @@ const drawAndGenerate = async (
   );
   await page.fill(PROMPT_SEL, description);
   await page.getByRole("button", { name: "Generate", exact: true }).last().click();
+  // 300s: one stalled model attempt (120s cap) + its retry (120s) + commit
+  // overhead must FIT — a wait sized to the happy path reports a recovered
+  // stall as a failure.
   await until(
     `an element for "${description.slice(0, 30)}…" lands`,
     async () => (await pieceIds(page)).length > before,
-    240_000,
+    300_000,
   );
   return (await pieceIds(page)).length - before;
 };
@@ -134,6 +140,32 @@ export const journeyFlows: Flow[] = [
       note(`blank document ${id}`);
 
       try {
+        // ── 0. The start panel must OFFER the whole product ────────────────
+        // Founder-found (2026-08-03): this panel had silently vanished — the
+        // deck fast path in page.tsx stopped passing isBlank when decks moved
+        // onto the editor shell, so "New document" landed in a bare editor
+        // with no route to full generation. A blank document must present the
+        // choice, and dismissing it must not bury the expensive path.
+        await page
+          .getByText("How do you want to start?")
+          .waitFor({ state: "visible", timeout: 20_000 });
+        expect(
+          await page.getByText("Generate every page for me").isVisible().catch(() => false),
+          "a brand-new document must offer end-to-end generation",
+        );
+        await page.getByText("Build it yourself").click();
+        used("Build it yourself", "Generate every page for me");
+        // Dismissal keeps the full-deck path one click away in the chrome.
+        const reopen = page.getByRole("button", { name: "Generate every page" });
+        await reopen.waitFor({ state: "visible", timeout: 10_000 });
+        await reopen.click();
+        used("Generate every page");
+        await page
+          .getByText("How do you want to start?")
+          .waitFor({ state: "visible", timeout: 10_000 });
+        await page.getByText("Build it yourself").click();
+        note("start panel: both paths offered, reachable again after dismissal");
+
         await waitForCanvas(page).catch(() => {
           /* a blank canvas legitimately starts with nothing on it */
         });
@@ -203,6 +235,30 @@ export const journeyFlows: Flow[] = [
           Math.round(after?.width ?? 0) !== Math.round(box?.width ?? 0),
           `dragging the east grip did not change ${again}'s width ` +
             `(${Math.round(box?.width ?? 0)}px before and after) — the grip moved but the element did not`,
+        );
+
+        // ── 4b. And back the OTHER way ─────────────────────────────────────
+        // Both directions, always. Expanding used to silently do nothing: the
+        // outward drag left the selection overlay onto the canvas iframe,
+        // which swallowed the mouseup — founder-found, and the "flaky
+        // technique" note above was this same bug wearing a disguise. One
+        // direction passing proves nothing about the other.
+        await selectPiece(page, again).catch(() => {});
+        const gripBack = page.locator('[aria-label="Resize se"]');
+        await gripBack.waitFor({ state: "visible", timeout: 15_000 });
+        const gb2 = await gripBack.boundingBox();
+        expect(!!gb2, "the resize grip should be grabbable for the reverse drag");
+        await page.mouse.move(gb2!.x + gb2!.width / 2, gb2!.y + gb2!.height / 2);
+        await page.mouse.down();
+        await page.mouse.move(gb2!.x + gb2!.width / 2 - 70, gb2!.y + gb2!.height / 2 - 45, { steps: 12 });
+        await page.mouse.up();
+        await waitIdle(page);
+        const shrunk = await pieceBox(page, again);
+        note(`and back: ${Math.round(after?.width ?? 0)} → ${Math.round(shrunk?.width ?? 0)}px`);
+        expect(
+          Math.round(shrunk?.width ?? 0) < Math.round(after?.width ?? 0),
+          `contracting after expanding did not shrink ${again} ` +
+            `(${Math.round(after?.width ?? 0)}px → ${Math.round(shrunk?.width ?? 0)}px)`,
         );
 
         // ── 5. Retype the copy, and format it ──────────────────────────────
@@ -298,6 +354,36 @@ export const journeyFlows: Flow[] = [
 
         // ── 9. Re-brand the deck ───────────────────────────────────────────
         await panelTab(page, "brand");
+
+        // No dead ends in the panel. Founder-found (2026-08-03): Background
+        // showed "not in this deck", disabled, on nearly every deck — the
+        // canvas role now resolves from where backgrounds are painted, so on
+        // a built deck the swatch must be live.
+        const bgSwatch = page.locator('input[type="color"][aria-label="Background"]');
+        if (await bgSwatch.isVisible().catch(() => false)) {
+          expect(
+            !(await bgSwatch.isDisabled().catch(() => true)),
+            'the Background swatch reads "not in this deck" — the page colour must be editable on a built deck',
+          );
+          note("Background swatch is live");
+        }
+
+        // The type slots are dropdowns that PREVIEW each face — opening one
+        // must show selectable font options, not a raw CSS string.
+        const fontBtn = page.locator('[data-rb-font-slot="display"]');
+        if (await fontBtn.isVisible().catch(() => false)) {
+          await fontBtn.click();
+          const opt = page.locator("[data-rb-font-option]").first();
+          const optionsShown = await opt
+            .waitFor({ state: "visible", timeout: 8_000 })
+            .then(() => true)
+            .catch(() => false);
+          expect(optionsShown, "the display font dropdown opened but showed no font options");
+          used((await fontBtn.innerText().catch(() => "")).trim().split("\n")[0] || "font dropdown");
+          await fontBtn.click(); // close it again
+          note("font dropdown previews real faces");
+        }
+
         const accent = page.getByRole("button", { name: "Accent", exact: true }).first();
         if (await accent.isVisible().catch(() => false)) {
           await accent.click();
@@ -314,6 +400,23 @@ export const journeyFlows: Flow[] = [
           note("re-skinned the deck from the Brand tab");
         }
         await panelTab(page, "copy");
+
+        // ── 9b. Export the page — the PNG by CLICKING — the PNG by CLICKING, because the button
+        // now owns a busy state and an in-app error surface, and neither is
+        // exercised by fetching the API. The PDF stays an API fetch (a second
+        // multi-second Playwright render per run buys no new coverage).
+        const pngBtn = page.getByRole("button", { name: "PNG", exact: true }).first();
+        // waitFor, not isVisible — the third time this suite has nearly paid
+        // for the non-polling check in one day.
+        await pngBtn.waitFor({ state: "visible", timeout: 15_000 });
+        {
+          const download = page.waitForEvent("download", { timeout: 120_000 }).catch(() => null);
+          await pngBtn.click();
+          used("PNG");
+          const got = await download;
+          expect(!!got, "clicking PNG should produce a download, and no error strip");
+          note("PNG exported by clicking the button");
+        }
 
         // ── 10. Share it, and open the link as a stranger ──────────────────
         const shareBtn = page.locator("[data-rb-share]").first();
@@ -365,7 +468,21 @@ export const journeyFlows: Flow[] = [
         const card = page.locator(`[data-rb-delete-document]`).first();
         if (await card.isVisible().catch(() => false)) {
           // Our own confirmation now, not window.confirm — no dialog to accept.
-          await card.click();
+          //
+          // Click UNTIL the confirm opens, the way a person would: a click in
+          // the pre-hydration window lands on a button whose JS has not
+          // attached yet and silently does nothing (probed and reproduced —
+          // no error, no state change, just a lost click). One blind click
+          // followed by a 30s wait turned that race into a hard failure.
+          await until(
+            "the delete confirm opens",
+            async () => {
+              if (await page.locator("[data-rb-confirm-delete]").first().isVisible().catch(() => false)) return true;
+              await card.click().catch(() => {});
+              return false;
+            },
+            20_000,
+          );
           await page.locator("[data-rb-confirm-delete]").first().click();
           used("Delete document");
           await page.waitForTimeout(3000);
@@ -513,7 +630,8 @@ export const journeyFlows: Flow[] = [
         const after = await pieceBox(page, target);
         note(`resized ${target}: ${Math.round(before?.width ?? 0)} → ${Math.round(after?.width ?? 0)}px`);
 
-        // 5. Export what came out.
+        // 5. Export what came out (the PNG button is exercised by
+        //    JOURNEY B at smoke tier, where the coverage gate runs).
         const pdf = await page.request.fetch(`${base}/api/preview/${id}/export?format=pdf`, {
           failOnStatusCode: false,
           timeout: 180_000,
@@ -575,6 +693,7 @@ export const journeyFlows: Flow[] = [
           [/^Reload$/, "developer affordance, not a user action"],
           [/^▶ Play$/, "playback preview, no assertable end state"],
           [/^Suggest$/, "covered by its own flow in editor.ts"],
+          [/^(Export PDF|Export PDF →|Exporting PDF…)$/, "a second full Playwright render per run; the export API is fetched in journey B step 5, and the button's busy/error UI is the same component the PNG click exercises"],
           [/^Upload an image/, "needs a real file picker; covered by the upload API tests"],
           [/^Save guidelines$/, "brand guidelines feed regeneration; covered in document.ts"],
           [/^(Background|Text|Surface|Lines)$/, "sibling swatches of Accent, same control"],

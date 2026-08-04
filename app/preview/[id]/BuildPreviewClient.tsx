@@ -26,6 +26,11 @@ import { cn } from "../../../lib/cn";
  */
 const POLL_MS = 4000;
 
+// How often the busy screen quietly re-attempts the build start. Long enough
+// to be a whisper against the server, short enough that "starts on its own"
+// is honest — the other build runs for minutes, not seconds.
+const BUSY_RETRY_MS = 15_000;
+
 async function pollUntilSettled(scriptId: string): Promise<Response> {
   for (;;) {
     await new Promise((r) => setTimeout(r, POLL_MS));
@@ -181,6 +186,45 @@ export function BuildPreviewClient({
     return () => clearTimeout(t);
   }, [current, isLast, agentDone, phase.kind, steps.length]);
 
+  // The busy screen tells the user their build starts once the running one
+  // finishes — keep that true without a button press: while busy, quietly
+  // re-attempt the start on an interval. 409 = still busy, stay put. Anything
+  // else means the POST just started (or attached to) this build server-side
+  // — the per-script job in build-jobs.ts dedups the follow-up POST into a
+  // 202 — so reset into the building phase and let the poll machinery run.
+  useEffect(() => {
+    if (phase.kind !== "busy") return;
+    let cancelled = false;
+    let inFlight = false;
+    const attempt = async () => {
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        const res = await fetch("/api/preview/build", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ scriptId }),
+        });
+        if (cancelled || res.status === 409) return;
+        // Same reset retry() performs, inlined so the effect's dependencies
+        // stay honest.
+        setPhase({ kind: "building" });
+        setCurrent(0);
+        setAgentDone(false);
+        setBuildKey((k) => k + 1);
+      } catch {
+        /* transient network blip — the next tick tries again */
+      } finally {
+        inFlight = false;
+      }
+    };
+    const t = setInterval(attempt, BUSY_RETRY_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(t);
+    };
+  }, [phase.kind, scriptId]);
+
   const retry = () => {
     setPhase({ kind: "building" });
     setCurrent(0);
@@ -220,15 +264,15 @@ export function BuildPreviewClient({
           Another build is already running
         </h1>
         <p className="mt-3 max-w-[46ch] text-[14px] leading-relaxed text-muted">
-          {phase.message} One build runs at a time per account — this one starts
-          the moment it finishes.
+          {phase.message} This page keeps checking — the build starts on its
+          own as soon as the other one finishes.
         </p>
         <button
           type="button"
           onClick={retry}
           className="mt-6 rounded-md bg-accent px-5 py-2.5 text-[14px] font-semibold text-accent-ink transition-all hover:brightness-110"
         >
-          Check again
+          Check now
         </button>
       </main>
     );

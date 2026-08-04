@@ -194,3 +194,70 @@ export const isBlankScript = (script: Script | null | undefined): boolean =>
   !!script &&
   script.scenes.length > 0 &&
   script.scenes.every((s) => !s.visual_concept && !s.description);
+
+/**
+ * True when the document is blank AS A DOCUMENT — script untouched AND no
+ * page holds anything beyond the blank template's own hint piece.
+ *
+ * isBlankScript alone is not that: hand edits never touch scene descriptions,
+ * so a deck someone spent an afternoon building by hand stayed "blank"
+ * forever — the start wizard reopened on top of their finished work, and the
+ * only guard on "Generate every page" (which REPLACES the outline) waved the
+ * exact documents it existed to protect straight through.
+ *
+ * The structural check reads the lego manifest: a blank page contains exactly
+ * one piece, `s<i>.hint` (see blankSection above). Anything else on any page
+ * means a person has content here. A page whose hint was deleted still counts
+ * as blank — visually empty, nothing to lose, full generation stays offered.
+ */
+/**
+ * Is the COMPOSITION still the untouched blank template?
+ *
+ * Two checks, both needed:
+ *   - every manifest piece is a hint piece (`s<i>.hint`) — anything else on
+ *     any page means a person added content;
+ *   - every hint piece still SAYS what the template says. Editing the hint
+ *     text in place keeps its id, and a doc whose only content lives in a
+ *     rewritten hint is not blank — treating it as blank offered "Generate
+ *     every page", which REPLACES the outline, over real words.
+ *
+ * `unreadable` decides the no-manifest case, because the right answer depends
+ * on what the caller does with it: the preview page shows an empty-state
+ * panel (harmless if wrong — "blank" is fine), but the generate route
+ * OVERWRITES the document, and on a container that has not hydrated this doc
+ * the manifest read throws ENOENT — failing open there would wave through
+ * exactly the decks the gate exists to protect.
+ */
+export const isBlankComposition = async (
+  genDir: string,
+  unreadable: "blank" | "not-blank" = "blank",
+): Promise<boolean> => {
+  try {
+    const raw = await fs.readFile(path.join(genDir, "lego", "manifest.json"), "utf8");
+    const manifest = JSON.parse(raw) as { scenes?: { pieces?: { id?: string }[] }[] };
+    const idsAreHints = (manifest.scenes ?? []).every((s) =>
+      (s.pieces ?? []).every((p) => /^s\d+\.hint$/.test(p.id ?? "")),
+    );
+    if (!idsAreHints) return false;
+    // The hint pieces must be UNEDITED, not merely present.
+    const pieceDir = path.join(genDir, "lego", "pieces");
+    const names = await fs.readdir(pieceDir).catch(() => [] as string[]);
+    for (const n of names) {
+      if (!/^s\d+\.hint\.tsx$/.test(n)) continue;
+      const body = await fs.readFile(path.join(pieceDir, n), "utf8").catch(() => "");
+      if (!body.includes("draw a box to make something")) return false;
+    }
+    return true;
+  } catch {
+    return unreadable === "blank";
+  }
+};
+
+export const isBlankDocument = async (
+  genDir: string,
+  script: Script | null | undefined,
+  unreadable: "blank" | "not-blank" = "blank",
+): Promise<boolean> => {
+  if (!isBlankScript(script)) return false;
+  return isBlankComposition(genDir, unreadable);
+};

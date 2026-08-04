@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "../../../../lib/auth";
-import { loadBriefByScriptId, saveBrief, saveScript } from "../../../../lib/store";
+import { loadBriefByScriptId, loadScript, saveBrief, saveScript } from "../../../../lib/store";
+import { isBlankDocument } from "../../../../lib/documents/blank-document";
+import { documentDir } from "../../../../lib/render/gen-store";
 import { withDbRetry } from "../../../../lib/db";
 import { generateScript, DECK_SECONDS_PER_SLIDE } from "../../../../lib/agents/script-generator";
 import { checkEntitlement } from "../../../../lib/entitlement";
@@ -43,6 +45,24 @@ export async function POST(request: Request) {
   // Ownership: the document must already exist and be theirs.
   const brief = await loadBriefByScriptId(scriptId, user.id);
   if (!brief) return NextResponse.json({ error: "document not found" }, { status: 404 });
+
+  // Only a BLANK document may be filled. Generating an outline into a document
+  // someone has already built pages into would replace their work wholesale —
+  // this route had ownership and spend gates but no content gate, and the
+  // "Generate every page" button is deliberately reachable from the editor.
+  const existing = await loadScript(scriptId, user.id);
+  // documentDir HYDRATES from durable storage first. A raw path here failed
+  // OPEN: on any container that had not seen this document (every container
+  // after a deploy), the manifest read threw ENOENT, "blank" came back true,
+  // and the gate waved through exactly the decks it exists to protect. Same
+  // reason the unreadable case is "not-blank" on this destructive path.
+  const genDir = await documentDir(scriptId);
+  if (existing && !(await isBlankDocument(genDir, existing, "not-blank"))) {
+    return NextResponse.json(
+      { error: "this document already has content — full generation would replace it. Start a new document instead." },
+      { status: 409 },
+    );
+  }
 
   try {
     assertZaiAvailable();
@@ -104,5 +124,10 @@ export async function POST(request: Request) {
     saveBrief({ ...updated, script_id: scriptId, status: "script_generated" } as typeof brief),
   );
 
-  return NextResponse.json({ ok: true, scriptId });
+  // Send the user to the OUTLINE REVIEW, not back to the editor. The panel
+  // promises "you approve the outline before anything is designed" — and a
+  // reload of /preview/[id] cannot keep it: the blank composition still
+  // exists, so the page takes the editor branch and the user lands on the
+  // same blank canvas they left, having paid for an outline they never see.
+  return NextResponse.json({ ok: true, scriptId, reviewUrl: `/review/${brief.id}` });
 }

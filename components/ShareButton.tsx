@@ -23,6 +23,7 @@ export function ShareButton({ scriptId }: { scriptId: string }) {
   const panelRef = useRef<HTMLDivElement>(null);
 
   const load = useCallback(async () => {
+    setError(null);
     try {
       const r = await fetch(`/api/preview/share?scriptId=${encodeURIComponent(scriptId)}`);
       const j = (await r.json()) as { shared?: boolean; url?: string; error?: string };
@@ -34,9 +35,11 @@ export function ShareButton({ scriptId }: { scriptId: string }) {
     }
   }, [scriptId]);
 
+  // At mount, not at first open: the button's whole job is to say whether a
+  // link is live without being clicked.
   useEffect(() => {
-    if (open && shared === null) void load();
-  }, [open, shared, load]);
+    void load();
+  }, [load]);
 
   // Click away closes, like every other menu in the app.
   useEffect(() => {
@@ -102,7 +105,20 @@ export function ShareButton({ scriptId }: { scriptId: string }) {
           aria-label="Share this document"
           className="absolute right-0 top-full z-50 mt-2 w-[320px] rounded-lg border border-hairline bg-surface p-3 shadow-2xl"
         >
-          {shared === null && <p className="text-[12px] text-muted">Checking…</p>}
+          {shared === null && !error && <p className="text-[12px] text-muted">Checking…</p>}
+
+          {shared === null && error && (
+            <>
+              <p className="text-[12px] text-muted">Couldn&rsquo;t check the share status.</p>
+              <button
+                type="button"
+                onClick={() => void load()}
+                className="mt-2 rounded-md border border-hairline-strong px-2.5 py-1.5 text-[11.5px] text-muted transition-colors hover:text-ink"
+              >
+                Try again
+              </button>
+            </>
+          )}
 
           {shared === false && (
             <>
@@ -167,7 +183,11 @@ export function ShareButton({ scriptId }: { scriptId: string }) {
             </>
           )}
 
-          {error && <p className="mt-2 text-[11.5px] text-red-500">{error}</p>}
+          {/* The unknown-status branch above owns its own message; this line is
+              for failures of the act()/copy() paths once status is known. */}
+          {error && shared !== null && (
+            <p className="mt-2 text-[11.5px] text-red-500">{error}</p>
+          )}
         </div>
       )}
     </span>

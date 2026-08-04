@@ -5,7 +5,10 @@ import { useEffect, useRef, useState } from "react";
 /**
  * The visual for a gallery card. Leads with the work and stays light:
  *   - thumbUrl present → the document's cached page-1 PNG (deck cards); if the
- *                        image fails to load, falls back to the placeholder.
+ *                        image fails to load, falls back to the orb alone —
+ *                        thumbUrl only exists for built documents, so the
+ *                        "Not built yet" caption would state the opposite of
+ *                        the truth.
  *   - mp4Url present  → the rendered video, muted + looping, autoplays while
  *                       it's in view (paused when it scrolls away) so the grid
  *                       shows the actual output playing.
@@ -89,19 +92,23 @@ export function ProjectThumb({
           style={{ background: "#0b0d12" }}
         />
       ) : (
-        <Placeholder hint={previewUrl ? "Hover to preview" : "Not built yet"} />
+        // A thumbUrl that failed to load still means the document is built —
+        // no caption is honest; "Not built yet" would be a lie.
+        <Placeholder hint={thumbUrl ? null : previewUrl ? "Hover to preview" : "Not built yet"} />
       )}
     </div>
   );
 }
 
-function Placeholder({ hint }: { hint: string }) {
+function Placeholder({ hint }: { hint: string | null }) {
   return (
     <div className="absolute inset-0 flex flex-col items-center justify-center gap-3">
       <span className="orb h-10 w-10" aria-hidden />
-      <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-white/40">
-        {hint}
-      </span>
+      {hint && (
+        <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-white/40">
+          {hint}
+        </span>
+      )}
     </div>
   );
 }

@@ -108,6 +108,26 @@ export const accountFlows: Flow[] = [
       const id = await createDocument(page, base);
       note(`created ${id}`);
 
+      // A brand-new document must open on the start choice. This is asserted
+      // in the FREE tier deliberately: the panel vanished once already — the
+      // deck fast path stopped passing isBlank in a shell refactor and every
+      // green run missed it, because only the smoke-tier journey opens a new
+      // document. Free runs happen far more often; the product's front door
+      // gets checked on all of them.
+      // waitFor, not isVisible — the panel mounts on hydration, and
+      // isVisible({timeout}) does not poll (a lesson this suite has already
+      // paid for three separate times).
+      const offersGeneration = await page
+        .getByText("Generate every page for me")
+        .waitFor({ state: "visible", timeout: 20_000 })
+        .then(() => true)
+        .catch(() => false);
+      expect(
+        offersGeneration,
+        "a new document must offer end-to-end generation — the start panel is missing",
+      );
+      note("start panel offers full generation");
+
       // It must actually appear in the list — a document that exists only as a
       // redirect target is one the user can never find again.
       //

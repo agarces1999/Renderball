@@ -1,6 +1,13 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import {
+  clearSandboxState,
+  composeBriefFromSandbox,
+  describeSandbox,
+  loadSandboxState,
+  type LandingSandboxState,
+} from "../lib/landing-sandbox";
 
 /**
  * The first thing a user sees in a brand-new document.
@@ -28,12 +35,46 @@ export function BlankDocumentPanel({
   scriptId: string;
   onDismiss: () => void;
 }) {
+  // Render NOTHING until hydrated. This panel arrives server-rendered on a
+  // heavy editor page, so for the first seconds it was a pixel-perfect card
+  // whose buttons did nothing — a first-time user's very first click on the
+  // product's headline offer, silently eaten (probed and reproduced). A
+  // moment of absence beats a moment of deadness; visible must mean alive.
+  const [live, setLive] = useState(false);
+  useEffect(() => setLive(true), []);
   const [open, setOpen] = useState(false);
   const [prompt, setPrompt] = useState("");
   const [url, setUrl] = useState("");
   const [pages, setPages] = useState(6);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // ─── Continue what you started (landing-canvas sandbox) ────────────
+  // The landing stage serializes the visitor's drawn boxes + chosen
+  // intents to localStorage. The old /new front door read it back after
+  // sign-in; now that / goes straight to /documents, this panel — the
+  // first surface of a fresh document — is where that promise is kept.
+  // Honest smallest version: the intents become words in the generate
+  // prompt the user can read and edit — no forged document. "start
+  // clean" is the escape hatch; both paths clear the stored canvas.
+  const [landingSeed, setLandingSeed] = useState<LandingSandboxState | null>(
+    null,
+  );
+  useEffect(() => {
+    const s = loadSandboxState();
+    if (s && s.elements.length > 0) setLandingSeed(s);
+  }, []);
+  const continueFromLanding = () => {
+    if (!landingSeed) return;
+    setPrompt(composeBriefFromSandbox(landingSeed));
+    clearSandboxState();
+    setLandingSeed(null);
+    setOpen(true);
+  };
+  const startClean = () => {
+    clearSandboxState();
+    setLandingSeed(null);
+  };
 
   const generate = async () => {
     if (!prompt.trim()) {
@@ -54,14 +95,22 @@ export function BlankDocumentPanel({
         setBusy(false);
         return;
       }
-      // The build runs server-side and the page polls it; a reload drops into
-      // the existing build ceremony rather than duplicating it here.
-      window.location.reload();
+      // On to the outline review — the approval step this form just promised.
+      // Reloading in place was a dead end: the blank composition still exists,
+      // so /preview/[id] re-renders the same blank editor and the outline the
+      // user just paid for is never shown.
+      if (data?.reviewUrl) {
+        window.location.assign(data.reviewUrl);
+      } else {
+        window.location.reload();
+      }
     } catch {
       setError("Network error.");
       setBusy(false);
     }
   };
+
+  if (!live) return null;
 
   return (
     <div className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center p-6">
@@ -74,6 +123,38 @@ export function BlankDocumentPanel({
             <h2 className="mt-1.5 font-display text-[22px] font-bold tracking-tight text-ink">
               How do you want to start?
             </h2>
+
+            {/* Continue what you started — seeded by the landing canvas */}
+            {landingSeed && (
+              <div className="mt-5 rounded-lg border border-accent-line bg-accent-soft p-4">
+                <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted">
+                  from the landing canvas
+                </p>
+                <p className="mt-1 text-[12.5px] leading-relaxed text-ink-soft">
+                  You started something out there —{" "}
+                  <span className="font-mono text-[11.5px] text-ink">
+                    {describeSandbox(landingSeed)}
+                  </span>
+                  .
+                </p>
+                <div className="mt-2.5 flex flex-wrap items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={continueFromLanding}
+                    className="rounded-md border border-accent-line bg-surface px-3 py-1.5 text-[12.5px] font-medium text-ink transition-colors hover:bg-surface-2"
+                  >
+                    Continue what you started →
+                  </button>
+                  <button
+                    type="button"
+                    onClick={startClean}
+                    className="font-mono text-[11px] text-muted transition-colors hover:text-ink"
+                  >
+                    start clean
+                  </button>
+                </div>
+              </div>
+            )}
 
             <button
               type="button"

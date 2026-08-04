@@ -22,22 +22,60 @@ import { renderSceneDoc } from "../../../../../lib/render/scene-iframe";
  *
  * GET /api/share/<token>/iframe?scene=<index>
  */
+
+/**
+ * The one answer for every failed lookup. Unknown, revoked, out-of-range, and
+ * unrenderable are identical on purpose, so the response cannot be used to
+ * learn which documents exist — and it is a full HTML document because this
+ * lands inside the share viewer's frame, where a bare-text body reads as a
+ * broken deck. Colors are the light-theme tokens from globals.css, inlined
+ * because the framed document does not load the app stylesheet. The
+ * data-share-gone attribute lets the same-origin parent detect this state.
+ */
+const goneDoc = () =>
+  new NextResponse(
+    `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>This link is no longer active</title>
+<style>
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: flex; align-items: center; justify-content: center;
+    background: #ffffff; color: #69707e; text-align: center;
+    font: 400 14px/1.6 "Geist", system-ui, sans-serif;
+  }
+  main { padding: 24px; }
+  h1 { margin: 0 0 6px; font-size: 15px; font-weight: 600; color: #10141c; }
+  a { color: #047857; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+</style>
+</head>
+<body data-share-gone>
+<main>
+  <h1>This link is no longer active</h1>
+  <p>Ask whoever sent it for a fresh one, or <a href="/" target="_top">make your own deck with Renderball</a>.</p>
+</main>
+</body>
+</html>`,
+    { status: 404, headers: compositionDocHeaders() },
+  );
+
 export async function GET(request: Request, { params }: { params: { token: string } }) {
   const shared = await loadSharedDocument(params.token);
-  // Unknown, revoked, and not-yet-built all answer the same way, so the response
-  // cannot be used to learn which documents exist.
-  if (!shared) return new NextResponse("not found", { status: 404 });
+  if (!shared) return goneDoc();
 
   const url = new URL(request.url);
   const requested = parseInt(url.searchParams.get("scene") ?? "0", 10);
   const sceneIndex = Number.isFinite(requested) ? requested : 0;
   if (sceneIndex < 0 || sceneIndex >= shared.script.scenes.length) {
-    return new NextResponse("not found", { status: 404 });
+    return goneDoc();
   }
 
   // Always settled: a viewer is reading a document, not watching it assemble.
   const result = await renderSceneDoc(shared.scriptId, sceneIndex, shared.script, { settle: true });
-  if (!result.ok) return new NextResponse("not found", { status: 404 });
+  if (!result.ok) return goneDoc();
 
   return new NextResponse(result.html, { headers: compositionDocHeaders() });
 }

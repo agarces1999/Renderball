@@ -7,8 +7,9 @@ import { listBriefsByOwner, type BriefStatus, type StoredBrief } from "../../lib
 import { prisma } from "../../lib/db";
 import { AppShellServer } from "../../components/AppShellServer";
 import { objectExists } from "../../lib/storage/r2";
-import { docKey } from "../../lib/render/gen-store";
-import { DeleteDocumentButton } from "./DeleteDocumentButton";
+import { docKey, genDirOf } from "../../lib/render/gen-store";
+import { isBlankComposition } from "../../lib/documents/blank-document";
+import { DeletableDocumentCard } from "./DeleteDocumentButton";
 import { ProjectThumb } from "../../components/ProjectThumb";
 
 /**
@@ -30,26 +31,40 @@ const ASPECT: Record<NonNullable<StoredBrief["distribution_format"]>, string> = 
 };
 
 type StatusTone = "ready" | "wip" | "fail";
+type Status = { label: string; tone: StatusTone };
 
-/** Status labels per document kind — decks speak outline/build, videos keep
- *  the render vocabulary (that pipeline still renders MP4s). */
-const STATUS: Record<"deck" | "video", Record<BriefStatus, { label: string; tone: StatusTone }>> = {
-  deck: {
-    awaiting_agent_1: { label: "Drafting", tone: "wip" },
-    script_generated: { label: "Outline ready", tone: "ready" },
-    script_approved: { label: "Approved", tone: "ready" },
-    rendering: { label: "Building", tone: "wip" },
-    rendered: { label: "Built", tone: "ready" },
-    failed: { label: "Failed", tone: "fail" },
-  },
-  video: {
-    awaiting_agent_1: { label: "Drafting", tone: "wip" },
-    script_generated: { label: "Story ready", tone: "ready" },
-    script_approved: { label: "Approved", tone: "ready" },
-    rendering: { label: "Rendering", tone: "wip" },
-    rendered: { label: "Rendered", tone: "ready" },
-    failed: { label: "Failed", tone: "fail" },
-  },
+/** Video chips keep the render vocabulary — that pipeline still walks these
+ *  statuses (script_generated on outline, rendered on a finished MP4). */
+const VIDEO_STATUS: Record<BriefStatus, Status> = {
+  awaiting_agent_1: { label: "Drafting", tone: "wip" },
+  script_generated: { label: "Story ready", tone: "ready" },
+  script_approved: { label: "Approved", tone: "ready" },
+  rendering: { label: "Rendering", tone: "wip" },
+  rendered: { label: "Rendered", tone: "ready" },
+  failed: { label: "Failed", tone: "fail" },
+};
+
+/**
+ * Deck chips are derived from what the gallery can observe, not from raw
+ * brief.status: the deck build path never advances the pipeline statuses
+ * (nothing writes script_approved/rendering, and "rendered" belongs to the
+ * MP4 export), so a status-map chip described work nobody was doing — every
+ * blank document said "Drafting" forever and every built deck "Outline
+ * ready". The composition check is the honest signal; it is the same one
+ * that decides whether the card opens the editor.
+ */
+const deckStatus = (status: BriefStatus, built: boolean): Status => {
+  if (status === "failed") return { label: "Failed", tone: "fail" };
+  if (built) {
+    // A blank document is the user's own canvas from the first click — no
+    // agent drafted it and no build ran, so "Built" would overclaim.
+    return status === "awaiting_agent_1"
+      ? { label: "Ready to edit", tone: "ready" }
+      : { label: "Built", tone: "ready" };
+  }
+  return status === "script_generated"
+    ? { label: "Outline ready", tone: "ready" }
+    : { label: "Draft", tone: "wip" };
 };
 
 function fmtDate(iso: string): string {
@@ -75,6 +90,9 @@ type Card = {
   mp4Url: string | null;
   previewUrl: string | null;
   thumbUrl: string | null;
+  /** Deck has a composition (local or durable) that is more than the
+   *  untouched blank — feeds the status chip and the editor-vs-outline link. */
+  built: boolean;
 };
 
 export default async function DocumentsPage({
@@ -113,7 +131,7 @@ export default async function DocumentsPage({
       const sid = brief.script_id;
       const reviewHref = `/review/${brief.id}`;
       if (!sid) {
-        return { brief, kind, aspect, href: reviewHref, mp4Url: null, previewUrl: null, thumbUrl: null };
+        return { brief, kind, aspect, href: reviewHref, mp4Url: null, previewUrl: null, thumbUrl: null, built: false };
       }
       const [hasLocalMp4, hasLocalComp] = await Promise.all([
         exists(path.join(process.cwd(), ".data", "renders", `${sid}.mp4`)),
@@ -128,6 +146,19 @@ export default async function DocumentsPage({
       // unconditionally was one HEAD per card per page view, unbounded-parallel,
       // for an answer the filesystem had already given us.
       const hasComp = hasLocalComp || (await objectExists(docKey(sid)));
+      // Composition-exists over-claims for one deck state: a blank document
+      // keeps its published composition while a generated outline waits for
+      // approval (/api/documents/generate never touches the blank pages). That
+      // card must read "Outline ready" and open the review page — "Built"
+      // opening an empty canvas would hide the outline the user paid for. An
+      // unreadable manifest counts as not-blank so genuinely built decks whose
+      // local dir was wiped by a redeploy (hasComp via R2) never downgrade.
+      const outlineAwaitingApproval =
+        kind === "deck" &&
+        hasComp &&
+        brief.status === "script_generated" &&
+        (await isBlankComposition(genDirOf(sid), "not-blank"));
+      const deckBuilt = kind === "deck" && hasComp && !outlineAwaitingApproval;
       // Show the MP4 if it's on the warm local disk OR a completed Render row
       // proves it's durably in R2 (survives a fresh container).
       const hasMp4 = hasLocalMp4 || renderedProjectIds.has(brief.id);
@@ -138,7 +169,7 @@ export default async function DocumentsPage({
         // Built decks open the editor. Everything else opens the outline —
         // /preview/[id] auto-starts the (expensive) build when no composition
         // exists, so an unbuilt card must never link there.
-        href: kind === "deck" && hasComp ? `/preview/${sid}` : reviewHref,
+        href: deckBuilt ? `/preview/${sid}` : reviewHref,
         // Served through the owner-gated route, not the static public dir.
         mp4Url: kind === "video" && hasMp4 ? `/api/renders/${sid}` : null,
         // Only offer the live preview when there's no finished MP4 to show.
@@ -146,7 +177,8 @@ export default async function DocumentsPage({
           kind === "video" && !hasMp4 && hasComp
             ? `/api/preview/${sid}/iframe?scene=0`
             : null,
-        thumbUrl: kind === "deck" && hasComp ? `/api/preview/${sid}/thumbnail` : null,
+        thumbUrl: deckBuilt ? `/api/preview/${sid}/thumbnail` : null,
+        built: deckBuilt,
       };
     }),
   );
@@ -166,7 +198,7 @@ export default async function DocumentsPage({
             </p>
           </div>
           <Link
-            href="/api/documents/new"
+            href="/api/documents/new" prefetch={false}
             className="shrink-0 rounded-md bg-accent px-4 py-2.5 text-[14px] font-semibold text-accent-ink transition-all hover:brightness-110"
           >
             New document
@@ -203,15 +235,15 @@ export default async function DocumentsPage({
 }
 
 function DocumentCard({ card }: { card: Card }) {
-  const { brief, kind, aspect, href, mp4Url, previewUrl, thumbUrl } = card;
-  const status = STATUS[kind][brief.status];
+  const { brief, kind, aspect, href, mp4Url, previewUrl, thumbUrl, built } = card;
+  const status = kind === "deck" ? deckStatus(brief.status, built) : VIDEO_STATUS[brief.status];
   const title =
     brief.purpose?.trim() || (kind === "deck" ? "Untitled deck" : "Untitled video");
 
   return (
-    // The delete control is a SIBLING of the link, not a child: a <button>
-    // inside an <a> is invalid markup, and the click would navigate anyway.
-    <div className="group relative mb-3 break-inside-avoid">
+    // The wrapper is the client component so a confirmed delete can collapse
+    // the whole card out of the grid, not just overlay it.
+    <DeletableDocumentCard id={brief.id} title={title}>
     <Link
       href={href}
       className="block overflow-hidden rounded-md border border-hairline bg-surface transition-all hover:border-hairline-strong hover:shadow-[0_14px_34px_-22px_rgba(18,26,43,0.4)]"
@@ -244,8 +276,7 @@ function DocumentCard({ card }: { card: Card }) {
         </div>
       </div>
     </Link>
-      <DeleteDocumentButton id={brief.id} title={title} />
-    </div>
+    </DeletableDocumentCard>
   );
 }
 
@@ -300,7 +331,7 @@ function EmptyState() {
         shape before anything builds.
       </p>
       <Link
-        href="/api/documents/new"
+        href="/api/documents/new" prefetch={false}
         className="mt-6 inline-block rounded-md bg-accent px-5 py-2.5 text-[14px] font-semibold text-accent-ink transition-all hover:brightness-110"
       >
         Make your first deck

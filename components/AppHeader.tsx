@@ -54,7 +54,7 @@ export function AppHeader({
             Your documents
           </Link>
           <Link
-            href="/api/documents/new"
+            href="/api/documents/new" prefetch={false}
             className={cn(
               "rounded-md px-3.5 py-1.5 text-[13px] font-semibold transition-all hover:brightness-110",
               light

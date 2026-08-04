@@ -419,6 +419,11 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
   // Live resize (overlay px) while dragging a grip; committed to canvas px on release.
   const [resizeBox, setResizeBox] = useState<null | { left: number; top: number; width: number; height: number }>(null);
   const resizeRef = useRef<null | { left: number; top: number; width: number; height: number }>(null);
+  // True only while a mouse button is actually down on a move/resize gesture.
+  // The full-screen shields key on THIS, not on the preview boxes — the boxes
+  // persist through the commit round-trip for visual continuity, but a shield
+  // that outlives the gesture eats the user's next click.
+  const [gestureHeld, setGestureHeld] = useState(false);
   // A press on empty canvas that hasn't yet become a marquee (native drag-to-generate).
   const pendingMarqueeRef = useRef<null | { x: number; y: number }>(null);
   // Mirrors `tool` for the once-attached iframe handlers, so an armed marquee
@@ -868,6 +873,7 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
     // (the overlay is inset:0 over the iframe), so no conversion is needed here.
     const MARQUEE_MIN = 24;
     const onDown = (e: MouseEvent) => {
+      if (e.button !== 0) return; // primary button only — see onDragStart
       if (editingRef.current || busyRef.current || toolRef.current) return;
       const target = e.target as Element | null;
       const piece = target?.closest?.("[data-piece]") as Element | null;
@@ -1423,6 +1429,7 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
   // Marquee draw on the armed capture layer. Overlay-local coords via the overlay's
   // own rect; window listeners track a drag that leaves the layer (like the move shield).
   const onMarqueeDown = (e: React.MouseEvent) => {
+    if (e.button !== 0) return; // primary button only — see onDragStart
     if (busy) return;
     const host = overlayRef.current?.getBoundingClientRect();
     if (!host) return;
@@ -1467,7 +1474,16 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
    * either document. A press that never moves is a click, and must stay one.
    */
   const DRAG_MIN_PX = 3;
+
+  /** Engine taxonomy → words a person would use on a slide. */
+  const kindLabel = (k: string): string =>
+    ({ diegetic: "Visual", atmosphere: "Background", chrome: "Overlay", copy: "Text" } as Record<string, string>)[k] ??
+    (k ? k[0].toUpperCase() + k.slice(1) : "Element");
   const onDragStart = (e: React.MouseEvent) => {
+    // Primary button only: a right-click opens a menu (and on macOS swallows
+    // the matching mouseup), a middle-click pastes on Linux — neither is the
+    // start of a drag, and arming the handlers anyway left them stranded.
+    if (e.button !== 0) return;
     if (!selected || busy) return;
     e.preventDefault();
 
@@ -1491,6 +1507,7 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
 
     dragRef.current = { startX: e.clientX, startY: e.clientY, scale: canvasScale() };
     draggingRef.current = false;
+    setGestureHeld(true);
     const move = (ev: MouseEvent) => {
       const d = dragRef.current;
       if (!d) return;
@@ -1502,6 +1519,7 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
     };
     const up = async (ev: MouseEvent) => {
       detachDrag();
+      setGestureHeld(false);
       const d = dragRef.current;
       const dragged = draggingRef.current;
       const wasSecondPress = secondPressRef.current;
@@ -1643,9 +1661,14 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
   // Escape disarms the marquee tool / cancels a pending generate box, and
   // dismisses proposed regions — one key clears every pending offer.
   useEffect(() => {
-    if (!tool && !genBox && suggestions.length === 0) return;
+    if (!tool && !genBox && suggestions.length === 0 && busy !== "insert") return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
+        // Backing out of a RUNNING generate is the same gesture as backing
+        // out of a pending one. Clearing only the overlays left the request
+        // in flight and every control dead behind an invisible busy state —
+        // and the element still landed later, a surprise nobody asked for.
+        if (generateAbortRef.current) cancelGenerate();
         setTool(null);
         setGenBox(null);
         setMarquee(null);
@@ -1653,9 +1676,36 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
         setSuggestions([]);
       }
     };
+    // BOTH documents, like Delete and cmd-Z above: mid-generate the natural
+    // "is it stuck?" click lands on the canvas, focus moves into the iframe,
+    // and a window-only listener leaves Escape dead exactly when it matters.
+    const frameDoc = iframeRef.current?.contentDocument ?? null;
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [tool, genBox, suggestions.length]);
+    frameDoc?.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      frameDoc?.removeEventListener("keydown", onKey);
+    };
+  }, [tool, genBox, suggestions.length, busy, docTick]);
+
+  // A proposed layout belongs to the page it was proposed FOR. Without this,
+  // dashed suggestion boxes followed the user across the slide rail, and one
+  // click built the suggested element onto the wrong page. Keyed on sceneIndex
+  // only — surviving the post-accept reload (reloadKey) is intentional.
+  useEffect(() => {
+    setSuggestions([]);
+    setGenBox(null);
+    setMarquee(null);
+    setGenPrompt("");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sceneIndex]);
+
+  // Errors are a moment, not a mode.
+  useEffect(() => {
+    if (!error) return;
+    const t = window.setTimeout(() => setError(null), 6000);
+    return () => window.clearTimeout(t);
+  }, [error]);
 
   // ---- text formatting (inserted text boxes only) -------------------------
   /** The live free-text span inside the selected piece, if it is an inserted text box. */
@@ -1760,10 +1810,19 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
       e.preventDefault();
       void undo();
     };
+    // BOTH documents, like the Delete handler above: clicking an element puts
+    // focus inside the canvas iframe, and a parent-window listener alone never
+    // hears the keystroke — so undo was dead precisely after touching an
+    // element, the moment it is most wanted.
+    const frameDoc = iframeRef.current?.contentDocument ?? null;
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    frameDoc?.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      frameDoc?.removeEventListener("keydown", onKey);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [busy, undoDepth, apiBase, scriptId]);
+  }, [busy, undoDepth, apiBase, scriptId, docTick]);
 
   // ---- resize -------------------------------------------------------------
   /** Drag one of the 8 grips. The box is tracked in overlay px for a live preview,
@@ -1781,6 +1840,7 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
    *  no gesture to preserve by waiting for travel. */
   const resizeCursorRef = useRef<string>("nwse-resize");
   const onResizeStart = (e: React.MouseEvent, dir: HandleDir, cursor: string) => {
+    if (e.button !== 0) return; // primary button only — see onDragStart
     if (!box || busy) return;
     resizeCursorRef.current = cursor;
     e.preventDefault();
@@ -1791,6 +1851,7 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
       setResizeBox(b);
     };
     track({ left: box.left, top: box.top, width: box.width, height: box.height });
+    setGestureHeld(true);
     const MIN = 12;
     const move = (ev: MouseEvent) => {
       const dx = ev.clientX - start.x;
@@ -1813,6 +1874,7 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
     const up = () => {
       window.removeEventListener("mousemove", move);
       window.removeEventListener("mouseup", up);
+      setGestureHeld(false);
       const final = resizeRef.current;
       // Always drop the live preview + shield, even when there is nothing to
       // commit — a stuck full-screen shield would make the whole editor dead.
@@ -2000,14 +2062,14 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
       {/* drag shield: while dragging, catch every mouse event before the iframe can
           swallow it (iframe docs don't forward mousemove to the parent window, so a
           fast drag that escaped the handle used to stall mid-gesture) */}
-      {dragDelta && (
+      {dragDelta && gestureHeld && (
         <div style={{ position: "fixed", inset: 0, zIndex: 60, cursor: "move", pointerEvents: "auto" }} />
       )}
       {/* resize shield: same reason, resize gesture. Without it, dragging a grip
           OUTWARD (expanding) left the grip and landed on the iframe, which
           swallowed the mouseup — so expanding silently did nothing while
           contracting worked. */}
-      {resizeBox && (
+      {resizeBox && gestureHeld && (
         <div style={{ position: "fixed", inset: 0, zIndex: 60, cursor: resizeCursorRef.current, pointerEvents: "auto" }} />
       )}
 
@@ -2442,7 +2504,7 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
       {showAll &&
         allPieces.map((p) => (
           <div key={p.pieceId} style={{ position: "absolute", left: p.rect.left, top: p.rect.top, width: p.rect.width, height: p.rect.height, border: "1px dashed rgba(255,255,255,0.34)", borderRadius: 8, pointerEvents: "none" }}>
-            <span className="absolute -top-[9px] left-1 rounded-[4px] bg-[#11141b]/90 px-1 font-mono text-[9px] leading-[1.4] text-white/70">{p.kind}</span>
+            <span className="absolute -top-[9px] left-1 rounded-[4px] bg-[#11141b]/90 px-1 font-mono text-[9px] leading-[1.4] text-white/70">{kindLabel(p.kind)}</span>
           </div>
         ))}
 
@@ -2450,7 +2512,7 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
       {hovered && !selected && !editing && !marquee && (
         <div style={{ position: "absolute", left: hovered.rect.left, top: hovered.rect.top, width: hovered.rect.width, height: hovered.rect.height, border: "1.5px solid var(--accent-line, rgba(0,194,138,0.42))", borderRadius: 8, pointerEvents: "none" }}>
           <span className="absolute -top-[10px] left-1 rounded-[4px] bg-[#11141b]/90 px-1.5 text-[9px] font-medium leading-[1.5] text-white/80">
-            {hovered.kind} · click to edit
+            {kindLabel(hovered.kind)} · click to edit
           </span>
         </div>
       )}
@@ -2466,6 +2528,17 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
           />
           <div
             onMouseDown={onDragStart}
+            // The selected element must offer the SAME right-click menu as an
+            // unselected one. This surface sits in the parent document, so the
+            // iframe's contextmenu listener never hears it — without this,
+            // right-clicking the element you just selected got Chrome's menu.
+            onContextMenu={(e) => {
+              e.preventDefault();
+              if (busy || editing || !selected) return;
+              const host = overlayRef.current?.getBoundingClientRect();
+              if (!host) return;
+              setMenu({ x: e.clientX - host.left, y: e.clientY - host.top, pieceId: selected.pieceId, kind: selected.kind });
+            }}
             // Belt and braces: when the browser DOES emit a native dblclick here
             // it arrives after our own detection has already opened the session,
             // and openTextSessionAt is a no-op while `editing`.
@@ -2722,7 +2795,12 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
       )}
 
       {error && (
-        <div style={{ pointerEvents: "auto" }} className={`absolute bottom-12 left-1/2 -translate-x-1/2 ${R_SM} bg-red-600/90 px-3 py-1.5 text-[11px] text-white`}>
+        <div
+          style={{ pointerEvents: "auto", cursor: "pointer" }}
+          title="Dismiss"
+          onClick={() => setError(null)}
+          className={`absolute bottom-12 left-1/2 -translate-x-1/2 ${R_SM} bg-red-600/90 px-3 py-1.5 text-[11px] text-white`}
+        >
           {error}
         </div>
       )}
