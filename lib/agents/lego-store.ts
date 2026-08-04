@@ -94,6 +94,19 @@ export const readManifest = async (genDir: string): Promise<Manifest> => {
   }
 };
 
+/**
+ * A failed store read throws in one of two shapes: readManifest's own
+ * user-facing sentence ("this page has no editable elements yet …"), or a raw
+ * fs errno from a missing/damaged store file. Edit ops answer the user with
+ * whichever is safe to show — an errno never is.
+ */
+export const storeErrorMessage = (e: unknown): string =>
+  typeof (e as NodeJS.ErrnoException)?.code === "string"
+    ? "this page's edit data is incomplete — regenerate the page to rebuild it"
+    : e instanceof Error
+      ? e.message
+      : String(e);
+
 export const writeManifest = async (genDir: string, m: Manifest): Promise<void> =>
   fs.writeFile(manifestPath(genDir), JSON.stringify(m, null, 2), "utf8");
 

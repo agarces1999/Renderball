@@ -126,7 +126,7 @@ not yet migrated (needs `DATABASE_URL`).
    entitlement check BEFORE any spend — submitBrief gates "generate", the build
    route gates "build" (402 with a user-facing reason); counts come from Prisma
    UsageRecord per ownerId per UTC month; limits are env-tunable
-   (FREE_GENERATES_PER_MONTH=3 / FREE_BUILDS_PER_MONTH=1 / SUB_*=60/30); any
+   (FREE_GENERATES_PER_MONTH=10 / FREE_BUILDS_PER_MONTH=3 / SUB_*=60/30); any
    metering error DENIES; DEV_OWNER_ID exempt. Successful + failed builds write
    UsageRecord rows (failed excluded from counts). *Done 2026-07-07.*
    Also done same day: **brand-kit gate** (required logo, confirm-from-scan

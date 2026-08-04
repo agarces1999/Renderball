@@ -15,7 +15,9 @@ import Link from "next/link";
  * Navigation is keyboard-first because that is how people actually read a deck:
  * arrows and space page forward, Home/End jump the ends. The iframe swallows key
  * events when it has focus, so the listener also runs INSIDE the frame — the same
- * trap that once made the editor's canvas inert.
+ * trap that once made the editor's canvas inert. Touch swipes bind there too:
+ * listeners inside the frame's document mean nothing ever sits between the mouse
+ * and the slide, so text selection survives on every device, hybrids included.
  */
 export function ShareViewer({
   token,
@@ -27,18 +29,11 @@ export function ShareViewer({
   pages: { label: string }[];
 }) {
   const [index, setIndex] = useState(0);
-  const [loading, setLoading] = useState(false);
-  const [touchStart, setTouchStart] = useState<{ x: number; y: number } | null>(null);
-  // The swipe layer exists only on touch devices — on a desktop it would sit
-  // between the mouse and the slide, silently breaking text selection.
-  const [isTouch, setIsTouch] = useState(false);
-  useEffect(() => setIsTouch("ontouchstart" in window || navigator.maxTouchPoints > 0), []);
+  // The first slide is server-rendered on demand — seconds on a cold container —
+  // so it starts veiled by the same counter overlay every later page turn gets.
+  const [loading, setLoading] = useState(true);
   const total = pages.length;
 
-  const go = useCallback(
-    (next: number) => setIndex((i) => Math.max(0, Math.min(total - 1, next === -1 ? i : next))),
-    [total],
-  );
   const turn = useCallback(
     (to: (i: number) => number) =>
       setIndex((i) => {
@@ -47,6 +42,10 @@ export function ShareViewer({
         return n;
       }),
     [],
+  );
+  const go = useCallback(
+    (next: number) => turn(() => Math.max(0, Math.min(total - 1, next))),
+    [total, turn],
   );
   const prev = useCallback(() => turn((i) => Math.max(0, i - 1)), [turn]);
   const next = useCallback(() => turn((i) => Math.min(total - 1, i + 1)), [total, turn]);
@@ -75,16 +74,48 @@ export function ShareViewer({
           break;
       }
     };
+    // Swipe start lives in a plain closure, not state — these are raw DOM
+    // listeners on the frame's document, re-created whenever the page changes.
+    let swipeStart: { x: number; y: number } | null = null;
+    const onTouchStart = (e: TouchEvent) => {
+      const t = e.touches[0];
+      // A second finger means a pinch — that is zoom, never a page turn.
+      swipeStart = e.touches.length === 1 && t ? { x: t.clientX, y: t.clientY } : null;
+    };
+    const onTouchEnd = (e: TouchEvent) => {
+      const start = swipeStart;
+      swipeStart = null;
+      const t = e.changedTouches[0];
+      if (!start || !t) return;
+      const dx = t.clientX - start.x;
+      const dy = t.clientY - start.y;
+      if (Math.abs(dx) < 48 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
+      if (dx < 0) next();
+      else prev();
+    };
     window.addEventListener("keydown", onKey);
     // The slide is an iframe; once it has focus, keystrokes go to ITS document
     // and never reach the parent. Bind there too, re-binding as pages change.
+    // Swipes bind the same way — inside the frame, so no layer ever sits between
+    // the mouse and the slide. pan-y keeps vertical scroll native, pinch-zoom
+    // keeps zoom alive (phone recipients read 1920px slides at ~18% scale), and
+    // horizontal drags are left for the swipe listeners to read.
     const frame = document.querySelector("iframe") as HTMLIFrameElement | null;
-    const bind = () => frame?.contentDocument?.addEventListener("keydown", onKey);
+    const bind = () => {
+      const doc = frame?.contentDocument;
+      if (!doc) return;
+      doc.addEventListener("keydown", onKey);
+      doc.addEventListener("touchstart", onTouchStart);
+      doc.addEventListener("touchend", onTouchEnd);
+      doc.documentElement?.style.setProperty("touch-action", "pan-y pinch-zoom");
+    };
     bind();
     frame?.addEventListener("load", bind);
     return () => {
       window.removeEventListener("keydown", onKey);
       frame?.contentDocument?.removeEventListener("keydown", onKey);
+      frame?.contentDocument?.removeEventListener("touchstart", onTouchStart);
+      frame?.contentDocument?.removeEventListener("touchend", onTouchEnd);
       frame?.removeEventListener("load", bind);
     };
   }, [next, prev, go, total, index]);
@@ -125,28 +156,6 @@ export function ShareViewer({
               </span>
             </div>
           )}
-          <div
-            // Touch layer: horizontal swipes page the deck. Mouse users click
-            // straight through (pointer-events only for touch via handlers on
-            // an always-mounted layer that ignores mouse events).
-            className="absolute inset-0"
-            style={{ touchAction: "pan-y", pointerEvents: isTouch ? "auto" : "none" }}
-            onTouchStart={(e) => {
-              const t = e.touches[0];
-              if (t) setTouchStart({ x: t.clientX, y: t.clientY });
-            }}
-            onTouchEnd={(e) => {
-              const start = touchStart;
-              setTouchStart(null);
-              const t = e.changedTouches[0];
-              if (!start || !t) return;
-              const dx = t.clientX - start.x;
-              const dy = t.clientY - start.y;
-              if (Math.abs(dx) < 48 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
-              if (dx < 0) next();
-              else prev();
-            }}
-          />
         </div>
       </main>
 

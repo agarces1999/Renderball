@@ -133,9 +133,9 @@ export default async function BillingPage({
             )
           ) : (
             <p className="mb-1 text-[13.5px] leading-relaxed text-ink-soft">
-              Metered billing opens shortly through our payment processor. Until
-              then everything here is free, and your usage above is still
-              recorded so nothing is lost.
+              Metered billing opens shortly. Until then there is nothing to
+              pay — the free monthly allowance above applies, and
+              support@renderball.com can raise it if you hit it.
             </p>
           )}
         </div>

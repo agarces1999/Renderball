@@ -1,6 +1,7 @@
 import { notFound, redirect } from "next/navigation";
 import { getCurrentUser } from "../../../lib/auth";
 import { loadBrief, loadScript } from "../../../lib/store";
+import { isBlankScript } from "../../../lib/documents/blank-document";
 import { AppShellServer } from "../../../components/AppShellServer";
 import { EditableReview } from "./EditableReview";
 
@@ -31,6 +32,12 @@ export default async function ReviewPage({
   const script = brief.script_id
     ? await loadScript(brief.script_id, user.id)
     : null;
+
+  // A blank document has no outline — this page would crash on its synthetic
+  // script (blankScript carries no brief), and even rendered it would be
+  // empty. Its home is the editor; every rail link lands here, so this is
+  // one click away for every hand-built deck.
+  if (script && isBlankScript(script)) redirect(`/preview/${script.id}`);
 
   return (
     <AppShellServer>

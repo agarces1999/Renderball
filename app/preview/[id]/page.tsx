@@ -6,7 +6,7 @@ import { getCurrentUser } from "../../../lib/auth";
 import { loadScript, loadBriefByScriptId } from "../../../lib/store";
 import { AppHeader } from "../../../components/AppHeader";
 import { hydrateGenDir } from "../../../lib/render/gen-store";
-import { isBlankDocument } from "../../../lib/documents/blank-document";
+import { isBlankComposition, isBlankDocument, isBlankScript } from "../../../lib/documents/blank-document";
 import { PreviewClient } from "./PreviewClient";
 import { BuildPreviewClient } from "./BuildPreviewClient";
 
@@ -75,10 +75,23 @@ export default async function PreviewPage({
   const backHref = brief ? `/review/${brief.id}` : "/documents";
   const isDeck = script.config.kind === "deck";
 
+  // AN APPROVED OUTLINE AWAITING ITS BUILD is "blank composition + real
+  // script": the generate route deliberately keeps the blank Composition.tsx
+  // (the editor is open on it), so branching on compositionExists alone sent
+  // the user who clicked "Build the deck →" straight back into the blank
+  // editor — the approved outline was UNREACHABLE and the product's headline
+  // path ended one click after the money was spent. The build ceremony owns
+  // this state.
+  const outlineAwaitingBuild =
+    isDeck &&
+    compositionExists &&
+    !isBlankScript(script) &&
+    (await isBlankComposition(path.dirname(compPath), "not-blank"));
+
   // A built deck is a full-bleed editor app (EditorShell owns its own chrome —
   // rail, toolbar, canvas — matching the landing). No AppHeader or centered doc
   // wrapper here: the shell's rail carries the wordmark and "← Documents".
-  if (compositionExists && isDeck) {
+  if (compositionExists && isDeck && !outlineAwaitingBuild) {
     return (
       <PreviewClient
         scriptId={params.id}
@@ -100,7 +113,7 @@ export default async function PreviewPage({
   return (
     <>
       <AppHeader />
-      {!compositionExists ? (
+      {!compositionExists || outlineAwaitingBuild ? (
         <BuildPreviewClient
           scriptId={params.id}
           kind={isDeck ? "deck" : "video"}

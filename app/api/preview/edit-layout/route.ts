@@ -74,35 +74,49 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "script not found" }, { status: 404 });
   }
 
-  const genDir = await documentDir(scriptId);
-  const result =
-    op === "move"
-      ? await moveElement({ genDir, sceneIndex, pieceId, dx: dx as number, dy: dy as number })
-      : op === "resize"
-        ? await resizeElement({ genDir, sceneIndex, pieceId, x: x as number, y: y as number, w: w as number, h: h as number })
-        : op === "front" || op === "back"
-          // Ordering the element, not removing it. This chain used to end at
-          // deleteElement for these two ops — a validated "bring to front"
-          // silently deleted the piece, which is exactly the data loss that
-          // kept z-order unshipped.
-          ? await reorderElement({ genDir, sceneIndex, pieceId, to: op })
-          : await deleteElement({ genDir, sceneIndex, pieceId });
+  // Anything below can throw — filesystem, storage hydration. Uncaught, that
+  // reached the user as a bare "request failed (500)" with no server-side
+  // trace (the same gap insert-element closed).
+  try {
+    const genDir = await documentDir(scriptId);
+    const result =
+      op === "move"
+        ? await moveElement({ genDir, sceneIndex, pieceId, dx: dx as number, dy: dy as number })
+        : op === "resize"
+          ? await resizeElement({ genDir, sceneIndex, pieceId, x: x as number, y: y as number, w: w as number, h: h as number })
+          : op === "front" || op === "back"
+            // Ordering the element, not removing it. This chain used to end at
+            // deleteElement for these two ops — a validated "bring to front"
+            // silently deleted the piece, which is exactly the data loss that
+            // kept z-order unshipped.
+            ? await reorderElement({ genDir, sceneIndex, pieceId, to: op })
+            : await deleteElement({ genDir, sceneIndex, pieceId });
 
-  const status = result.ok ? 200 : /not found/.test(result.error ?? "") ? 404 : 400;
-  if (!result.ok) {
-    // `code` is forwarded so the editor can branch on WHY a resize failed
-    // (e.g. "no-wrapper" → rebuild the element at the new size) instead of
-    // string-matching an error message that is written for humans.
+    const status = result.ok ? 200 : /not found/.test(result.error ?? "") ? 404 : 400;
+    if (!result.ok) {
+      // `code` is forwarded so the editor can branch on WHY a resize failed
+      // (e.g. "no-wrapper" → rebuild the element at the new size) instead of
+      // string-matching an error message that is written for humans.
+      return NextResponse.json(
+        { ok: false, code: (result as { code?: string }).code, error: result.error },
+        { status },
+      );
+    }
+    const payload =
+      op === "move"
+        ? { ok: true, sceneIndex, pieceId, op, offset: (result as { offset?: unknown }).offset }
+        : op === "resize" || op === "front" || op === "back"
+          ? { ok: true, sceneIndex, pieceId, op }
+          : { ok: true, sceneIndex, pieceId, op, remaining: (result as { remaining?: number }).remaining };
+    return NextResponse.json(payload, { status });
+  } catch (err) {
+    console.error(
+      `[edit-layout] ${op} failed for owner=${user.id} script=${scriptId} scene=${sceneIndex}:`,
+      err instanceof Error ? (err.stack ?? err.message) : String(err),
+    );
     return NextResponse.json(
-      { ok: false, code: (result as { code?: string }).code, error: result.error },
-      { status },
+      { ok: false, error: "that edit didn't go through — nothing was changed. Please try again." },
+      { status: 500 },
     );
   }
-  const payload =
-    op === "move"
-      ? { ok: true, sceneIndex, pieceId, op, offset: (result as { offset?: unknown }).offset }
-      : op === "resize" || op === "front" || op === "back"
-        ? { ok: true, sceneIndex, pieceId, op }
-        : { ok: true, sceneIndex, pieceId, op, remaining: (result as { remaining?: number }).remaining };
-  return NextResponse.json(payload, { status });
 }

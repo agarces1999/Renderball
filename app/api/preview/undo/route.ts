@@ -47,16 +47,33 @@ export async function POST(request: Request) {
   const script = await loadScript(scriptId, user.id);
   if (!script) return NextResponse.json({ error: "script not found" }, { status: 404 });
 
-  const result = await undoEdit(await documentDir(scriptId));
-  // A scene-structure undo (page ops) restores the Script too — persist it so
-  // the rail/scenes and the Section components stay in lockstep.
-  if (result.ok && result.script) {
-    await saveScript(result.script as Script, user.id);
+  // Anything below can throw — filesystem, storage hydration, persisting the
+  // restored script. Uncaught, that reached the user as a bare
+  // "request failed (500)" with no server-side trace (the same gap
+  // insert-element closed).
+  try {
+    const result = await undoEdit(await documentDir(scriptId));
+    // A scene-structure undo (page ops) restores the Script too — persist it so
+    // the rail/scenes and the Section components stay in lockstep.
+    if (result.ok && result.script) {
+      await saveScript(result.script as Script, user.id);
+    }
+    return NextResponse.json(
+      result.ok
+        ? { ok: true, label: result.label, remaining: result.remaining, script: result.script }
+        : { ok: false, error: result.error },
+      { status: result.ok ? 200 : /nothing to undo/.test(result.error ?? "") ? 409 : 400 },
+    );
+  } catch (err) {
+    console.error(
+      `[undo] failed for owner=${user.id} script=${scriptId}:`,
+      err instanceof Error ? (err.stack ?? err.message) : String(err),
+    );
+    // A throw after the restore (persisting the script) can leave the page
+    // ahead of what this tab shows — say "reload", not "nothing changed".
+    return NextResponse.json(
+      { ok: false, error: "the undo didn't finish — reload the page to see where things stand, then try again." },
+      { status: 500 },
+    );
   }
-  return NextResponse.json(
-    result.ok
-      ? { ok: true, label: result.label, remaining: result.remaining, script: result.script }
-      : { ok: false, error: result.error },
-    { status: result.ok ? 200 : /nothing to undo/.test(result.error ?? "") ? 409 : 400 },
-  );
 }

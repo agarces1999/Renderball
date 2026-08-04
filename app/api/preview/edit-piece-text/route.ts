@@ -69,19 +69,33 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "script not found" }, { status: 404 });
   }
 
-  const genDir = await documentDir(scriptId);
-  // normalizeFormat in lib/edit/freetext.ts clamps + sanitizes every field, so an
-  // arbitrary object here can't inject anything into the emitted source.
-  const result = await editPieceText({
-    genDir,
-    sceneIndex,
-    pieceId,
-    ...(value !== undefined ? { value } : {}),
-    ...(format && typeof format === "object" ? { format: format as Record<string, never> } : {}),
-  });
-  const status = result.ok ? 200 : /not found/.test(result.error ?? "") ? 404 : 400;
-  return NextResponse.json(
-    result.ok ? { ok: true, sceneIndex, pieceId, format: result.format } : { ok: false, error: result.error },
-    { status },
-  );
+  // Anything below can throw — filesystem, storage hydration. Uncaught, that
+  // reached the user as a bare "request failed (500)" with no server-side
+  // trace (the same gap insert-element closed).
+  try {
+    const genDir = await documentDir(scriptId);
+    // normalizeFormat in lib/edit/freetext.ts clamps + sanitizes every field, so an
+    // arbitrary object here can't inject anything into the emitted source.
+    const result = await editPieceText({
+      genDir,
+      sceneIndex,
+      pieceId,
+      ...(value !== undefined ? { value } : {}),
+      ...(format && typeof format === "object" ? { format: format as Record<string, never> } : {}),
+    });
+    const status = result.ok ? 200 : /not found/.test(result.error ?? "") ? 404 : 400;
+    return NextResponse.json(
+      result.ok ? { ok: true, sceneIndex, pieceId, format: result.format } : { ok: false, error: result.error },
+      { status },
+    );
+  } catch (err) {
+    console.error(
+      `[edit-piece-text] failed for owner=${user.id} script=${scriptId} scene=${sceneIndex}:`,
+      err instanceof Error ? (err.stack ?? err.message) : String(err),
+    );
+    return NextResponse.json(
+      { ok: false, error: "that edit didn't go through — nothing was changed. Please try again." },
+      { status: 500 },
+    );
+  }
 }

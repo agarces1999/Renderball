@@ -26,8 +26,15 @@ export function ShareButton({ scriptId }: { scriptId: string }) {
     setError(null);
     try {
       const r = await fetch(`/api/preview/share?scriptId=${encodeURIComponent(scriptId)}`);
-      const j = (await r.json()) as { shared?: boolean; url?: string; error?: string };
-      if (!r.ok) throw new Error(j.error ?? "could not read the share status");
+      // The wire can answer non-JSON (the middleware rewrites a dead session
+      // to an HTML 404; Cloudflare serves its own error pages) — a parser's
+      // complaint must never become the panel copy.
+      const j = (await r.json().catch(() => null)) as {
+        shared?: boolean;
+        url?: string;
+        error?: string;
+      } | null;
+      if (!r.ok || !j) throw new Error(j?.error ?? "could not read the share status");
       setShared(!!j.shared);
       setUrl(j.url ?? null);
     } catch (e) {
@@ -62,8 +69,22 @@ export function ShareButton({ scriptId }: { scriptId: string }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ scriptId, rotate: what === "rotate" }),
       });
-      const j = (await r.json()) as { shared?: boolean; url?: string; error?: string };
-      if (!r.ok) throw new Error(j.error ?? "that didn't work");
+      // Non-JSON tolerated for the same reason as load(). An auth-shaped
+      // status names the fix AND states that the link didn't change — "Stop
+      // sharing" failing must never leave doubt about whether it's still live.
+      const j = (await r.json().catch(() => null)) as {
+        shared?: boolean;
+        url?: string;
+        error?: string;
+      } | null;
+      if (!r.ok || !j) {
+        throw new Error(
+          j?.error ??
+            (r.status === 401 || r.status === 404
+              ? "your session has expired — sign in again and retry. The link hasn't changed."
+              : "that didn't work — try again in a moment. The link hasn't changed."),
+        );
+      }
       setShared(!!j.shared);
       setUrl(j.url ?? null);
     } catch (e) {

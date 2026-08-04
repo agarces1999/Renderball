@@ -189,7 +189,14 @@ export const castCall = async (call: CastCall): Promise<CastResult> => {
             ...(call.messages ?? [{ role: "user", content: call.user ?? "" }]),
           ],
         }),
-        signal: call.signal ?? AbortSignal.timeout(call.timeoutMs ?? 120_000),
+        // Retries stall-detect FASTER than the first attempt: a healthy call
+        // answers in seconds, and the observed failure mode (Fireworks
+        // accepting a request and never sending headers) is sticky across
+        // identical immediate retries — journey A measured 5 × 120s = 10
+        // minutes of "Starting…" for an outline whose successful attempt took
+        // 3 seconds. First attempt keeps the generous window for genuinely
+        // slow calls; a retry that is going to answer at all answers fast.
+        signal: call.signal ?? AbortSignal.timeout(call.timeoutMs ?? (attempt === 0 ? 120_000 : 60_000)),
       });
     } catch (err) {
       // Network-level failure (reset, DNS, timeout): retryable within budget.

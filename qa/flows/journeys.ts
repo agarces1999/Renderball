@@ -508,34 +508,46 @@ export const journeyFlows: Flow[] = [
         const brief =
           "A 4-slide investor update for Renderball, an AI design editor: " +
           "the problem with prompt-only tools, what we built, early traction, what's next.";
-        const promptBox = page
-          .locator('textarea, input[type="text"]')
-          .filter({ hasNot: page.locator("[data-rb-share]") })
-          .first();
-        const typedInUi = await promptBox.isVisible().catch(() => false);
-        if (typedInUi) {
-          await promptBox.fill(brief);
-          const go = page.getByRole("button", { name: /generate|create|build|start/i }).first();
-          if (await go.isVisible().catch(() => false)) await go.click();
-          used("Generate the deck");
-        } else {
-          // The empty state has no prompt box on this build — fall back so the
-          // journey still covers the build, and SAY SO rather than pretending.
-          note("! no prompt box in the empty state — outline requested directly");
-          const outline = await page.request.fetch(`${base}/api/documents/generate`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            data: { scriptId: id, prompt: brief, pages: 4 },
+        // The start panel is THE path now: choose "Generate every page for
+        // me", describe the deck, land on the outline review, click Build —
+        // clicked, because the routing between those steps has broken twice
+        // (the reload dead-end, then the blank-composition branch) and only
+        // clicking notices.
+        await page.getByText("Generate every page for me").waitFor({ state: "visible", timeout: 20_000 });
+        await page.getByText("Generate every page for me").click();
+        used("Generate every page for me");
+        await page.getByPlaceholder(/pitch deck for Northwind/i).fill(brief);
+        await page.locator('input[type="number"]').fill("4");
+        await page.getByRole("button", { name: "Generate the document" }).click();
+        used("Generate the document");
+        note("outline generating…");
+        await page.waitForURL(/\/review\//, { timeout: 600_000 });
+        note("outline review reached");
+
+        const buildLink = page.getByRole("link", { name: /build the deck/i }).first();
+        await buildLink.waitFor({ state: "visible", timeout: 30_000 });
+        await buildLink.click();
+        used("Build the deck");
+        // Clicking Build lands on /preview, which must show the CEREMONY, not
+        // the blank editor — the exact regression this journey now pins.
+        await page
+          .waitForURL(/\/preview\//, { timeout: 60_000 })
+          .catch(() => {});
+        const ceremonyShown = await page
+          .getByText(/building|designing|outline|page \d/i)
+          .first()
+          .waitFor({ state: "visible", timeout: 30_000 })
+          .then(() => true)
+          .catch(() => false);
+        expect(ceremonyShown, "clicking Build must land on the build ceremony, not the blank editor");
+
+        {
+          const outline = await page.request.fetch(`${base}/api/preview/build?scriptId=${encodeURIComponent(id)}`, {
             failOnStatusCode: false,
-            // Ten minutes, not five. A 4-page outline is a large single model
-            // call and five minutes was a guess that turned out to be the
-            // thing under test — the run failed on the timeout with no usage
-            // recorded, which does not distinguish "slow" from "stalled".
-            timeout: 600_000,
           });
           expect(
             outline.status() === 200,
-            `the outline should generate, got ${outline.status()} ${(await outline.text()).slice(0, 200)}`,
+            `the build status should be readable, got ${outline.status()} ${(await outline.text()).slice(0, 200)}`,
           );
         }
         note("outline requested");
@@ -565,7 +577,12 @@ export const journeyFlows: Flow[] = [
             if (job.status === "failed") throw new Error(`the build failed: ${job.error ?? "no reason given"}`);
             return job.status === "done";
           },
-          45 * 60_000,
+          // 75 min, from MEASUREMENT not hope: a 4-page build on 2026-08-04
+          // spent 36.7 minutes in design:fills alone and entered the
+          // gate-retry phase at 37.4 — the 45-minute budget expired
+          // mid-gates and reported a working build as a failure. The wait
+          // must exceed reality or the journey tests the timeout.
+          75 * 60_000,
         );
         note(`built in ${Math.round((Date.now() - began) / 60_000)} min`);
 

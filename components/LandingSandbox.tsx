@@ -354,13 +354,33 @@ export function useSandbox({
 
 /** The marquee catcher: empty canvas inside the band. Sits UNDER the beats
  *  and the visitor's elements in paint order, so anything interactive wins
- *  the hit-test and everything else falls through to "draw here". */
-export function CaptureRegion({ top, armed }: { top: number; armed: boolean }) {
+ *  the hit-test and everything else falls through to "draw here".
+ *
+ *  `drawWins` puts touch-action:none on the catcher itself. The browser
+ *  latches touch-action at gesture START from the touched element, so a
+ *  host-level flip after the fact can never protect a drag in flight — but
+ *  none on the catcher means a touch that starts on armed empty canvas draws
+ *  in every direction, while touches on pieces and links keep the host's
+ *  pan-y. The stage wants this (it invites the gesture); the phone panel
+ *  must not (it sits in the page's scroll path, where a flick is a scroll). */
+export function CaptureRegion({
+  top,
+  armed,
+  drawWins = false,
+}: {
+  top: number;
+  armed: boolean;
+  drawWins?: boolean;
+}) {
   return (
     <div
       data-rb-region
       className="absolute inset-x-0 bottom-0 cursor-crosshair"
-      style={{ top, pointerEvents: armed ? "auto" : "none" }}
+      style={{
+        top,
+        pointerEvents: armed ? "auto" : "none",
+        touchAction: drawWins ? "none" : undefined,
+      }}
       aria-hidden
     />
   );
@@ -691,7 +711,12 @@ export function SandboxPanel({ still }: { still?: React.ReactNode }) {
         className={`relative h-[340px] overflow-hidden rounded-lg border border-hairline bg-canvas ${
           sb.drawing ? "select-none" : ""
         }`}
-        style={{ touchAction: "none" }}
+        // pan-y, never none: this panel is a full-width block in the phone's
+        // scroll path, so a flick that starts here must keep scrolling the
+        // page. The browser claims vertical strokes (pointercancel already
+        // ends the marquee cleanly); horizontal-leaning draws still land, and
+        // materialized elements drag via their own [touch-action:none].
+        style={{ touchAction: "pan-y" }}
         onPointerDown={sb.onPointerDown}
         onPointerMove={sb.onPointerMove}
         onPointerUp={sb.onPointerUp}
@@ -715,8 +740,8 @@ export function SandboxPanel({ still }: { still?: React.ReactNode }) {
         </SandboxLayer>
       </div>
       <p className="mt-3 font-mono text-[10px] tracking-[0.1em] text-faint">
-        drawn as a box · generated as a real element · sandbox — zero model
-        calls in here
+        drawn as a box · generated as a real element · sandbox — no tokens
+        spent in here
       </p>
     </div>
   );

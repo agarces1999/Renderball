@@ -95,6 +95,10 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "script not found" }, { status: 404 });
   }
 
+  // Same guard insert-element carries: anything below can throw (filesystem,
+  // storage hydration, the model call), and uncaught it reached the user as a
+  // bare "request failed (500)" with no server-side trace.
+  try {
   const genDir = await documentDir(scriptId);
   const result = await regenerateElement({ genDir, sceneIndex, pieceId, instruction });
   // Pivot token counter: regens spend tokens whether or not they succeed.
@@ -106,4 +110,14 @@ export async function POST(request: Request) {
       : { ok: false, error: result.error },
     { status },
   );
+  } catch (err) {
+    console.error(
+      `[regenerate-element] failed for owner=${user.id} script=${scriptId} scene=${sceneIndex}:`,
+      err instanceof Error ? (err.stack ?? err.message) : String(err),
+    );
+    return NextResponse.json(
+      { ok: false, error: "could not regenerate that element — nothing was changed. Please try again." },
+      { status: 500 },
+    );
+  }
 }

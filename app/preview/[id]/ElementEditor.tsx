@@ -424,6 +424,9 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
   // persist through the commit round-trip for visual continuity, but a shield
   // that outlives the gesture eats the user's next click.
   const [gestureHeld, setGestureHeld] = useState(false);
+  // A session that expired mid-edit. One persistent overlay with the way
+  // back, not an error toast per gesture.
+  const [sessionDead, setSessionDead] = useState(false);
   // A press on empty canvas that hasn't yet become a marquee (native drag-to-generate).
   const pendingMarqueeRef = useRef<null | { x: number; y: number }>(null);
   // Mirrors `tool` for the once-attached iframe handlers, so an armed marquee
@@ -559,6 +562,14 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
           body: JSON.stringify(body),
           signal,
         });
+        // Clerk's middleware answers a DEAD SESSION with an HTML 404 — to a
+        // fetch that expected JSON. Before this check, every gesture after a
+        // session expired said "request failed (404)" forever, with no hint
+        // that signing back in fixes everything.
+        if (res.status === 404 && (res.headers.get("content-type") ?? "").includes("text/html")) {
+          setSessionDead(true);
+          return { ok: false, json: {} };
+        }
         const json = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
         if (!res.ok || !json.ok) {
           setError(json.error || `request failed (${res.status})`);
@@ -2794,6 +2805,26 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
         </>
       )}
 
+      {sessionDead && (
+        <div
+          style={{ pointerEvents: "auto" }}
+          className="absolute inset-0 z-[70] flex items-center justify-center bg-[#0b0d12]/55 backdrop-blur-[2px]"
+        >
+          <div className="max-w-[380px] rounded-xl border border-hairline bg-surface p-6 text-center shadow-[0_30px_80px_-40px_rgba(18,26,43,0.6)]">
+            <p className="text-[14.5px] font-semibold text-ink">Your session expired</p>
+            <p className="mt-1.5 text-[13px] leading-relaxed text-muted">
+              Nothing was lost — your document is saved. Sign back in to keep
+              editing.
+            </p>
+            <a
+              href={`/sign-in?redirect_url=${encodeURIComponent(typeof window !== "undefined" ? window.location.pathname : "/documents")}`}
+              className="mt-4 inline-block rounded-md bg-accent px-4 py-2 text-[13px] font-semibold text-accent-ink transition-all hover:brightness-110"
+            >
+              Sign in
+            </a>
+          </div>
+        </div>
+      )}
       {error && (
         <div
           style={{ pointerEvents: "auto", cursor: "pointer" }}

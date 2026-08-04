@@ -66,7 +66,7 @@ export async function crawlWebsite(url: string): Promise<BrandExtract> {
   // crawl when the generate quota is spent (no new schema/service needed).
   const ent = await checkEntitlement(user.id, "generate").catch(() => ({ allowed: true }));
   if (!ent.allowed) {
-    return { url, fetched_at: new Date().toISOString(), ok: false, error: "Monthly limit reached — upgrade to analyze more sites." };
+    return { url, fetched_at: new Date().toISOString(), ok: false, error: "Monthly limit reached — It resets on the 1st — or email support@renderball.com." };
   }
   // Meter the crawl's model calls (previously unrecorded for real users — the
   // onUsage collector was wired only into the dev route, so this z.ai spend was

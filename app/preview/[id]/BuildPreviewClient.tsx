@@ -78,8 +78,10 @@ async function pollUntilSettled(scriptId: string): Promise<Response> {
 type Phase =
   | { kind: "building" }
   | { kind: "error"; message: string }
-  // 402 from the metering gate — a plan limit, not a failure. Retrying
-  // re-hits the same 402 forever; the way forward is /billing.
+  // 402 from the metering gate — a real plan limit, not a failure. Retrying
+  // re-hits the same 402 forever; the way forward is /billing. (A fail-closed
+  // 402 — the gate couldn't check the plan — routes to "error" instead, which
+  // has the retry the situation calls for.)
   | { kind: "limit"; message: string }
   // 409 from the build lock — the account already has a build running.
   | { kind: "busy"; message: string };
@@ -137,13 +139,28 @@ export function BuildPreviewClient({
 
         if (!res.ok) {
           const txt = await res.text();
-          let friendly: string | null = null;
+          let body: { error?: string; limit?: number } | null = null;
           try {
-            friendly = (JSON.parse(txt) as { error?: string }).error ?? null;
+            body = JSON.parse(txt) as { error?: string; limit?: number };
           } catch {
-            /* non-JSON body — fall through to the raw text */
+            /* non-JSON body — wire text; it goes to the console below */
           }
+          const friendly = body?.error ?? null;
           if (res.status === 402) {
+            // The entitlement gate FAILS CLOSED: when the plan lookup itself
+            // errors (a DB blip), it denies with limit 0 — the only 402 shape
+            // with no real allowance behind it. That is a retryable hiccup,
+            // not a plan limit, so it must not wear the limit wall (which has
+            // no retry and points at billing).
+            if (body?.limit === 0) {
+              setPhase({
+                kind: "error",
+                message:
+                  friendly ??
+                  "We couldn't check your plan just now. Try the build again in a moment.",
+              });
+              return;
+            }
             setPhase({ kind: "limit", message: friendly ?? "Monthly build limit reached." });
             return;
           }
@@ -157,17 +174,32 @@ export function BuildPreviewClient({
             setPhase({ kind: "error", message: friendly });
             return;
           }
-          throw new Error(`build failed (${res.status}): ${friendly ?? txt}`);
+          // Other 4xx bodies (422 brand kit, preflight) are server-authored
+          // user language — surface them as-is, no wire prefix. 5xx bodies
+          // are pipeline internals: those belong in the console, the user
+          // gets a sentence.
+          console.error(`[build] failed (${res.status}):`, friendly ?? txt);
+          setPhase({
+            kind: "error",
+            message:
+              res.status < 500 && friendly
+                ? friendly
+                : `The build failed partway through. Nothing is lost — your approved ${isDeck ? "outline" : "story"} is saved. Try the build again.`,
+          });
+          return;
         }
         setAgentDone(true);
       } catch (e) {
+        // Client-side failure (the request never settled). Exception text is
+        // as much jargon as wire text — console only.
+        console.error("[build] request failed:", e);
         setPhase({
           kind: "error",
-          message: e instanceof Error ? e.message : String(e),
+          message: `We couldn't reach the server to start the build. Your approved ${isDeck ? "outline" : "story"} is saved — try again in a moment.`,
         });
       }
     })();
-  }, [buildKey, scriptId]);
+  }, [buildKey, scriptId, isDeck]);
 
   const isLast = current === steps.length - 1;
 
@@ -247,7 +279,7 @@ export function BuildPreviewClient({
           href="/billing"
           className="mt-6 rounded-md bg-accent px-5 py-2.5 text-[14px] font-semibold text-accent-ink transition-all hover:brightness-110"
         >
-          See plans →
+          View usage →
         </a>
       </main>
     );
@@ -288,9 +320,11 @@ export function BuildPreviewClient({
         <h1 className="font-display text-[24px] font-semibold tracking-tight text-ink">
           The build hit a snag
         </h1>
-        <pre className="mt-4 w-full overflow-x-auto whitespace-pre-wrap break-words rounded-md border border-hairline bg-surface-2 p-4 text-left font-mono text-[12px] text-ink-soft">
+        {/* Messages here are always human sentences (wire detail is in the
+            console), so this is a paragraph like the other phases. */}
+        <p className="mt-3 max-w-[46ch] text-[14px] leading-relaxed text-muted">
           {phase.message}
-        </pre>
+        </p>
         <button
           type="button"
           onClick={retry}

@@ -47,7 +47,10 @@ export function EditableReview({
   };
 
   const handleHeadlineBlur = (sceneIdx: number, next: string) => {
-    const original = initialScript.scenes[sceneIdx]?.content?.headline ?? "";
+    // No-op guard against CURRENT state, not the page-load snapshot —
+    // comparing against initialScript made reverting a line to its original
+    // wording silently snap back to the rejected edit.
+    const original = script.scenes[sceneIdx]?.content?.headline ?? "";
     if (next === original) return;
     const nextScenes = script.scenes.map((sc, i) =>
       i === sceneIdx
@@ -60,7 +63,8 @@ export function EditableReview({
   };
 
   const handleConceptBlur = (sceneIdx: number, next: string) => {
-    const original = initialScript.scenes[sceneIdx]?.visual_concept ?? "";
+    // Same current-state guard as handleHeadlineBlur — reverts must persist.
+    const original = script.scenes[sceneIdx]?.visual_concept ?? "";
     if (next === original) return;
     const nextScenes = script.scenes.map((sc, i) =>
       i === sceneIdx ? { ...sc, visual_concept: next } : sc,
@@ -112,7 +116,9 @@ export function EditableReview({
           {isDeck ? "Your outline" : "Your story"}
         </div>
         <h1 className="max-w-[32ch] font-display text-[clamp(24px,3.4vw,34px)] font-medium leading-[1.18] tracking-tight text-ink">
-          {narrative?.logline || script.brief.purpose || (isDeck ? "Your outline" : "Your story")}
+          {/* brief is optional-chained: synthetic scripts (blank documents)
+              carry none, and this header must never crash the page */}
+          {narrative?.logline || script.brief?.purpose || (isDeck ? "Your outline" : "Your story")}
         </h1>
         <div className="mt-4 font-mono text-[12px] leading-relaxed text-muted">
           {isDeck

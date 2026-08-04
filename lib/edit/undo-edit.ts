@@ -6,7 +6,7 @@
 // If the restored store somehow fails to compile, the restore is itself rolled
 // back, leaving the user exactly where they were.
 //
-import { captureUndo, undoLast, undoDepth, writeManifest } from "../agents/lego-store";
+import { captureUndo, undoLast, undoDepth, writeManifest, storeErrorMessage } from "../agents/lego-store";
 import { promises as fs } from "fs";
 import path from "path";
 import { commitGenDir } from "./commit";
@@ -51,7 +51,9 @@ export const undoEdit = async (genDir: string): Promise<UndoResult> =>
       code: res.code,
       script: restored.script,
     };
-  });
+    // A mid-restore throw (an inconsistent snapshot feeding reassembleFromDisk)
+    // escaped the route as a non-JSON 500 — answer in the result shape instead.
+  }).catch((e) => ({ ok: false, error: storeErrorMessage(e) }));
 
 /** How many undo steps are available (for enabling the control on load). */
 export const undoAvailable = async (genDir: string): Promise<number> => undoDepth(genDir).catch(() => 0);

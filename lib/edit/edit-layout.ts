@@ -24,6 +24,7 @@ import {
   removePieceFromManifest,
   captureUndo,
   commitUndo,
+  storeErrorMessage,
   type PieceOffset,
 } from "../agents/lego-store";
 import { pieceSlot } from "../agents/lego-decompose";
@@ -89,7 +90,10 @@ export const moveElement = async (input: MoveElementInput): Promise<MoveElementR
       await writeManifest(genDir, snapshot).catch(() => {});
       return { ok: false, error: `move failed: ${msg(e)}` };
     }
-  });
+    // The reads ABOVE the inner try (readManifest, readDecomposed) throw too —
+    // uncaught, they escaped the route as a non-JSON 500 and the user saw
+    // "request failed (500)" instead of the store's own sentence.
+  }).catch((e) => ({ ok: false, error: storeErrorMessage(e) }));
 };
 
 export interface DeleteElementInput {
@@ -152,7 +156,8 @@ export const deleteElement = async (input: DeleteElementInput): Promise<DeleteEl
       await writePieceBody(genDir, nested.parent.id, originalBody).catch(() => {});
       return { ok: false, error: `delete failed: ${msg(e)}` };
     }
-  });
+    // Store reads outside the inner try blocks — see moveElement.
+  }).catch((e) => ({ ok: false, error: storeErrorMessage(e) }));
 };
 
 // ── z-order ─────────────────────────────────────────────────────────────────
@@ -341,7 +346,8 @@ export const reorderElement = async (
       await writeManifest(genDir, snapshot).catch(() => {});
       return { ok: false, error: `reorder failed: ${msg(e)}` };
     }
-  });
+    // Store reads outside the inner try blocks — see moveElement.
+  }).catch((e) => ({ ok: false, error: storeErrorMessage(e) }));
 };
 
 // ── resize ──────────────────────────────────────────────────────────────────
@@ -516,5 +522,6 @@ export const resizeElement = async (input: ResizeElementInput): Promise<ResizeEl
       if (hadOffset) await writeManifest(genDir, snapshot).catch(() => {});
       return { ok: false, error: `resize failed: ${msg(e)}` };
     }
-  });
+    // Store reads outside the inner try blocks — see moveElement.
+  }).catch((e) => ({ ok: false, error: storeErrorMessage(e) }));
 };

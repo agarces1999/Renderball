@@ -32,9 +32,15 @@ check("under the limit → allowed with counts attached", () => {
   assert(e.allowed && e.used === 0 && e.limit === 3 && !e.reason, JSON.stringify(e));
 });
 
-check("at the limit → denied with an upgrade-worded reason on free", () => {
+check("at the limit → denied in allowance language, never a dead-end upgrade", () => {
   const e = decideEntitlement("free", "build", 3);
-  assert(!e.allowed && /Upgrade/.test(e.reason ?? ""), JSON.stringify(e));
+  // With billing not live there is nothing to upgrade TO — the reason must
+  // offer a way out that exists (the monthly reset, or support). "Upgrade"
+  // marched people to a billing page with no pay button (hunt round two).
+  assert(!e.allowed, JSON.stringify(e));
+  assert(/free allowance/.test(e.reason ?? ""), JSON.stringify(e));
+  assert(/resets on the 1st|billing page/.test(e.reason ?? ""), JSON.stringify(e));
+  assert(!/[Uu]pgrade/.test(e.reason ?? "") || /billing page/.test(e.reason ?? ""), JSON.stringify(e));
 });
 
 check("subscription denial words the reset, not an upgrade", () => {

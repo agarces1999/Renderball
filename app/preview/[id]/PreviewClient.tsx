@@ -47,6 +47,31 @@ type Mp4State =
   | { kind: "error"; message: string };
 
 /**
+ * Reduce an error response body to a sentence a person can read. Routes answer
+ * designed failures as JSON {error} with human-written copy — surface that
+ * verbatim. Everything else is wire format: a Cloudflare error page mid-deploy,
+ * the middleware's HTML rewrite of a dead session, some future bare-text body.
+ * None of that may be printed into the editor, so non-JSON falls back to a
+ * short status line — with the one hint we can infer (an auth-shaped status
+ * means signing in again fixes it).
+ */
+const friendlyApiError = (txt: string, status: number, op: string): string => {
+  try {
+    const e = (JSON.parse(txt) as { error?: string }).error;
+    if (e) return e;
+  } catch {
+    /* non-JSON body */
+  }
+  if (status === 401 || status === 404) {
+    return `${op} didn't go through — your session may have expired. Refresh the page and sign in again.`;
+  }
+  const t = txt.trim();
+  // Belt-and-braces: never render markup or a wall of wire text as the message.
+  if (!t || t.startsWith("<") || t.length > 300) return `${op} failed (${status})`;
+  return t;
+};
+
+/**
  * Soft quality warnings the pipeline can attach to a build result. Matches
  * BuildWarnings in pipeline.ts. All non-blocking — surfaced as quiet notes.
  */
@@ -155,19 +180,19 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
         // message for the designed outcomes (hourly cap, breaker, tokens) —
         // surface that sentence, never the wire format.
         const txt = await res.text();
-        let friendly: string | null = null;
-        try {
-          friendly = (JSON.parse(txt) as { error?: string }).error ?? null;
-        } catch {
-          /* non-JSON body — fall through to the raw text */
-        }
         if (res.status === 402) {
+          let friendly: string | null = null;
+          try {
+            friendly = (JSON.parse(txt) as { error?: string }).error ?? null;
+          } catch {
+            /* non-JSON body */
+          }
           setRegenLimit(
             friendly ?? "This document has used its included tokens.",
           );
           return;
         }
-        throw new Error(friendly ?? (txt || `regeneration failed (${res.status})`));
+        throw new Error(friendlyApiError(txt, res.status, "regeneration"));
       }
       const json = (await res.json()) as {
         ok: true;
@@ -191,16 +216,9 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
         method: "POST",
       });
       if (!res.ok) {
-        const txt = await res.text();
-        let friendly: string | null = null;
-        try {
-          friendly = (JSON.parse(txt) as { error?: string }).error ?? null;
-        } catch {
-          /* non-JSON body — fall through to the raw text */
-        }
         setMp4State({
           kind: "error",
-          message: friendly ?? (txt || `render failed (${res.status})`),
+          message: friendlyApiError(await res.text(), res.status, "render"),
         });
         return;
       }
@@ -220,10 +238,10 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
   };
 
   // Fetch-driven export. The route SSRs every page through a headless browser
-  // (multi-second) and, on failure, answers plain text with no attachment
-  // header — a bare <a> would navigate the editor away to that text. Fetching
-  // keeps the user in place: a busy label while it renders, a dismissible
-  // message if it fails, a normal download if it succeeds.
+  // (multi-second) and, on failure, answers JSON with no attachment header —
+  // a bare <a> would navigate the editor away to that body. Fetching keeps
+  // the user in place: a busy label while it renders, a dismissible message
+  // if it fails, a normal download if it succeeds.
   const handleExport = async (format: "pdf" | "png") => {
     if (exporting) return;
     setExportError(null);
@@ -233,14 +251,7 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
         format === "png" ? `format=png&scene=${sceneIndex}` : "format=pdf";
       const res = await fetch(`/api/preview/${scriptId}/export?${qs}`);
       if (!res.ok) {
-        const txt = (await res.text()).trim();
-        let friendly: string | null = null;
-        try {
-          friendly = (JSON.parse(txt) as { error?: string }).error ?? null;
-        } catch {
-          /* non-JSON body — fall through to the raw text */
-        }
-        setExportError(friendly ?? (txt || `export failed (${res.status})`));
+        setExportError(friendlyApiError(await res.text(), res.status, "export"));
         return;
       }
       const blob = await res.blob();
@@ -280,14 +291,19 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ scriptId, ...op }),
       });
-      const json = (await res.json()) as {
+      // The wire can answer non-JSON (a Cloudflare error page mid-deploy, the
+      // middleware's HTML rewrite of a dead session) — parse defensively like
+      // every neighboring handler, never surface a parser's complaint.
+      const json = (await res.json().catch(() => null)) as {
         ok?: true;
         focus?: number;
         script?: typeof script;
         error?: string;
-      };
-      if (!res.ok || !json.script) {
-        throw new Error(json.error ?? `page operation failed (${res.status})`);
+      } | null;
+      if (!res.ok || !json?.script) {
+        throw new Error(
+          json?.error ?? friendlyApiError("", res.status, "page operation"),
+        );
       }
       setDoc(json.script);
       setSceneIndex(Math.min(json.focus ?? 0, json.script.scenes.length - 1));
@@ -385,13 +401,17 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
                 {regenerating ? "Regenerating…" : "Regenerate"}
               </button>
               <ShareButton scriptId={scriptId} />
+              {/* Scoped to ONE page while its neighbor exports the whole deck —
+                  the label carries the page number so a bare "PNG" can't read
+                  as the PDF button's whole-deck sibling. */}
               <button
                 type="button"
                 onClick={() => void handleExport("png")}
                 disabled={exporting !== null}
+                title={`Download page ${sceneIndex + 1} as a PNG image`}
                 className="rounded-md border border-hairline-strong bg-surface px-3 py-1.5 text-[12px] text-ink transition-colors hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-60"
               >
-                {exporting === "png" ? "Exporting…" : "PNG"}
+                {exporting === "png" ? "Exporting…" : `Page ${sceneIndex + 1} PNG`}
               </button>
               <button
                 type="button"

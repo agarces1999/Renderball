@@ -45,6 +45,12 @@ export function DeletableDocumentCard({
     try {
       const res = await fetch(`/api/documents/${encodeURIComponent(id)}`, { method: "DELETE" });
       if (!res.ok && res.status !== 404) {
+        // A dead session answers 401 {"error":"unauthorized"} — wire
+        // vocabulary that reads as "you don't own this". The client owns
+        // the human sentence.
+        if (res.status === 401) {
+          throw new Error("You've been signed out — sign in again to delete this document.");
+        }
         const body = (await res.json().catch(() => ({}))) as { error?: string };
         throw new Error(body.error ?? "that didn't work");
       }

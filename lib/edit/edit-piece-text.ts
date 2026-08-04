@@ -14,6 +14,7 @@ import {
   writePieceBody,
   captureUndo,
   commitUndo,
+  storeErrorMessage,
 } from "../agents/lego-store";
 import { commitGenDir } from "./commit";
 import { withGenDirLock } from "./gendir-lock";
@@ -71,7 +72,9 @@ export const editPieceText = async (input: EditPieceTextInput): Promise<EditPiec
       await writePieceBody(genDir, pieceId, oldBody).catch(() => {});
       return { ok: false, error: `text edit failed: ${msg(e)}` };
     }
-  });
+    // readDecomposed above the inner try throws too — uncaught, it escaped the
+    // route as a non-JSON 500 instead of the store's own sentence.
+  }).catch((e) => ({ ok: false, error: storeErrorMessage(e) }));
 };
 
 /** The video's own palette, for the text toolbar's colour swatches. Read from the

@@ -250,13 +250,19 @@ export function LandingEditor() {
               className={`relative flex-1 overflow-hidden rounded-xl border border-hairline bg-surface shadow-[0_30px_80px_-40px_rgba(18,26,43,0.45)] ${
                 sb.drawing ? "select-none" : ""
               }`}
-              style={{ touchAction: sb.drawing ? "none" : "pan-y" }}
+              // Plain pan-y: touch-action is latched at gesture start, so a
+              // state-driven flip to "none" could never protect a drag
+              // already in flight (vertical finger-drawn marquees were being
+              // claimed for page scroll). Draw-wins lives on the armed
+              // CaptureRegion instead — none at the touch target itself —
+              // while pieces and the unarmed stage keep scrolling the page.
+              style={{ touchAction: "pan-y" }}
               onPointerDown={sb.onPointerDown}
               onPointerMove={sb.onPointerMove}
               onPointerUp={sb.onPointerUp}
               onPointerCancel={sb.onPointerCancel}
             >
-              <CaptureRegion top={0} armed={armed && !sb.pending} />
+              <CaptureRegion top={0} armed={armed && !sb.pending} drawWins />
               <Canvas section={section} local={local} first={idx === 0} />
               <SandboxLayer sb={sb} interactive={idx === 0} tabbable={armed}>
                 <SandboxHint
