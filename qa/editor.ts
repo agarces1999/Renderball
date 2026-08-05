@@ -269,8 +269,21 @@ export const canvasBox = async (page: Page): Promise<Box> => {
 };
 
 /** Wait for the slide to finish (re)loading and expose pieces. */
+/**
+ * Wait for the slide to actually paint.
+ *
+ * 90s, not 30. The canvas is an iframe whose document is COMPILED ON DEMAND
+ * (esbuild over Composition.tsx), and flows run three-wide against one dev
+ * server — so a cold route under contention legitimately takes far longer
+ * than the same route alone. Measured 2026-08-04: four separate flows failed
+ * this wait inside the parallel batch and every one passed solo in ~3s.
+ *
+ * That pattern is worse than a slow test: it produces FALSE REDS, and a suite
+ * that cries wolf gets ignored precisely when it is right. The wait is now
+ * sized for the loaded case; a genuinely dead canvas still fails, just later.
+ */
 export const waitForCanvas = async (page: Page): Promise<void> => {
-  await until("the canvas renders at least one piece", async () => (await pieceIds(page)).length > 0, 30000);
+  await until("the canvas renders at least one piece", async () => (await pieceIds(page)).length > 0, 90000);
 };
 
 /**

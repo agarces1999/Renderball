@@ -70,7 +70,18 @@ const signIn = async (context: BrowserContext, base: string, creds: Credentials)
     await page.goto(`${base}/sign-in`, { waitUntil: "domcontentloaded" });
 
     const identifier = page.locator('input[name="identifier"]').first();
-    await identifier.waitFor({ state: "visible", timeout: 30000 });
+    // Name the likeliest cause when the form never mounts. Clerk renders it
+    // client-side, so an EMPTY /sign-in means hydration did not happen — and
+    // on this project that has meant a corrupt `.next/cache/webpack` far more
+    // often than a Clerk problem. Two full validation attempts were spent
+    // rediscovering that; the fix is `rm -rf .next/cache` and a dev restart.
+    await identifier.waitFor({ state: "visible", timeout: 30000 }).catch((err) => {
+      throw new Error(
+        "the sign-in form never mounted — Clerk renders it client-side, so this usually means the dev " +
+          "server failed to hydrate (corrupt .next/cache/webpack). Try: rm -rf .next/cache && restart dev. " +
+          `Original: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    });
     await identifier.fill(creds.email);
 
     // One step or two — fill the password if it is already here, otherwise

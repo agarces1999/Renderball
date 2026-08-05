@@ -21,6 +21,8 @@
 // control the editor renders and fails if one is not claimed by a flow below.
 // "Exhaustive" should be an assertion, not a claim.
 //
+import { promises as fs } from "fs";
+import path from "path";
 import type { Page } from "playwright";
 import type { Flow } from "../harness";
 import { expect, until } from "../harness";
@@ -401,18 +403,26 @@ export const journeyFlows: Flow[] = [
         }
         await panelTab(page, "copy");
 
-        // ── 9b. Export the page — the PNG by CLICKING — the PNG by CLICKING, because the button
+        // ── 9b. Export the page — the PNG by CLICKING, because the button
         // now owns a busy state and an in-app error surface, and neither is
         // exercised by fetching the API. The PDF stays an API fetch (a second
         // multi-second Playwright render per run buys no new coverage).
-        const pngBtn = page.getByRole("button", { name: "PNG", exact: true }).first();
+        // Matched by MEANING, not by exact label. This broke the same night it
+        // was written: a sibling fix relabelled the button from "PNG" to
+        // "Download page 1 as a PNG image" — a better label — and an exact
+        // match turned that improvement into a red suite.
+        const pngBtn = page.getByRole("button", { name: /PNG/i }).first();
         // waitFor, not isVisible — the third time this suite has nearly paid
         // for the non-polling check in one day.
         await pngBtn.waitFor({ state: "visible", timeout: 15_000 });
         {
           const download = page.waitForEvent("download", { timeout: 120_000 }).catch(() => null);
+          // Record the label the BUTTON reports, not one hardcoded here — the
+          // coverage gate enumerates by title, and a hardcoded "PNG" silently
+          // stopped matching the moment the title improved.
+          const pngLabel = (await pngBtn.getAttribute("title")) ?? "PNG";
           await pngBtn.click();
-          used("PNG");
+          used(pngLabel, "PNG");
           const got = await download;
           expect(!!got, "clicking PNG should produce a download, and no error strip");
           note("PNG exported by clicking the button");
@@ -587,6 +597,39 @@ export const journeyFlows: Flow[] = [
         );
         note(`built in ${Math.round((Date.now() - began) / 60_000)} min`);
 
+        // THE BREAKDOWN, not just the total. The pipeline writes
+        // build-timeline.json next to the composition, and this journey
+        // deletes the document at the end — so every run so far has thrown
+        // away the only record of WHERE the minutes went, leaving "6 min" as
+        // a number with no structure behind it. Read it while it still
+        // exists. This is also the regression detector for the mid-token
+        // stall: a healthy design:fills is ~55-88s for five scenes, and the
+        // stall showed up as 2199s, which no total-only view distinguishes
+        // from "the model was busy".
+        try {
+          const raw = await fs.readFile(
+            path.join(process.cwd(), "src", "generated", id, "build-timeline.json"),
+            "utf8",
+          );
+          const tl = JSON.parse(raw) as {
+            total_s?: number;
+            events?: { phase: string; elapsed_s: number; step_s: number }[];
+          };
+          for (const e of tl.events ?? []) {
+            if (e.step_s >= 1) note(`  ${e.phase.slice(0, 56)} — ${e.step_s.toFixed(0)}s`);
+          }
+          const fills = (tl.events ?? []).find((e) => e.phase.startsWith("design:fills"));
+          if (fills) {
+            expect(
+              fills.step_s < 600,
+              `design:fills took ${fills.step_s.toFixed(0)}s — healthy is 55-88s for five scenes. ` +
+                "That is the Fireworks mid-token stall signature (see lib/llm/safe-truncate.ts), not slow generation.",
+            );
+          }
+        } catch {
+          note("  (no build-timeline.json — breakdown unavailable)");
+        }
+
         // 3. Look at what was built, page by page, the way anyone would.
         await page.goto(`${base}/preview/${id}`, { waitUntil: "domcontentloaded" });
 
@@ -735,8 +778,16 @@ export const journeyFlows: Flow[] = [
           [/^Renderball$/, "the wordmark link"],
         ];
 
+        // Compare with DIGITS NORMALISED. Some control labels carry live
+        // state — "Download page 1 as a PNG image" — so the string a journey
+        // records depends on which page it happened to be on, and the string
+        // this flow sees depends on its own fresh document. Exact matching
+        // made a covered control read as uncovered purely because the two
+        // flows stood on different pages.
+        const norm = (s: string) => s.replace(/\d+/g, "#");
+        const touchedNorm = new Set([...touched].map(norm));
         const uncovered = controls.filter(
-          (c) => !touched.has(c) && !EXEMPT.some(([re]) => re.test(c)),
+          (c) => !touched.has(c) && !touchedNorm.has(norm(c)) && !EXEMPT.some(([re]) => re.test(c)),
         );
         note(`${controls.length} controls found · ${touched.size} touched by journeys`);
         if (uncovered.length) note(`uncovered: ${uncovered.join(" | ")}`);
