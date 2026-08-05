@@ -206,7 +206,13 @@ export const selectPiece = async (page: Page, pieceId: string): Promise<void> =>
   await page.mouse.click(point!.x, point!.y);
   // Clicking a piece may select an ancestor or a nested child depending on where
   // the pointer lands, so assert that SOMETHING is selected and report which.
-  await until(`a piece is selected after clicking "${pieceId}"`, async () => isSelected(page));
+  // 45s, for the same reason waitForCanvas is 90: the click has to reach an
+  // on-demand-compiled iframe and the selection has to paint, and flows run
+  // three-wide against one dev server. Measured — "resizing an element
+  // actually changes its size" failed this wait inside the batch and passed
+  // solo in 3.5s, reporting 438x129 -> 518x129. Raising waitForCanvas alone
+  // fixed the symptom I looked at and left its sibling to cry wolf later.
+  await until(`a piece is selected after clicking "${pieceId}"`, async () => isSelected(page), 45000);
 };
 
 /**
@@ -267,6 +273,28 @@ export const canvasBox = async (page: Page): Promise<Box> => {
   expect(b!.width > 0 && b!.height > 0, "the canvas should have a non-zero size");
   return b!;
 };
+
+/**
+ * The SLIDE's own box, measured inside the frame.
+ *
+ * Not the same thing as canvasBox. That measures the iframe ELEMENT, whose
+ * shape follows the editor chrome — a banner or a warning strip shortens it —
+ * while the slide inside keeps its 16:9 and simply letterboxes. Comparing the
+ * frame box against an exported image therefore reports a stretch that is not
+ * happening. Anything asking "is what the owner arranges what comes out"
+ * wants THIS.
+ */
+export const slideBox = async (page: Page): Promise<Box | null> =>
+  page.evaluate(() => {
+    const f = document.querySelector("iframe") as HTMLIFrameElement | null;
+    const d = f?.contentDocument;
+    const root = d?.body?.firstElementChild as HTMLElement | null;
+    if (!f || !root) return null;
+    const host = f.getBoundingClientRect();
+    const r = root.getBoundingClientRect();
+    if (r.width <= 0 || r.height <= 0) return null;
+    return { x: host.left + r.left, y: host.top + r.top, width: r.width, height: r.height };
+  });
 
 /** Wait for the slide to finish (re)loading and expose pieces. */
 /**

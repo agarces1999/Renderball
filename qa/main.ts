@@ -17,6 +17,10 @@ import { returningFlows } from "./flows/journey-returning";
 import { recipientFlows } from "./flows/journey-recipient";
 import { messyFlows } from "./flows/journey-messy";
 import { interruptedFlows } from "./flows/journey-interrupted";
+import { limitFlows } from "./flows/journey-limits";
+// The invariant nothing checked: no surface may render an error where
+// another renders content.
+import { surfaceFlows } from "./flows/journey-surfaces";
 import { authenticator, testCredentials } from "./auth";
 
 const BASE = process.env.QA_BASE ?? "http://localhost:3000";
@@ -271,6 +275,8 @@ const main = async (): Promise<void> => {
     ...recipientFlows,
     ...messyFlows,
     ...interruptedFlows,
+    ...limitFlows,
+    ...surfaceFlows,
   ];
   const only = (process.env.QA_ONLY ?? "")
     .split(",")
