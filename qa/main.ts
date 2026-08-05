@@ -11,6 +11,12 @@ import { securityFlows } from "./flows/security";
 import { shareFlows } from "./flows/share";
 import { accountFlows } from "./flows/account";
 import { journeyFlows } from "./flows/journeys";
+// The journeys people actually break things in: coming back to work, being
+// sent a link, changing your mind mid-generate, and using a mouse messily.
+import { returningFlows } from "./flows/journey-returning";
+import { recipientFlows } from "./flows/journey-recipient";
+import { messyFlows } from "./flows/journey-messy";
+import { interruptedFlows } from "./flows/journey-interrupted";
 import { authenticator, testCredentials } from "./auth";
 
 const BASE = process.env.QA_BASE ?? "http://localhost:3000";
@@ -254,7 +260,18 @@ const main = async (): Promise<void> => {
   // QA_ONLY=<substring> reruns just the flows whose names match — so verifying
   // one failure costs one flow (and, for a journey, one generation) instead of
   // the whole suite. Case-insensitive; comma-separates multiple substrings.
-  const all = [...editorFlows, ...documentFlows, ...securityFlows, ...shareFlows, ...accountFlows, ...journeyFlows];
+  const all = [
+    ...editorFlows,
+    ...documentFlows,
+    ...securityFlows,
+    ...shareFlows,
+    ...accountFlows,
+    ...journeyFlows,
+    ...returningFlows,
+    ...recipientFlows,
+    ...messyFlows,
+    ...interruptedFlows,
+  ];
   const only = (process.env.QA_ONLY ?? "")
     .split(",")
     .map((s) => s.trim().toLowerCase())

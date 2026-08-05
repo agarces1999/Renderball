@@ -1,7 +1,7 @@
 {
   "name": "renderball",
   "version": "0.0.1",
-  "description": "Renderball — script-first AI video generation",
+  "description": "Renderball \u2014 script-first AI video generation",
   "private": true,
   "scripts": {
     "dev": "node scripts/dev.mjs",
@@ -17,7 +17,8 @@
     "db:deploy": "prisma migrate deploy",
     "db:generate": "dotenv -e .env.local -- prisma generate",
     "db:studio": "dotenv -e .env.local -- prisma studio",
-    "postinstall": "playwright install chromium || true"
+    "postinstall": "playwright install chromium || true",
+    "typecheck:qa": "tsc --noEmit -p tsconfig.qa.json"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "0.99.0",

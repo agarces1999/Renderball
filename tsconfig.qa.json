@@ -1,0 +1,18 @@
+{
+  // The QA suite is real TypeScript that NOTHING was type-checking.
+  //
+  // tsconfig.json's `include` covers src/app/lib/components — deliberately, so
+  // `next build` does not compile Playwright flows into the product — but the
+  // consequence went unnoticed: `npx tsc --noEmit` returned clean for edits to
+  // qa/ that it had never read. The runner's esbuild bundle catches syntax and
+  // nothing else, so a type error in a flow surfaced only as a confusing
+  // failure at run time, if at all.
+  //
+  // This config exists to be run explicitly (npm run typecheck:qa) and in CI.
+  "extends": "./tsconfig.json",
+  // qa/ and what it imports. scripts/*-spike.ts are one-off research files
+  // that predate strict settings and carry 22 pre-existing errors — pulling
+  // them in would mean this check is red on arrival and therefore ignored.
+  "include": ["qa/**/*", "lib/**/*", "src/**/*"],
+  "exclude": ["node_modules", "out", "public/renders", "src/generated"]
+}
