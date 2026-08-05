@@ -10,9 +10,13 @@
   //
   // This config exists to be run explicitly (npm run typecheck:qa) and in CI.
   "extends": "./tsconfig.json",
-  // qa/ and what it imports. scripts/*-spike.ts are one-off research files
-  // that predate strict settings and carry 22 pre-existing errors — pulling
-  // them in would mean this check is red on arrival and therefore ignored.
-  "include": ["qa/**/*", "lib/**/*", "src/**/*"],
+  // qa/ AND scripts/ — between this config and tsconfig.json, every directory
+  // in the repo is now read by a type-checker. That is the point: the qa/ hole
+  // existed because nothing was checking a directory, and an excluded
+  // directory is the same hole with a comment on it. scripts/ carried 22
+  // errors when this config was written; they were fixed (and eight superseded
+  // one-off spikes deleted) rather than excluded. If a new script does not
+  // type-check, fix the script.
+  "include": ["qa/**/*", "lib/**/*", "src/**/*", "scripts/**/*.ts"],
   "exclude": ["node_modules", "out", "public/renders", "src/generated"]
 }

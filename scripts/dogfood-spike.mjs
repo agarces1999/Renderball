@@ -1,5 +1,5 @@
 // Tiny runner for scripts/dogfood-spike.ts — esbuild-bundles the TS and
-// imports it (same pattern as scripts/acceptance8-spike.mjs). Usage, from the
+// imports it (same pattern as scripts/full-spike.mjs). Usage, from the
 // repo root:
 //   set -a && source .env.local && set +a && \
 //     RB_DOGFOOD_BRIEF=<briefId> RB_DOGFOOD_TAG=<brand> RB_DOGFOOD_CYCLE=<N> \

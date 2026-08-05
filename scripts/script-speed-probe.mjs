@@ -1,5 +1,5 @@
 // Tiny runner for scripts/script-speed-probe.ts — esbuild-bundles the TS and
-// imports it (same pattern as scripts/acceptance5-spike.mjs). Usage, from the
+// imports it (same pattern as scripts/full-spike.mjs). Usage, from the
 // repo root:
 //   set -a && source .env.local && set +a && node scripts/script-speed-probe.mjs
 import * as esbuild from "esbuild";

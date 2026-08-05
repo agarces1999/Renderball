@@ -24,6 +24,10 @@ jobs:
       # frames and extracts them with system ffmpeg — not on the runner image.
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - run: npx tsc --noEmit
+      # tsc --noEmit above reads only the product scope (app/lib/components/src).
+      # qa/ and scripts/ live outside it, so they need their own pass or they go
+      # unchecked in CI exactly as they did locally.
+      - run: npm run typecheck:qa
       - run: node scripts/run-tests.mjs
 
   build:

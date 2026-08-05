@@ -228,11 +228,26 @@ interface CallRecord {
   error?: string;
 }
 
+/**
+ * The prompt text a call actually sends. `user` is OPTIONAL and is ignored
+ * whenever `messages` is present (the Fireworks multi-turn migration,
+ * 2026-07-23, which cast-build's repair loops use) — so reading `call.user`
+ * alone would label every repair call "?" and silently split one piece's
+ * attempt counter in two. Read the last user turn when there is one.
+ */
+const promptTextOf = (call: Parameters<typeof castCall>[0]): string => {
+  if (call.messages?.length) {
+    const lastUserTurn = call.messages.filter((m) => m.role === "user").at(-1);
+    return lastUserTurn?.content ?? "";
+  }
+  return call.user ?? "";
+};
+
 const makeInstrumentedCaller = () => {
   const calls: CallRecord[] = [];
   const attempts = new Map<string, number>();
   const caller: typeof castCall = async (call) => {
-    const pieceId = /piece id "([^"]+)"/.exec(call.user)?.[1] ?? "?";
+    const pieceId = /piece id "([^"]+)"/.exec(promptTextOf(call))?.[1] ?? "?";
     const attempt = (attempts.get(pieceId) ?? 0) + 1;
     attempts.set(pieceId, attempt);
     const t0 = Date.now();

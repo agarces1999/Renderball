@@ -487,7 +487,10 @@ const galleryHtml = (rows: Row[], refDensities: Map<number, Density>, report: Re
           const d = c.density;
           const visual = c.renderError
             ? `<div class="err">RENDER FAILED<br><span>${esc(c.renderError)}</span></div>`
-            : `<a href="${c.png}" target="_blank"><img src="${c.png}" alt="${c.cond ?? "ref"} scene ${c.scene}"></a>`;
+            // The condition lives on the ROW, not the cell (cells carry only
+            // scene-level measurements). Reading `c.cond` made every alt text
+            // read "ref scene N" no matter which condition rendered it.
+            : `<a href="${c.png}" target="_blank"><img src="${c.png}" alt="${row.cond?.id ?? "ref"} scene ${c.scene}"></a>`;
           const statBits = [
             c.stat ? `${c.stat.secs.toFixed(1)}s · ${c.stat.outputTokens} tok out (${c.stat.codeChars} code chars)` : "reference build",
             `${d.domEls} DOM els · ${d.diegeticInterior} diegetic-interior · ${d.svgRoots} svg (${d.svgPrims} prims) · ${d.textEls} text els`,

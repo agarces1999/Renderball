@@ -42,7 +42,7 @@
 // buys the comparison; clicking here would buy a second copy of journey B.
 //
 import { PDFDocument } from "pdf-lib";
-import type { BrowserContext, Page } from "playwright";
+import type { BrowserContext, Locator, Page } from "playwright";
 import type { Flow } from "../harness";
 import { expect, until } from "../harness";
 import { canvasBox, pieceIds, slideBox, waitForCanvas } from "../editor";
@@ -110,31 +110,77 @@ const buildOwnDeck = async (
   base: string,
 ): Promise<{ id: string } | { skip: string }> => {
   await page.goto(`${base}/api/documents/new`, { waitUntil: "domcontentloaded" });
+  // ONE retry on a sign-in bounce. Signed-in flows replay a stored session
+  // rather than signing in again, and under parallel load a server-rendered
+  // route can be reached before that session is accepted — which made this
+  // journey SKIP, comparing nothing at all. A skip is the most expensive
+  // outcome here: it looks green. Same treatment as journey F; a second
+  // bounce still gives up honestly.
+  if (/\/sign-in/.test(page.url())) {
+    await page.waitForTimeout(1500);
+    await page.goto(`${base}/api/documents/new`, { waitUntil: "domcontentloaded" });
+  }
   const id = /\/preview\/([^/?#]+)/.exec(page.url())?.[1];
   if (!id) return { skip: `creating a document did not open one (landed on ${page.url()})` };
 
-  // Two pages, each with visible ink — one page would let a per-page
-  // comparison pass without ever comparing anything.
-  for (const scene of [0, 1]) {
-    if (scene > 0) {
-      const add = await page.request.post(`${base}/api/preview/page-op`, {
-        data: { scriptId: id, op: "add", index: scene },
-        failOnStatusCode: false,
-      });
-      if (add.status() >= 400) return { skip: `could not add page ${scene + 1} (${add.status()})` };
-    }
+  // The route says WHY in JSON on every failure path, and this helper had been
+  // reporting only the status — which is how `op: "add"` sat here mis-spelled
+  // for its whole life saying nothing more than "(400)".
+  const reasonFrom = async (res: { text: () => Promise<string> }): Promise<string> => {
+    const said = (await res.text().catch(() => "")).slice(0, 300);
+    return /"error"\s*:\s*"([^"]+)"/.exec(said)?.[1] ?? said.replace(/\s+/g, " ").trim();
+  };
+
+  // INK FIRST, THEN COPY THE PAGE — not add-a-blank-then-fill-it.
+  //
+  // The obvious order (add a blank page 2, then insert text into it) is the one
+  // this helper used to attempt, and on a hand-built document it does not work:
+  // page-op adds the blank fine, and the very next insert-element into that new
+  // scene answers 400 "inserted element did not materialize in the composition"
+  // — the piece is written and then rolled back because the reassembled
+  // template comes back without its slot. Measured on this checkout, twice.
+  // Whether a deck that has actually been BUILT behaves the same way is not
+  // something this journey established, so nothing here claims it.
+  //
+  // Duplicating a page that already has ink sidesteps that path entirely, and
+  // it is a gesture the product offers anyway. Both pages then carry the same
+  // three lines, which costs the comparison nothing: this journey compares each
+  // page across surfaces, never one page against another.
+  //
+  // Enough ink to be a slide, not a word on a ground. PNG_INK_FLOOR is 20KB and
+  // a single line compresses to ~13KB, so a one-element page would trip the
+  // journey's own emptiness assertion on a deck that is perfectly fine — the
+  // floor is the calibrated part and must not move, so the subject gets heavier.
+  const lines = [
+    { y: 220, h: 200, text: "The deck I see is the deck they get" },
+    { y: 440, h: 240, text: "The same words should reach every surface it is rendered on." },
+    { y: 700, h: 240, text: "Editor, PDF, PNG, shared viewer, link preview — five paths, one deck." },
+  ];
+  for (const line of lines) {
     const ins = await page.request.post(`${base}/api/preview/insert-element`, {
       data: {
         scriptId: id,
-        sceneIndex: scene,
-        bounds: { x: 160, y: 300, w: 1600, h: 220 },
+        sceneIndex: 0,
+        bounds: { x: 160, y: line.y, w: 1600, h: line.h },
         mode: "primitive",
         primitive: "text",
-        text: `Page ${scene + 1} — the same words should reach every surface`,
+        text: line.text,
       },
       failOnStatusCode: false,
     });
-    if (ins.status() >= 400) return { skip: `could not put text on page ${scene + 1} (${ins.status()})` };
+    if (ins.status() >= 400) {
+      return { skip: `could not put text on page 1 (${ins.status()} — ${await reasonFrom(ins)})` };
+    }
+  }
+
+  // A second page, because one page would let every per-page comparison below
+  // pass without ever comparing anything.
+  const dup = await page.request.post(`${base}/api/preview/page-op`, {
+    data: { scriptId: id, op: "duplicate", page: 0 },
+    failOnStatusCode: false,
+  });
+  if (dup.status() >= 400) {
+    return { skip: `could not make a second page (${dup.status()} — ${await reasonFrom(dup)})` };
   }
 
   await page.goto(`${base}/preview/${id}`, { waitUntil: "domcontentloaded" });
@@ -158,6 +204,31 @@ const openFixtureAsOwner = async (
         `the fixture deck ${id} does not belong to the signed-in QA account ` +
         `(/preview/${id} answered ${status} and landed on ${page.url()}) — ` +
         "point QA_DEV_SCRIPT_ID at a deck that account owns, or sign in as its owner",
+    };
+  }
+
+  // CAN OPEN and OWNS are different questions, and the share surfaces need the
+  // second one. `loadScript` ORs in DEV_OWNER_ID outside production, so the
+  // signed-in QA account opens the dev harness's fixture perfectly well — while
+  // `shareStateFor`/`enableShare`/`disableShare` filter on ownerId STRICTLY,
+  // with no such fallback. Measured on this checkout: the fixture is owned by
+  // "dev-local", the QA account is a different user row, and the strict query
+  // for that pair returns null, so GET /api/preview/share answers 404 forever.
+  // The panel parks in its error branch and NO number of Try again presses can
+  // move it — which is precisely how this journey came to compare three
+  // surfaces out of five and report a pass. Asking the share route itself is
+  // the only probe that answers the question the next 200 lines actually ask.
+  const owns = await page.request.fetch(
+    `${base}/api/preview/share?scriptId=${encodeURIComponent(id)}`,
+    { failOnStatusCode: false },
+  );
+  if (owns.status() !== 200) {
+    return {
+      skip:
+        `the fixture deck ${id} opens for the signed-in QA account but is not OWNED by it — the ` +
+        `share status route answers ${owns.status()} for it, so its link, its viewer and its ` +
+        "preview image can never be reached from this account (a dev-only read fallback makes it " +
+        "readable; sharing has no such fallback)",
     };
   }
   return { id };
@@ -285,6 +356,16 @@ const pngSize = (bytes: Buffer): { width: number; height: number } | null => {
 const PNG_INK_FLOOR = 20_000;
 
 /**
+ * How many times the owner presses "Try again" before the flow gives up.
+ *
+ * Bounded, not infinite: the point of retrying is to survive a status fetch that
+ * lost a race, not to hide a share API that is genuinely down. Three presses of
+ * a button a person would press once is generous; a fourth would be the flow
+ * refusing to report bad news.
+ */
+const SHARE_RETRY_PRESSES = 3;
+
+/**
  * The share panel's link, created by clicking, exactly as journey D does it.
  *
  * waitFor, never isVisible({timeout}): the panel fetches its share state before
@@ -292,8 +373,24 @@ const PNG_INK_FLOOR = 20_000;
  * answers false and the button is never pressed. Duplicated rather than shared
  * because the two journeys assert different things about the same panel, and a
  * helper that has to serve both ends up asserting neither.
+ *
+ * WHY THIS RETRIES, and why it is not papering over a bug. The panel loads its
+ * status once, AT MOUNT — long before this journey reaches step 4, because the
+ * PDF and the PNGs in front of it take minutes. A status fetch that lost its
+ * race back then leaves the panel parked in its error branch ("Couldn't check
+ * the share status" + a Try again button) for the rest of the page's life, and
+ * the earlier version of this helper read that branch as "never resolved",
+ * skipped, and compared three surfaces out of five. The share route itself was
+ * healthy throughout — probed on a fresh document, it answered 200 four times
+ * running. So the recovery is the one the product already offers its owner:
+ * press Try again. The panel's error branch is a REAL state a user can be in,
+ * and a flow that cannot get past it is not testing the surfaces that matter
+ * most — the viewer and the unfurl are what a RECIPIENT sees, and the only two
+ * surfaces here that nobody signed in ever looks at.
  */
-const shareLinkByClicking = async (page: Page): Promise<{ url: string } | { skip: string }> => {
+const shareLinkByClicking = async (
+  page: Page,
+): Promise<{ url: string; retried: number } | { skip: string }> => {
   const button = page.locator("[data-rb-share]").first();
   const present = await button
     .waitFor({ state: "visible", timeout: 30_000 })
@@ -307,30 +404,70 @@ const shareLinkByClicking = async (page: Page): Promise<{ url: string } | { skip
 
   const create = panel.getByRole("button", { name: /create a link/i }).first();
   const field = panel.getByRole("textbox", { name: /public link/i }).first();
-
+  const tryAgain = panel.getByRole("button", { name: /try again/i }).first();
   // isVisible with no timeout INSIDE until() is the correct pairing — until does
   // the polling, the check answers now.
-  const decided = await until(
-    "the share panel finishes checking and offers either a link or a way to make one",
-    async () =>
-      (await create.isVisible().catch(() => false)) || (await field.isVisible().catch(() => false)),
-    25_000,
-  )
-    .then(() => true)
-    .catch(() => false);
-  if (!decided) {
-    const said = (await panel.innerText().catch(() => "")).replace(/\s+/g, " ").trim();
-    return { skip: `the share panel never resolved its state — it says: "${said.slice(0, 120)}"` };
+  const showing = (l: Locator): Promise<boolean> => l.isVisible().catch(() => false);
+
+  let retried = 0;
+  let ready = false;
+  let stuckOnChecking = false;
+  for (;;) {
+    // SETTLED means the panel has stopped saying "Checking…" — three of its
+    // four states, not just the two good ones. Waiting only for the good two is
+    // what made the error branch indistinguishable from a hang, and the flow
+    // then spent its whole budget confirming a state it could have fixed in a
+    // click. The first pass keeps the original 25s tolerance because that one
+    // may still be waiting on a genuinely cold fetch; the retries are short,
+    // because by then the route has answered once and the journey has already
+    // spent minutes on the exports.
+    const settled = await until(
+      retried === 0
+        ? "the share panel finishes checking and offers either a link or a way to make one"
+        : `the share panel finishes re-checking after Try again (press ${retried} of ${SHARE_RETRY_PRESSES})`,
+      async () => (await showing(create)) || (await showing(field)) || (await showing(tryAgain)),
+      retried === 0 ? 25_000 : 12_000,
+    )
+      .then(() => true)
+      .catch(() => false);
+
+    if (settled && ((await showing(create)) || (await showing(field)))) {
+      ready = true;
+      break;
+    }
+    if (!settled) {
+      // Never left "Checking…" at all: there is no control to press, so there
+      // is nothing a retry could do that this wait did not already do.
+      stuckOnChecking = true;
+      break;
+    }
+    if (retried >= SHARE_RETRY_PRESSES) break;
+    retried++;
+    await tryAgain.click().catch(() => {});
+    // load() clears the error before it re-fetches, so the button goes away and
+    // "Checking…" comes back. Waiting for that hand-off keeps the next poll
+    // from reading the pre-click frame and burning a press on it.
+    await tryAgain.waitFor({ state: "hidden", timeout: 5_000 }).catch(() => {});
   }
 
-  if (await create.isVisible().catch(() => false)) await create.click();
+  if (!ready) {
+    const said = (await panel.innerText().catch(() => "")).replace(/\s+/g, " ").trim();
+    return {
+      skip: stuckOnChecking
+        ? `the share panel never left "Checking…" — it says: "${said.slice(0, 120)}"`
+        : `the share panel could not read the share status, and ${SHARE_RETRY_PRESSES} presses of ` +
+          `its own Try again button did not change that — it says: "${said.slice(0, 120)}"`,
+    };
+  }
+
+  if (await showing(create)) await create.click();
   await field.waitFor({ state: "visible", timeout: 20_000 });
   const url = await field.inputValue();
   expect(
     /\/s\/[^/]+$/.test(url),
     `the panel should hand the owner a public link to send, and instead shows "${url}"`,
   );
-  return { url };
+  return { url, retried };
 };
 
 /** Turn sharing off through the panel, the way the owner would. */
@@ -460,14 +597,30 @@ export const surfaceFlows: Flow[] = [
       // fixture is owned by the dev harness, so on most machines this journey
       // makes its own subject rather than skipping and testing nothing.
       const owned = await openFixtureAsOwner(page, base);
-      const opened = "skip" in owned ? await buildOwnDeck(page, base) : owned;
-      if ("skip" in opened) {
-        note(`skipped: ${opened.skip}`);
-        return;
+      let subject: { id: string };
+      let builtItself = false;
+      if ("skip" in owned) {
+        note(`not using the configured fixture: ${owned.skip}`);
+        const made = await buildOwnDeck(page, base);
+        if ("skip" in made) {
+          note(`skipped: ${made.skip}`);
+          return;
+        }
+        subject = made;
+        builtItself = true;
+      } else {
+        subject = owned;
       }
-      const { id } = opened;
-      created.add(id);
-      note(`comparing surfaces for ${id}`);
+      const { id } = subject;
+      // Only decks this journey BUILT are litter. Registering a borrowed
+      // fixture here hands it to the cleanup flow's DELETE — which no-ops today
+      // only because the fixture belongs to someone else, and would succeed the
+      // moment the QA account really does own the deck it was pointed at.
+      if (builtItself) created.add(id);
+      note(
+        `comparing surfaces for ${id} ` +
+          (builtItself ? "(built by this journey)" : "(the configured fixture)"),
+      );
 
       // ── 1. THE EDITOR — the surface the owner judges the deck by ────────────
       // Everything below is compared against this one, so if the deck is broken
@@ -682,9 +835,24 @@ export const surfaceFlows: Flow[] = [
       // ── 4. THE SHARE VIEWER — the same deck, to somebody with no account ─────
       const link = await shareLinkByClicking(page);
       if ("skip" in link) {
-        note(`the share surfaces could not be checked: ${link.skip}`);
+        // Spelled out, because the honest-but-quiet version of this line read
+        // like a footnote and the run passed looking complete. Two of the five
+        // surfaces are missing, and they are the two only a RECIPIENT ever
+        // sees — nothing below can vouch for them.
+        note(
+          `PARTIAL COMPARISON — 3 of 5 surfaces only. The share viewer and the link-preview ` +
+            `image were NOT compared this run, so a page that renders for the owner and breaks ` +
+            `for the recipient would NOT have been caught. Reason: ${link.skip}`,
+        );
       } else {
         shared.add(id);
+        if (link.retried > 0) {
+          note(
+            `the share panel came up unable to read its status; it took ${link.retried} press(es) ` +
+              "of its own Try again button to get a link (the panel loads its status at mount, " +
+              "minutes before this step)",
+          );
+        }
         // Navigate against the base under test, not the origin baked into the
         // panel's value, so this still works through a tunnel or a preview
         // deployment. The panel's own URL is asserted inside the helper.
@@ -870,10 +1038,15 @@ export const surfaceFlows: Flow[] = [
         )}. Whichever surface is right, the owner cannot see the broken one from their editor, and ` +
           "the person they sent it to has no way to tell them",
       );
-      const checked = across.some((p) => p.viewer !== "unchecked")
-        ? "the editor, the PDF, the PNGs, the shared link and its preview image"
-        : "the editor, the PDF and the PNGs (the shared surfaces were not reachable this run)";
-      note(`all ${pages} page(s) agree across ${checked}`);
+      const full = across.some((p) => p.viewer !== "unchecked");
+      note(
+        full
+          ? `all ${pages} page(s) agree across all five surfaces: the editor, the PDF, the PNGs, ` +
+              "the shared link and its preview image"
+          : `all ${pages} page(s) agree across the editor, the PDF and the PNGs — 3 SURFACES OF 5. ` +
+              "The shared link and its preview image were not compared, so this run does NOT say " +
+              "the deck the owner sees is the deck a recipient gets",
+      );
     },
   },
 
@@ -889,12 +1062,34 @@ export const surfaceFlows: Flow[] = [
       // The journey builds its own subject when the fixture is not its to
       // read; that document is scaffolding, not a result.
       const mine = [...created];
+      // WARM THE SESSION FIRST, with a real page load.
+      //
+      // page.request.fetch sends the stored cookie but runs no client JS, so
+      // it cannot refresh a Clerk token that has aged out during the run — it
+      // just posts a stale JWT and collects a 401. A navigation does refresh
+      // it, because the app boots. That is why a late cleanup failed twice in
+      // a row while every earlier flow was fine, and why a document was left
+      // on a real account.
+      if (mine.length) {
+        await page.goto(`${base}/documents`, { waitUntil: "domcontentloaded" }).catch(() => {});
+      }
       for (const id of mine) {
-        const res = await page.request.fetch(`${base}/api/documents/${encodeURIComponent(id)}`, {
-          method: "DELETE",
-          failOnStatusCode: false,
-        });
-        if (res.status() < 400 || res.status() === 404) created.delete(id);
+        // Two attempts. A replayed session can be refused mid-suite (the same
+        // bounce that made this journey skip), and a cleanup that gives up on
+        // the first 401 leaves a real document behind on a real account —
+        // which is exactly what happened, and it is litter, not a false red.
+        let status = 0;
+        for (let attempt = 0; attempt < 2; attempt++) {
+          const res = await page.request.fetch(`${base}/api/documents/${encodeURIComponent(id)}`, {
+            method: "DELETE",
+            failOnStatusCode: false,
+          });
+          status = res.status();
+          if (status < 400 || status === 404) break;
+          await page.waitForTimeout(1500);
+        }
+        if (status < 400 || status === 404) created.delete(id);
+        else note(`! deleting ${id} answered ${status} twice`);
       }
       if (mine.length) note(`discarded ${mine.length} document(s) the journey built to compare`);
       expect(

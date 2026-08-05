@@ -242,7 +242,23 @@ export const accountFlows: Flow[] = [
     needsAuth: true,
     run: async ({ page, base, note }) => {
       for (const path of ["/account", "/billing"]) {
-        const res = await page.goto(`${base}${path}`, { waitUntil: "domcontentloaded" });
+        let res = await page.goto(`${base}${path}`, { waitUntil: "domcontentloaded" });
+
+        // ONE retry on a 5xx, and the retry is REPORTED.
+        //
+        // `next dev` compiles routes on demand, and under this suite's
+        // parallel load the first hit on a cold route can throw from inside
+        // React's own ErrorBoundary — "Cannot read properties of null
+        // (reading 'useContext')", no app frame in the stack. It cost two
+        // full-suite runs; both times the page rendered alone seconds later.
+        // Retrying once absorbs the artifact; NOTING it means a genuinely
+        // intermittent 500 still shows up in the output instead of being
+        // quietly smoothed away, and a second failure still fails the flow.
+        if ((res?.status() ?? 0) >= 500) {
+          note(`! ${path} answered ${res?.status()} on the first hit — retrying once (cold-compile artifact?)`);
+          await page.waitForTimeout(2000);
+          res = await page.goto(`${base}${path}`, { waitUntil: "domcontentloaded" });
+        }
         expect((res?.status() ?? 0) < 400, `${path} should load, got ${res?.status()}`);
         expect(!/sign-in/.test(page.url()), `${path} should not bounce a signed-in user to sign-in`);
         const text = await page.evaluate(() => document.body.innerText);
