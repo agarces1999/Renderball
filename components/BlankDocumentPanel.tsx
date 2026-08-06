@@ -124,37 +124,16 @@ export function BlankDocumentPanel({
               How do you want to start?
             </h2>
 
-            {/* Continue what you started — seeded by the landing canvas */}
-            {landingSeed && (
-              <div className="mt-5 rounded-lg border border-accent-line bg-accent-soft p-4">
-                <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted">
-                  from the landing canvas
-                </p>
-                <p className="mt-1 text-[12.5px] leading-relaxed text-ink-soft">
-                  You started something out there —{" "}
-                  <span className="font-mono text-[11.5px] text-ink">
-                    {describeSandbox(landingSeed)}
-                  </span>
-                  .
-                </p>
-                <div className="mt-2.5 flex flex-wrap items-center gap-3">
-                  <button
-                    type="button"
-                    onClick={continueFromLanding}
-                    className="rounded-md border border-accent-line bg-surface px-3 py-1.5 text-[12.5px] font-medium text-ink transition-colors hover:bg-surface-2"
-                  >
-                    Continue what you started →
-                  </button>
-                  <button
-                    type="button"
-                    onClick={startClean}
-                    className="font-mono text-[11px] text-muted transition-colors hover:text-ink"
-                  >
-                    start clean
-                  </button>
-                </div>
-              </div>
-            )}
+            {/* What you sketched on the home page.
+                This used to sit ABOVE both real choices, headed "from the
+                landing canvas", promising to "continue what you started" —
+                and the founder could not tell what it did. Fairly: it does
+                not restore anything. It describes your sketch in words and
+                pre-types that into the GENERATE form, which spends tokens.
+                So it now says where the sketch came from in ordinary words,
+                says exactly what the button will do, and sits with the
+                generate option it actually leads to rather than above
+                everything as a third headline choice. */}
 
             <button
               type="button"
@@ -169,6 +148,39 @@ export function BlankDocumentPanel({
                 images. Always free — you only pay when Renderball generates.
               </span>
             </button>
+
+            {landingSeed && (
+              /* Quiet on purpose: an accent fill here put a SECOND green card
+                 on the panel, competing with "Build it yourself" for primacy
+                 while actually belonging to the generate option below it. This
+                 is a helper for that option, not a third choice. */
+              <div className="mt-4 rounded-lg border border-hairline bg-surface-2 px-4 py-3">
+                <p className="text-[12.5px] leading-relaxed text-ink-soft">
+                  On the home page you sketched {describeSandbox(landingSeed)}.{" "}
+                  Renderball can write that up as the starting description for
+                  the deck below.
+                </p>
+                <div className="mt-2 flex flex-wrap items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={continueFromLanding}
+                    className="rounded-md border border-hairline-strong bg-surface px-3 py-1.5 text-[12.5px] font-medium text-ink transition-colors hover:bg-surface"
+                  >
+                    Use it as my brief →
+                  </button>
+                  <span className="text-[11.5px] text-muted">
+                    writes it out for you to edit — nothing is spent until you generate
+                  </span>
+                  <button
+                    type="button"
+                    onClick={startClean}
+                    className="text-[11.5px] text-muted underline underline-offset-2 transition-colors hover:text-ink"
+                  >
+                    forget it
+                  </button>
+                </div>
+              </div>
+            )}
 
             <button
               type="button"
