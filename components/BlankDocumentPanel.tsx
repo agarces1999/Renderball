@@ -60,6 +60,46 @@ export const generatingSteps = (pages: number, url: string): string[] => {
   ];
 };
 
+/**
+ * Wait for an outline that is being written server-side.
+ *
+ * A network blip must NOT be read as failure — the outline is still being
+ * written on the server and a single dropped poll is not news. Only a real
+ * `error` state or running out of patience ends the wait.
+ */
+const pollOutline = async (
+  scriptId: string,
+): Promise<{ ok: true; body: unknown } | { ok: false; status: number; error?: string } | null> => {
+  const DEADLINE_MS = 8 * 60_000; // far above the p99 outline; the clock on screen is the real signal
+  const INTERVAL_MS = 2_500;
+  const until = Date.now() + DEADLINE_MS;
+
+  while (Date.now() < until) {
+    await new Promise((r) => setTimeout(r, INTERVAL_MS));
+    let res: Response;
+    try {
+      res = await fetch(`/api/documents/generate?scriptId=${encodeURIComponent(scriptId)}`);
+    } catch {
+      continue; // transient blip — keep waiting
+    }
+    if (!res.ok) continue;
+    const data = (await res.json().catch(() => null)) as
+      | { status?: string; result?: unknown; resultStatus?: number; error?: string }
+      | null;
+    if (!data) continue;
+    if (data.status === "done") {
+      const status = data.resultStatus ?? 200;
+      if (status >= 200 && status < 300) return { ok: true, body: data.result };
+      const body = data.result as { error?: string } | null;
+      return { ok: false, status, error: body?.error };
+    }
+    if (data.status === "error") return { ok: false, status: 500, error: data.error };
+    // "running" or "unknown" — an unknown after a container restart is not a
+    // failure either; the page decides from whether the outline exists.
+  }
+  return null;
+};
+
 export function BlankDocumentPanel({
   scriptId,
   onDismiss,
@@ -155,8 +195,28 @@ export function BlankDocumentPanel({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ scriptId, prompt, url: url.trim() || undefined, pages }),
       });
-      const data = await res.json().catch(() => null);
-      if (!res.ok) {
+      let data = await res.json().catch(() => null);
+
+      // 202 = the outline is being written server-side and this request is
+      // NOT going to be held open for it. Measured: the median outline takes
+      // 79s and 28% take longer than 100s — and Cloudflare cuts an origin
+      // response at 100s, so a synchronous wait returned a 524 for better than
+      // one twelve-page generation in three, for work that had completed fine.
+      // Poll instead, exactly as the build does.
+      if (res.status === 202) {
+        const settled = await pollOutline(scriptId);
+        if (!settled) {
+          setError("The outline is taking longer than expected. Refresh in a moment — it may already be done.");
+          setBusy(false);
+          return;
+        }
+        if (!settled.ok) {
+          setError(humanError(settled.status, settled.error, "The outline didn't come together this time."));
+          setBusy(false);
+          return;
+        }
+        data = settled.body;
+      } else if (!res.ok) {
         setError(humanError(res.status, data?.error, "Could not start generating."));
         setBusy(false);
         return;
@@ -165,8 +225,9 @@ export function BlankDocumentPanel({
       // Reloading in place was a dead end: the blank composition still exists,
       // so /preview/[id] re-renders the same blank editor and the outline the
       // user just paid for is never shown.
-      if (data?.reviewUrl) {
-        window.location.assign(data.reviewUrl);
+      const done = data as { reviewUrl?: string } | null;
+      if (done?.reviewUrl) {
+        window.location.assign(done.reviewUrl);
       } else {
         window.location.reload();
       }

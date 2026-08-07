@@ -363,6 +363,10 @@ export const flattenHistoryToUser = (history: ScriptMsg[]): string =>
  */
 export const fireworksScriptTransport: ScriptTransport = async (history) => {
   const r = await castCall({
+    // 300s, from 94 measured generations: median 79s, p95 185s, p99 463s. The
+    // 120s default aborted roughly one in eight legitimate outlines and then
+    // reported it as a provider error.
+    timeoutMs: 300_000,
     system: SCRIPT_GENERATOR_SYSTEM_PROMPT,
     user: flattenHistoryToUser(history),
     maxTokens: 16000,

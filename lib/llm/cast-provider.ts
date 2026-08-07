@@ -156,7 +156,13 @@ const retryDelayMs = (attempt: number, retryAfterHeader: string | null): number 
 /**
  * One cast call. Non-streaming on purpose: at Cerebras speeds an element is
  * ~2s and the head ~10s — the SSE plumbing (and its failure modes) buys
- * nothing here. The 120s timeout is generous headroom over both.
+ * nothing here.
+ *
+ * The 120s default was described as "generous headroom" for those numbers and
+ * is nothing of the kind for every caller: on Fireworks GLM-5.2 a deck outline
+ * runs 79s at the median and 185s at p95. Long callers pass timeoutMs
+ * explicitly (build-client uses 600s, the script transport 300s); the default
+ * only covers the short ones it was written for.
  */
 export const castCall = async (call: CastCall): Promise<CastResult> => {
   const model = call.model ?? MODEL();
@@ -196,7 +202,14 @@ export const castCall = async (call: CastCall): Promise<CastResult> => {
         // minutes of "Starting…" for an outline whose successful attempt took
         // 3 seconds. First attempt keeps the generous window for genuinely
         // slow calls; a retry that is going to answer at all answers fast.
-        signal: call.signal ?? AbortSignal.timeout(call.timeoutMs ?? (attempt === 0 ? 120_000 : 60_000)),
+        // The retry gets the SAME budget as the first attempt, never less.
+        // It used to halve to 60s, which is indefensible for a call whose
+        // whole point on retry is to succeed: measured over 94 real outline
+        // generations the median is 79s and p95 is 185s, so a 60s retry
+        // window could not have completed most of them. An attempt that timed
+        // out because the work is genuinely long was then given LESS time,
+        // making each retry strictly less likely to land than the one before.
+        signal: call.signal ?? AbortSignal.timeout(call.timeoutMs ?? 120_000),
       });
     } catch (err) {
       // Network-level failure (reset, DNS, timeout): retryable within budget.
