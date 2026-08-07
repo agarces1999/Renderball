@@ -498,6 +498,29 @@ const INTERIOR_SOURCE =
   "rows?|labell?ed|labels?|values?|tabs?|feeds?|charts?|graphs?|avatars?|favicons?|fields?|columns?|cells?|buttons?|badges?|check(?:mark)?s?|toggles?|icons?|logos?|menus?|sidebars?|toolbars?|title\\s?bars?|headers?|footers?|nav|url\\s?bar|status\\s?bar|toasts?|modals?|inputs?|cursors?|timestamps?|metrics?|sparklines?|records?|titles?";
 const INTERIOR_RX = new RegExp(`\\b(${INTERIOR_SOURCE})\\b`, "gi");
 
+/**
+ * The interior vocabulary AS WORDS, from the same source the counter matches.
+ *
+ * THE SECOND INSTANCE OF THE SAME BUG. Like drawableVocabulary(), this is a
+ * CLOSED list, and every message describing it ended in an ellipsis — "(rows,
+ * labels, values, tabs, feed, chart, avatar...)". A model reading that writes
+ * perfectly good interior detail from outside the set and scores zero:
+ * "approval cards showing a name, an amount and a status pill" counts NOTHING,
+ * because name, amount and pill are not in it. That exact concept failed a real
+ * outline. Quote the set; the floor is unchanged.
+ */
+export const interiorVocabulary = (): string[] => {
+  const words = INTERIOR_SOURCE.split("|").map((raw) =>
+    raw
+      .replace(/\(\?:[^)]*\)\??/g, "")
+      .replace(/\\s\??/g, " ")
+      .replace(/s\?$/, "")
+      .replace(/\?/g, "")
+      .trim(),
+  );
+  return [...new Set(words.filter((w) => w.length > 1))];
+};
+
 /** Distinct interior specifics named in a visual_concept. */
 export const countInteriorSpecifics = (visualConcept: string): number => {
   const seen = new Set<string>();

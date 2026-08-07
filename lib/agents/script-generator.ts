@@ -9,6 +9,7 @@ import {
   findTypeOnlyScenes,
   drawableVocabulary,
   containerVocabulary,
+  interiorVocabulary,
 } from "./schema-validator";
 import { signatureWithLogoFallback, resolveCanvasPlan, brandShortName } from "../crawl/brand-identity";
 import { formatDesignLanguage } from "../crawl/design-language";
@@ -729,7 +730,7 @@ const buildSceneRepairMessage = (
     `  ${drawableVocabulary().join(", ")}`,
     "  Imagery outside this list scores ZERO however vivid — \"a conveyor belt of invoices dropped into a tray\" counts ONE (invoice). Adjectives, moods, gradients and glows count nothing.",
     `  TRAP: ${containerVocabulary().join(" / ")} are CONTAINERS — each one you name needs >=2 things named INSIDE it, or it fails a different rule. Reaching three via non-container words (bar, sparkline, logo, badge, arrow, invoice, counter) is cheaper and safer.`,
-    `- INTERIOR DETAIL: naming any of ${containerVocabulary().join(" / ")} promises an interior, and an unfurnished one FAILS. You have two ways out and both are fine: FURNISH it (name >=2 things drawn inside — rows, column labels, values, tabs, an avatar, a sparkline), or DROP THE WORD and say what is actually there with non-container nouns (bar, sparkline, logo, badge, arrow, invoice, counter). A "thin-outlined card" holding one number is the failure; either put a label and a delta beside the number, or call it a counter and a label.`,
+    `- INTERIOR DETAIL: naming any of ${containerVocabulary().join(" / ")} promises an interior, and an unfurnished one FAILS. You have two ways out and both are fine: FURNISH it (name >=2 things drawn inside, AND THOSE ARE A CLOSED LIST TOO — only these count: ${interiorVocabulary().join(", ")}), or DROP THE WORD and say what is actually there with non-container nouns (bar, sparkline, logo, badge, arrow, invoice, counter). "approval cards showing a name, an amount and a status pill" counts ZERO interiors — name, amount and pill are not in that list. Say "rows with labels and values" and it counts two.`,
     "Length is not the problem: these scenes were already long. Add the missing OBJECTS.",
     "",
     "Output ONLY the JSON array. No prose, no fence.",
