@@ -431,7 +431,20 @@ export function GeneratingSteps({
             <li
               key={label}
               className="flex items-center gap-2.5"
-              style={{ animation: `rb-fade-up 320ms ease-out both`, animationDelay: `${i * 60}ms` }}
+              // `backwards`, NOT `both` — and this is a correctness fix, not a
+              // preference. A CSS animation whose document timeline is paused
+              // sits inside its active phase indefinitely, applying the `from`
+              // keyframe (opacity: 0) forever: playState reads "running" while
+              // currentTime never leaves 0. A backgrounded tab is enough to do
+              // it, and this panel's own copy invites exactly that ("You can
+              // close this tab"). `backwards` still holds the pre-delay state
+              // for the stagger, but once the run finishes the element returns
+              // to its own opacity: 1 rather than whatever the keyframe said.
+              // Measured on a replica of this component: four rows, "running",
+              // currentTime 0, computed opacity 0 — an empty panel with a
+              // ticking clock under it. Nothing a person must read may depend
+              // on motion having run.
+              style={{ animation: `rb-fade-up 320ms ease-out backwards`, animationDelay: `${i * 60}ms` }}
             >
               {/* Three states must be readable at a glance, and colour alone
                   cannot carry it: done and active were both solid accent, so
