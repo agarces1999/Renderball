@@ -125,6 +125,25 @@ export async function POST(request: Request) {
     console.error(
       `[documents/generate] outline failed for ${scriptId} (${pages} pages, ${prompt.length} chars of brief): ${result.error}`,
     );
+    // A REFUSAL is not the same as a breakdown, and must not read like one.
+    // When the model invented a statistic, the truth gate stopped it on
+    // purpose — that is the system protecting the user from printing a number
+    // they cannot defend in a room. Telling them "it didn't come together"
+    // would hide the one thing they can actually act on: put the real figure
+    // in the brief and it will be used.
+    const invented = /^Ungrounded numeric claims|^Ungrounded funding-stage/.test(result.error);
+    if (invented) {
+      const tokens = result.error.replace(/^Ungrounded [^:]*:\s*/, "").split(",").map((t) => t.trim()).filter(Boolean);
+      const named = tokens.slice(0, 3).join(", ");
+      return {
+        status: 502,
+        body: {
+          error: `The outline kept reaching for figures that aren't in your brief${named ? ` (${named})` : ""}, and we won't put a number in your deck that you can't stand behind. Add the real figures to the brief and generate again — or leave them out and it will write around them.`,
+          retryable: true,
+        },
+      };
+    }
+
     const thin = prompt.length < pages * BRIEF_CHARS_PER_PAGE;
     return {
       status: 502,
