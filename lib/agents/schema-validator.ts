@@ -1885,6 +1885,7 @@ export const normalizeScriptContent = (input: unknown): unknown => {
   const dropped: string[] = [];
   const splitHeadlines: string[] = [];
   let droppedCtas = 0;
+  const droppedFields: string[] = [];
   const scenes = root.scenes.map((sc) => {
     if (!sc || typeof sc !== "object") return sc;
     const scene = sc as Record<string, unknown>;
@@ -1908,6 +1909,32 @@ export const normalizeScriptContent = (input: unknown): unknown => {
     } else if (typeof working.asset_ids === "string") {
       working = { ...working, asset_ids: [working.asset_ids] };
       changed = true;
+    }
+
+    // A malformed OPTIONAL field is dropped, not fatal. `illustration` is an
+    // optional identifier; the model emitted it as an empty string and a paid
+    // twelve-page generation died on a field that carries no meaning when
+    // absent. Deleting it restores exactly the state the script would have had
+    // if the model had simply left it out.
+    //
+    // ENUMERATED ON PURPOSE, never a blanket "drop anything malformed" rule.
+    // Applied to `meta` or `cta` that would silently delete content the user
+    // goes looking for on the review screen. These three are pure optional
+    // metadata: absent and malformed mean the same thing to every reader.
+    for (const field of ["illustration", "narrative", "decisions"] as const) {
+      const value = working[field];
+      if (value === undefined) continue;
+      const malformed =
+        field === "illustration"
+          ? typeof value !== "string" || !value.trim()
+          : value === null || typeof value !== "object";
+      if (malformed) {
+        const next = { ...working };
+        delete next[field];
+        working = next;
+        changed = true;
+        droppedFields.push(field);
+      }
     }
 
 
@@ -1974,6 +2001,9 @@ export const normalizeScriptContent = (input: unknown): unknown => {
         .map((d) => `"${d}"`)
         .join(", ")})`,
     );
+  }
+  if (droppedFields.length > 0) {
+    console.warn(`[script] dropped ${droppedFields.length} malformed optional field(s): ${droppedFields.join(", ")}`);
   }
   if (droppedCtas > 0) {
     console.warn(`[script] dropped ${droppedCtas} call-to-action(s) that merely repeated the headline`);

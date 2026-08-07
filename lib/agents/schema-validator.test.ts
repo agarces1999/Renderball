@@ -1820,5 +1820,36 @@ await check("dropping a cta does not resurrect when the headline is also split",
   assert(content.lede === "Deeper than a tool.", `lede: ${content.lede}`);
 });
 
+
+// ── a malformed OPTIONAL field must not kill a paid generation ──────────────
+await check("an empty illustration is dropped, not fatal", () => {
+  // Observed: a 14-run matrix pass lost a generation to
+  // "content.illustration must be a non-empty string identifier" — a field
+  // that means nothing when absent.
+  const out = normalizeScriptContent({
+    scenes: [{ content: { headline: "The close", illustration: "   ", asset_ids: [] } }],
+  }) as { scenes: { content: Record<string, unknown> }[] };
+  assert(out.scenes[0].content.illustration === undefined, "the malformed field should be gone");
+  assert(out.scenes[0].content.headline === "The close", "everything else is untouched");
+});
+
+await check("a VALID illustration is kept", () => {
+  const out = normalizeScriptContent({
+    scenes: [{ content: { headline: "The close", illustration: "ledger-lines", asset_ids: [] } }],
+  }) as { scenes: { content: Record<string, unknown> }[] };
+  assert(out.scenes[0].content.illustration === "ledger-lines", "a real identifier survives");
+});
+
+await check("meta and cta are NOT swept by the optional-field drop", () => {
+  // The enumerated list exists so this cannot happen: meta and cta carry
+  // content a user looks for on the review screen, so a malformed one must
+  // reach the validator's error message rather than vanish.
+  const out = normalizeScriptContent({
+    scenes: [{ content: { headline: "x", meta: [{ label: "a" }], cta: { primary: "Book a demo" }, asset_ids: [] } }],
+  }) as { scenes: { content: Record<string, unknown> }[] };
+  assert(Array.isArray(out.scenes[0].content.meta), "malformed meta is left for the validator");
+  assert(!!out.scenes[0].content.cta, "a real cta is never dropped here");
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exitCode = 1;
