@@ -3,6 +3,7 @@ import { readXlsx } from "./read-xlsx";
 import { readSvg } from "./read-svg";
 import { readCsv } from "./read-csv";
 import { readPdf } from "./read-pdf";
+import { readImage } from "./read-image";
 
 /**
  * Pull the readable text out of a brief someone attached.
@@ -203,6 +204,20 @@ export const extractText = async (buf: Buffer, filename: string): Promise<Extrac
     return clamp(csv.text);
   }
 
+  // Images are the ONE attachment path that spends tokens — everything above
+  // is deterministic and free. Routed by magic bytes so a renamed screenshot
+  // still reaches the reader that can actually read it.
+  const isImage =
+    (buf.length >= 8 && buf.readUInt32BE(0) === 0x89504e47) ||
+    (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) ||
+    (buf.length >= 6 && buf.subarray(0, 3).toString("latin1") === "GIF") ||
+    (buf.length >= 12 && buf.subarray(8, 12).toString("latin1") === "WEBP");
+  if (isImage || ["png", "jpg", "jpeg", "gif", "webp"].includes(ext)) {
+    const img = await readImage(buf, filename);
+    if (!img.ok) return { ok: false, text: "", reason: img.reason };
+    return clamp(img.text);
+  }
+
   if (ext === "docx" || (isZip && ext !== "zip")) {
     const text = docxToText(buf);
     if (text === null) {
@@ -247,6 +262,6 @@ export const extractText = async (buf: Buffer, filename: string): Promise<Extrac
   return {
     ok: false,
     text: "",
-    reason: `.${ext} files aren't supported. Attach a PDF, Word document, spreadsheet, CSV, SVG or plain text file — or paste the text into the brief.`,
+    reason: `.${ext} files aren't supported. Attach a PDF, Word document, spreadsheet, CSV, image, SVG or plain text file — or paste the text into the brief.`,
   };
 };

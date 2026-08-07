@@ -114,8 +114,22 @@ export const callZaiVision = async (
   // that call site passes 120_000.
   opts: { disableThinking?: boolean; maxTokens?: number; timeoutMs?: number } = {},
 ): Promise<ZaiVisionResult> => {
+  // Sniff the real type from the decoded magic bytes. This wrapped EVERY bare
+  // base64 image as image/png unconditionally, so a JPEG went to the provider
+  // announcing itself as a PNG — a mislabel that costs nothing until the day a
+  // provider believes the label, and then the whole vision layer is blind for
+  // reasons no log explains. Given the history here (an Anthropic-compat proxy
+  // silently dropping image blocks), the image wire says what it is.
+  const sniffMime = (b64: string): string => {
+    const head = Buffer.from(b64.slice(0, 24), "base64");
+    if (head.length >= 8 && head.readUInt32BE(0) === 0x89504e47) return "image/png";
+    if (head.length >= 3 && head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff) return "image/jpeg";
+    if (head.length >= 6 && head.subarray(0, 3).toString("latin1") === "GIF") return "image/gif";
+    if (head.length >= 12 && head.subarray(8, 12).toString("latin1") === "WEBP") return "image/webp";
+    return "image/png"; // the historical default, and what every caller here sends
+  };
   const toUrl = (img: string) =>
-    /^(data:|https?:)/i.test(img) ? img : `data:image/png;base64,${img}`;
+    /^(data:|https?:)/i.test(img) ? img : `data:${sniffMime(img)};base64,${img}`;
   const urls = (Array.isArray(image) ? image : [image]).map(toUrl);
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), opts.timeoutMs ?? 60_000);

@@ -19,6 +19,7 @@
  */
 import { chromium } from "playwright";
 import { deflateRawSync } from "zlib";
+import { PDFDocument, StandardFonts } from "pdf-lib";
 import { authenticator } from "./auth";
 
 const BASE = process.env.QA_BASE ?? "http://localhost:3000";
@@ -124,13 +125,55 @@ const run = async () => {
   );
 
   // ── pdf ──────────────────────────────────────────────────────────────────
+  // A REAL PDF, because the interesting failure is silent mojibake, not a
+  // rejection. Two columns: the layout that reads as nonsense if reading order
+  // is taken from draw order.
+  const pdfDoc = await PDFDocument.create();
+  const pdfFont = await pdfDoc.embedFont(StandardFonts.Helvetica);
+  const pdfPage = pdfDoc.addPage([595, 842]);
+  pdfPage.drawText("Reconciliation is manual today", { x: 60, y: 760, size: 14, font: pdfFont });
+  [["Left one", 60], ["Right one", 340], ["Left two", 60], ["Right two", 340]].forEach(
+    ([t, x], i) => pdfPage.drawText(String(t), { x: Number(x), y: 700 - Math.floor(i / 2) * 20, size: 12, font: pdfFont }),
+  );
+  const beforePdfReal = await textarea.inputValue();
+  await input.setInputFiles({
+    name: "brief.pdf",
+    mimeType: "application/pdf",
+    buffer: Buffer.from(await pdfDoc.save()),
+  });
+  await page.waitForTimeout(6000);
+  const afterPdf = await textarea.inputValue();
+  record(
+    "a real PDF's text lands in the brief",
+    afterPdf.includes("Reconciliation is manual today"),
+    `${afterPdf.length - beforePdfReal.length} chars added`,
+  );
+  record(
+    "PDF columns are not interleaved",
+    afterPdf.indexOf("Left two") < afterPdf.indexOf("Right one") || !afterPdf.includes("Right one"),
+    "whole left column should precede the right",
+  );
+
+  // ── spreadsheet, csv, svg ────────────────────────────────────────────────
+  const beforeSheet = await textarea.inputValue();
+  await input.setInputFiles({
+    name: "numbers.csv",
+    mimeType: "text/csv",
+    buffer: Buffer.from('Region,Revenue\nEMEA,"184,000"\nAMER,97250\n'),
+  });
+  await page.waitForTimeout(3000);
+  const afterCsv = await textarea.inputValue();
+  record("a CSV lands, and a quoted comma survives", afterCsv.includes("184,000"), "");
+  record("the CSV did not replace what was there", afterCsv.startsWith(beforeSheet.slice(0, 30)));
+
+  // ── a damaged pdf still fails as a sentence ──────────────────────────────
   const beforePdf = await textarea.inputValue();
   await input.setInputFiles({
-    name: "deck.pdf",
+    name: "broken.pdf",
     mimeType: "application/pdf",
     buffer: Buffer.from("%PDF-1.7\nbinary junk\n"),
   });
-  await page.waitForTimeout(3000);
+  await page.waitForTimeout(4000);
 
   const body = await page.locator("body").innerText().catch(() => "");
   // Every line mentioning PDF, not the FIRST — the page also carries an
@@ -138,9 +181,13 @@ const run = async () => {
   // then reported the feature broken. A probe that can fail on the wrong
   // string is worse than no probe.
   const pdfLines = (body.match(/[^\n]*PDF[^\n]*/gi) ?? []).filter((l) => !/export/i.test(l));
-  const pdfMessage = pdfLines.find((l) => /paste|copy/i.test(l)) ?? pdfLines[0] ?? "";
-  record("a PDF is refused, with a way forward", /paste|copy/i.test(pdfMessage), pdfMessage.slice(0, 100));
-  record("a refused PDF does not touch the brief", (await textarea.inputValue()) === beforePdf);
+  const pdfMessage = pdfLines.find((l) => /paste|copy|scan|damaged/i.test(l)) ?? pdfLines[0] ?? "";
+  record(
+    "a DAMAGED pdf fails as a sentence with a way forward",
+    /paste|copy|scan|damaged/i.test(pdfMessage),
+    pdfMessage.slice(0, 100),
+  );
+  record("a refused file does not touch the brief", (await textarea.inputValue()) === beforePdf);
 
   // ── no wire vocabulary anywhere on screen ────────────────────────────────
   const leaked = (body.match(JARGON) ?? [])[0];

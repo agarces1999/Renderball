@@ -32,7 +32,7 @@ const COOLDOWN_MS = 10 * 60 * 1000; // re-probe every 10 minutes while dry
 
 export class ZaiUnavailableError extends Error {
   readonly friendly =
-    "Video generation is temporarily unavailable — our AI provider account needs attention. Your quota was NOT used; please try again in a few minutes.";
+    "Generation is temporarily unavailable — our AI provider account needs attention. Nothing was charged to you; please try again in a few minutes.";
   constructor() {
     super("z.ai account unavailable ([1113] insufficient balance) — circuit open");
     this.name = "ZaiUnavailableError";

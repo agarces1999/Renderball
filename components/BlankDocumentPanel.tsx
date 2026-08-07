@@ -299,7 +299,7 @@ export function BlankDocumentPanel({
               <input
                 ref={fileInput}
                 type="file"
-                accept=".pdf,.txt,.md,.markdown,.mdx,.csv,.tsv,.json,.yaml,.yml,.log,.docx,.xlsx,.xlsm,.svg,application/pdf,text/plain,text/markdown,text/csv,image/svg+xml,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                accept=".pdf,.png,.jpg,.jpeg,.webp,.gif,.txt,.md,.markdown,.mdx,.csv,.tsv,.json,.yaml,.yml,.log,.docx,.xlsx,.xlsm,.svg,application/pdf,image/png,image/jpeg,image/webp,image/gif,text/plain,text/markdown,text/csv,image/svg+xml,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 className="hidden"
                 onChange={(e) => {
                   const f = e.target.files?.[0];

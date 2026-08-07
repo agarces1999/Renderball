@@ -65,15 +65,9 @@ export const MAX_IMAGE_BYTES = 7 * 1024 * 1024;
 export const base64Bytes = (n: number): number => Math.ceil(n / 3) * 4;
 
 /**
- * WHY OVERSIZED IMAGES ARE REFUSED RATHER THAN SHRUNK: shrinking pixels needs a
- * real image codec, and this path is deliberately kept free of native image
- * processing — it runs on whatever bytes a stranger uploads, on the request
- * path, before anything has been paid for. The band where this actually bites
- * is narrow: the attach route already caps uploads at 10 MB
- * (app/api/documents/attach/route.ts), so only 7-10 MB files land here, and the
- * refusal below tells the user exactly what to do about it. If we later decide
- * a downscale is worth the native module, sharp is already a project dependency
- * and lib/render/thumbnail.ts shows the lazy-import shape to copy.
+ * The message for an image we could not shrink into range. Reaching it should
+ * be rare: normaliseForVision below downscales first, and sharp handles even a
+ * 50-megapixel phone photo. This is the fallback for bytes sharp cannot decode.
  */
 const TOO_BIG =
   "That image is too big to read — images need to be under 7 MB. Resize it or take a smaller screenshot and attach it again, or paste the words into the brief.";
@@ -191,6 +185,48 @@ const isNoTextSentinel = (text: string): boolean =>
  * as extractText(buf, filename) at the router, and is otherwise unused: it is
  * attacker-controlled, and refusal text is shown back to the user.
  */
+/** Vision models gain nothing above this; tokens keep climbing. */
+const VISION_LONG_EDGE = 1568;
+
+/**
+ * Shrink an image to something worth sending, or null if it cannot be decoded.
+ *
+ * Deliberately forgiving: if sharp cannot read the metadata we still return the
+ * ORIGINAL when it is small enough, because a format sharp dislikes is not the
+ * same as a file the vision model cannot read. Only genuinely oversized bytes
+ * that also resist decoding are refused.
+ */
+const normaliseForVision = async (buf: Buffer): Promise<Buffer | null> => {
+  try {
+    const sharp = (await import("sharp")).default;
+    const img = sharp(buf, { failOn: "none" });
+    const meta = await img.metadata();
+    const longEdge = Math.max(meta.width ?? 0, meta.height ?? 0);
+    if (longEdge === 0) return buf.length <= MAX_IMAGE_BYTES ? buf : null;
+    if (longEdge <= VISION_LONG_EDGE && buf.length <= MAX_IMAGE_BYTES) return buf;
+
+    // Re-encode as JPEG: a screenshot PNG of a slide is often several times
+    // larger than the same pixels as a quality-82 JPEG, and no vision model
+    // reads the difference.
+    let out = await img
+      .rotate() // honour EXIF, or a phone photo arrives sideways
+      .resize({ width: VISION_LONG_EDGE, height: VISION_LONG_EDGE, fit: "inside", withoutEnlargement: true })
+      .jpeg({ quality: 82 })
+      .toBuffer();
+
+    // Still too big only happens for something pathological; one harder pass.
+    if (out.length > MAX_IMAGE_BYTES) {
+      out = await sharp(out, { failOn: "none" })
+        .resize({ width: 1024, height: 1024, fit: "inside" })
+        .jpeg({ quality: 70 })
+        .toBuffer();
+    }
+    return out.length <= MAX_IMAGE_BYTES ? out : null;
+  } catch {
+    return buf.length <= MAX_IMAGE_BYTES ? buf : null;
+  }
+};
+
 export const readImage = async (
   buf: Buffer,
   filename: string,
@@ -205,10 +241,20 @@ export const readImage = async (
     return { ok: false, reason: NOT_AN_IMAGE };
   }
 
-  // Size BEFORE the call, always: an oversized image that fails at the provider
-  // has already cost the upload, the wait, and — depending on where it fails —
-  // the input tokens.
-  if (buf.length > MAX_IMAGE_BYTES) return { ok: false, reason: TOO_BIG };
+  // Downscale BEFORE anything is spent. Two reasons, and the second is the
+  // bigger one:
+  //   1. Fireworks bounds the base64 payload, and a modern phone photo of a
+  //      whiteboard clears 7 MB easily — refusing those would refuse exactly
+  //      the use case this feature exists for.
+  //   2. COST. This is the only attachment path that spends tokens, and image
+  //      tokens scale with pixels. A 4032x3024 photo carries several times the
+  //      tokens of the same photo at 1568px long edge, and the model reads no
+  //      more words from the larger one.
+  // sharp is already a project dependency (thumbnail.ts uses this same lazy
+  // shape) so this costs no new supply-chain surface.
+  const prepared = await normaliseForVision(buf);
+  if (!prepared) return { ok: false, reason: TOO_BIG };
+  buf = prepared;
 
   // Gate the spend on the breaker, which exists because a dry provider account
   // has taken all generation down twice (lib/zai-breaker.ts). The sibling vision
@@ -226,7 +272,13 @@ export const readImage = async (
   // unconditionally (zai-vision.ts), so a JPEG or WebP would go out claiming to
   // be a PNG. It passes a full data:/http(s) URL through untouched, which is the
   // documented way to send bytes and the only way to name them correctly.
-  const image = `data:${mime};base64,${buf.toString("base64")}`;
+  // Re-sniff: normaliseForVision re-encodes to JPEG, so the mime read from the
+  // ORIGINAL bytes is stale by now. Labelling downscaled JPEG bytes as the
+  // PNG they used to be is precisely the mislabel this block exists to avoid —
+  // and it would have been invisible until a provider started believing the
+  // label.
+  const sentMime = sniffImageMime(buf) ?? mime;
+  const image = `data:${sentMime};base64,${buf.toString("base64")}`;
 
   const transport: ImageVisionTransport =
     opts.transport ??
