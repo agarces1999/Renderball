@@ -1851,6 +1851,32 @@ export const splitTwoSentenceHeadline = (
   return { headline: first, lede: merged };
 };
 
+/**
+ * A call-to-action that merely repeats the headline is worth less than no
+ * call-to-action, so drop it rather than failing an entire outline over it.
+ *
+ * Seen three times in a single 14-run matrix pass — "Over to today's speaker",
+ * "Read the full thesis" — always on the closing page of a long brief, where
+ * the model reaches for the hero line again because it is the most recent
+ * thing it wrote. The validator's own reasoning is that the pill is the one
+ * place a viewer is told what to DO; an echo wastes it. Removing the echo
+ * restores exactly that property, deterministically and at no cost, and the
+ * user still sees the page on the review before anything is built.
+ *
+ * @returns the content without the dead CTA, or null when there is nothing to do.
+ */
+export const dropEchoedCta = (
+  content: Record<string, unknown>,
+): Record<string, unknown> | null => {
+  const cta = content.cta as { primary?: unknown } | undefined;
+  const headline = content.headline;
+  if (!cta || typeof cta.primary !== "string" || typeof headline !== "string") return null;
+  if (!sameCopy(cta.primary, headline)) return null;
+  const next = { ...content };
+  delete next.cta;
+  return next;
+};
+
 export const normalizeScriptContent = (input: unknown): unknown => {
   if (!input || typeof input !== "object") return input;
   const root = input as Record<string, unknown>;
@@ -1858,6 +1884,7 @@ export const normalizeScriptContent = (input: unknown): unknown => {
   let changed = false;
   const dropped: string[] = [];
   const splitHeadlines: string[] = [];
+  let droppedCtas = 0;
   const scenes = root.scenes.map((sc) => {
     if (!sc || typeof sc !== "object") return sc;
     const scene = sc as Record<string, unknown>;
@@ -1870,15 +1897,26 @@ export const normalizeScriptContent = (input: unknown): unknown => {
     // is a paid generation dying on punctuation. splitTwoSentenceHeadline
     // declines whenever the result would not clearly be better.
     let working = c;
-    if (typeof c.headline === "string" && headlineProblem(c.headline)) {
+
+    const deEchoed = dropEchoedCta(working);
+    if (deEchoed) {
+      working = deEchoed;
+      changed = true;
+      droppedCtas++;
+    }
+
+    // Chained off `working`, NOT `c`. Spreading the ORIGINAL here would put
+    // back a cta that dropEchoedCta had just removed — two repairs on the same
+    // content, the second quietly undoing the first.
+    if (typeof working.headline === "string" && headlineProblem(working.headline)) {
       const split = splitTwoSentenceHeadline(
-        c.headline,
-        typeof c.lede === "string" ? c.lede : undefined,
+        working.headline,
+        typeof working.lede === "string" ? working.lede : undefined,
       );
       if (split) {
-        working = { ...c, headline: split.headline, lede: split.lede };
+        working = { ...working, headline: split.headline, lede: split.lede };
         changed = true;
-        splitHeadlines.push(c.headline);
+        splitHeadlines.push(String(working.headline));
       }
     }
 
@@ -1912,6 +1950,9 @@ export const normalizeScriptContent = (input: unknown): unknown => {
         .map((d) => `"${d}"`)
         .join(", ")})`,
     );
+  }
+  if (droppedCtas > 0) {
+    console.warn(`[script] dropped ${droppedCtas} call-to-action(s) that merely repeated the headline`);
   }
   if (splitHeadlines.length > 0) {
     console.warn(

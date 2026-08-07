@@ -1770,5 +1770,43 @@ await check("normalizeScriptContent leaves a FINE headline completely alone", ()
   assert(out === input, "an untouched script must be returned by identity, not rebuilt");
 });
 
+
+// ── an echoed call-to-action is dropped, not argued about ───────────────────
+await check("a cta that repeats the headline is dropped", () => {
+  const out = normalizeScriptContent({
+    scenes: [{ content: { headline: "Read the full thesis", cta: { primary: "Read the full thesis" }, asset_ids: [] } }],
+  }) as { scenes: { content: Record<string, unknown> }[] };
+  assert(out.scenes[0].content.cta === undefined, "the dead cta must be gone");
+  assert(out.scenes[0].content.headline === "Read the full thesis", "the headline is untouched");
+});
+
+await check("a REAL cta is kept", () => {
+  const input = {
+    scenes: [{ content: { headline: "Close the books in four days", cta: { primary: "Book a walkthrough" }, asset_ids: [] } }],
+  };
+  const out = normalizeScriptContent(input);
+  assert(out === input, "nothing to repair means the script is returned untouched");
+});
+
+await check("dropping a cta does not resurrect when the headline is also split", () => {
+  // Two repairs on one content object. The second used to spread the ORIGINAL,
+  // putting the dead cta straight back.
+  const out = normalizeScriptContent({
+    scenes: [
+      {
+        content: {
+          headline: "Narrower than a platform. Deeper than a tool.",
+          cta: { primary: "Narrower than a platform. Deeper than a tool." },
+          asset_ids: [],
+        },
+      },
+    ],
+  }) as { scenes: { content: Record<string, unknown> }[] };
+  const content = out.scenes[0].content;
+  assert(content.cta === undefined, `the cta came back: ${JSON.stringify(content.cta)}`);
+  assert(content.headline === "Narrower than a platform.", `headline: ${content.headline}`);
+  assert(content.lede === "Deeper than a tool.", `lede: ${content.lede}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exitCode = 1;

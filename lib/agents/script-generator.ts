@@ -429,12 +429,19 @@ export const generateScript = async (
     try {
       result = await transport(history);
     } catch (err) {
-      // castCall owns the 429/5xx/network retry ladder; anything surfacing
-      // here is terminal for this attempt.
-      return {
-        ok: false,
-        error: `Fireworks script-gen error: ${err instanceof Error ? err.message : String(err)}`,
-      };
+      // castCall owns the 429/5xx/network retry ladder, so anything surfacing
+      // here is terminal for THIS ATTEMPT — which is what the comment always
+      // said and what the code did not do: it returned, ending the whole
+      // generation with attempts still unspent. Seen live as "cast HTTP 200:
+      // unparseable response" killing a 12-page run on its first try. A
+      // provider hiccup must cost one roll of the dice, not the user's deck.
+      lastError = `Fireworks script-gen error: ${err instanceof Error ? err.message : String(err)}`;
+      console.warn(`[script] attempt ${attempt} transport error, retrying: ${lastError}`);
+      if (attempt >= MAX_ATTEMPTS + repairRounds) {
+        return { ok: false, error: lastError };
+      }
+      // Nothing was produced, so there is nothing to correct — just try again.
+      continue;
     }
 
     totalUsage = addUsage(totalUsage, result.usage);
@@ -755,6 +762,11 @@ export const generateScript = async (
         completed++;
       }
     }
+    if (completed !== indexes.length) {
+      console.warn(
+        `[script] last-resort completion declined: finished ${completed} of ${indexes.length} flagged scene(s)`,
+      );
+    }
     if (completed === indexes.length) {
       // The SAME options the loop validates with — a salvage checked against a
       // laxer contract than the one that rejected it would be no check at all.
@@ -777,6 +789,11 @@ export const generateScript = async (
             ...findUngroundedStageLabels(sceneClaimCopy(recheck.script.scenes), salvageSource),
           ]
         : [];
+      if (!recheck.ok) {
+        console.warn(`[script] last-resort completion declined: patched script still invalid — ${recheck.error}`);
+      } else if (salvageUngrounded.length > 0) {
+        console.warn(`[script] last-resort completion declined: ungrounded claims ${salvageUngrounded.join(", ")}`);
+      }
       if (recheck.ok && salvageUngrounded.length === 0) {
         console.warn(
           `[script] completed ${completed} thin visual_concept(s) deterministically after ${MAX_ATTEMPTS + repairRounds} attempts rather than failing the outline (scenes ${indexes.join(", ")})`,

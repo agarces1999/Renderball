@@ -662,5 +662,36 @@ await check("the completion patches the VALIDATED script, not the raw model outp
   }
 });
 
+
+await check("a transport glitch costs ONE attempt, not the whole generation", async () => {
+  // Observed live: "cast HTTP 200: unparseable response" ended a 12-page run on
+  // its FIRST try with two attempts unspent. The comment beside that code said
+  // "terminal for this attempt"; the code returned, ending the run.
+  let calls = 0;
+  const transport: ScriptTransport = async () => {
+    calls++;
+    if (calls === 1) throw new Error("cast HTTP 200: unparseable response");
+    return {
+      text: JSON.stringify(VALID_SCRIPT),
+      usage: { input_tokens: 10, output_tokens: 5, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+    };
+  };
+  const r = await generateScript(validBrief, "brief_test", { transport });
+  assert(r.ok, `a single provider hiccup must not kill the run, got: ${r.ok ? "" : r.error}`);
+  assert(calls === 2, `expected a retry after the glitch, made ${calls} calls`);
+});
+
+await check("a transport that NEVER recovers still fails, and says so plainly", async () => {
+  let calls = 0;
+  const transport: ScriptTransport = async () => {
+    calls++;
+    throw new Error("cast HTTP 500: upstream down");
+  };
+  const r = await generateScript(validBrief, "brief_test", { transport });
+  assert(!r.ok, "a permanently broken provider must fail");
+  assert(calls === 3, `it should spend its whole budget first, made ${calls} calls`);
+  if (!r.ok) assert(/upstream down/.test(r.error), `the real cause must survive: ${r.error}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exitCode = 1;
