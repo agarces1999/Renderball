@@ -96,6 +96,17 @@ export async function GET() {
     status: healthy ? "ok" : "degraded",
     checks,
     uptimeSeconds: Math.round(process.uptime()),
+    // WHICH COMMIT is actually serving. Without this, "is it deployed?" can
+    // only be answered by inference — comparing a restart time against a
+    // commit time — which is right until the day a build fails and the old
+    // process keeps answering happily. Railway injects the SHA; the fallbacks
+    // cover other hosts, and "unknown" is honest when nothing sets it.
+    commit: (
+      process.env.RAILWAY_GIT_COMMIT_SHA ||
+      process.env.VERCEL_GIT_COMMIT_SHA ||
+      process.env.GIT_COMMIT_SHA ||
+      "unknown"
+    ).slice(0, 7),
   };
   cached = { at: now, body, healthy };
 
