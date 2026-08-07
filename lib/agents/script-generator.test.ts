@@ -620,5 +620,47 @@ await check("every register's completion actually satisfies the floors", () => {
   }
 });
 
+
+await check("the completion also fires for a DECK, which is what production generates", async () => {
+  // The matrix runs kind:"deck" and kept failing on exactly the complaints the
+  // salvage exists for, while the video-mode test above passed — so deck mode
+  // is where to look.
+  const thin = structuredClone(VALID_SCRIPT) as typeof VALID_SCRIPT;
+  thin.scenes[1] = {
+    ...thin.scenes[1],
+    visual_concept: "A quiet moment of relief settles across the frame, warm and unhurried, as the tension of the long wait finally eases away at 2.6s.",
+  };
+  const deckBrief: AgentBrief = { ...validBrief, kind: "deck" } as AgentBrief;
+  const r = await generateScript(deckBrief, "brief_test", { transport: stuckOn(thin) });
+  assert(r.ok, `deck mode must salvage too, got: ${r.ok ? "" : r.error}`);
+});
+
+
+await check("the completion patches the VALIDATED script, not the raw model output", async () => {
+  // The discriminating case. A real model reply routinely omits `register`;
+  // the loop backfills it, merges assets and injects identity BEFORE
+  // validating. The salvage originally kept the RAW parse and re-validated
+  // that, so it failed for reasons unrelated to the thin scene and declined
+  // silently — passing every unit test while never once firing in production.
+  // Strip the registers and the two shapes stop being interchangeable.
+  const raw = structuredClone(VALID_SCRIPT) as unknown as {
+    scenes: Record<string, unknown>[];
+  };
+  for (const sc of raw.scenes) delete sc.register;
+  raw.scenes[1].visual_concept =
+    "A quiet moment of relief settles across the frame, warm and unhurried, as the tension of the long wait finally eases away at 2.6s.";
+
+  const deckBrief: AgentBrief = { ...validBrief, kind: "deck" } as AgentBrief;
+  const r = await generateScript(deckBrief, "brief_test", { transport: stuckOn(raw) });
+  assert(r.ok, `must salvage a reply with no registers, got: ${r.ok ? "" : r.error}`);
+  if (r.ok) {
+    assert(r.completedScenes?.includes(1) === true, "the thin scene is the one completed");
+    assert(
+      r.script.scenes.every((sc) => typeof sc.register === "string" && sc.register.length > 0),
+      "the shipped script keeps the backfilled registers — proof it is the normalised object",
+    );
+  }
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exitCode = 1;

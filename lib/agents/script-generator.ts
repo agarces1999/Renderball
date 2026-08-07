@@ -523,7 +523,6 @@ export const generateScript = async (
       continue;
     }
 
-    lastCandidate = parsed;
     const withIdentity = injectIdentity(parsed, brief, briefId);
     const withAssets = mergePreallocatedAssets(withIdentity, brief);
     // Strip prose-as-value KPI meta entries before validation so a value-less
@@ -531,6 +530,13 @@ export const generateScript = async (
     // backfill any missing scene registers (GLM omits them sporadically, and
     // exemplar selection + the Design Agent's layout archetypes key on them).
     const normalized = backfillSceneRegisters(normalizeScriptContent(withAssets));
+    // The NORMALISED candidate, not the raw parse. The last-resort completion
+    // patches this object and re-validates it, and the raw parse has not been
+    // through injectIdentity / asset merge / register backfill — so re-checking
+    // it failed for reasons that had nothing to do with the thin scene, and the
+    // salvage declined silently on every real run while passing every unit
+    // test. Whatever was VALIDATED is what must be patched.
+    lastCandidate = normalized;
     // Canvas pivot: the document kind is the BRIEF's choice — stamp it before
     // validation so deck-aware checks (and everything downstream) see it.
     stampDocumentKind(normalized, brief.kind);
