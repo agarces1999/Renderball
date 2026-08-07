@@ -722,5 +722,35 @@ await check("a MASKED second complaint is repaired too, not left to kill the run
   }
 });
 
+
+await check("a MISSING visual_concept is composed from the page's own headline", async () => {
+  // Pass 13's only failure: the model dropped visual_concept on one page of
+  // twelve and took eleven good scenes down with it.
+  const gone = structuredClone(VALID_SCRIPT) as unknown as { scenes: Record<string, unknown>[] };
+  delete gone.scenes[1].visual_concept;
+
+  const deckBrief: AgentBrief = { ...validBrief, kind: "deck" } as AgentBrief;
+  const r = await generateScript(deckBrief, "brief_test", { transport: stuckOn(gone) });
+  assert(r.ok, `one missing concept must not cost the outline, got: ${r.ok ? "" : r.error}`);
+  if (r.ok) {
+    const composed = r.script.scenes[1].visual_concept;
+    assert(composed.length >= 120, `composed concept too short: ${composed}`);
+    assert(
+      composed.includes(String((VALID_SCRIPT.scenes[1].content as { headline: string }).headline)),
+      `it must describe THIS page — its own headline should appear: ${composed}`,
+    );
+    assert(countDrawableNouns(composed, r.script.scenes[1].register) >= 3, "and it must clear the floor");
+  }
+});
+
+await check("a scene with NEITHER a concept nor a headline is not invented", async () => {
+  // With no copy to build from, composing anything would be fabrication.
+  const bare = structuredClone(VALID_SCRIPT) as unknown as { scenes: Record<string, unknown>[] };
+  delete bare.scenes[1].visual_concept;
+  bare.scenes[1].content = { asset_ids: [] };
+  const r = await generateScript(validBrief, "brief_test", { transport: stuckOn(bare) });
+  assert(!r.ok, "with nothing real to describe, it must fail rather than invent a page");
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exitCode = 1;

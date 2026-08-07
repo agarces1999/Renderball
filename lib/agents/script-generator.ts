@@ -739,14 +739,25 @@ export const generateScript = async (
   // anything about copy, and this does not run: those are wrong in ways a
   // generic clause cannot honestly fix, and shipping them would be worse than
   // failing.
-  const SOFT_ONLY = /^(?:Scene \d+: (?:visual_concept too thin|names ")).*/;
+  // A MISSING visual_concept counts as soft too. The model dropped the field
+  // on one page out of twelve and took eleven good scenes down with it. There
+  // is nothing to append to, but the scene still carries its own headline and
+  // register — real content, not invention — so a concept can be composed from
+  // what the page actually says.
+  // NOTE THE COLON, or rather its absence. The richness rules say
+  // "Scene 4: visual_concept too thin"; the missing-field rule says
+  // "Scene 8 missing or empty visual_concept" with no colon at all. A pattern
+  // that assumed the colon silently matched nothing and the repair never ran —
+  // caught by a test that expected the salvage and watched it decline.
+  const SOFT_ONLY =
+    /^Scene \d+:? (?:visual_concept too thin|names "|missing or empty visual_concept).*/;
 
   /** The soft scene indexes named by a validator error, or null if any complaint is not soft. */
   const softIndexes = (error: string): number[] | null => {
     const complaints = error.split("|").map((c) => c.trim()).filter(Boolean);
     if (complaints.length === 0 || !complaints.every((c) => SOFT_ONLY.test(c))) return null;
     return [...new Set(
-      complaints.map((c) => Number(/^Scene (\d+):/.exec(c)?.[1])).filter((n) => Number.isFinite(n)),
+      complaints.map((c) => Number(/^Scene (\d+):? /.exec(c)?.[1])).filter((n) => Number.isFinite(n)),
     )];
   };
 
@@ -774,9 +785,22 @@ export const generateScript = async (
     let completed = 0;
     for (const i of indexes) {
       const scene = patched.scenes[i];
-      if (!scene || typeof scene.visual_concept !== "string") continue;
+      if (!scene) continue;
+      const existing = typeof scene.visual_concept === "string" ? scene.visual_concept.trim() : "";
+      // Seed from the page's OWN headline when the field is missing entirely,
+      // so the composed concept describes this page rather than any page.
+      // completeVisualConcept refuses an empty string by design, and rightly:
+      // it appends, it does not author.
+      const headline =
+        (scene.content as { headline?: unknown } | undefined)?.headline;
+      const seed =
+        existing ||
+        (typeof headline === "string" && headline.trim()
+          ? `The page carries the line "${headline.trim()}" as its hero.`
+          : "");
+      if (!seed) continue;
       const better = completeVisualConcept(
-        scene.visual_concept,
+        seed,
         typeof scene.register === "string" ? scene.register : undefined,
       );
       if (better) {
