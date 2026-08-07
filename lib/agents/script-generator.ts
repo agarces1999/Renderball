@@ -7,6 +7,7 @@ import {
   findUngroundedClaims,
   findUngroundedStageLabels,
   findTypeOnlyScenes,
+  drawableVocabulary,
 } from "./schema-validator";
 import { signatureWithLogoFallback, resolveCanvasPlan, brandShortName } from "../crawl/brand-identity";
 import { formatDesignLanguage } from "../crawl/design-language";
@@ -149,9 +150,18 @@ export interface AgentBrief {
   freeform_prompt?: string;
 }
 
+/** What a failed outline knows about its own failure. `evidence` carries the
+ *  flagged scenes' actual prose so a diagnosis can read what was judged rather
+ *  than re-deriving it. Diagnostic only — never shown to a user. */
+export interface ScriptFailureEvidence {
+  scene: number;
+  label: string;
+  visual_concept: string;
+}
+
 export type ScriptGenerationResult =
   | { ok: true; script: Script; usage: Usage }
-  | { ok: false; error: string };
+  | { ok: false; error: string; evidence?: ScriptFailureEvidence[] };
 
 /**
  * The ONLY text a numeric claim in script copy may ground against (QA S5,
@@ -369,6 +379,10 @@ export const generateScript = async (
 
   let totalUsage = EMPTY_USAGE;
   let lastError = "Unknown error.";
+  /** Set when the next reply should be JUST the named scenes (see below). */
+  let repair: { base: Record<string, unknown>; indexes: number[] } | null = null;
+  /** The most recent parsed candidate, kept purely so a failure can show its work. */
+  let lastCandidate: unknown = null;
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     let result: { text: string; usage: Usage };
@@ -406,6 +420,45 @@ export const generateScript = async (
     let parsed: unknown;
     try {
       parsed = JSON.parse(cleaned);
+      // SCENE REPAIR: when the previous attempt asked for a few scenes rather
+      // than a whole script, the model answers with just those scenes. Splice
+      // them into the outline we already had instead of treating the reply as
+      // a new script (which would fail "Missing top-level key: config").
+      if (repair) {
+        // A repair turn asked for JUST the flagged scenes, so the reply is a
+        // bare array — which on its own is NOT a Script. Every branch here must
+        // end with `parsed` being a whole Script object again.
+        //
+        // The unguarded version of this cost an outline outright: a reply whose
+        // scene count did not match left the bare array in `parsed`, so the deck
+        // became a headless list, every GOOD scene was thrown away, and the next
+        // attempt was told to fix "Missing top-level key: config" — a defect the
+        // model never produced and could not act on. Observed live, twice in six
+        // runs. A repair that misses must cost nothing but the attempt.
+        const base = structuredClone(repair.base) as { scenes: unknown[] };
+        const fixed = Array.isArray(parsed)
+          ? parsed
+          : ((parsed as { scenes?: unknown[] } | null)?.scenes ?? null);
+
+        if (Array.isArray(fixed) && fixed.length === repair.indexes.length) {
+          // The expected shape: one replacement per flagged scene, in order.
+          repair.indexes.forEach((sceneIdx, i) => {
+            if (sceneIdx >= 0 && sceneIdx < base.scenes.length) base.scenes[sceneIdx] = fixed[i];
+          });
+          parsed = base;
+        } else if (Array.isArray(fixed) && fixed.length === base.scenes.length) {
+          // The model re-emitted EVERY scene instead of the flagged ones. Not
+          // what was asked, but unambiguous and safe to take wholesale.
+          base.scenes = fixed;
+          parsed = base;
+        } else {
+          // Unusable. Keep the base — its good scenes are still the best draft
+          // we have — and let the ORIGINAL complaint drive the next correction
+          // rather than a structural error invented by the failed repair.
+          parsed = base;
+        }
+        repair = null;
+      }
     } catch (err) {
       lastError = `Output was not valid JSON (${err instanceof Error ? err.message : String(err)}).`;
       history.push({ role: "assistant", content: raw });
@@ -416,6 +469,7 @@ export const generateScript = async (
       continue;
     }
 
+    lastCandidate = parsed;
     const withIdentity = injectIdentity(parsed, brief, briefId);
     const withAssets = mergePreallocatedAssets(withIdentity, brief);
     // Strip prose-as-value KPI meta entries before validation so a value-less
@@ -519,18 +573,68 @@ export const generateScript = async (
       };
     }
 
-    // Validation failed — feed the exact error back and ask for a fix.
+    // Validation failed.
+    //
+    // REPAIR THE SCENES THAT MISSED, rather than asking for a whole new
+    // outline. Measured over a 14-run matrix (2026-08-06): 3 failures, and
+    // every one of them missed only ONE OR TWO scenes out of six or twelve —
+    // "607 chars, 2 drawable nouns" where three are wanted, "1 interior
+    // detail" where two are. Near misses, not bad outlines.
+    //
+    // Re-emitting the COMPLETE script (what this used to ask for) re-rolls
+    // every scene on every attempt, so a twelve-scene outline needs all
+    // twelve to land at once, three times running. That does not converge —
+    // it reshuffles which scene misses, which is exactly what a founder hit:
+    // three attempts, still one scene short, dead end after a paid minute.
     lastError = validation.error;
+    const failedScenes = [...validation.error.matchAll(/Scene (\d+)\s*:/g)]
+      .map((m) => Number(m[1]))
+      .filter((n, i, a) => Number.isFinite(n) && a.indexOf(n) === i);
+    const baseScenes = (parsed as { scenes?: unknown[] } | null)?.scenes;
+    const repairable =
+      failedScenes.length > 0 &&
+      Array.isArray(baseScenes) &&
+      baseScenes.length > 0 &&
+      failedScenes.every((n) => n < baseScenes.length) &&
+      // A minority. If most of the outline is wrong, the outline is wrong.
+      failedScenes.length <= Math.max(1, Math.floor(baseScenes.length / 2));
+
     history.push({ role: "assistant", content: raw });
-    history.push({
-      role: "user",
-      content: buildRetryMessage(validation.error, attempt),
-    });
+    if (repairable) {
+      repair = { base: parsed as Record<string, unknown>, indexes: failedScenes };
+      history.push({
+        role: "user",
+        content: buildSceneRepairMessage(validation.error, failedScenes, baseScenes.length),
+      });
+    } else {
+      history.push({
+        role: "user",
+        content: buildRetryMessage(validation.error, attempt),
+      });
+    }
   }
+
+  // Keep the EVIDENCE. A failure used to surface only the validator's
+  // complaint ("2 drawable nouns"), never the prose it was counting, so every
+  // investigation had to re-derive what the model actually wrote. The last
+  // candidate's flagged scenes ride along; callers log it, users never see it.
+  const flagged = [...lastError.matchAll(/Scene (\d+)\s*:/g)].map((m) => Number(m[1]));
+  const lastScenes = (lastCandidate as { scenes?: { label?: string; visual_concept?: string }[] } | null)?.scenes;
+  const evidence =
+    Array.isArray(lastScenes) && flagged.length
+      ? flagged
+          .filter((i) => i >= 0 && i < lastScenes.length)
+          .map((i) => ({
+            scene: i,
+            label: lastScenes[i]?.label ?? "",
+            visual_concept: lastScenes[i]?.visual_concept ?? "",
+          }))
+      : [];
 
   return {
     ok: false,
     error: `Schema validation failed after ${MAX_ATTEMPTS} attempts. Last error: ${lastError}`,
+    evidence,
   };
 };
 
@@ -559,6 +663,47 @@ const buildDurationRetryMessage = (
     `"Per beat" pacing (0.8–4s) describes how often motion fires INSIDE a section — it is NOT the length of a section. A fast-paced ${avg}s section still runs ${avg}s.`,
     "",
     "Re-emit the COMPLETE Script JSON. Output ONLY the JSON object. No prose, no fence.",
+  ].join("\n");
+};
+
+/**
+ * Ask for ONLY the scenes that missed.
+ *
+ * The reply is a bare JSON array, in the same order as the indexes given, and
+ * the caller splices it back into the outline it already has. Keeping the rest
+ * of the script untouched is the whole point: the scenes that passed were fine,
+ * and re-rolling them is what stopped the old retry from ever converging.
+ */
+const buildSceneRepairMessage = (
+  error: string,
+  indexes: number[],
+  totalScenes: number,
+): string => {
+  const per = error
+    .split("|")
+    .map((s) => s.trim())
+    .filter((s) => indexes.some((i) => s.startsWith(`Scene ${i}:`)));
+  return [
+    `${indexes.length} of your ${totalScenes} scenes fell short. Everything else is good and must NOT change.`,
+    "",
+    ...per.map((line) => `- ${line}`),
+    "",
+    `Re-emit ONLY those scenes — index ${indexes.join(", ")} — as a JSON ARRAY of scene objects, in that exact order.`,
+    "Keep each scene's label, timing and content; the fix belongs in visual_concept.",
+    "",
+    "What the check is counting, so you can satisfy it deliberately:",
+    // The counter is a CLOSED whitelist. Describing it as a category — "things
+    // with edges", with examples and an ellipsis — is what produced 538- and
+    // 602-character concepts that scored 2: the imagery was genuinely drawable,
+    // just not in the set. Quote the set. It is generated from the matcher
+    // itself, so it cannot drift out of date.
+    "- CONCRETE DRAWABLE NOUNS. A literal word-match, NOT a judgement of vividness. Only these words count, and you need at least THREE DIFFERENT ones, spelled this way (plurals are fine):",
+    `  ${drawableVocabulary().join(", ")}`,
+    "  Imagery outside this list scores ZERO however vivid — \"a conveyor belt of invoices dropped into a tray\" counts ONE (invoice). Adjectives, moods, gradients and glows count nothing.",
+    "- INTERIOR DETAIL: when you name a container (dashboard, window, card), name at least two specific things drawn INSIDE it — rows, column labels, values, tabs, an avatar, a sparkline.",
+    "Length is not the problem: these scenes were already long. Add the missing OBJECTS.",
+    "",
+    "Output ONLY the JSON array. No prose, no fence.",
   ].join("\n");
 };
 

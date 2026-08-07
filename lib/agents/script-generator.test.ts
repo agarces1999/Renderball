@@ -276,5 +276,130 @@ await check("buildUserMessage: a POPULATED moments array is still pre-structured
   assert(/Opening/.test(msg), "the moment must appear in the message");
 });
 
+
+// ── scene-level repair ──────────────────────────────────────────────────────
+// WHY THIS EXISTS: a rejected outline used to be re-rolled WHOLE — all twelve
+// scenes regenerated because one tripped the drawable-noun floor. Measured on
+// 1,588 real visual_concepts, 15% land at or under that floor, so a fresh roll
+// of twelve scenes breaks a DIFFERENT scene about half the time and three
+// attempts compound into a user-visible failure. Repair asks for just the
+// flagged scenes and splices them back. The splice is the dangerous part: a
+// wrong index silently swaps someone's slides, which is worse than the bug.
+
+await check("scene repair: a bare array of the flagged scenes splices back at the right indexes", async () => {
+  // Attempt 1 returns a script whose scene 1 is too thin; attempt 2 answers the
+  // repair request with ONE scene, which must land at index 1 and nowhere else.
+  const thin = structuredClone(VALID_SCRIPT) as typeof VALID_SCRIPT;
+  thin.scenes[1] = { ...thin.scenes[1], visual_concept: "A thing." };
+  const good = VALID_SCRIPT.scenes[1];
+
+  let attempt = 0;
+  const sent: string[] = [];
+  const transport: ScriptTransport = async (history) => {
+    attempt++;
+    sent.push(String(history[history.length - 1]?.content ?? ""));
+    return {
+      text: attempt === 1 ? JSON.stringify(thin) : JSON.stringify([good]),
+      usage: { input_tokens: 10, output_tokens: 5, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+    };
+  };
+
+  const r = await generateScript(validBrief, "brief_test", { transport });
+  assert(r.ok, `the repaired script must validate, got: ${r.ok ? "" : r.error}`);
+  if (r.ok) {
+    assert(r.script.scenes.length === 3, `repair must not change the scene COUNT, got ${r.script.scenes.length}`);
+    assert(
+      r.script.scenes[1].visual_concept === good.visual_concept,
+      "the repaired scene lands at the index that was flagged",
+    );
+    assert(
+      r.script.scenes[0].visual_concept === VALID_SCRIPT.scenes[0].visual_concept &&
+        r.script.scenes[2].visual_concept === VALID_SCRIPT.scenes[2].visual_concept,
+      "the scenes that were FINE are untouched — the whole point of repairing instead of re-rolling",
+    );
+  }
+  assert(attempt === 2, `one repair round should be enough, took ${attempt} attempts`);
+  assert(/scene/i.test(sent[1] ?? ""), "the second turn asks for scenes, not a whole script");
+});
+
+await check("scene repair: a mismatched reply costs the ATTEMPT, never the deck", async () => {
+  // A model that answers a one-scene repair with two scenes has misunderstood.
+  // OBSERVED LIVE (twice in six runs): the bare array was left as the candidate,
+  // so the deck became a headless list, the good scenes were destroyed, and the
+  // run died on "Missing top-level key: config" — a structural defect invented
+  // by the failed repair, which the model was then asked to fix. The base must
+  // survive and the ORIGINAL complaint must be what carries forward.
+  const thin = structuredClone(VALID_SCRIPT) as typeof VALID_SCRIPT;
+  thin.scenes[1] = { ...thin.scenes[1], visual_concept: "A thing." };
+
+  let attempt = 0;
+  const transport: ScriptTransport = async () => {
+    attempt++;
+    return {
+      text: attempt === 1
+        ? JSON.stringify(thin)
+        // Two scenes for a one-scene request: unusable.
+        : JSON.stringify([VALID_SCRIPT.scenes[0], VALID_SCRIPT.scenes[1]]),
+      usage: { input_tokens: 10, output_tokens: 5, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+    };
+  };
+
+  const r = await generateScript(validBrief, "brief_test", { transport });
+  assert(!r.ok, "the thin scene was never repaired, so the run still fails");
+  if (!r.ok) {
+    assert(
+      !/Missing top-level key/i.test(r.error),
+      `a failed repair must not invent a STRUCTURAL defect — got: ${r.error}`,
+    );
+    const ev = r.evidence ?? [];
+    assert(
+      ev.some((e) => e.visual_concept === "A thing."),
+      `the base deck must survive so the real offender is still nameable, got ${JSON.stringify(ev)}`,
+    );
+  }
+});
+
+await check("scene repair: a reply that re-emits EVERY scene is taken wholesale", async () => {
+  // Not what was asked, but unambiguous — and refusing it would waste a good
+  // answer.
+  const thin = structuredClone(VALID_SCRIPT) as typeof VALID_SCRIPT;
+  thin.scenes[1] = { ...thin.scenes[1], visual_concept: "A thing." };
+
+  let attempt = 0;
+  const transport: ScriptTransport = async () => {
+    attempt++;
+    return {
+      text: attempt === 1 ? JSON.stringify(thin) : JSON.stringify(VALID_SCRIPT.scenes),
+      usage: { input_tokens: 10, output_tokens: 5, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+    };
+  };
+
+  const r = await generateScript(validBrief, "brief_test", { transport });
+  assert(r.ok, `a full re-emission is a valid answer, got: ${r.ok ? "" : r.error}`);
+  if (r.ok) assert(r.script.scenes.length === 3, "scene count is preserved");
+});
+
+await check("failure carries the flagged scenes' own prose as evidence", async () => {
+  // A failure used to surface only the validator's complaint, never the text it
+  // was counting — so every investigation re-derived it by hand.
+  const thin = structuredClone(VALID_SCRIPT) as typeof VALID_SCRIPT;
+  thin.scenes[1] = { ...thin.scenes[1], visual_concept: "A quiet mood, softly." };
+  const transport: ScriptTransport = async () => ({
+    text: JSON.stringify(thin),
+    usage: { input_tokens: 10, output_tokens: 5, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+  });
+
+  const r = await generateScript(validBrief, "brief_test", { transport });
+  assert(!r.ok, "the thin scene must fail");
+  if (!r.ok) {
+    const ev = r.evidence ?? [];
+    assert(ev.length > 0, "a failure must carry evidence of what was judged");
+    assert(
+      ev.some((e) => e.visual_concept === "A quiet mood, softly."),
+      `evidence must quote the offending prose verbatim, got ${JSON.stringify(ev)}`,
+    );
+  }
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exitCode = 1;

@@ -408,6 +408,38 @@ const TYPO_DRAWABLE_NOUN_RX = new RegExp(
   "gi",
 );
 
+/**
+ * The drawable vocabulary AS WORDS, derived from the very sources the counter
+ * matches on — so a prompt can quote the real list and can never drift from it.
+ *
+ * WHY THIS IS EXPORTED: the counter is a CLOSED whitelist, but every message
+ * describing it ended in an ellipsis — "(panel, chart, logo, bar, mock,
+ * button...)" — which reads as *examples of a category* rather than *the set*.
+ * A model given that writes vivid, genuinely drawable imagery from outside the
+ * list and scores near zero: measured, a 538-character concept scored 2, and a
+ * founder's real 12-page deck died on a 602-character one. Naming the words is
+ * not a loosening of the gate — the floor is unchanged. It is the difference
+ * between a check the writer can pass and a check it cannot see.
+ */
+export const drawableVocabulary = (register?: string): string[] => {
+  const sources = [DIEGETIC_ELEMENT_SOURCE, EXTRA_DRAWABLE_SOURCE];
+  if (register && TYPE_POSTER_REGISTERS.has(register)) sources.push(TYPO_DRAWABLE_SOURCE);
+  const words = sources
+    .join("|")
+    .split("|")
+    .map((raw) =>
+      raw
+        .replace(/\(\?:[^)]*\)\??/g, "") // optional inner groups: mock(?:up)?s? → mocks?
+        .replace(/\[\\s-\]\?/g, " ") // trust[\s-]?bar → trust bar
+        .replace(/\\s\??/g, " ")
+        .replace(/s\?$/, "") // plural marker
+        .replace(/\?/g, "")
+        .trim(),
+    )
+    .filter((w) => w.length > 1);
+  return [...new Set(words)];
+};
+
 /** Naive singular so "cards"/"card" count once ("mesh"/"glass" unaffected). */
 const singularize = (w: string): string =>
   w.endsWith("s") && !w.endsWith("ss") ? w.slice(0, -1) : w;
