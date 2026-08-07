@@ -401,5 +401,64 @@ await check("failure carries the flagged scenes' own prose as evidence", async (
   }
 });
 
+
+await check("a COPY failure (\"Section N …\") repairs the one scene, it does not re-roll the deck", async () => {
+  // The validator speaks two vocabularies for the same index: "Scene 4:" for
+  // visual rules, "Section 5 content.headline" for copy rules. Repair matched
+  // only the first, so a two-sentence headline — a one-line fix — re-rolled
+  // every scene and burned all three attempts. Observed on a 12-page outline.
+  const twoSentences = structuredClone(VALID_SCRIPT) as typeof VALID_SCRIPT;
+  twoSentences.scenes[1] = {
+    ...twoSentences.scenes[1],
+    content: { ...twoSentences.scenes[1].content, headline: "Narrower than a platform. Deeper than a tool." },
+  };
+
+  let attempt = 0;
+  const asks: string[] = [];
+  const transport: ScriptTransport = async (history) => {
+    attempt++;
+    asks.push(String(history[history.length - 1]?.content ?? ""));
+    return {
+      text: attempt === 1 ? JSON.stringify(twoSentences) : JSON.stringify([VALID_SCRIPT.scenes[1]]),
+      usage: { input_tokens: 10, output_tokens: 5, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+    };
+  };
+
+  const r = await generateScript(validBrief, "brief_test", { transport });
+  assert(r.ok, `the repaired copy must validate, got: ${r.ok ? "" : r.error}`);
+  // The ask must be a SCENE repair, and must quote the actual complaint.
+  const ask = asks[1] ?? "";
+  assert(/JSON ARRAY of scene objects/i.test(ask), `expected a scene-repair ask, got: ${ask.slice(0, 160)}`);
+  assert(
+    /two sentences/i.test(ask),
+    `the repair must quote the complaint it is fixing, got: ${ask.slice(0, 300)}`,
+  );
+});
+
+await check("a BOUNDARY error is never scene-repaired — it is a relationship, not a scene", async () => {
+  // Rewriting one scene in isolation cannot fix "previous end_seconds != current
+  // start_seconds", so this must fall through to the whole-script retry.
+  const broken = structuredClone(VALID_SCRIPT) as typeof VALID_SCRIPT;
+  broken.scenes[1] = { ...broken.scenes[1], start_seconds: 99 };
+
+  const asks: string[] = [];
+  const transport: ScriptTransport = async (history) => {
+    asks.push(String(history[history.length - 1]?.content ?? ""));
+    return {
+      text: JSON.stringify(broken),
+      usage: { input_tokens: 10, output_tokens: 5, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+    };
+  };
+
+  const r = await generateScript(validBrief, "brief_test", { transport });
+  assert(!r.ok, "the broken timeline must fail");
+  const retries = asks.slice(1);
+  assert(retries.length > 0, "there must be a retry to inspect");
+  assert(
+    retries.every((a) => !/JSON ARRAY of scene objects/i.test(a)),
+    "a boundary error must NOT be answered with a single-scene repair",
+  );
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exitCode = 1;

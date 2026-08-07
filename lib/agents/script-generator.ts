@@ -602,7 +602,17 @@ export const generateScript = async (
     // it reshuffles which scene misses, which is exactly what a founder hit:
     // three attempts, still one scene short, dead end after a paid minute.
     lastError = validation.error;
-    const failedScenes = [...validation.error.matchAll(/Scene (\d+)\s*:/g)]
+    // Both spellings. The validator says "Scene 4: visual_concept too thin"
+    // for visual rules and "Section 5 content.headline is two sentences" for
+    // copy rules — the SAME index, in two vocabularies. Matching only "Scene"
+    // meant every copy failure skipped repair and re-rolled the whole deck,
+    // which is how a one-line headline fix burned three attempts and failed a
+    // 12-page outline. Boundary errors are excluded: they are a relationship
+    // BETWEEN scenes, so rewriting one in isolation cannot fix them.
+    const scenePattern = /\b(?:Scene|Section) (\d+)\b/g;
+    const failedScenes = /boundary mismatch/i.test(validation.error)
+      ? []
+      : [...validation.error.matchAll(scenePattern)]
       .map((m) => Number(m[1]))
       .filter((n, i, a) => Number.isFinite(n) && a.indexOf(n) === i);
     const baseScenes = (parsed as { scenes?: unknown[] } | null)?.scenes;
@@ -633,7 +643,7 @@ export const generateScript = async (
   // complaint ("2 drawable nouns"), never the prose it was counting, so every
   // investigation had to re-derive what the model actually wrote. The last
   // candidate's flagged scenes ride along; callers log it, users never see it.
-  const flagged = [...lastError.matchAll(/Scene (\d+)\s*:/g)].map((m) => Number(m[1]));
+  const flagged = [...lastError.matchAll(/\b(?:Scene|Section) (\d+)\b/g)].map((m) => Number(m[1]));
   const lastScenes = (lastCandidate as { scenes?: { label?: string; visual_concept?: string }[] } | null)?.scenes;
   const evidence =
     Array.isArray(lastScenes) && flagged.length
@@ -694,10 +704,13 @@ const buildSceneRepairMessage = (
   indexes: number[],
   totalScenes: number,
 ): string => {
+  // Match BOTH vocabularies (see the caller): visual rules say "Scene 4:",
+  // copy rules say "Section 5 content.headline". Filtering on "Scene" alone
+  // produced a repair request that quoted no complaint at all.
   const per = error
     .split("|")
     .map((s) => s.trim())
-    .filter((s) => indexes.some((i) => s.startsWith(`Scene ${i}:`)));
+    .filter((s) => indexes.some((i) => new RegExp(`^(?:Scene|Section) ${i}\\b`).test(s)));
   return [
     `${indexes.length} of your ${totalScenes} scenes fell short. Everything else is good and must NOT change.`,
     "",
@@ -716,7 +729,7 @@ const buildSceneRepairMessage = (
     `  ${drawableVocabulary().join(", ")}`,
     "  Imagery outside this list scores ZERO however vivid — \"a conveyor belt of invoices dropped into a tray\" counts ONE (invoice). Adjectives, moods, gradients and glows count nothing.",
     `  TRAP: ${containerVocabulary().join(" / ")} are CONTAINERS — each one you name needs >=2 things named INSIDE it, or it fails a different rule. Reaching three via non-container words (bar, sparkline, logo, badge, arrow, invoice, counter) is cheaper and safer.`,
-    "- INTERIOR DETAIL: when you name a container (dashboard, window, card), name at least two specific things drawn INSIDE it — rows, column labels, values, tabs, an avatar, a sparkline.",
+    `- INTERIOR DETAIL: naming any of ${containerVocabulary().join(" / ")} promises an interior, and an unfurnished one FAILS. You have two ways out and both are fine: FURNISH it (name >=2 things drawn inside — rows, column labels, values, tabs, an avatar, a sparkline), or DROP THE WORD and say what is actually there with non-container nouns (bar, sparkline, logo, badge, arrow, invoice, counter). A "thin-outlined card" holding one number is the failure; either put a label and a delta beside the number, or call it a counter and a label.`,
     "Length is not the problem: these scenes were already long. Add the missing OBJECTS.",
     "",
     "Output ONLY the JSON array. No prose, no fence.",
