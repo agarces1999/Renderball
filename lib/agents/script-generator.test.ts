@@ -460,5 +460,51 @@ await check("a BOUNDARY error is never scene-repaired — it is a relationship, 
   );
 });
 
+
+await check("a CONVERGING repair earns extra rounds beyond the 3-attempt budget", async () => {
+  // Failures concentrate in long-brief x 12-page outlines, where several
+  // scenes trip at once and three rolls is simply not many when every roll has
+  // to land twelve times. A repair is cheap and cannot break a good scene, so
+  // a repair that is still making progress gets more rounds. "Progress" means
+  // the flagged set keeps changing — here a different scene each time.
+  const thin = (i: number) => {
+    const s = structuredClone(VALID_SCRIPT) as typeof VALID_SCRIPT;
+    s.scenes[i] = { ...s.scenes[i], visual_concept: "A thing." };
+    return s;
+  };
+  let attempt = 0;
+  const transport: ScriptTransport = async () => {
+    attempt++;
+    // A different scene is broken each round, then finally a clean script.
+    const text =
+      attempt === 1 ? JSON.stringify(thin(0))
+      : attempt === 2 ? JSON.stringify(thin(1))
+      : attempt === 3 ? JSON.stringify(thin(2))
+      : JSON.stringify(VALID_SCRIPT);
+    return { text, usage: { input_tokens: 10, output_tokens: 5, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 } };
+  };
+  const r = await generateScript(validBrief, "brief_test", { transport });
+  assert(attempt > 3, `the loop must run past the base 3 attempts while converging, ran ${attempt}`);
+  assert(r.ok, `it should land once the model stops breaking scenes, got: ${r.ok ? "" : r.error}`);
+});
+
+await check("a STUCK repair does not earn extra rounds", async () => {
+  // Same scene, same complaint, every time. More rounds would only spend the
+  // user's time — the extra budget must not be granted.
+  const thin = structuredClone(VALID_SCRIPT) as typeof VALID_SCRIPT;
+  thin.scenes[1] = { ...thin.scenes[1], visual_concept: "A thing." };
+  let attempt = 0;
+  const transport: ScriptTransport = async () => {
+    attempt++;
+    return {
+      text: JSON.stringify(thin),
+      usage: { input_tokens: 10, output_tokens: 5, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+    };
+  };
+  const r = await generateScript(validBrief, "brief_test", { transport });
+  assert(!r.ok, "a stuck repair still fails");
+  assert(attempt <= 4, `a stuck repair must not keep buying rounds, ran ${attempt}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exitCode = 1;
