@@ -47,14 +47,16 @@ import { useEffect, useState } from "react";
  *     precisely the moment it becomes dishonest — the same discipline
  *     BuildPreviewClient uses when it holds its final step.
  */
-const generatingSteps = (pages: number, url: string): string[] => {
+export const generatingSteps = (pages: number, url: string): string[] => {
   const site = url.trim().replace(/^https?:\/\//, "").replace(/\/$/, "");
   return [
     "Reading your brief",
     ...(site ? [`Looking at ${site}`] : []),
     "Finding the story",
     `Naming your ${pages} page${pages === 1 ? "" : "s"}`,
-    "Putting them in order",
+    // One page has no order to put anything in. The generic line read as
+    // filler there, which is exactly what erodes trust in a progress display.
+    ...(pages === 1 ? ["Shaping the page"] : ["Putting them in order"]),
   ];
 };
 
@@ -297,7 +299,7 @@ export function BlankDocumentPanel({
  * a generous multiple of the estimate the copy says so out loud rather than
  * pretending the pace was right.
  */
-function GeneratingSteps({
+export function GeneratingSteps({
   steps,
   elapsed,
   pages,
@@ -325,13 +327,39 @@ function GeneratingSteps({
               className="flex items-center gap-2.5"
               style={{ animation: `rb-fade-up 320ms ease-out both`, animationDelay: `${i * 60}ms` }}
             >
+              {/* Three states must be readable at a glance, and colour alone
+                  cannot carry it: done and active were both solid accent, so
+                  the list showed no progress at all. Done is a check, active
+                  is the pulsing dot, pending is a hollow ring. */}
               <span
                 aria-hidden
-                className={`rb-step-dot inline-block h-1.5 w-1.5 shrink-0 rounded-full ${
-                  done ? "bg-accent" : now ? "bg-accent" : "bg-hairline-strong"
+                className={`rb-step-dot inline-flex h-3 w-3 shrink-0 items-center justify-center rounded-full ${
+                  done
+                    ? "text-accent"
+                    : now
+                      ? "bg-accent"
+                      : "border border-hairline-strong"
                 }`}
-                style={now ? { animation: "rb-step-pulse 1.4s ease-in-out infinite" } : undefined}
-              />
+                style={
+                  now
+                    ? { animation: "rb-step-pulse 1.4s ease-in-out infinite", height: 6, width: 6 }
+                    : !done
+                      ? { height: 6, width: 6 }
+                      : undefined
+                }
+              >
+                {done && (
+                  <svg viewBox="0 0 12 12" className="h-3 w-3" fill="none" aria-hidden>
+                    <path
+                      d="M2.5 6.2l2.3 2.3 4.7-4.7"
+                      stroke="currentColor"
+                      strokeWidth="1.6"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </svg>
+                )}
+              </span>
               <span
                 className={`text-[12.5px] leading-relaxed ${
                   done ? "text-muted" : now ? "text-ink" : "text-faint"

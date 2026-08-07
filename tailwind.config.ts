@@ -29,6 +29,19 @@ const config: Config = {
           soft: "var(--accent-soft)",
           line: "var(--accent-line)",
         },
+        // Registered as a COLOR, not only a borderColor. It lived under
+        // borderColor alone, so `border-hairline` worked and every other
+        // utility built from the same token — `bg-hairline`, `bg-hairline-
+        // strong` — silently generated nothing and rendered transparent. That
+        // is invisible in review (a missing 1px rule looks like spacing) and
+        // it had already eaten the toolbar separators in EditorShell and
+        // LandingEditor, an indicator in AppShell, and every pending step dot
+        // in the outline panel. Measured, not guessed: computed background was
+        // rgba(0, 0, 0, 0) while --hairline-strong itself resolved correctly.
+        hairline: {
+          DEFAULT: "var(--hairline)",
+          strong: "var(--hairline-strong)",
+        },
       },
       borderColor: {
         hairline: {
