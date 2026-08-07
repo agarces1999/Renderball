@@ -627,9 +627,14 @@ export const checkScriptRichness = (
     const chars = vc.trim().length;
     const nouns = countDrawableNouns(vc, register);
     if (chars < VISUAL_CONCEPT_MIN_CHARS || nouns < VISUAL_CONCEPT_MIN_NOUNS) {
+      // NO ELLIPSIS. "(panel, chart, logo, bar, mock, button...)" reads as
+      // examples of a category, and the thing being counted is a CLOSED list —
+      // that gap is what let 602 characters of good imagery score 2. Say the
+      // size, and say where the whole list is; the retry message quotes it in
+      // full via drawableVocabulary().
       const vocabHint = typeRegister
-        ? "(panel, chart, logo, bar — or, on this register, typographic artifacts: oversized numeral, type lockup, sticker, stamp, scribble...)"
-        : "(panel, chart, logo, bar, mock, button...)";
+        ? `(CLOSED ${drawableVocabulary("quote").length}-word list, incl. typographic)`
+        : `(CLOSED ${drawableVocabulary().length}-word list, not any vivid noun)`;
       errors.push(
         `Scene ${i}: visual_concept too thin (${chars} chars, ${nouns} drawable nouns) — need ≥${VISUAL_CONCEPT_MIN_CHARS} chars AND ≥${VISUAL_CONCEPT_MIN_NOUNS} concrete drawable elements ${vocabHint}.`,
       );
@@ -643,7 +648,7 @@ export const checkScriptRichness = (
           .trim()
           .slice(0, 40);
         errors.push(
-          `Scene ${i}: names "${phrase}" but only ${interiors} interior detail(s) — a container must name ≥${FURNISHING_MIN_INTERIORS} specifics drawn inside it (rows, labels, values, tabs, feed, chart, avatar...).`,
+          `Scene ${i}: names "${phrase}" but only ${interiors} interior detail(s) — a container must name ≥${FURNISHING_MIN_INTERIORS} specifics from a CLOSED ${interiorVocabulary().length}-word list (rows, labels, values, tabs, chart, avatar).`,
         );
       }
     }
