@@ -783,6 +783,8 @@ export const generateScript = async (
   let candidate = lastCandidate as { scenes?: Record<string, unknown>[] } | null;
   let salvageError = lastError;
   let salvaged: Script | null = null;
+  /** Why the salvage gave up, when that is truer than the complaint it started from. */
+  let refusal: string | null = null;
   const completedAll = new Set<number>();
 
   for (let round = 0; round < MAX_SALVAGE_ROUNDS; round++) {
@@ -891,6 +893,13 @@ export const generateScript = async (
       ...findUngroundedStageLabels(sceneClaimCopy(recheck.script.scenes), salvageSource),
     ];
     if (stillFabricated.length > 0) {
+      // REPORT THIS, not the complaint we started from. Observed in a 14-run
+      // pass: the salvage repaired a thin scene, revalidated clean, and was
+      // then refused because the model had invented "12 seconds" — and the
+      // user was shown the stale "only 1 interior detail" message, so the
+      // route's actionable "those figures aren't in your brief" copy never
+      // fired. A failure must name the reason it actually failed for.
+      refusal = `Ungrounded numeric claims survived every attempt: ${stillFabricated.join(", ")}`;
       console.warn(`[script] last-resort completion refused: ungrounded claims ${stillFabricated.join(", ")}`);
       break;
     }
@@ -905,6 +914,8 @@ export const generateScript = async (
     );
     return { ok: true, script: salvaged, usage: totalUsage, completedScenes: finished };
   }
+
+  if (refusal) lastError = refusal;
 
   // Keep the EVIDENCE. A failure used to surface only the validator's
   // complaint ("2 drawable nouns"), never the prose it was counting, so every
