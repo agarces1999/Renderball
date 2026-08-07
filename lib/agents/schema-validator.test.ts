@@ -6,6 +6,7 @@ import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 import {
   splitTwoSentenceHeadline,
+  dropEchoedCta,
   headlineProblem,
   findUngroundedClaims,
   findUngroundedStageLabels,
@@ -1783,15 +1784,85 @@ await check("normalizeScriptContent leaves a FINE headline completely alone", ()
 });
 
 
-// ── an echoed call-to-action is dropped, not argued about ───────────────────
-await check("a cta that repeats the headline is dropped", () => {
-  const out = normalizeScriptContent({
-    scenes: [{ content: { headline: "Read the full thesis", cta: { primary: "Read the full thesis" }, asset_ids: [] } }],
-  }) as { scenes: { content: Record<string, unknown> }[] };
-  assert(out.scenes[0].content.cta === undefined, "the dead cta must be gone");
-  assert(out.scenes[0].content.headline === "Read the full thesis", "the headline is untouched");
+// ── an echoed call-to-action ────────────────────────────────────────────────
+// dropEchoedCta is a LAST-RESORT repair and must not run pre-validation.
+// Dropping removes the whole cta object (validateScript requires cta.primary
+// whenever cta exists), and 52 of the 292 stored decks pair an echoed primary
+// with a real secondary — a closing-slide URL. Running it early deleted that
+// link on the first attempt for a defect the model usually fixes when asked.
+
+await check("normalizeScriptContent does NOT drop an echoed cta", () => {
+  const input = {
+    scenes: [
+      {
+        content: {
+          headline: "Request early access",
+          cta: { primary: "Request early access", secondary: "stripe.com/ai-wallet" },
+          asset_ids: [],
+        },
+      },
+    ],
+  };
+  const out = normalizeScriptContent(input) as { scenes: { content: Record<string, unknown> }[] };
+  const cta = out.scenes[0].content.cta as { secondary?: string } | undefined;
+  assert(!!cta, "the model must get its retry before we delete anything");
+  assert(cta?.secondary === "stripe.com/ai-wallet", "and the URL must still be there");
 });
 
+await check("dropEchoedCta itself still identifies an echo", () => {
+  const dropped = dropEchoedCta({
+    headline: "Request early access",
+    cta: { primary: "Request early access", secondary: "stripe.com/ai-wallet" },
+  });
+  assert(!!dropped && dropped.cta === undefined, "the whole cta goes — primary is required when cta exists");
+  const kept = dropEchoedCta({
+    headline: "Close the books in four days",
+    cta: { primary: "Book a walkthrough" },
+  });
+  assert(kept === null, "a real cta is never touched");
+});
+
+await check("declines when the first sentence would STILL be too long", () => {
+  const long = `${"A very long opening clause that runs past the cap".padEnd(80, "x")}. And a second.`;
+  assert(splitTwoSentenceHeadline(long, undefined) === null, "must not create a still-invalid headline");
+});
+
+await check("declines when there is no sentence boundary", () => {
+  assert(
+    splitTwoSentenceHeadline("One clause with no terminal punctuation at all here", undefined) === null,
+    "nothing to split",
+  );
+});
+
+await check("declines when the merged lede would overflow the cap", () => {
+  const r = splitTwoSentenceHeadline("Narrower than a platform. Deeper than a tool.", "x".repeat(279));
+  assert(r === null, "must not produce an over-length lede");
+});
+
+await check("a decimal or abbreviation is not mistaken for a sentence break", () => {
+  // "3.5x faster" and "Inc." must not be split on.
+  assert(splitTwoSentenceHeadline("Close the books 3.5x faster than last quarter", undefined) === null, "decimal");
+});
+
+await check("normalizeScriptContent applies the split end to end", () => {
+  const input = {
+    scenes: [
+      { content: { headline: "Narrower than a platform. Deeper than a tool.", asset_ids: [] } },
+    ],
+  };
+  const out = normalizeScriptContent(input) as { scenes: { content: { headline: string; lede?: string } }[] };
+  assert(out.scenes[0].content.headline === "Narrower than a platform.", `headline: ${out.scenes[0].content.headline}`);
+  assert(out.scenes[0].content.lede === "Deeper than a tool.", `lede: ${out.scenes[0].content.lede}`);
+});
+
+await check("normalizeScriptContent leaves a FINE headline completely alone", () => {
+  const input = { scenes: [{ content: { headline: "You wait days to hear back", asset_ids: [] } }] };
+  const out = normalizeScriptContent(input);
+  assert(out === input, "an untouched script must be returned by identity, not rebuilt");
+});
+
+
+// ── an echoed call-to-action is dropped, not argued about ───────────────────
 await check("a REAL cta is kept", () => {
   const input = {
     scenes: [{ content: { headline: "Close the books in four days", cta: { primary: "Book a walkthrough" }, asset_ids: [] } }],
@@ -1800,28 +1871,6 @@ await check("a REAL cta is kept", () => {
   assert(out === input, "nothing to repair means the script is returned untouched");
 });
 
-await check("dropping a cta does not resurrect when the headline is also split", () => {
-  // Two repairs on one content object. The second used to spread the ORIGINAL,
-  // putting the dead cta straight back.
-  const out = normalizeScriptContent({
-    scenes: [
-      {
-        content: {
-          headline: "Narrower than a platform. Deeper than a tool.",
-          cta: { primary: "Narrower than a platform. Deeper than a tool." },
-          asset_ids: [],
-        },
-      },
-    ],
-  }) as { scenes: { content: Record<string, unknown> }[] };
-  const content = out.scenes[0].content;
-  assert(content.cta === undefined, `the cta came back: ${JSON.stringify(content.cta)}`);
-  assert(content.headline === "Narrower than a platform.", `headline: ${content.headline}`);
-  assert(content.lede === "Deeper than a tool.", `lede: ${content.lede}`);
-});
-
-
-// ── a malformed OPTIONAL field must not kill a paid generation ──────────────
 await check("an empty illustration is dropped, not fatal", () => {
   // Observed: a 14-run matrix pass lost a generation to
   // "content.illustration must be a non-empty string identifier" — a field
@@ -1849,6 +1898,29 @@ await check("meta and cta are NOT swept by the optional-field drop", () => {
   }) as { scenes: { content: Record<string, unknown> }[] };
   assert(Array.isArray(out.scenes[0].content.meta), "malformed meta is left for the validator");
   assert(!!out.scenes[0].content.cta, "a real cta is never dropped here");
+});
+
+
+await check("a visual_concept emitted as an ARRAY keeps its prose", () => {
+  // It read to the validator as "missing", and the completion then replaced two
+  // usable sentences of the model's own direction with boilerplate.
+  const out = normalizeScriptContent({
+    scenes: [
+      {
+        content: { headline: "x", asset_ids: [] },
+        visual_concept: [
+          "A browser mock frames a settings panel with toggle rows, labels and a save button",
+          "the third toggle flips at 2.6s and a toast card slides up from the lower edge",
+        ],
+      },
+    ],
+  }) as { scenes: { visual_concept?: unknown }[] };
+  const vc = out.scenes[0].visual_concept;
+  assert(typeof vc === "string", `expected a joined string, got ${typeof vc}`);
+  assert(
+    String(vc).includes("browser mock") && String(vc).includes("toast card"),
+    `both parts must survive: ${String(vc)}`,
+  );
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

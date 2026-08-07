@@ -11,6 +11,7 @@ import {
   containerVocabulary,
   interiorVocabulary,
   completeVisualConcept,
+  dropEchoedCta,
 } from "./schema-validator";
 import { signatureWithLogoFallback, resolveCanvasPlan, brandShortName } from "../crawl/brand-identity";
 import { formatDesignLanguage } from "../crawl/design-language";
@@ -749,15 +750,23 @@ export const generateScript = async (
   // "Scene 8 missing or empty visual_concept" with no colon at all. A pattern
   // that assumed the colon silently matched nothing and the repair never ran —
   // caught by a test that expected the salvage and watched it decline.
-  const SOFT_ONLY =
-    /^Scene \d+:? (?:visual_concept too thin|names "|missing or empty visual_concept).*/;
+  // BOTH VOCABULARIES AGAIN — "Scene N:" for richness, "Scene N " with no
+  // colon for the missing field, "Section N" for copy. Each of those spellings
+  // has already cost a repair that silently never ran; there is no fourth
+  // chance worth taking.
+  const SOFT_ONLY = new RegExp(
+    '^(?:Scene \\d+:? (?:visual_concept too thin|names "|missing or empty visual_concept)' +
+      '|Section \\d+ content\\.cta\\.primary .* duplicates the headline)',
+  );
 
   /** The soft scene indexes named by a validator error, or null if any complaint is not soft. */
   const softIndexes = (error: string): number[] | null => {
     const complaints = error.split("|").map((c) => c.trim()).filter(Boolean);
     if (complaints.length === 0 || !complaints.every((c) => SOFT_ONLY.test(c))) return null;
     return [...new Set(
-      complaints.map((c) => Number(/^Scene (\d+):? /.exec(c)?.[1])).filter((n) => Number.isFinite(n)),
+      complaints
+        .map((c) => Number(/^(?:Scene|Section) (\d+)[: ]/.exec(c)?.[1]))
+        .filter((n) => Number.isFinite(n)),
     )];
   };
 
@@ -783,6 +792,43 @@ export const generateScript = async (
 
     const patched = structuredClone(candidate) as { scenes: Record<string, unknown>[] };
     let completed = 0;
+
+    // A call-to-action that merely repeats the headline is dropped HERE, at the
+    // last resort, rather than pre-validation. Dropping it removes the whole
+    // cta object (validateScript requires cta.primary whenever cta exists), and
+    // 52 of the 292 stored decks pair an echoed primary with a real secondary —
+    // a closing-slide URL. Doing it early deleted that link on the first
+    // attempt for a defect the model usually fixes when asked. Here the model
+    // has already been asked, twice, and a deck without its link beats no deck.
+    if (/duplicates the headline/.test(salvageError)) {
+      for (const i of indexes) {
+        const scene = patched.scenes[i];
+        const content = scene?.content;
+        if (!content || typeof content !== "object") continue;
+        const deEchoed = dropEchoedCta(content as Record<string, unknown>);
+        if (deEchoed) {
+          scene.content = deEchoed;
+          completed++;
+          completedAll.add(i);
+        }
+      }
+      if (completed === indexes.length) {
+        const rechecked = validateScript(patched, {
+          brandName: brandShortName(brief.brand_extract),
+          deck: brief.kind === "deck",
+        });
+        candidate = patched;
+        if (rechecked.ok) {
+          salvaged = rechecked.script;
+          break;
+        }
+        if (rechecked.error === salvageError) break;
+        salvageError = rechecked.error;
+        continue;
+      }
+      break;
+    }
+
     for (const i of indexes) {
       const scene = patched.scenes[i];
       if (!scene) continue;

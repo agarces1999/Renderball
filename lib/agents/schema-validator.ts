@@ -1863,6 +1863,16 @@ export const splitTwoSentenceHeadline = (
  * restores exactly that property, deterministically and at no cost, and the
  * user still sees the page on the review before anything is built.
  *
+ * WHERE THIS RUNS, AND WHY IT MOVED: as a LAST RESORT only, never before the
+ * model has had its retries. Dropping a cta deletes the whole object, because
+ * validateScript requires cta.primary whenever cta is present — and measured
+ * across the 292 stored decks, 52 of them pair an echoed primary with a real
+ * secondary ("stripe.com/ai-wallet", "fusefinance.com/rescue"). Running this
+ * pre-validation therefore deleted a closing slide's URL on the FIRST attempt,
+ * silently, for a defect the model would very likely have fixed if simply
+ * asked. Now it is asked; only when every attempt is spent do we trade the
+ * link for the deck, which at that point is the better of two bad outcomes.
+ *
  * @returns the content without the dead CTA, or null when there is nothing to do.
  */
 export const dropEchoedCta = (
@@ -1884,13 +1894,33 @@ export const normalizeScriptContent = (input: unknown): unknown => {
   let changed = false;
   const dropped: string[] = [];
   const splitHeadlines: string[] = [];
-  let droppedCtas = 0;
   const droppedFields: string[] = [];
+  let coercedConcepts = 0;
   const scenes = root.scenes.map((sc) => {
     if (!sc || typeof sc !== "object") return sc;
     const scene = sc as Record<string, unknown>;
     const content = scene.content;
-    if (!content || typeof content !== "object") return sc;
+    // Nothing invented, nothing DISCARDED. visual_concept lives on the SCENE,
+    // not on content — and a concept emitted as an array of beat strings reads
+    // to the validator as "missing", after which the last-resort completion
+    // replaced two usable sentences of the model's own visual direction with
+    // boilerplate. Joining the parts keeps the authored prose: measured, a real
+    // two-element array joins to 161 chars and 8 drawable nouns, which passes
+    // on its own with nothing added.
+    let sceneOut = scene;
+    if (scene.visual_concept !== undefined && typeof scene.visual_concept !== "string") {
+      const parts = Array.isArray(scene.visual_concept)
+        ? scene.visual_concept.filter((x): x is string => typeof x === "string" && !!x.trim())
+        : [];
+      const joined = parts.join(". ").trim();
+      if (joined) {
+        sceneOut = { ...scene, visual_concept: joined };
+        changed = true;
+        coercedConcepts++;
+      }
+    }
+
+    if (!content || typeof content !== "object") return sceneOut;
     const c = content as Record<string, unknown>;
 
     // Two-sentence headline → move the second sentence into the lede. Done
@@ -1938,13 +1968,6 @@ export const normalizeScriptContent = (input: unknown): unknown => {
     }
 
 
-    const deEchoed = dropEchoedCta(working);
-    if (deEchoed) {
-      working = deEchoed;
-      changed = true;
-      droppedCtas++;
-    }
-
     // Chained off `working`, NOT `c`. Spreading the ORIGINAL here would put
     // back a cta that dropEchoedCta had just removed — two repairs on the same
     // content, the second quietly undoing the first.
@@ -1957,22 +1980,11 @@ export const normalizeScriptContent = (input: unknown): unknown => {
         working = { ...working, headline: split.headline, lede: split.lede };
         changed = true;
         splitHeadlines.push(String(working.headline));
-        // AND AGAIN, because the split MOVED the headline. A cta reading
-        // "Narrower than a platform." is not a duplicate of "Narrower than a
-        // platform. Deeper than a tool." — but it is an exact duplicate of what
-        // that headline becomes. Checking only before the split let this
-        // repair manufacture the very defect the other repair exists to
-        // remove, which is the one thing a repair may never do.
-        const afterSplit = dropEchoedCta(working);
-        if (afterSplit) {
-          working = afterSplit;
-          droppedCtas++;
-        }
       }
     }
 
     if (!Array.isArray(working.meta)) {
-      return working === c ? sc : { ...scene, content: working };
+      return working === c ? sceneOut : { ...sceneOut, content: working };
     }
     const c2 = working;
     const kept = (c2.meta as unknown[]).filter((m) => {
@@ -1986,13 +1998,13 @@ export const normalizeScriptContent = (input: unknown): unknown => {
       return ok;
     });
     if (kept.length === (c2.meta as unknown[]).length) {
-      return working === c ? sc : { ...scene, content: working };
+      return working === c ? sceneOut : { ...sceneOut, content: working };
     }
     changed = true;
     const nextContent: Record<string, unknown> = { ...c2 };
     if (kept.length === 0) delete nextContent.meta;
     else nextContent.meta = kept;
-    return { ...scene, content: nextContent };
+    return { ...sceneOut, content: nextContent };
   });
   if (!changed) return input;
   if (dropped.length > 0) {
@@ -2002,11 +2014,11 @@ export const normalizeScriptContent = (input: unknown): unknown => {
         .join(", ")})`,
     );
   }
+  if (coercedConcepts > 0) {
+    console.warn(`[script] joined ${coercedConcepts} visual_concept(s) emitted as arrays rather than discarding the prose`);
+  }
   if (droppedFields.length > 0) {
     console.warn(`[script] dropped ${droppedFields.length} malformed optional field(s): ${droppedFields.join(", ")}`);
-  }
-  if (droppedCtas > 0) {
-    console.warn(`[script] dropped ${droppedCtas} call-to-action(s) that merely repeated the headline`);
   }
   if (splitHeadlines.length > 0) {
     console.warn(
