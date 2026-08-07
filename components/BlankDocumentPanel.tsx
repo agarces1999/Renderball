@@ -1,13 +1,6 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import {
-  clearSandboxState,
-  composeBriefFromSandbox,
-  describeSandbox,
-  loadSandboxState,
-  type LandingSandboxState,
-} from "../lib/landing-sandbox";
 
 /**
  * The first thing a user sees in a brand-new document.
@@ -27,6 +20,15 @@ import {
  * This panel only exists while the document is untouched (isBlankScript).
  * The moment there is real content it disappears for good — it is an empty
  * state, not a mode.
+ *
+ * TWO choices, never three. A third option briefly lived here: continuing the
+ * sketch a visitor drew on the home page. Founder call (2026-08-06) — remove
+ * it. The landing's elements are canned demo content (a KPI reading "4.6 min
+ * from one URL", a stock bar chart, a quote attributed to "the model"), so
+ * carrying them into somebody's real deck imports OUR marketing filler into
+ * THEIR document. It also could not do what its label promised, which is how
+ * it was noticed. Do not reintroduce it without a real answer to "why would
+ * anyone want this in their deck".
  */
 export function BlankDocumentPanel({
   scriptId,
@@ -48,33 +50,6 @@ export function BlankDocumentPanel({
   const [pages, setPages] = useState(6);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  // ─── Continue what you started (landing-canvas sandbox) ────────────
-  // The landing stage serializes the visitor's drawn boxes + chosen
-  // intents to localStorage. The old /new front door read it back after
-  // sign-in; now that / goes straight to /documents, this panel — the
-  // first surface of a fresh document — is where that promise is kept.
-  // Honest smallest version: the intents become words in the generate
-  // prompt the user can read and edit — no forged document. "start
-  // clean" is the escape hatch; both paths clear the stored canvas.
-  const [landingSeed, setLandingSeed] = useState<LandingSandboxState | null>(
-    null,
-  );
-  useEffect(() => {
-    const s = loadSandboxState();
-    if (s && s.elements.length > 0) setLandingSeed(s);
-  }, []);
-  const continueFromLanding = () => {
-    if (!landingSeed) return;
-    setPrompt(composeBriefFromSandbox(landingSeed));
-    clearSandboxState();
-    setLandingSeed(null);
-    setOpen(true);
-  };
-  const startClean = () => {
-    clearSandboxState();
-    setLandingSeed(null);
-  };
 
   const generate = async () => {
     if (!prompt.trim()) {
@@ -148,39 +123,6 @@ export function BlankDocumentPanel({
                 images. Always free — you only pay when Renderball generates.
               </span>
             </button>
-
-            {landingSeed && (
-              /* Quiet on purpose: an accent fill here put a SECOND green card
-                 on the panel, competing with "Build it yourself" for primacy
-                 while actually belonging to the generate option below it. This
-                 is a helper for that option, not a third choice. */
-              <div className="mt-4 rounded-lg border border-hairline bg-surface-2 px-4 py-3">
-                <p className="text-[12.5px] leading-relaxed text-ink-soft">
-                  On the home page you sketched {describeSandbox(landingSeed)}.{" "}
-                  Renderball can write that up as the starting description for
-                  the deck below.
-                </p>
-                <div className="mt-2 flex flex-wrap items-center gap-3">
-                  <button
-                    type="button"
-                    onClick={continueFromLanding}
-                    className="rounded-md border border-hairline-strong bg-surface px-3 py-1.5 text-[12.5px] font-medium text-ink transition-colors hover:bg-surface"
-                  >
-                    Use it as my brief →
-                  </button>
-                  <span className="text-[11.5px] text-muted">
-                    writes it out for you to edit — nothing is spent until you generate
-                  </span>
-                  <button
-                    type="button"
-                    onClick={startClean}
-                    className="text-[11.5px] text-muted underline underline-offset-2 transition-colors hover:text-ink"
-                  >
-                    forget it
-                  </button>
-                </div>
-              </div>
-            )}
 
             <button
               type="button"
