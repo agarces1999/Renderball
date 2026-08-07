@@ -440,6 +440,20 @@ export const drawableVocabulary = (register?: string): string[] => {
   return [...new Set(words)];
 };
 
+/**
+ * The subset of the drawable vocabulary that promises an INTERIOR — naming one
+ * without furnishing it fails a separate rule. Exported for the same reason as
+ * drawableVocabulary(): once the writer was told which words count, it reached
+ * for these (they are the most obvious "drawable" nouns) and tripped the
+ * furnishing rule instead. Measured: telling it the vocabulary removed every
+ * drawable-noun failure and produced two "only 1 interior detail" failures in
+ * their place. The writer needs BOTH halves of the contract, not one.
+ */
+export const containerVocabulary = (): string[] =>
+  CONTAINER_SOURCE.split("|").map((raw) =>
+    raw.replace(/\(\?:[^)]*\)\??/g, "").replace(/s\?$/, "").replace(/\?/g, "").trim(),
+  );
+
 /** Naive singular so "cards"/"card" count once ("mesh"/"glass" unaffected). */
 const singularize = (w: string): string =>
   w.endsWith("s") && !w.endsWith("ss") ? w.slice(0, -1) : w;

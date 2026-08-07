@@ -8,6 +8,7 @@ import {
   findUngroundedStageLabels,
   findTypeOnlyScenes,
   drawableVocabulary,
+  containerVocabulary,
 } from "./schema-validator";
 import { signatureWithLogoFallback, resolveCanvasPlan, brandShortName } from "../crawl/brand-identity";
 import { formatDesignLanguage } from "../crawl/design-language";
@@ -442,8 +443,22 @@ export const generateScript = async (
 
         if (Array.isArray(fixed) && fixed.length === repair.indexes.length) {
           // The expected shape: one replacement per flagged scene, in order.
+          //
+          // MERGE, never replace. A repair turn asks for one scene in
+          // isolation, so the model answers with the part it was asked to fix
+          // and readily drops structural fields it was not thinking about —
+          // observed live as "scenes[0].start_seconds must be 0, got
+          // undefined", a defect invented by the repair rather than found by
+          // it. Anything the reply omits is inherited from the scene it
+          // replaces, so a repair can only ever improve the scene.
           repair.indexes.forEach((sceneIdx, i) => {
-            if (sceneIdx >= 0 && sceneIdx < base.scenes.length) base.scenes[sceneIdx] = fixed[i];
+            if (sceneIdx < 0 || sceneIdx >= base.scenes.length) return;
+            const original = base.scenes[sceneIdx];
+            const replacement = fixed[i];
+            base.scenes[sceneIdx] =
+              original && typeof original === "object" && replacement && typeof replacement === "object"
+                ? { ...(original as object), ...(replacement as object) }
+                : replacement;
           });
           parsed = base;
         } else if (Array.isArray(fixed) && fixed.length === base.scenes.length) {
@@ -700,6 +715,7 @@ const buildSceneRepairMessage = (
     "- CONCRETE DRAWABLE NOUNS. A literal word-match, NOT a judgement of vividness. Only these words count, and you need at least THREE DIFFERENT ones, spelled this way (plurals are fine):",
     `  ${drawableVocabulary().join(", ")}`,
     "  Imagery outside this list scores ZERO however vivid — \"a conveyor belt of invoices dropped into a tray\" counts ONE (invoice). Adjectives, moods, gradients and glows count nothing.",
+    `  TRAP: ${containerVocabulary().join(" / ")} are CONTAINERS — each one you name needs >=2 things named INSIDE it, or it fails a different rule. Reaching three via non-container words (bar, sparkline, logo, badge, arrow, invoice, counter) is cheaper and safer.`,
     "- INTERIOR DETAIL: when you name a container (dashboard, window, card), name at least two specific things drawn INSIDE it — rows, column labels, values, tabs, an avatar, a sparkline.",
     "Length is not the problem: these scenes were already long. Add the missing OBJECTS.",
     "",
