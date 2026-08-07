@@ -407,10 +407,18 @@ await check("a COPY failure (\"Section N …\") repairs the one scene, it does n
   // visual rules, "Section 5 content.headline" for copy rules. Repair matched
   // only the first, so a two-sentence headline — a one-line fix — re-rolled
   // every scene and burned all three attempts. Observed on a 12-page outline.
+  // NOT a two-sentence headline: that is now split deterministically before
+  // validation, so it never reaches repair (which is the better outcome, and
+  // is covered in schema-validator.test.ts). This is an over-length headline
+  // with no sentence boundary — the splitter declines it by design, so the
+  // copy complaint still travels the "Section N" path this test is about.
   const twoSentences = structuredClone(VALID_SCRIPT) as typeof VALID_SCRIPT;
   twoSentences.scenes[1] = {
     ...twoSentences.scenes[1],
-    content: { ...twoSentences.scenes[1].content, headline: "Narrower than a platform. Deeper than a tool." },
+    content: {
+      ...twoSentences.scenes[1].content,
+      headline: "A single unbroken clause that simply runs on far past the seventy-two character cap",
+    },
   };
 
   let attempt = 0;
@@ -430,7 +438,7 @@ await check("a COPY failure (\"Section N …\") repairs the one scene, it does n
   const ask = asks[1] ?? "";
   assert(/JSON ARRAY of scene objects/i.test(ask), `expected a scene-repair ask, got: ${ask.slice(0, 160)}`);
   assert(
-    /two sentences/i.test(ask),
+    /cap at 72|chars/i.test(ask),
     `the repair must quote the complaint it is fixing, got: ${ask.slice(0, 300)}`,
   );
 });

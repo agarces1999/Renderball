@@ -26,6 +26,7 @@ export type ValidationResult =
 
 const HEADLINE_MAX = 72;
 const HEADLINE_TWO_SENTENCE_MIN = 44;
+const LEDE_MAX = 280;
 
 /**
  * QA S4: a hero headline must be ONE punchy clause. The old cap was 120 chars,
@@ -1753,20 +1754,81 @@ const metaValueIsTerse = (value: string): boolean => {
  * Any shape it doesn't recognise is left untouched — validateScript owns shape
  * errors; this only prunes well-formed-but-prose meta values.
  */
+/**
+ * Move a headline's second sentence into the lede — deterministically.
+ *
+ * "Section 5 content.headline is two sentences" was the single most repeated
+ * copy failure across the outline matrix, and the model kept reproducing it
+ * because the phrasing it likes is genuinely good writing ("Narrower than a
+ * platform. Deeper than a tool."). The validator's own instruction for it is
+ * mechanical — "Move the second sentence into the lede" — so DO it rather than
+ * spending a model round asking, and a paid generation no longer dies on
+ * punctuation. Zero tokens, and the user still reviews the outline before
+ * anything is built.
+ *
+ * Conservative: it declines whenever the result would not clearly be an
+ * improvement — no clean boundary, an empty half, a first sentence that still
+ * breaks the length cap, or a lede that would overflow. Those go back to the
+ * model, which is the status quo rather than a regression.
+ *
+ * @returns the rewritten pair, or null to leave it alone.
+ */
+export const splitTwoSentenceHeadline = (
+  headline: string,
+  lede: string | undefined,
+): { headline: string; lede: string } | null => {
+  const h = headline.trim();
+  if (h.length <= HEADLINE_TWO_SENTENCE_MIN) return null;
+  const m = /^(.*?[.?!])\s+(\p{Lu}.*)$/su.exec(h);
+  if (!m) return null;
+  const first = m[1].trim();
+  const rest = m[2].trim();
+  if (!first || !rest) return null;
+  // The kept half must actually satisfy the rule it is being split to satisfy.
+  if (first.length > HEADLINE_MAX) return null;
+  if (headlineProblem(first)) return null;
+  const existing = (lede ?? "").trim();
+  const merged = existing ? `${rest} ${existing}` : rest;
+  if (merged.length > LEDE_MAX) return null;
+  return { headline: first, lede: merged };
+};
+
 export const normalizeScriptContent = (input: unknown): unknown => {
   if (!input || typeof input !== "object") return input;
   const root = input as Record<string, unknown>;
   if (!Array.isArray(root.scenes)) return input;
   let changed = false;
   const dropped: string[] = [];
+  const splitHeadlines: string[] = [];
   const scenes = root.scenes.map((sc) => {
     if (!sc || typeof sc !== "object") return sc;
     const scene = sc as Record<string, unknown>;
     const content = scene.content;
     if (!content || typeof content !== "object") return sc;
     const c = content as Record<string, unknown>;
-    if (!Array.isArray(c.meta)) return sc;
-    const kept = c.meta.filter((m) => {
+
+    // Two-sentence headline → move the second sentence into the lede. Done
+    // here, before validation, because it is mechanical and the alternative
+    // is a paid generation dying on punctuation. splitTwoSentenceHeadline
+    // declines whenever the result would not clearly be better.
+    let working = c;
+    if (typeof c.headline === "string" && headlineProblem(c.headline)) {
+      const split = splitTwoSentenceHeadline(
+        c.headline,
+        typeof c.lede === "string" ? c.lede : undefined,
+      );
+      if (split) {
+        working = { ...c, headline: split.headline, lede: split.lede };
+        changed = true;
+        splitHeadlines.push(c.headline);
+      }
+    }
+
+    if (!Array.isArray(working.meta)) {
+      return working === c ? sc : { ...scene, content: working };
+    }
+    const c2 = working;
+    const kept = (c2.meta as unknown[]).filter((m) => {
       // Leave malformed shapes for validateScript to reject; only judge well-
       // formed {label,value} string pairs here.
       if (!m || typeof m !== "object") return true;
@@ -1776,19 +1838,30 @@ export const normalizeScriptContent = (input: unknown): unknown => {
       if (!ok) dropped.push(mm.value);
       return ok;
     });
-    if (kept.length === c.meta.length) return sc;
+    if (kept.length === (c2.meta as unknown[]).length) {
+      return working === c ? sc : { ...scene, content: working };
+    }
     changed = true;
-    const nextContent: Record<string, unknown> = { ...c };
+    const nextContent: Record<string, unknown> = { ...c2 };
     if (kept.length === 0) delete nextContent.meta;
     else nextContent.meta = kept;
     return { ...scene, content: nextContent };
   });
   if (!changed) return input;
-  console.warn(
-    `[script] normalized meta: dropped ${dropped.length} prose-as-value KPI entr${dropped.length === 1 ? "y" : "ies"} (${dropped
-      .map((d) => `"${d}"`)
-      .join(", ")})`,
-  );
+  if (dropped.length > 0) {
+    console.warn(
+      `[script] normalized meta: dropped ${dropped.length} prose-as-value KPI entr${dropped.length === 1 ? "y" : "ies"} (${dropped
+        .map((d) => `"${d}"`)
+        .join(", ")})`,
+    );
+  }
+  if (splitHeadlines.length > 0) {
+    console.warn(
+      `[script] normalized ${splitHeadlines.length} two-sentence headline(s) into headline + lede: ${splitHeadlines
+        .map((d) => `"${d}"`)
+        .join(", ")}`,
+    );
+  }
   return { ...root, scenes };
 };
 
@@ -2087,7 +2160,7 @@ export const validateScript = (
         return { ok: false, error: `Section ${idx} content.lede is not readable.` };
       }
       if (lede.length > 280) {
-        return { ok: false, error: `Section ${idx} content.lede is ${lede.length} chars; cap at 280. Keep ledes to 1-2 sentences.` };
+        return { ok: false, error: `Section ${idx} content.lede is ${lede.length} chars; cap at ${LEDE_MAX}. Keep ledes to 1-2 sentences.` };
       }
     }
 

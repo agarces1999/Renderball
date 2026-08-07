@@ -5,6 +5,7 @@
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 import {
+  splitTwoSentenceHeadline,
   headlineProblem,
   findUngroundedClaims,
   findUngroundedStageLabels,
@@ -1706,6 +1707,67 @@ check("voice: validateScript surfaces a brand-led scene-0 opener when brandName 
   // Without the brandName the brand-opener arm is skipped.
   const noBrand = validateScript(branded, {});
   assert(noBrand.ok || !/names the brand/.test(noBrand.error), "the brand-opener arm is skipped without brandName");
+});
+
+
+// ── two-sentence headlines are split, not argued about ──────────────────────
+// The most repeated copy failure in the outline matrix. The validator's own
+// instruction is mechanical ("Move the second sentence into the lede"), so it
+// is done rather than asked for. The tests that matter are the REFUSALS: a
+// deterministic rewrite of someone's copy must decline whenever the result
+// would not clearly be better.
+
+await check("a two-sentence headline is split, second sentence into the lede", () => {
+  const r = splitTwoSentenceHeadline("Narrower than a platform. Deeper than a tool.", undefined);
+  assert(!!r, "expected a split");
+  assert(r!.headline === "Narrower than a platform.", `unexpected headline: ${r!.headline}`);
+  assert(r!.lede === "Deeper than a tool.", `unexpected lede: ${r!.lede}`);
+  assert(headlineProblem(r!.headline) === null, "the kept half must satisfy the rule it was split for");
+});
+
+await check("an EXISTING lede is preserved, not overwritten", () => {
+  const r = splitTwoSentenceHeadline("Narrower than a platform. Deeper than a tool.", "It reconciles continuously.");
+  assert(!!r && r!.lede.includes("It reconciles continuously."), `the writer's lede must survive: ${r?.lede}`);
+  assert(r!.lede.startsWith("Deeper than a tool."), `the moved sentence leads: ${r!.lede}`);
+});
+
+await check("declines when the first sentence would STILL be too long", () => {
+  const long = `${"A very long opening clause that runs past the cap".padEnd(80, "x")}. And a second.`;
+  assert(splitTwoSentenceHeadline(long, undefined) === null, "must not create a still-invalid headline");
+});
+
+await check("declines when there is no sentence boundary", () => {
+  assert(
+    splitTwoSentenceHeadline("One clause with no terminal punctuation at all here", undefined) === null,
+    "nothing to split",
+  );
+});
+
+await check("declines when the merged lede would overflow the cap", () => {
+  const r = splitTwoSentenceHeadline("Narrower than a platform. Deeper than a tool.", "x".repeat(279));
+  assert(r === null, "must not produce an over-length lede");
+});
+
+await check("a decimal or abbreviation is not mistaken for a sentence break", () => {
+  // "3.5x faster" and "Inc." must not be split on.
+  assert(splitTwoSentenceHeadline("Close the books 3.5x faster than last quarter", undefined) === null, "decimal");
+});
+
+await check("normalizeScriptContent applies the split end to end", () => {
+  const input = {
+    scenes: [
+      { content: { headline: "Narrower than a platform. Deeper than a tool.", asset_ids: [] } },
+    ],
+  };
+  const out = normalizeScriptContent(input) as { scenes: { content: { headline: string; lede?: string } }[] };
+  assert(out.scenes[0].content.headline === "Narrower than a platform.", `headline: ${out.scenes[0].content.headline}`);
+  assert(out.scenes[0].content.lede === "Deeper than a tool.", `lede: ${out.scenes[0].content.lede}`);
+});
+
+await check("normalizeScriptContent leaves a FINE headline completely alone", () => {
+  const input = { scenes: [{ content: { headline: "You wait days to hear back", asset_ids: [] } }] };
+  const out = normalizeScriptContent(input);
+  assert(out === input, "an untouched script must be returned by identity, not rebuilt");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);
