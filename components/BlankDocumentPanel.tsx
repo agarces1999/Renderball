@@ -30,6 +30,34 @@ import { useEffect, useState } from "react";
  * it was noticed. Do not reintroduce it without a real answer to "why would
  * anyone want this in their deck".
  */
+
+/**
+ * The steps shown while an outline is being written.
+ *
+ * PACED, NOT MEASURED — and the design is built around admitting that.
+ * lib/llm/cast-provider.ts is deliberately non-streaming, so there is no
+ * progress signal to read; inventing a percentage would be a lie told with a
+ * progress bar. What IS true:
+ *
+ *   - every line names something the user actually asked for (their page
+ *     count, their site), so each is a true statement about the work;
+ *   - the elapsed clock beside them is real, and is the only number claimed;
+ *   - the LAST step never completes. It keeps breathing until the response
+ *     lands. A ceremony whose steps all tick green while the user waits is
+ *     precisely the moment it becomes dishonest — the same discipline
+ *     BuildPreviewClient uses when it holds its final step.
+ */
+const generatingSteps = (pages: number, url: string): string[] => {
+  const site = url.trim().replace(/^https?:\/\//, "").replace(/\/$/, "");
+  return [
+    "Reading your brief",
+    ...(site ? [`Looking at ${site}`] : []),
+    "Finding the story",
+    `Naming your ${pages} page${pages === 1 ? "" : "s"}`,
+    "Putting them in order",
+  ];
+};
+
 export function BlankDocumentPanel({
   scriptId,
   onDismiss,
@@ -49,6 +77,16 @@ export function BlankDocumentPanel({
   const [url, setUrl] = useState("");
   const [pages, setPages] = useState(6);
   const [busy, setBusy] = useState(false);
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    if (!busy) {
+      setElapsed(0);
+      return;
+    }
+    const started = Date.now();
+    const t = window.setInterval(() => setElapsed(Math.round((Date.now() - started) / 1000)), 1000);
+    return () => window.clearInterval(t);
+  }, [busy]);
   const [error, setError] = useState<string | null>(null);
 
   const generate = async () => {
@@ -191,7 +229,13 @@ export function BlankDocumentPanel({
               />
             </label>
 
-            {prompt.trim().length > 0 && prompt.trim().length < pages * 40 && (
+            {/* Deliberately CONSERVATIVE. At 40 chars/page this fired on a
+                brief that named the audience, the problem and the ask in 165
+                characters — good input, scolded. And the outline matrix shows
+                a 91-character fragment producing 12 pages fine, so brevity is
+                not a known cause of failure. It now speaks only for briefs
+                that are tiny even by a generous reading. */}
+            {prompt.trim().length > 0 && prompt.trim().length < pages * 15 && (
               <p className="mt-2.5 text-[12px] leading-relaxed text-muted">
                 That is short for {pages} page{pages === 1 ? "" : "s"} — a few
                 sentences on who it is for, the problem, and what you are asking
@@ -199,14 +243,17 @@ export function BlankDocumentPanel({
               </p>
             )}
 
-            <button
-              type="button"
-              onClick={() => void generate()}
-              disabled={busy}
-              className="mt-4 w-full rounded-md bg-accent px-4 py-2.5 text-[13.5px] font-semibold text-accent-ink transition-all hover:brightness-110 disabled:opacity-50"
-            >
-              {busy ? "Starting…" : "Generate the document"}
-            </button>
+            {busy ? (
+              <GeneratingSteps steps={generatingSteps(pages, url)} elapsed={elapsed} pages={pages} />
+            ) : (
+              <button
+                type="button"
+                onClick={() => void generate()}
+                className="mt-4 w-full rounded-md bg-accent px-4 py-2.5 text-[13.5px] font-semibold text-accent-ink transition-all hover:brightness-110"
+              >
+                Generate the document
+              </button>
+            )}
             <p className="mt-2 text-center font-mono text-[10.5px] text-faint">
               You approve the outline before anything is designed.
             </p>
@@ -235,6 +282,84 @@ export function BlankDocumentPanel({
             )}
           </>
         )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The steps, rendered. See generatingSteps above for why they are paced and
+ * what is actually true on this screen.
+ *
+ * Pacing: a 3-page outline has measured ~29s and a 12-page one ~114s, so the
+ * estimate scales with the page count. Steps advance through the estimate and
+ * then STOP — the final one keeps breathing for as long as it takes, and past
+ * a generous multiple of the estimate the copy says so out loud rather than
+ * pretending the pace was right.
+ */
+function GeneratingSteps({
+  steps,
+  elapsed,
+  pages,
+}: {
+  steps: string[];
+  elapsed: number;
+  pages: number;
+}) {
+  const estimate = 25 + pages * 6;
+  const perStep = estimate / steps.length;
+  // Never past the last index: the final step is where the wait lives.
+  const active = Math.min(Math.floor(elapsed / perStep), steps.length - 1);
+  const slow = elapsed > estimate * 2;
+  const mmss = `${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, "0")}`;
+
+  return (
+    <div className="mt-4 rounded-lg border border-hairline bg-surface-2 p-4">
+      <ul className="flex flex-col gap-2">
+        {steps.map((label, i) => {
+          const done = i < active;
+          const now = i === active;
+          return (
+            <li
+              key={label}
+              className="flex items-center gap-2.5"
+              style={{ animation: `rb-fade-up 320ms ease-out both`, animationDelay: `${i * 60}ms` }}
+            >
+              <span
+                aria-hidden
+                className={`rb-step-dot inline-block h-1.5 w-1.5 shrink-0 rounded-full ${
+                  done ? "bg-accent" : now ? "bg-accent" : "bg-hairline-strong"
+                }`}
+                style={now ? { animation: "rb-step-pulse 1.4s ease-in-out infinite" } : undefined}
+              />
+              <span
+                className={`text-[12.5px] leading-relaxed ${
+                  done ? "text-muted" : now ? "text-ink" : "text-faint"
+                }`}
+              >
+                {label}
+              </span>
+              {now && (
+                <span className="relative ml-1 h-px flex-1 overflow-hidden bg-hairline" aria-hidden>
+                  <span
+                    className="rb-step-sweep absolute inset-y-0 left-0 w-1/3 bg-accent/60"
+                    style={{ animation: "rb-step-sweep 1.6s ease-in-out infinite" }}
+                  />
+                </span>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+
+      <div className="mt-3 flex items-baseline justify-between gap-3 border-t border-hairline pt-2.5">
+        {/* The one number on this screen that is measured rather than paced. */}
+        <span className="font-mono text-[11px] tabular-nums text-muted">{mmss}</span>
+        <span className="text-[11px] leading-relaxed text-faint">
+          {slow
+            ? "Taking longer than usual — still working."
+            : "You can close this tab; it finishes on its own."}
+        </span>
       </div>
     </div>
   );

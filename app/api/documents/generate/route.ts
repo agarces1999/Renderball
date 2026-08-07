@@ -41,10 +41,11 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "scriptId and prompt required" }, { status: 400 });
   }
   const pages = Math.max(1, Math.min(12, Number(body.pages) || 6));
-  // Roughly the shortest brief that has ever produced a usable page. Used only
-  // to word the failure honestly and to nudge before spending — never to block:
-  // a terse brief plus a URL to crawl can work fine.
-  const BRIEF_CHARS_PER_PAGE = 40;
+  // Only blame the brief when it is REALLY thin. A 91-character fragment
+  // produced 12 good pages in the outline matrix, so shortness is not a known
+  // cause of failure and saying it is would send someone rewriting perfectly
+  // good input. Never blocks; only chooses the wording of a failure.
+  const BRIEF_CHARS_PER_PAGE = 15;
 
   // Ownership: the document must already exist and be theirs.
   const brief = await loadBriefByScriptId(scriptId, user.id);

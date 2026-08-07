@@ -289,3 +289,20 @@
 .chrome-veil {
   background-color: color-mix(in srgb, var(--canvas) 82%, transparent);
 }
+
+/* Generating steps (components/BlankDocumentPanel.tsx). The ACTIVE step
+   breathes so a minute-long wait reads as work rather than a frozen screen;
+   the dot travels so there is motion even when nothing has changed yet. Both
+   are decoration — the elapsed clock beside them is the honest signal — and
+   both stop entirely under prefers-reduced-motion. */
+@keyframes rb-step-pulse {
+  0%, 100% { opacity: 0.55; transform: scale(0.9); }
+  50%      { opacity: 1;    transform: scale(1.15); }
+}
+@keyframes rb-step-sweep {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(300%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .rb-step-dot, .rb-step-sweep { animation: none !important; }
+}
