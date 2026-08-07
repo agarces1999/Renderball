@@ -55,7 +55,7 @@ export async function POST(request: Request) {
   const buf = Buffer.from(await file.arrayBuffer());
   // file.name is used ONLY to choose a strategy and to echo back for display;
   // it never touches a path.
-  const result = extractText(buf, file.name || "attachment");
+  const result = await extractText(buf, file.name || "attachment");
 
   if (!result.ok) {
     // reason is written for a person and is safe to show as-is.

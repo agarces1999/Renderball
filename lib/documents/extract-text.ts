@@ -2,6 +2,7 @@ import { inflateRawSync } from "zlib";
 import { readXlsx } from "./read-xlsx";
 import { readSvg } from "./read-svg";
 import { readCsv } from "./read-csv";
+import { readPdf } from "./read-pdf";
 
 /**
  * Pull the readable text out of a brief someone attached.
@@ -167,7 +168,7 @@ const docxToText = (buf: Buffer): string | null => {
 /**
  * @param filename used only to pick a strategy; never trusted as a path.
  */
-export const extractText = (buf: Buffer, filename: string): ExtractResult => {
+export const extractText = async (buf: Buffer, filename: string): Promise<ExtractResult> => {
   const ext = extensionOf(filename);
 
   // Sniff the real bytes rather than trusting the extension: a renamed PDF
@@ -176,12 +177,9 @@ export const extractText = (buf: Buffer, filename: string): ExtractResult => {
   const isZip = buf.length > 4 && buf.readUInt32LE(0) === 0x04034b50;
 
   if (isPdf || ext === "pdf") {
-    return {
-      ok: false,
-      text: "",
-      reason:
-        "PDFs aren't supported yet — open it, copy the text and paste it into the brief. Word documents and plain text files work.",
-    };
+    const pdf = await readPdf(buf, filename);
+    if (!pdf.ok) return { ok: false, text: "", reason: pdf.reason };
+    return clamp(pdf.text);
   }
 
   // Spreadsheets before documents: both are ZIP-of-XML, so a byte sniff cannot
@@ -249,6 +247,6 @@ export const extractText = (buf: Buffer, filename: string): ExtractResult => {
   return {
     ok: false,
     text: "",
-    reason: `.${ext} files aren't supported. Attach a Word document, spreadsheet, CSV, SVG or plain text file — or paste the text into the brief.`,
+    reason: `.${ext} files aren't supported. Attach a PDF, Word document, spreadsheet, CSV, SVG or plain text file — or paste the text into the brief.`,
   };
 };

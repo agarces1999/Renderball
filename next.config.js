@@ -13,6 +13,9 @@ const nextConfig = {
       // to parse as JS. Mark external so it's resolved at runtime by
       // the iframe-preview route.
       "esbuild",
+      // pdfjs is 35MB and server-only (attachment text extraction). Bundling
+      // it would ship a PDF engine to every browser that loads the editor.
+      "pdfjs-dist",
     ],
   },
   async redirects() {

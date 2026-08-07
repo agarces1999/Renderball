@@ -1,7 +1,7 @@
 {
   "name": "renderball",
   "version": "0.0.1",
-  "description": "Renderball \u2014 script-first AI video generation",
+  "description": "Renderball — script-first AI video generation",
   "private": true,
   "scripts": {
     "dev": "node scripts/dev.mjs",
@@ -36,6 +36,7 @@
     "next": "^14.2.35",
     "nodemailer": "^9.0.3",
     "pdf-lib": "^1.17.1",
+    "pdfjs-dist": "^5.7.284",
     "playwright": "^1.60.0",
     "react": "18.3.1",
     "react-dom": "18.3.1",
