@@ -191,6 +191,14 @@ export function BlankDocumentPanel({
               />
             </label>
 
+            {prompt.trim().length > 0 && prompt.trim().length < pages * 40 && (
+              <p className="mt-2.5 text-[12px] leading-relaxed text-muted">
+                That is short for {pages} page{pages === 1 ? "" : "s"} — a few
+                sentences on who it is for, the problem, and what you are asking
+                for gives it more to work with. You can generate anyway.
+              </p>
+            )}
+
             <button
               type="button"
               onClick={() => void generate()}
@@ -203,7 +211,27 @@ export function BlankDocumentPanel({
               You approve the outline before anything is designed.
             </p>
             {error && (
-              <p className="mt-2 text-center font-mono text-[11px] text-red-500">{error}</p>
+              <div className="mt-3 rounded-md border border-red-500/25 bg-red-500/[0.06] px-3 py-2.5">
+                <p className="text-[12.5px] leading-relaxed text-ink">{error}</p>
+                <div className="mt-2 flex items-center gap-3">
+                  {/* One click, brief intact. This failure looks intermittent —
+                      it did not reproduce on a like-for-like retry — so the
+                      cheapest useful thing is to make trying again cost
+                      nothing but a click, rather than making someone wonder
+                      whether their text survived. */}
+                  <button
+                    type="button"
+                    onClick={() => void generate()}
+                    disabled={busy}
+                    className="rounded-md border border-hairline-strong bg-surface px-3 py-1.5 text-[12px] font-medium text-ink transition-colors hover:bg-surface-2 disabled:opacity-50"
+                  >
+                    {busy ? "Trying…" : "Try again"}
+                  </button>
+                  <span className="font-mono text-[10.5px] text-faint">
+                    your brief is still here · nothing was charged
+                  </span>
+                </div>
+              </div>
             )}
           </>
         )}

@@ -41,6 +41,10 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "scriptId and prompt required" }, { status: 400 });
   }
   const pages = Math.max(1, Math.min(12, Number(body.pages) || 6));
+  // Roughly the shortest brief that has ever produced a usable page. Used only
+  // to word the failure honestly and to nudge before spending — never to block:
+  // a terse brief plus a URL to crawl can work fine.
+  const BRIEF_CHARS_PER_PAGE = 40;
 
   // Ownership: the document must already exist and be theirs.
   const brief = await loadBriefByScriptId(scriptId, user.id);
@@ -112,7 +116,24 @@ export async function POST(request: Request) {
     );
   }
   if (!result.ok) {
-    return NextResponse.json({ error: result.error }, { status: 500 });
+    // The validator's complaint is OUR vocabulary — "visual_concept too thin
+    // (602 chars, 2 drawable nouns)", one clause per scene. A founder saw the
+    // whole wall of it in red, in the form, with no way forward. It is a
+    // useful diagnostic and it belongs in the log, not in front of a person
+    // who just spent a minute waiting.
+    console.error(
+      `[documents/generate] outline failed for ${scriptId} (${pages} pages, ${prompt.length} chars of brief): ${result.error}`,
+    );
+    const thin = prompt.length < pages * BRIEF_CHARS_PER_PAGE;
+    return NextResponse.json(
+      {
+        error: thin
+          ? `The outline didn't come together. ${pages} pages is a lot to build from ${prompt.length} characters — try a few more sentences about who it is for, what problem it solves and what you are asking for, or ask for fewer pages.`
+          : "The outline didn't come together this time. Try again — and if it keeps happening, adding a little more detail about the audience and the ask usually settles it.",
+        retryable: true,
+      },
+      { status: 502 },
+    );
   }
 
   // Keep the document's EXISTING scriptId: the editor is already open on it,
