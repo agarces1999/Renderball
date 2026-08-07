@@ -736,19 +736,37 @@ export const generateScript = async (
   // generic clause cannot honestly fix, and shipping them would be worse than
   // failing.
   const SOFT_ONLY = /^(?:Scene \d+: (?:visual_concept too thin|names ")).*/;
-  const complaints = lastError
-    .replace(/^Schema validation failed after \d+ attempts\. Last error: /, "")
-    .split("|")
-    .map((c) => c.trim())
-    .filter(Boolean);
-  const allSoft = complaints.length > 0 && complaints.every((c) => SOFT_ONLY.test(c));
-  const salvageScenes = (lastCandidate as { scenes?: Record<string, unknown>[] } | null)?.scenes;
 
-  if (allSoft && Array.isArray(salvageScenes) && salvageScenes.length > 0) {
-    const indexes = [...new Set(
+  /** The soft scene indexes named by a validator error, or null if any complaint is not soft. */
+  const softIndexes = (error: string): number[] | null => {
+    const complaints = error.split("|").map((c) => c.trim()).filter(Boolean);
+    if (complaints.length === 0 || !complaints.every((c) => SOFT_ONLY.test(c))) return null;
+    return [...new Set(
       complaints.map((c) => Number(/^Scene (\d+):/.exec(c)?.[1])).filter((n) => Number.isFinite(n)),
     )];
-    const patched = structuredClone(lastCandidate) as { scenes: Record<string, unknown>[] };
+  };
+
+  // ITERATE. validateScript returns on the FIRST failing group, so a rule can
+  // sit MASKED behind the one that was reported: patch the thin scene,
+  // re-validate, and a cliché on a different scene — invisible until now —
+  // fires instead. A single-shot salvage repaired the reported complaint and
+  // then declined on the newly-revealed one, while the error shown to the user
+  // still named the rule that had already been fixed. That is the whole reason
+  // "a different rule each pass" looked like whack-a-mole: the labels were
+  // misattributed. Keep going while every newly-surfaced complaint is still
+  // soft and progress is being made.
+  const MAX_SALVAGE_ROUNDS = 4;
+  let candidate = lastCandidate as { scenes?: Record<string, unknown>[] } | null;
+  let salvageError = lastError;
+  let salvaged: Script | null = null;
+  const completedAll = new Set<number>();
+
+  for (let round = 0; round < MAX_SALVAGE_ROUNDS; round++) {
+    const indexes = softIndexes(salvageError);
+    if (!indexes || indexes.length === 0) break;
+    if (!candidate || !Array.isArray(candidate.scenes) || candidate.scenes.length === 0) break;
+
+    const patched = structuredClone(candidate) as { scenes: Record<string, unknown>[] };
     let completed = 0;
     for (const i of indexes) {
       const scene = patched.scenes[i];
@@ -760,52 +778,58 @@ export const generateScript = async (
       if (better) {
         scene.visual_concept = better;
         completed++;
+        completedAll.add(i);
       }
     }
     if (completed !== indexes.length) {
       console.warn(
-        `[script] last-resort completion declined: finished ${completed} of ${indexes.length} flagged scene(s)`,
+        `[script] last-resort completion stopped: finished ${completed} of ${indexes.length} flagged scene(s) in round ${round + 1}`,
       );
+      break;
     }
-    if (completed === indexes.length) {
-      // The SAME options the loop validates with — a salvage checked against a
-      // laxer contract than the one that rejected it would be no check at all.
-      const recheck = validateScript(patched, {
-        brandName: brandShortName(brief.brand_extract),
-        deck: brief.kind === "deck",
-      });
-      // validateScript is NOT the whole contract. Grounding, funding-stage and
-      // type-only checks live in the loop AFTER it, so a salvage that only
-      // re-ran validateScript would wave an invented statistic straight
-      // through — the exact hole a test caught here. Re-run the truth gates.
-      const salvageSource = claimGroundingSources(brief);
-      const salvageCopy = recheck.ok
-        ? sceneClaimCopyByStrictness(recheck.script.scenes)
-        : { strict: "", caption: "" };
-      const salvageUngrounded = recheck.ok
-        ? [
-            ...findUngroundedClaims(salvageCopy.strict, salvageSource),
-            ...findUngroundedClaims(salvageCopy.caption, salvageSource, { exemptDiegeticPrices: true }),
-            ...findUngroundedStageLabels(sceneClaimCopy(recheck.script.scenes), salvageSource),
-          ]
-        : [];
-      if (!recheck.ok) {
-        console.warn(`[script] last-resort completion declined: patched script still invalid — ${recheck.error}`);
-      } else if (salvageUngrounded.length > 0) {
-        console.warn(`[script] last-resort completion declined: ungrounded claims ${salvageUngrounded.join(", ")}`);
+
+    const recheck = validateScript(patched, {
+      brandName: brandShortName(brief.brand_extract),
+      deck: brief.kind === "deck",
+    });
+    if (!recheck.ok) {
+      // A DIFFERENT complaint than last round means progress — the masked rule
+      // is now visible and may itself be soft. The same complaint twice means
+      // the repair is not working, and another round would only repeat it.
+      if (recheck.error === salvageError) {
+        console.warn(`[script] last-resort completion stopped: no progress on "${recheck.error.slice(0, 120)}"`);
+        break;
       }
-      if (recheck.ok && salvageUngrounded.length === 0) {
-        console.warn(
-          `[script] completed ${completed} thin visual_concept(s) deterministically after ${MAX_ATTEMPTS + repairRounds} attempts rather than failing the outline (scenes ${indexes.join(", ")})`,
-        );
-        return {
-          ok: true,
-          script: recheck.script,
-          usage: totalUsage,
-          completedScenes: indexes,
-        };
-      }
+      console.warn(`[script] last-resort completion round ${round + 1} revealed: ${recheck.error.slice(0, 160)}`);
+      candidate = patched;
+      salvageError = recheck.error;
+      continue;
     }
+
+    // validateScript is NOT the whole contract. Grounding and funding-stage
+    // checks live in the loop AFTER it, so a salvage that only re-ran
+    // validateScript would wave an invented statistic straight through.
+    const salvageSource = claimGroundingSources(brief);
+    const byStrictness = sceneClaimCopyByStrictness(recheck.script.scenes);
+    const stillFabricated = [
+      ...findUngroundedClaims(byStrictness.strict, salvageSource),
+      ...findUngroundedClaims(byStrictness.caption, salvageSource, { exemptDiegeticPrices: true }),
+      ...findUngroundedStageLabels(sceneClaimCopy(recheck.script.scenes), salvageSource),
+    ];
+    if (stillFabricated.length > 0) {
+      console.warn(`[script] last-resort completion refused: ungrounded claims ${stillFabricated.join(", ")}`);
+      break;
+    }
+    salvaged = recheck.script;
+    break;
+  }
+
+  if (salvaged) {
+    const finished = [...completedAll].sort((a, b) => a - b);
+    console.warn(
+      `[script] completed ${finished.length} thin visual_concept(s) deterministically after ${MAX_ATTEMPTS + repairRounds} attempts rather than failing the outline (scenes ${finished.join(", ")})`,
+    );
+    return { ok: true, script: salvaged, usage: totalUsage, completedScenes: finished };
   }
 
   // Keep the EVIDENCE. A failure used to surface only the validator's

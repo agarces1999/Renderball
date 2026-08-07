@@ -343,8 +343,12 @@ check("returns the correct mixed indices across a sequence", () => {
 // The Stripe overnight build emitted meta values that were DESCRIPTIONS, not
 // numbers — {label:"Volume", value:"in payments volume processed in 2025"} —
 // rendering KPI tiles with blank number slots. The normalizer drops them.
+// asset_ids included, because a scene WITHOUT it is not clean — validateScript
+// rejects an absent asset_ids outright ("must be an array of strings, use []
+// if none"), and normalizeScriptContent now supplies the [] that message asks
+// for. A fixture that omits it is testing a script the validator would refuse.
 const metaScenes = (meta: { label: string; value: string }[]) => ({
-  scenes: [{ content: { headline: "The scale", meta } }],
+  scenes: [{ content: { headline: "The scale", meta, asset_ids: [] } }],
 });
 const firstMeta = (out: unknown): unknown =>
   ((out as { scenes?: { content?: { meta?: unknown } }[] }).scenes?.[0].content?.meta);
@@ -391,8 +395,16 @@ check("normalizeScriptContent leaves malformed shapes for the validator", () => 
   // Non-object meta entries / missing scenes must pass through untouched so
   // validateScript owns the shape error message.
   assert(normalizeScriptContent({ nope: 1 }) !== undefined, "non-script object passes through");
+  // Asserts the INTENT — the malformed meta survives untouched — rather than
+  // object identity. Identity stopped being the right proxy once the
+  // normaliser also supplies the asset_ids the validator demands: this scene
+  // has none, so a new object is correct and the meta is what must not change.
   const bad = { scenes: [{ content: { headline: "x", meta: [{ label: "a" }] } }] };
-  assert(normalizeScriptContent(bad) === bad, "malformed meta entry (no value) is left for validateScript");
+  const out = normalizeScriptContent(bad) as { scenes: { content: { meta?: unknown } }[] };
+  assert(
+    JSON.stringify(out.scenes[0].content.meta) === JSON.stringify([{ label: "a" }]),
+    "malformed meta entry (no value) is left for validateScript to reject",
+  );
 });
 
 // ── backfillSceneRegisters (GLM sporadically omits register wholesale) ──────

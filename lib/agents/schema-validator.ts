@@ -1898,6 +1898,19 @@ export const normalizeScriptContent = (input: unknown): unknown => {
     // declines whenever the result would not clearly be better.
     let working = c;
 
+    // asset_ids: the rule is "must be an array of strings (use [] if none)" —
+    // a message that contains its own repair. A paid twelve-page generation
+    // died on this once. Absent or null becomes []; a bare string becomes a
+    // one-element array. Nothing is invented and nothing is discarded.
+    if (working.asset_ids === undefined || working.asset_ids === null) {
+      working = { ...working, asset_ids: [] };
+      changed = true;
+    } else if (typeof working.asset_ids === "string") {
+      working = { ...working, asset_ids: [working.asset_ids] };
+      changed = true;
+    }
+
+
     const deEchoed = dropEchoedCta(working);
     if (deEchoed) {
       working = deEchoed;
@@ -1917,6 +1930,17 @@ export const normalizeScriptContent = (input: unknown): unknown => {
         working = { ...working, headline: split.headline, lede: split.lede };
         changed = true;
         splitHeadlines.push(String(working.headline));
+        // AND AGAIN, because the split MOVED the headline. A cta reading
+        // "Narrower than a platform." is not a duplicate of "Narrower than a
+        // platform. Deeper than a tool." — but it is an exact duplicate of what
+        // that headline becomes. Checking only before the split let this
+        // repair manufacture the very defect the other repair exists to
+        // remove, which is the one thing a repair may never do.
+        const afterSplit = dropEchoedCta(working);
+        if (afterSplit) {
+          working = afterSplit;
+          droppedCtas++;
+        }
       }
     }
 

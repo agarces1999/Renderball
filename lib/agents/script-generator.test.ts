@@ -693,5 +693,34 @@ await check("a transport that NEVER recovers still fails, and says so plainly", 
   if (!r.ok) assert(/upstream down/.test(r.error), `the real cause must survive: ${r.error}`);
 });
 
+
+await check("a MASKED second complaint is repaired too, not left to kill the run", async () => {
+  // validateScript returns on the FIRST failing group, so scene 2's problem is
+  // invisible while scene 1's is reported. A single-shot salvage fixed scene 1,
+  // re-validated, met scene 2 for the first time and gave up — while the error
+  // shown to the user still named scene 1, which had already been fixed. That
+  // misattribution is what made this look like a different rule every run.
+  const thinTwice = structuredClone(VALID_SCRIPT) as typeof VALID_SCRIPT;
+  const THIN = "A quiet moment settles across the frame, warm and unhurried, as the tension of the long wait finally eases away at 2.6s.";
+  thinTwice.scenes[1] = { ...thinTwice.scenes[1], visual_concept: THIN };
+  thinTwice.scenes[2] = { ...thinTwice.scenes[2], visual_concept: THIN };
+
+  const deckBrief: AgentBrief = { ...validBrief, kind: "deck" } as AgentBrief;
+  const r = await generateScript(deckBrief, "brief_test", { transport: stuckOn(thinTwice) });
+  assert(r.ok, `both thin scenes must be finished, got: ${r.ok ? "" : r.error}`);
+  if (r.ok) {
+    assert(
+      !!r.completedScenes?.includes(1) && !!r.completedScenes?.includes(2),
+      `both scenes should be reported completed, got ${JSON.stringify(r.completedScenes)}`,
+    );
+    for (const sc of r.script.scenes) {
+      assert(
+        countDrawableNouns(sc.visual_concept, sc.register) >= 3,
+        `a shipped scene is still under the floor: ${sc.visual_concept}`,
+      );
+    }
+  }
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exitCode = 1;

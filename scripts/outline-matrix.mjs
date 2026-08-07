@@ -97,6 +97,14 @@ await esbuild.build({
 });
 const { generateScript } = await import(pathToFileURL(bundle).href);
 
+// TRUNCATE FIRST. A previous pass's results.json sat here while this run
+// started, and a wait-loop polling for "14 rows" read the STALE fourteen
+// instantly and copied them as if they were this run's — producing a saved
+// "pass 9" byte-identical to pass 8, and a reported result that never
+// happened. An output file that is valid-looking before the work begins is a
+// trap; leave it obviously empty until there is something real in it.
+writeFileSync(join(OUT, "results.json"), "[]");
+
 const results = [];
 const started = Date.now();
 console.log(`▶ outline matrix — ${RUNS.length} runs\n`);

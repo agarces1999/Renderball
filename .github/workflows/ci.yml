@@ -12,6 +12,30 @@ on:
 jobs:
   check:
     runs-on: ubuntu-latest
+    # A REAL database, because five suites need one — tenancy, share links,
+    # document delete, user delete and the resilience checks. Without
+    # DATABASE_URL they did not skip, they CRASHED the runner mid-suite, and
+    # every push to this branch went red: 40 consecutive failures with zero
+    # successes, for long enough that the notification stopped meaning
+    # anything. Those five cover ownership isolation and deletion — the
+    # suites you least want unrun — so the fix is to give CI a database, not
+    # to skip them.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: renderball_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/renderball_test
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -20,6 +44,8 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npx prisma generate
+      # The schema must exist before any suite touches it.
+      - run: npx prisma migrate deploy
       # The render-truth suite (animation-clock.test.ts) renders REAL MP4
       # frames and extracts them with system ffmpeg — not on the runner image.
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg
