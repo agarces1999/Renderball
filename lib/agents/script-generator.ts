@@ -10,6 +10,7 @@ import {
   drawableVocabulary,
   containerVocabulary,
   interiorVocabulary,
+  completeVisualConcept,
 } from "./schema-validator";
 import { signatureWithLogoFallback, resolveCanvasPlan, brandShortName } from "../crawl/brand-identity";
 import { formatDesignLanguage } from "../crawl/design-language";
@@ -162,7 +163,17 @@ export interface ScriptFailureEvidence {
 }
 
 export type ScriptGenerationResult =
-  | { ok: true; script: Script; usage: Usage }
+  | {
+      ok: true;
+      script: Script;
+      usage: Usage;
+      /**
+       * Scene indexes whose visual_concept we finished deterministically rather
+       * than failing the whole outline. Logged, and worth surfacing on the
+       * review one day so the user knows which brief to look at first.
+       */
+      completedScenes?: number[];
+    }
   | { ok: false; error: string; evidence?: ScriptFailureEvidence[] };
 
 /**
@@ -571,10 +582,23 @@ export const generateScript = async (
       // QA G5: also catch a fabricated funding-stage label ("Series C" when the
       // brief only says "$250M funding round").
       const ungroundedStages = findUngroundedStageLabels(scriptCopy, sourceText);
-      if (
-        (ungrounded.length > 0 || ungroundedStages.length > 0) &&
-        attempt < MAX_ATTEMPTS + repairRounds
-      ) {
+      // NO BUDGET LEFT AND STILL FABRICATED → FAIL. This guard used to read
+      // `attempt < MAX`, so on the final attempt the whole block was skipped
+      // and execution fell through to `return { ok: true }` — shipping the
+      // invented number. The comment above says exactly why that is the worst
+      // possible outcome: the design stage TRUSTS script content, so a stat
+      // that survives here is laundered into "approved content" and then
+      // printed on a page in somebody's investor deck. A failed generation
+      // costs a retry; a fabricated statistic costs their credibility. Found by
+      // a test asserting a made-up "38ms" could never reach a user.
+      const fabricated = ungrounded.length > 0 || ungroundedStages.length > 0;
+      if (fabricated && attempt >= MAX_ATTEMPTS + repairRounds) {
+        return {
+          ok: false,
+          error: `Ungrounded numeric claims survived every attempt: ${[...ungrounded, ...ungroundedStages].join(", ")}`,
+        };
+      }
+      if (fabricated) {
         lastError = [
           ungrounded.length > 0 ? `Ungrounded numeric claims: ${ungrounded.join(", ")}` : "",
           ungroundedStages.length > 0 ? `Ungrounded funding-stage labels: ${ungroundedStages.join(", ")}` : "",
@@ -676,6 +700,88 @@ export const generateScript = async (
         role: "user",
         content: buildRetryMessage(validation.error, attempt),
       });
+    }
+  }
+
+  // ── last resort: finish the outline rather than destroy it ────────────────
+  //
+  // Attempts are spent. But what is in hand at this point is almost always
+  // ELEVEN good scenes and one that fell a noun or an interior short — and the
+  // very next screen is the outline REVIEW, where the user reads and edits
+  // every visual brief before a single page is designed.
+  //
+  // Measured across eight 14-run matrix passes: about one generation in seven
+  // ended here, and every one of those users waited two minutes, paid for the
+  // call, and got a wall of red they could do nothing with. A slightly generic
+  // brief on one scene costs them one edit. That is the trade, and it is not
+  // close.
+  //
+  // STRICTLY BOUNDED. It fires only when every remaining complaint is one of
+  // the two SOFT scene rules — a thin visual_concept, or a container named
+  // without its interior. Anything structural, anything about grounded claims,
+  // anything about copy, and this does not run: those are wrong in ways a
+  // generic clause cannot honestly fix, and shipping them would be worse than
+  // failing.
+  const SOFT_ONLY = /^(?:Scene \d+: (?:visual_concept too thin|names ")).*/;
+  const complaints = lastError
+    .replace(/^Schema validation failed after \d+ attempts\. Last error: /, "")
+    .split("|")
+    .map((c) => c.trim())
+    .filter(Boolean);
+  const allSoft = complaints.length > 0 && complaints.every((c) => SOFT_ONLY.test(c));
+  const salvageScenes = (lastCandidate as { scenes?: Record<string, unknown>[] } | null)?.scenes;
+
+  if (allSoft && Array.isArray(salvageScenes) && salvageScenes.length > 0) {
+    const indexes = [...new Set(
+      complaints.map((c) => Number(/^Scene (\d+):/.exec(c)?.[1])).filter((n) => Number.isFinite(n)),
+    )];
+    const patched = structuredClone(lastCandidate) as { scenes: Record<string, unknown>[] };
+    let completed = 0;
+    for (const i of indexes) {
+      const scene = patched.scenes[i];
+      if (!scene || typeof scene.visual_concept !== "string") continue;
+      const better = completeVisualConcept(
+        scene.visual_concept,
+        typeof scene.register === "string" ? scene.register : undefined,
+      );
+      if (better) {
+        scene.visual_concept = better;
+        completed++;
+      }
+    }
+    if (completed === indexes.length) {
+      // The SAME options the loop validates with — a salvage checked against a
+      // laxer contract than the one that rejected it would be no check at all.
+      const recheck = validateScript(patched, {
+        brandName: brandShortName(brief.brand_extract),
+        deck: brief.kind === "deck",
+      });
+      // validateScript is NOT the whole contract. Grounding, funding-stage and
+      // type-only checks live in the loop AFTER it, so a salvage that only
+      // re-ran validateScript would wave an invented statistic straight
+      // through — the exact hole a test caught here. Re-run the truth gates.
+      const salvageSource = claimGroundingSources(brief);
+      const salvageCopy = recheck.ok
+        ? sceneClaimCopyByStrictness(recheck.script.scenes)
+        : { strict: "", caption: "" };
+      const salvageUngrounded = recheck.ok
+        ? [
+            ...findUngroundedClaims(salvageCopy.strict, salvageSource),
+            ...findUngroundedClaims(salvageCopy.caption, salvageSource, { exemptDiegeticPrices: true }),
+            ...findUngroundedStageLabels(sceneClaimCopy(recheck.script.scenes), salvageSource),
+          ]
+        : [];
+      if (recheck.ok && salvageUngrounded.length === 0) {
+        console.warn(
+          `[script] completed ${completed} thin visual_concept(s) deterministically after ${MAX_ATTEMPTS + repairRounds} attempts rather than failing the outline (scenes ${indexes.join(", ")})`,
+        );
+        return {
+          ok: true,
+          script: recheck.script,
+          usage: totalUsage,
+          completedScenes: indexes,
+        };
+      }
     }
   }
 

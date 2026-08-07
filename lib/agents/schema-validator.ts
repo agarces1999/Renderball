@@ -410,6 +410,64 @@ const TYPO_DRAWABLE_NOUN_RX = new RegExp(
 );
 
 /**
+ * Finish an under-specified visual_concept so a whole outline is not thrown
+ * away for one thin scene.
+ *
+ * WHY THIS EXISTS: measured across eight 14-run matrix passes, roughly one
+ * generation in seven died after every retry was spent — and in every case the
+ * outline in hand was ELEVEN good scenes and one that fell a noun or an
+ * interior short. The user waited two minutes, paid for the call, and got a
+ * wall of red. That trade is indefensible: the very next screen is the outline
+ * REVIEW, where they read and edit every visual brief before a single page is
+ * designed. A slightly generic brief on one scene costs them one edit; a
+ * failure costs them everything.
+ *
+ * So this is the last resort, after the model has had its attempts: append a
+ * clause that is true, drawable, and appropriate to the scene's own register.
+ * It is deliberately plain — it should read as a sensible default someone would
+ * rewrite, never as a flourish pretending to be authored.
+ *
+ * Deterministic. No tokens. Returns null when it has nothing useful to add,
+ * which keeps the caller honest about when it fired.
+ */
+export const completeVisualConcept = (
+  concept: string,
+  register?: string,
+): string | null => {
+  const base = (concept ?? "").trim();
+  if (!base) return null;
+
+  const needsNouns = countDrawableNouns(base, register) < VISUAL_CONCEPT_MIN_NOUNS;
+  const container = CONTAINER_PHRASE_RX.exec(base)?.[0];
+  const needsInteriors =
+    !!container && countInteriorSpecifics(base) < FURNISHING_MIN_INTERIORS;
+  if (!needsNouns && !needsInteriors) return null;
+
+  // Register-appropriate, and phrased so the added nouns and interiors both
+  // land. Every option is verified by test to satisfy the floors it exists to
+  // satisfy — if one drifts below them the test goes red rather than the
+  // fallback silently failing to help.
+  const byRegister: Record<string, string> = {
+    stat: "A large counter anchors the frame, with a label beneath it and a small delta arrow and sparkline alongside.",
+    list: "A column of rows runs down one side, each row carrying a label and a value, with a slim divider between them.",
+    quote: "A stacked wordmark sits in the corner above a thin rule, with a small logo badge and a row of dots beneath.",
+    centered: "A slim panel sits below the type, holding two labelled rows and a small sparkline.",
+    "full-bleed": "A logo lockup sits in one corner and a row of labelled chips runs along the lower edge, above a hairline divider.",
+    split: "A panel occupies the opposite side, holding two labelled rows, a value and a small sparkline.",
+  };
+  const addition = byRegister[register ?? ""] ?? byRegister.split;
+
+  const joined = /[.!?]$/.test(base) ? `${base} ${addition}` : `${base}. ${addition}`;
+  // Never hand back something that still fails — if the clause did not do the
+  // job, say so rather than pretending.
+  if (countDrawableNouns(joined, register) < VISUAL_CONCEPT_MIN_NOUNS) return null;
+  const stillBare = CONTAINER_RX.test(joined) && countInteriorSpecifics(joined) < FURNISHING_MIN_INTERIORS;
+  if (stillBare) return null;
+  if (joined.length < VISUAL_CONCEPT_MIN_CHARS) return null;
+  return joined;
+};
+
+/**
  * The drawable vocabulary AS WORDS, derived from the very sources the counter
  * matches on — so a prompt can quote the real list and can never drift from it.
  *

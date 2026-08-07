@@ -24,7 +24,7 @@ import {
   type AgentBrief,
 } from "./script-generator";
 import { SCRIPT_GENERATOR_SYSTEM_PROMPT } from "./prompts/script-generator";
-import { validateScript } from "./schema-validator";
+import { validateScript, countDrawableNouns, completeVisualConcept } from "./schema-validator";
 
 let passed = 0;
 let failed = 0;
@@ -512,6 +512,112 @@ await check("a STUCK repair does not earn extra rounds", async () => {
   const r = await generateScript(validBrief, "brief_test", { transport });
   assert(!r.ok, "a stuck repair still fails");
   assert(attempt <= 4, `a stuck repair must not keep buying rounds, ran ${attempt}`);
+});
+
+
+// ── last-resort completion ──────────────────────────────────────────────────
+// About one generation in seven used to die with every attempt spent, holding
+// eleven good scenes and one that fell a noun short. The user waited two
+// minutes, paid for the call, and got a wall of red. These tests are mostly
+// about what it must REFUSE to salvage — a fallback that fires too widely
+// ships broken decks, which is worse than the failure it replaces.
+
+/** A transport that always returns the same script — the model never improves. */
+const stuckOn = (script: unknown): ScriptTransport => async () => ({
+  text: JSON.stringify(script),
+  usage: { input_tokens: 10, output_tokens: 5, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+});
+
+await check("a thin visual_concept is COMPLETED rather than failing the outline", async () => {
+  const thin = structuredClone(VALID_SCRIPT) as typeof VALID_SCRIPT;
+  // Carries a late timed beat, so the ONLY thing wrong with it is the
+  // drawable-noun floor — the case the salvage exists for. Without the beat it
+  // also trips the motion rule, the complaint set stops being soft-only, and
+  // the salvage correctly declines (which is what the first version of this
+  // test actually proved).
+  thin.scenes[1] = { ...thin.scenes[1], visual_concept: "A quiet moment of relief settles across the frame, warm and unhurried, as the tension of the long wait finally eases away at 2.6s." };
+
+  const r = await generateScript(validBrief, "brief_test", { transport: stuckOn(thin) });
+  assert(r.ok, `the outline must survive one thin scene, got: ${r.ok ? "" : r.error}`);
+  if (r.ok) {
+    assert(r.completedScenes?.includes(1) === true, `it must report WHICH scene it finished, got ${JSON.stringify(r.completedScenes)}`);
+    assert(r.script.scenes.length === 3, "scene count unchanged");
+    assert(
+      r.script.scenes[1].visual_concept.startsWith("A quiet moment of relief"),
+      "the model's own words are kept — the clause is appended, not substituted",
+    );
+    assert(
+      r.script.scenes[0].visual_concept === VALID_SCRIPT.scenes[0].visual_concept,
+      "scenes that were fine are untouched",
+    );
+  }
+});
+
+await check("a STRUCTURAL failure is never salvaged", async () => {
+  // A broken timeline is wrong in a way no generic clause can fix. Shipping it
+  // would be worse than failing.
+  const broken = structuredClone(VALID_SCRIPT) as typeof VALID_SCRIPT;
+  broken.scenes[1] = { ...broken.scenes[1], start_seconds: 99 };
+  const r = await generateScript(validBrief, "brief_test", { transport: stuckOn(broken) });
+  assert(!r.ok, "a structural defect must still fail");
+});
+
+await check("an UNGROUNDED numeric claim is never salvaged", async () => {
+  // Inventing "38ms" is a truth problem, not a thinness problem.
+  const fabricated = structuredClone(VALID_SCRIPT) as typeof VALID_SCRIPT;
+  fabricated.scenes[1] = {
+    ...fabricated.scenes[1],
+    content: { ...fabricated.scenes[1].content, headline: "Approvals land in 38ms flat" },
+  };
+  const r = await generateScript(validBrief, "brief_test", { transport: stuckOn(fabricated) });
+  if (r.ok) {
+    assert(
+      !/38ms/.test(JSON.stringify(r.script)),
+      "a fabricated stat must never reach the user via the salvage path",
+    );
+  }
+});
+
+await check("a MOSTLY broken outline is not papered over", async () => {
+  // Two of three scenes thin means the outline is wrong, not one scene.
+  const mostly = structuredClone(VALID_SCRIPT) as typeof VALID_SCRIPT;
+  mostly.scenes[0] = { ...mostly.scenes[0], visual_concept: "A feeling of quiet dread that settles slowly over the whole room and lingers there." };
+  mostly.scenes[1] = { ...mostly.scenes[1], visual_concept: "A sense of relief arriving, soft and slow and welcome after everything that came before." };
+  mostly.scenes[2] = { ...mostly.scenes[2], visual_concept: "An impression of calm, unhurried and warm, as the last of the tension leaves the air." };
+  const r = await generateScript(validBrief, "brief_test", { transport: stuckOn(mostly) });
+  // Either it fails, or every scene it shipped genuinely passes the floor.
+  if (r.ok) {
+    for (const sc of r.script.scenes) {
+      assert(
+        countDrawableNouns(sc.visual_concept, sc.register) >= 3,
+        `a shipped scene still under the floor: ${sc.visual_concept}`,
+      );
+    }
+  }
+});
+
+await check("completeVisualConcept refuses when it cannot actually help", () => {
+  assert(completeVisualConcept("", "split") === null, "empty in, null out");
+  // Already fine — nothing to add.
+  assert(
+    completeVisualConcept(VALID_SCRIPT.scenes[0].visual_concept, "split") === null,
+    "a concept that already passes must be left alone",
+  );
+});
+
+await check("every register's completion actually satisfies the floors", () => {
+  // The clause per register is a fixed string; if one drifts below the floors
+  // it exists to clear, this goes red rather than the fallback quietly failing.
+  const thin = "A quiet mood settles over everything here, unhurried and warm and slow.";
+  for (const register of ["stat", "list", "quote", "centered", "full-bleed", "split"]) {
+    const out = completeVisualConcept(thin, register);
+    assert(!!out, `no completion produced for register ${register}`);
+    assert(
+      countDrawableNouns(out!, register) >= 3,
+      `${register}: only ${countDrawableNouns(out!, register)} drawable nouns`,
+    );
+    assert(out!.length >= 120, `${register}: ${out!.length} chars, under the 120 floor`);
+  }
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);
