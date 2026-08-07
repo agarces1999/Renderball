@@ -1,7 +1,7 @@
 "use client";
 
 import { notFound } from "next/navigation";
-import { GeneratingSteps, generatingSteps } from "../../../components/BlankDocumentPanel";
+import { BlankDocumentPanel, GeneratingSteps, generatingSteps } from "../../../components/BlankDocumentPanel";
 
 /**
  * Dev-only harness for the outline "thinking steps" (NODE_ENV-gated, mirrors
@@ -40,6 +40,15 @@ export default function DevStepsPage() {
             <GeneratingSteps steps={generatingSteps(c.pages, c.url)} elapsed={c.elapsed} pages={c.pages} />
           </div>
         ))}
+      </div>
+
+      {/* The real panel, so the brief box and its attach affordance can be
+          seen and driven headlessly. Its network calls need a session, which
+          is the point: the unauthenticated path must fail like a person can
+          read, not like a stack trace. */}
+      <h2 className="mb-4 mt-10 font-display text-[22px] text-ink">The brief box, live</h2>
+      <div className="relative h-[560px] rounded-xl border border-hairline">
+        <BlankDocumentPanel scriptId="dev-harness" onDismiss={() => {}} />
       </div>
     </main>
   );

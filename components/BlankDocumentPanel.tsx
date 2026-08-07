@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 /**
  * The first thing a user sees in a brand-new document.
@@ -91,6 +91,57 @@ export function BlankDocumentPanel({
   }, [busy]);
   const [error, setError] = useState<string | null>(null);
 
+  /**
+   * Turn a route's reply into something a person can act on.
+   *
+   * Routes answer `{ error: "unauthorized" }` because that is the right thing
+   * to say to an API consumer — and this panel used to print it verbatim. A
+   * user whose session had lapsed attached a document and was told, in full,
+   * "unauthorized". Caught by attaching a file to the signed-out harness. A
+   * status the user can DO something about gets a sentence about what to do.
+   */
+  const humanError = (status: number, raw: unknown, fallback: string): string => {
+    if (status === 401)
+      return "You have been signed out. Refresh the page, sign in, and it will still be here.";
+    if (status === 413) return typeof raw === "string" ? raw : "That file is too large.";
+    const text = typeof raw === "string" ? raw.trim() : "";
+    // A bare one-word code is wire vocabulary, not a message.
+    if (!text || (!/\s/.test(text) && text.length < 24)) return fallback;
+    return text;
+  };
+
+  // ── attaching a document ──────────────────────────────────────────────────
+  const fileInput = useRef<HTMLInputElement | null>(null);
+  const [attaching, setAttaching] = useState(false);
+  const [dragging, setDragging] = useState(false);
+  const [attached, setAttached] = useState<{ name: string; truncated: boolean } | null>(null);
+
+  /**
+   * Read a file into the brief box. APPENDS rather than replaces: someone who
+   * has already typed two sentences and then attaches the long version should
+   * not watch their own words disappear.
+   */
+  const attach = async (file: File) => {
+    setAttaching(true);
+    setError(null);
+    try {
+      const body = new FormData();
+      body.append("file", file);
+      const res = await fetch("/api/documents/attach", { method: "POST", body });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data?.ok) {
+        setError(humanError(res.status, data?.error, "That file could not be read."));
+        return;
+      }
+      setPrompt((prev) => (prev.trim() ? `${prev.trim()}\n\n${data.text}` : data.text));
+      setAttached({ name: data.name ?? file.name, truncated: !!data.truncated });
+    } catch {
+      setError("Could not read that file — check your connection and try again.");
+    } finally {
+      setAttaching(false);
+    }
+  };
+
   const generate = async () => {
     if (!prompt.trim()) {
       setError("Say what the document is about.");
@@ -106,7 +157,7 @@ export function BlankDocumentPanel({
       });
       const data = await res.json().catch(() => null);
       if (!res.ok) {
-        setError(data?.error ?? "Could not start generating.");
+        setError(humanError(res.status, data?.error, "Could not start generating."));
         setBusy(false);
         return;
       }
@@ -201,8 +252,63 @@ export function BlankDocumentPanel({
               rows={4}
               autoFocus
               placeholder="A pitch deck for Northwind Coffee — office coffee subscriptions. Who it's for, the problem, the offer, and the ask."
-              className="mt-3 w-full resize-y rounded-md border border-hairline bg-surface-2 px-3 py-2.5 text-[13px] leading-relaxed text-ink outline-none focus:border-accent-line"
+              onDragOver={(e) => {
+                e.preventDefault();
+                setDragging(true);
+              }}
+              onDragLeave={() => setDragging(false)}
+              onDrop={(e) => {
+                e.preventDefault();
+                setDragging(false);
+                const f = e.dataTransfer.files?.[0];
+                if (f) void attach(f);
+              }}
+              className={`mt-3 w-full resize-y rounded-md border bg-surface-2 px-3 py-2.5 text-[13px] leading-relaxed text-ink outline-none focus:border-accent-line ${
+                dragging ? "border-accent-line" : "border-hairline"
+              }`}
             />
+
+            {/* Attaching is a SHORTCUT INTO the brief, not a second input.
+                The text lands in the box above where it can be read, trimmed
+                and corrected before a page is generated from it — and nothing
+                is stored server-side, so there is no copy of someone's
+                company document sitting in our object storage. */}
+            <div className="mt-1.5 flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => fileInput.current?.click()}
+                disabled={attaching}
+                className="inline-flex items-center gap-1.5 rounded-md border border-hairline px-2.5 py-1 text-[11.5px] text-muted transition-colors hover:border-accent-line hover:text-ink disabled:opacity-60"
+              >
+                <svg viewBox="0 0 14 14" className="h-3 w-3" fill="none" aria-hidden>
+                  <path
+                    d="M9.5 4L5 8.5a1.6 1.6 0 002.3 2.3l4.2-4.2a3 3 0 10-4.3-4.3L3 6.6a4.4 4.4 0 006.2 6.2l3.3-3.3"
+                    stroke="currentColor"
+                    strokeWidth="1.2"
+                    strokeLinecap="round"
+                  />
+                </svg>
+                {attaching ? "Reading…" : "Attach a document"}
+              </button>
+              {attached && (
+                <span className="text-[11.5px] text-muted">
+                  Added <span className="text-ink">{attached.name}</span>
+                  {attached.truncated ? " (first part — it was long)" : ""}
+                </span>
+              )}
+              <input
+                ref={fileInput}
+                type="file"
+                accept=".txt,.md,.markdown,.mdx,.csv,.tsv,.json,.yaml,.yml,.log,.docx,text/plain,text/markdown,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                className="hidden"
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  // Reset first, so attaching the SAME file twice still fires.
+                  e.target.value = "";
+                  if (f) void attach(f);
+                }}
+              />
+            </div>
 
             <label className="mt-2.5 block">
               <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-faint">
