@@ -1,4 +1,7 @@
 import { inflateRawSync } from "zlib";
+import { readXlsx } from "./read-xlsx";
+import { readSvg } from "./read-svg";
+import { readCsv } from "./read-csv";
 
 /**
  * Pull the readable text out of a brief someone attached.
@@ -25,15 +28,22 @@ export interface ExtractResult {
   truncated?: boolean;
 }
 
+// csv/tsv are deliberately ABSENT: they route to readCsv, which parses quoted
+// fields properly. Read as plain text a spreadsheet export arrives as an
+// undifferentiated wall of commas, and any value containing a comma is a lie.
 const PLAIN_EXTENSIONS = new Set([
-  "txt", "md", "markdown", "mdx", "csv", "tsv", "json", "yaml", "yml", "log", "text",
+  "txt", "md", "markdown", "mdx", "json", "yaml", "yml", "log", "text",
 ]);
 
 const extensionOf = (filename: string): string =>
   (filename.split(".").pop() ?? "").toLowerCase();
 
-/** Collapse the runaway whitespace that survives every extraction path. */
-const tidy = (raw: string): string =>
+/**
+ * Collapse the runaway whitespace that survives every extraction path.
+ *
+ * Exported for ./read-svg, which faces the same mess from a different format.
+ */
+export const tidy = (raw: string): string =>
   raw
     .replace(/\r\n?/g, "\n")
     .replace(/[ \t ]+/g, " ")
@@ -55,8 +65,14 @@ const clamp = (text: string): ExtractResult => {
 // it, and strip the markup. Paragraph and line-break tags become newlines
 // FIRST, or every paragraph runs together into one wall of text.
 
-/** Locate a file in a ZIP central directory and return its raw bytes. */
-const readZipEntry = (buf: Buffer, wanted: string): Buffer | null => {
+/**
+ * Locate a file in a ZIP central directory and return its raw bytes.
+ *
+ * Exported for the .xlsx reader: a spreadsheet is the same ZIP-of-XML shape as
+ * a .docx, and a second hand-rolled copy of the offset arithmetic below is
+ * exactly the sort of thing that drifts and then reads from the wrong place.
+ */
+export const readZipEntry = (buf: Buffer, wanted: string): Buffer | null => {
   // End of central directory: signature 0x06054b50, scanned from the back
   // because it is followed by a variable-length comment.
   let eocd = -1;
@@ -105,13 +121,33 @@ const readZipEntry = (buf: Buffer, wanted: string): Buffer | null => {
   return null;
 };
 
-const decodeXmlEntities = (s: string): string =>
+/**
+ * A numeric character reference, or the reference left as-is when it does not
+ * name a character.
+ *
+ * WHY THE GUARD: String.fromCodePoint THROWS a RangeError above U+10FFFF, and
+ * "&#1114112;" is six keystrokes. That made an uncaught throw inside extraction
+ * reachable from any uploaded file — a 500 on the attach route, from a document
+ * that is merely malformed rather than hostile.
+ */
+const codePoint = (n: number, raw: string): string =>
+  Number.isFinite(n) && n >= 0 && n <= 0x10ffff ? String.fromCodePoint(n) : raw;
+
+/**
+ * Exported for the sibling readers — every office format on the way in here is
+ * XML underneath, and the &amp;-goes-last ordering below is subtle enough that
+ * a second copy of it would drift.
+ */
+export const decodeXmlEntities = (s: string): string =>
   s
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
     .replace(/&quot;/g, '"')
     .replace(/&apos;/g, "'")
-    .replace(/&#(\d+);/g, (_m, d) => String.fromCodePoint(Number(d)))
+    // Hex refs are how Illustrator and Figma write a curly apostrophe. Left
+    // undecoded they reach the brief as a literal "&#x2019;".
+    .replace(/&#[xX]([0-9a-fA-F]+);/g, (m, h) => codePoint(parseInt(h, 16), m))
+    .replace(/&#(\d+);/g, (m, d) => codePoint(Number(d), m))
     .replace(/&amp;/g, "&"); // last, or the others double-decode
 
 const docxToText = (buf: Buffer): string | null => {
@@ -146,6 +182,27 @@ export const extractText = (buf: Buffer, filename: string): ExtractResult => {
       reason:
         "PDFs aren't supported yet — open it, copy the text and paste it into the brief. Word documents and plain text files work.",
     };
+  }
+
+  // Spreadsheets before documents: both are ZIP-of-XML, so a byte sniff cannot
+  // separate them. The extension decides, and for a mislabelled file the
+  // presence of xl/workbook.xml settles it.
+  if (isZip && (ext === "xlsx" || ext === "xlsm" || readZipEntry(buf, "xl/workbook.xml"))) {
+    const sheet = readXlsx(buf);
+    if (!sheet.ok) return { ok: false, text: "", reason: sheet.reason };
+    return clamp(sheet.text);
+  }
+
+  if (ext === "svg" || (!isZip && !isPdf && /^\s*(?:<\?xml|<svg)/i.test(buf.subarray(0, 200).toString("utf8")))) {
+    const svg = readSvg(buf);
+    if (!svg.ok) return { ok: false, text: "", reason: svg.reason };
+    return clamp(svg.text);
+  }
+
+  if (ext === "csv" || ext === "tsv") {
+    const csv = readCsv(buf, filename);
+    if (!csv.ok) return { ok: false, text: "", reason: csv.reason };
+    return clamp(csv.text);
   }
 
   if (ext === "docx" || (isZip && ext !== "zip")) {
@@ -192,6 +249,6 @@ export const extractText = (buf: Buffer, filename: string): ExtractResult => {
   return {
     ok: false,
     text: "",
-    reason: `.${ext} files aren't supported. Attach a .txt, .md or .docx — or paste the text into the brief.`,
+    reason: `.${ext} files aren't supported. Attach a Word document, spreadsheet, CSV, SVG or plain text file — or paste the text into the brief.`,
   };
 };
