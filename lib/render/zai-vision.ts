@@ -17,6 +17,7 @@ import { readFileSync } from "fs";
 import path from "path";
 import { VISION_MODEL } from "../anthropic";
 import { EMPTY_USAGE, type Usage } from "../usage";
+import { recordSpend } from "../spend/record";
 
 const readEnvLocal = (key: string): string | undefined => {
   try {
@@ -112,7 +113,12 @@ export const callZaiVision = async (
   // timeoutMs: default 60s. The 5-image sequence judgment measurably needs
   // more (retry audit class 3: the 60s guard killed it mid-generation) —
   // that call site passes 120_000.
-  opts: { disableThinking?: boolean; maxTokens?: number; timeoutMs?: number } = {},
+  // stage: spend-ledger label. Optional — the row is written either way and
+  // falls back to the ambient withSpend() context, then "unattributed". Every
+  // image attachment used to spend Kimi tokens completely invisibly (the
+  // onUsage hook in read-image.ts was never wired through extract-text.ts),
+  // which is a verbatim repeat of the bug app/new/actions.ts documents.
+  opts: { disableThinking?: boolean; maxTokens?: number; timeoutMs?: number; stage?: string } = {},
 ): Promise<ZaiVisionResult> => {
   // Sniff the real type from the decoded magic bytes. This wrapped EVERY bare
   // base64 image as image/png unconditionally, so a JPEG went to the provider
@@ -133,6 +139,7 @@ export const callZaiVision = async (
   const urls = (Array.isArray(image) ? image : [image]).map(toUrl);
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), opts.timeoutMs ?? 60_000);
+  const t0 = Date.now();
   try {
     const resp = await fetch(visionUrl(), {
       method: "POST",
@@ -179,6 +186,17 @@ export const callZaiVision = async (
     if (!text.trim() && typeof msg.reasoning_content === "string" && msg.reasoning_content.trim()) {
       text = extractJsonFromReasoning(msg.reasoning_content) ?? "";
     }
+    // Ledger write at the transport, not the six call sites (QA gate ×2,
+    // design-language, brand colors, logo agent, document image OCR). Two of
+    // those six recorded nothing at all before this line existed.
+    void recordSpend({
+      model: VISION_MODEL,
+      stage: opts.stage,
+      defaultStage: "vision",
+      inputTokens: u.prompt_tokens ?? 0,
+      outputTokens: u.completion_tokens ?? 0,
+      latencyMs: Date.now() - t0,
+    });
     return {
       text,
       usage: {
@@ -187,6 +205,23 @@ export const callZaiVision = async (
         output_tokens: u.completion_tokens ?? 0,
       },
     };
+  } catch (err) {
+    // The 60s guard aborting a thinking model mid-generation is billed and
+    // unmeasurable, exactly like the cast transport's timeout. Zero tokens,
+    // never an estimate — the marker exists so the count is honest. A 4xx/5xx
+    // from the provider is rethrown without a row for the same reason castCall
+    // does not record one: rejected, not served.
+    if (!(err instanceof Error) || !/^fireworks vision \d/.test(err.message)) {
+      void recordSpend({
+        model: VISION_MODEL,
+        stage: opts.stage,
+        defaultStage: "vision",
+        ok: false,
+        tokensUnknown: true,
+        latencyMs: Date.now() - t0,
+      });
+    }
+    throw err;
   } finally {
     clearTimeout(timer);
   }
@@ -201,10 +236,11 @@ export const callZaiVision = async (
  */
 export const callZaiText = async (
   prompt: string,
-  opts: { disableThinking?: boolean; maxTokens?: number } = {},
+  opts: { disableThinking?: boolean; maxTokens?: number; stage?: string } = {},
 ): Promise<ZaiVisionResult> => {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 60_000);
+  const t0 = Date.now();
   try {
     const resp = await fetch(visionUrl(), {
       method: "POST",
@@ -231,6 +267,18 @@ export const callZaiText = async (
       usage?: { prompt_tokens?: number; completion_tokens?: number };
     };
     const u = json.usage ?? {};
+    // callZaiText is a SEPARATE door from callZaiVision — its own exported
+    // function with its own fetch in the same file. "Instrument the vision
+    // transport" reads as one function and is two; hooking only the other one
+    // would have left the brand-colour backstop unrecorded.
+    void recordSpend({
+      model: VISION_MODEL,
+      stage: opts.stage,
+      defaultStage: "vision-text",
+      inputTokens: u.prompt_tokens ?? 0,
+      outputTokens: u.completion_tokens ?? 0,
+      latencyMs: Date.now() - t0,
+    });
     return {
       text: json.choices?.[0]?.message?.content ?? "",
       usage: {
@@ -239,6 +287,18 @@ export const callZaiText = async (
         output_tokens: u.completion_tokens ?? 0,
       },
     };
+  } catch (err) {
+    if (!(err instanceof Error) || !/^fireworks text \d/.test(err.message)) {
+      void recordSpend({
+        model: VISION_MODEL,
+        stage: opts.stage,
+        defaultStage: "vision-text",
+        ok: false,
+        tokensUnknown: true,
+        latencyMs: Date.now() - t0,
+      });
+    }
+    throw err;
   } finally {
     clearTimeout(timer);
   }

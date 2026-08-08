@@ -101,7 +101,7 @@ export const analyzeDesignLanguage = async (
     const visionCall =
       opts.visionCall ??
       ((image, prompt) =>
-        callZaiVision(image, prompt, { disableThinking: true, maxTokens: 500 }));
+        callZaiVision(image, prompt, { disableThinking: true, maxTokens: 500, stage: "crawl" }));
     const { text, usage } = await visionCall(imageUrl, ANALYZE_PROMPT);
     opts.onUsage?.(VISION_MODEL, usage);
     if (!text) return null;

@@ -35,6 +35,10 @@ const isProtectedApi = createRouteMatcher([
   "/api/preview(.*)",
   "/api/renders(.*)",
   "/api/usage(.*)",
+  // /api/admin/* reports what the BUSINESS spends, not what a user owns. The
+  // route checks the allowlist itself and fails closed; this line is the outer
+  // door, so an unauthenticated request never reaches the query at all.
+  "/api/admin(.*)",
 ]);
 
 /** The slide canvas's own document — an <iframe src>, not a fetch. */

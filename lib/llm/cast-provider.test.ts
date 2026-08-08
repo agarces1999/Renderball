@@ -8,6 +8,9 @@
  * (RB_FIREWORKS_KEY vs RB_CAST_KEY, per 3839765).
  */
 import { castCall, castConfigured, CastProviderError } from "./cast-provider";
+import { __setSpendWriterForTests, flushSpend, type SpendRow } from "../spend/record";
+import { withSpend } from "../spend/context";
+import { costUsd, EMPTY_USAGE } from "../usage";
 
 let passed = 0;
 let failed = 0;
@@ -205,6 +208,192 @@ await check("json flag maps to response_format json_object on both wires; absent
   await castCall({ system: "", user: "u", maxTokens: 100, model: CEREBRAS_MODEL });
   assert(!("response_format" in sent), "no response_format unless asked — element TSX must stay unconstrained");
 });
+
+// ─── the spend ledger, recorded INSIDE the transport ─────────────────────────
+// The reason these live here and not at a call site: castCall is reached from
+// ~15 modules and every one of them would otherwise have to remember. In
+// August 2026 they did not — Fireworks billed $37.69 and our records covered
+// $6.52. The transport cannot forget.
+//
+// The runner disarms the ledger process-wide (scripts/run-tests.mjs); these
+// checks arm it with an in-memory writer for their own duration.
+{
+  let rows: SpendRow[] = [];
+  const armLedger = () => {
+    rows = [];
+    delete process.env.RB_SPEND_DISABLE;
+    __setSpendWriterForTests(async (r) => { rows.push(r); });
+  };
+  const disarmLedger = () => {
+    __setSpendWriterForTests(null);
+    process.env.RB_SPEND_DISABLE = "1";
+  };
+
+  await check("a successful call records EXACTLY ONE row with the exact tokens and cost", async () => {
+    armLedger();
+    try {
+      mockFetch(() => ok(completion("<div />")));
+      await castCall({ system: "s", user: "u", maxTokens: 100, stage: "outline" });
+      assert(rows.length === 1, `expected exactly 1 ledger row, got ${rows.length}`);
+      const r = rows[0];
+      // Verbatim from the response — 100/42 in `completion()` above. Derived
+      // or estimated counts are the failure this whole table exists to end.
+      assert(r.inputTokens === 100, `prompt_tokens verbatim, got ${r.inputTokens}`);
+      assert(r.outputTokens === 42, `completion_tokens verbatim, got ${r.outputTokens}`);
+      assert(r.model === FW_DEFAULT, `the WIRE model id is what gets billed, got ${r.model}`);
+      assert(r.stage === "outline", `stage: ${r.stage}`);
+      assert(r.ok === true && r.tokensUnknown === false, "a served call is measured, not a marker");
+      const expected = costUsd(FW_DEFAULT, { ...EMPTY_USAGE, input_tokens: 100, output_tokens: 42 });
+      assert(Math.abs(r.costUsd - expected) < 1e-8, `cost ${r.costUsd} should be ${expected}`);
+    } finally {
+      disarmLedger();
+    }
+  });
+
+  await check("cached_tokens are captured off the wire (recorded, not discounted)", async () => {
+    armLedger();
+    try {
+      mockFetch(() =>
+        ok({
+          choices: [{ message: { content: "x" }, finish_reason: "stop" }],
+          usage: { prompt_tokens: 5000, completion_tokens: 10, prompt_tokens_details: { cached_tokens: 4000 } },
+        }),
+      );
+      await castCall({ system: "", user: "u", maxTokens: 100 });
+      assert(rows[0].cachedTokens === 4000, `cached_tokens must reach the ledger, got ${rows[0].cachedTokens}`);
+      // Priced at the FULL input rate on purpose: the semantics are unverified
+      // on this account and lib/usage.ts errs on overstating, never under.
+      const full = costUsd(FW_DEFAULT, { ...EMPTY_USAGE, input_tokens: 5000, output_tokens: 10 });
+      assert(Math.abs(rows[0].costUsd - full) < 1e-8, "no silent discount on an unverified rate");
+    } finally {
+      disarmLedger();
+    }
+  });
+
+  await check("no stage passed → the ambient build context labels the row", async () => {
+    armLedger();
+    try {
+      mockFetch(() => ok(completion("x")));
+      await withSpend({ stage: "build.fill", scriptId: "deck-9" }, () =>
+        castCall({ system: "", user: "u", maxTokens: 100 }),
+      );
+      assert(rows[0].stage === "build.fill", `stage: ${rows[0].stage}`);
+      assert(rows[0].scriptId === "deck-9", "cost-per-deck needs the scriptId on every row");
+    } finally {
+      disarmLedger();
+    }
+  });
+
+  await check("a REJECTED attempt records nothing; only the served one counts", async () => {
+    armLedger();
+    try {
+      let calls = 0;
+      mockFetch(() => {
+        calls++;
+        if (calls === 1) return new Response("rate limited", { status: 429, headers: { "retry-after": "0.05" } });
+        return ok(completion("body"));
+      });
+      await castCall({ system: "", user: "u", maxTokens: 100, stage: "build" });
+      assert(calls === 2, `expected a retry, got ${calls} attempts`);
+      // A 429 is the provider refusing to serve — nothing generated, nothing
+      // billed. Emitting a marker for it would drown the "we paid and could
+      // not measure it" count, which is the one signal here that must stay
+      // trustworthy.
+      assert(rows.length === 1, `expected 1 row for 2 attempts (1 rejected), got ${rows.length}`);
+      assert(rows[0].ok === true, "the row is the SERVED attempt");
+    } finally {
+      disarmLedger();
+    }
+  });
+
+  await check("a transport failure records a ZERO-token marker per attempt, never an estimate", async () => {
+    armLedger();
+    try {
+      mockFetch(() => {
+        throw new Error("ECONNRESET");
+      });
+      let threw = false;
+      try {
+        await castCall({ system: "", user: "u", maxTokens: 100, stage: "build" });
+      } catch {
+        threw = true;
+      }
+      assert(threw, "castCall still surfaces the error");
+      // 4 retries + the original = 5 attempts, each of which may have been
+      // billed for a completion we aborted before reading. Unknowable from our
+      // side, forever — so the honest record is a COUNT, not a dollar guess.
+      assert(rows.length === 5, `expected 5 markers (one per attempt), got ${rows.length}`);
+      assert(rows.every((r) => r.ok === false && r.tokensUnknown === true), "every marker says why it is zero");
+      assert(rows.every((r) => r.costUsd === 0), "a marker must never carry a fabricated cost");
+      assert(rows.every((r) => r.inputTokens === 0 && r.outputTokens === 0), "no fabricated token counts");
+      assert(rows.every((r) => r.latencyMs !== null), "elapsed time is what makes a marker useful");
+    } finally {
+      disarmLedger();
+    }
+  });
+
+  await check("a FAILING recorder does not break the user's call", async () => {
+    rows = [];
+    delete process.env.RB_SPEND_DISABLE;
+    // The ledger's disk fallback would fire here; point it somewhere harmless.
+    const savedLog = process.env.RB_SPEND_LOG;
+    process.env.RB_SPEND_LOG = "/dev/null";
+    __setSpendWriterForTests(async () => {
+      throw new Error("ledger is on fire");
+    });
+    // The transport calls `void recordSpend(...)`, so a returned value that
+    // merely LOOKS fine is not proof. A rejecting recorder produces an
+    // unhandled rejection, which on Node ≥15 terminates the process the user's
+    // build is running in — the call "succeeds" and the container dies. This
+    // listener is what makes the check real; verified by making recordSpend
+    // rethrow and watching this line go red.
+    let unhandled: unknown = null;
+    const onUnhandled = (e: unknown) => { unhandled = e; };
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      mockFetch(() => ok(completion("the answer")));
+      const r = await castCall({ system: "", user: "u", maxTokens: 100 });
+      // This is the rule lib/usage.ts states and this module inherits: usage
+      // logging must NEVER break the call it is measuring.
+      assert(r.text === "the answer", "the call must succeed even when the ledger cannot write");
+      assert(r.inputTokens === 100 && r.outputTokens === 42, "and return its usage unharmed");
+      await new Promise((res) => setTimeout(res, 20)); // let a rejection surface
+      assert(unhandled === null, `the ledger must not crash the caller's process: ${String(unhandled)}`);
+      // MUST flush before the env is restored below. The disk fallback resolves
+      // RB_SPEND_LOG at write time, not at call time, so an in-flight fallback
+      // that lands after the restore writes into the developer's real
+      // .data/spend.jsonl. Found the honest way: four phantom rows appeared
+      // there after four runs of this file.
+      await flushSpend();
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+      __setSpendWriterForTests(null);
+      if (savedLog === undefined) delete process.env.RB_SPEND_LOG;
+      else process.env.RB_SPEND_LOG = savedLog;
+      process.env.RB_SPEND_DISABLE = "1";
+    }
+  });
+
+  await check("CONCURRENT calls through the transport lose no rows", async () => {
+    armLedger();
+    try {
+      mockFetch(async () => {
+        await new Promise((r) => setTimeout(r, Math.random() * 10));
+        return ok(completion("x"));
+      });
+      const N = 40;
+      await Promise.all(
+        Array.from({ length: N }, (_, i) =>
+          withSpend({ stage: `fill.${i}` }, () => castCall({ system: "", user: "u", maxTokens: 100 })),
+        ),
+      );
+      assert(rows.length === N, `expected ${N} rows, got ${rows.length}`);
+      assert(new Set(rows.map((r) => r.stage)).size === N, "each parallel call keeps its own stage");
+    } finally {
+      disarmLedger();
+    }
+  });
+}
 
 await check("Fireworks model without RB_FIREWORKS_KEY fails fast, names the missing key", async () => {
   const saved = process.env.RB_FIREWORKS_KEY;

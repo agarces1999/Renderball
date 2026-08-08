@@ -182,6 +182,98 @@ model OpWindow {
   @@index([at])
 }
 
+/// PROVIDER SPEND — what WE owe Fireworks, one row per paid provider call.
+///
+/// Written from inside the four paid transports (castCall, callZaiVision,
+/// callZaiText, imageCall), never from a route. The reason is a measured one:
+/// in August 2026 Fireworks' dashboard said $37.69 and our records covered
+/// $6.52. recordUsage() was not missing — it had eight call sites — but
+/// recording was a PER-CALL-SITE CONVENTION, so every surface written after
+/// the convention (the production outline route, the image-attachment OCR,
+/// suggest-layout, ~12 offline scripts, and an esbuild lab bundle that ran
+/// ~180 paid generations over two days) simply never opted in. A transport
+/// cannot forget.
+///
+/// WHY POSTGRES AND NOT .data/usage.jsonl: `.dockerignore` excludes .data from
+/// the image, Railway's disk is ephemeral, and a volume attaches to ONE
+/// instance — so a file ledger is lost on deploy and split-brain the moment a
+/// second replica runs. The same reasoning already moved decks to R2
+/// (lib/render/gen-store.ts) and briefs to pg (lib/store.ts). "An exact number
+/// always" cannot live on a disk that gets thrown away.
+///
+/// WHY A NEW TABLE and not UsageRecord: UsageRecord's ROW GRAIN is the paywall
+/// — lib/entitlement.ts counts its rows against FREE_BUILDS_PER_MONTH. One row
+/// per LLM call in there would turn "3 free builds" into "3 free LLM calls".
+/// TokenUsage answers the opposite question (what the USER owes US) and
+/// deliberately skips DEV_OWNER_ID and cached tokens. Both are right for their
+/// job and wrong for this one. They share the pricing function
+/// (lib/usage.ts costUsd), not the table.
+model SpendRecord {
+  id String @id @default(cuid())
+
+  at DateTime @default(now())
+
+  provider String @default("fireworks")
+  /// The WIRE model id verbatim ("accounts/fireworks/routers/glm-5p2-fast"),
+  /// because that is what the provider bills. A routing change then shows up
+  /// in the next query instead of hiding behind an abstract name.
+  model    String
+  /// Which part of the product spent this: "outline" | "build" | "vision" |
+  /// "crawl" | "edit.insert" | "edit.regen" | "image" | "unattributed".
+  /// A missing label NEVER loses the row — it lands as "unattributed", which
+  /// is itself the signal that an entrypoint still needs wiring.
+  stage    String  @default("unattributed")
+
+  /// Verbatim from the completion response. Never derived, never estimated.
+  inputTokens  Int @default(0) // prompt_tokens
+  outputTokens Int @default(0) // completion_tokens
+  /// prompt_tokens_details.cached_tokens when the wire reports it. RECORDED
+  /// BUT NOT DISCOUNTED: Fireworks' cached-input semantics are unverified on
+  /// this account (no invoice yet), so cost prices the full prompt at the base
+  /// rate — lib/usage.ts's standing posture of overstating, never under.
+  /// Storing the count means history can be re-priced from the first real
+  /// invoice instead of guessed at.
+  cachedTokens Int @default(0)
+  /// Per-IMAGE billed ops (SDXL in the editor) carry no tokens at all.
+  images       Int @default(0)
+
+  /// Decimal, not Float, deliberately breaking this schema's own convention:
+  /// the requirement is literally "an exact number always", and Postgres
+  /// SUM(numeric) is exact where SUM(double precision) accumulates error.
+  costUsd     Decimal @db.Decimal(14, 8)
+  /// Which RATES table priced this row. lib/usage.ts admits its Kimi rate is
+  /// an estimate and its image rates are rounded up; without this, correcting
+  /// a rate either silently rewrites reported history or is impossible.
+  rateVersion String
+
+  /// NULLABLE and deliberately NOT a User relation (same shape as OpWindow):
+  /// offline scripts and the dev loop have no owner, and that spend is still
+  /// real money. A foreign key would reject exactly the rows that went missing.
+  ownerId   String?
+  scriptId  String?
+  /// Groups every call of one build attempt, for cost-per-deck.
+  runId     String?
+
+  /// false = we paid (or may have) and got nothing usable.
+  ok            Boolean @default(true)
+  /// The provider may have billed but reported no usage we could read — a
+  /// timeout or abort mid-generation. Tokens stay ZERO and cost stays ZERO;
+  /// this flag plus latencyMs is the honest floor. Same discipline as
+  /// lib/agents/pipeline.ts:485 — never a fabricated estimate.
+  tokensUnknown Boolean @default(false)
+  latencyMs     Int?
+
+  /// "web" | "script" | "test". Offline lab spend was the MAJORITY of August;
+  /// unit economics are meaningless if it cannot be separated from customers'.
+  origin String @default("web")
+
+  @@index([at])
+  @@index([stage, at])
+  @@index([model, at])
+  @@index([scriptId])
+  @@index([ownerId, at])
+}
+
 model TokenUsage {
   ownerId      String   @id
   owner        User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)

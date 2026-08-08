@@ -13,6 +13,7 @@
     "qa": "node scripts/run-qa.mjs",
     "alert:test": "node scripts/test-alert.mjs",
     "usage": "node scripts/usage-report.mjs",
+    "spend": "node scripts/spend-report.mjs",
     "db:migrate": "dotenv -e .env.local -- prisma migrate dev",
     "db:deploy": "prisma migrate deploy",
     "db:generate": "dotenv -e .env.local -- prisma generate",

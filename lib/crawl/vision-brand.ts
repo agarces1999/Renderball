@@ -102,7 +102,7 @@ export const extractBrandColorRoles = async (
     const visionCall =
       opts.visionCall ??
       ((image, prompt) =>
-        callZaiVision(image, prompt, { disableThinking: true, maxTokens: 500 }));
+        callZaiVision(image, prompt, { disableThinking: true, maxTokens: 500, stage: "crawl" }));
     const { text, usage } = await visionCall(imageUrl, COLOR_ROLES_PROMPT);
     opts.onUsage?.(VISION_MODEL, usage);
     const obj = parseFirstJsonObject(text);

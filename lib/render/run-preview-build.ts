@@ -35,6 +35,7 @@ import {
 import { MODELS, VISION_MODEL } from "../anthropic";
 import { callZaiVision, callZaiText } from "./zai-vision";
 import { recordUsage, costUsd, addUsage, EMPTY_USAGE, type Usage } from "../usage";
+import { withSpend } from "../spend/context";
 import { tallyGateFires, recordGateTelemetry } from "./gate-telemetry";
 import { recordMeteredUsage } from "../entitlement";
 import { recordTokenUsage } from "../metering";
@@ -85,6 +86,26 @@ export async function runPreviewBuild(
      *  cast without touching the process env). Falls back to RB_BUILD_MODE. */
     buildMode?: "cast" | "parallel" | "monolithic";
   },
+): Promise<BuildRouteResult> {
+  // ONE wrap attributes every provider call a build makes — scaffold, scene
+  // fills (which fan out with Promise.all), motion, repairs, gate retries and
+  // the vision judgments — to this deck and this owner, without any of those
+  // ~15 modules knowing the ledger exists. runId groups them into one attempt
+  // so "what did this build cost" is a single query.
+  //
+  // The wrapper exists because AsyncLocalStorage needs a callback boundary and
+  // the body below is 900 lines with a dozen returns; splitting it is safer
+  // than threading a try/finally through all of them.
+  return withSpend(
+    { stage: "build", scriptId, ownerId, runId: `${scriptId}-${Date.now()}` },
+    () => runPreviewBuildInner(scriptId, ownerId, opts),
+  );
+}
+
+async function runPreviewBuildInner(
+  scriptId: string,
+  ownerId: string,
+  opts?: { buildMode?: "cast" | "parallel" | "monolithic" },
 ): Promise<BuildRouteResult> {
   // Balance circuit breaker (the twice-proven [1113] outage): while the z.ai
   // account is dry, fail fast with a friendly message BEFORE any spend or

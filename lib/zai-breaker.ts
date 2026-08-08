@@ -31,11 +31,32 @@ import { sendAlert } from "./alert";
 const COOLDOWN_MS = 10 * 60 * 1000; // re-probe every 10 minutes while dry
 
 export class ZaiUnavailableError extends Error {
-  readonly friendly =
+  // Annotated `string` rather than inferred, so SpendCapExceededError below can
+  // override it with its own copy.
+  readonly friendly: string =
     "Generation is temporarily unavailable — our AI provider account needs attention. Nothing was charged to you; please try again in a few minutes.";
-  constructor() {
-    super("z.ai account unavailable ([1113] insufficient balance) — circuit open");
+  constructor(message = "z.ai account unavailable ([1113] insufficient balance) — circuit open") {
+    super(message);
     this.name = "ZaiUnavailableError";
+  }
+}
+
+/**
+ * The OTHER reason to stop spending: we hit our own dollar cap.
+ *
+ * A SUBCLASS on purpose. Six entrypoints already do
+ * `if (err instanceof ZaiUnavailableError) return 503 err.friendly`, and the
+ * correct handling for "stop generating right now" is identical in all of
+ * them. Extending means every one of those routes handles the spend cap
+ * correctly the day it ships, with no edit and nothing to forget — and the
+ * user still gets a message that is true rather than one blaming the provider.
+ */
+export class SpendCapExceededError extends ZaiUnavailableError {
+  readonly friendly: string =
+    "Generation is paused — we've hit today's safety limit on AI spend. Nothing was charged to you; it lifts automatically, and we've been notified.";
+  constructor(reason: string, untilIso: string) {
+    super(`spend cap reached (${reason}) — generation paused until ${untilIso}`);
+    this.name = "SpendCapExceededError";
   }
 }
 
@@ -169,12 +190,109 @@ export const noteZaiSuccess = (): void => {
   }
 };
 
+// ── OUR OWN SPEND CAP ────────────────────────────────────────────────────
+//
+// The breaker above trips only when FIREWORKS says the account is dry. That
+// is a DISCOVERY, not a control: by the time it fires, the money is already
+// gone. A dollar cap is the control — it is the same "stop spending" state
+// machine pointed at our own threshold instead of the provider's.
+//
+// It lives HERE, next to the balance breaker, for one structural reason: every
+// spending entrypoint already calls assertZaiAvailable() before doing any
+// work. Putting the cap behind that single gate means a route cannot forget
+// it — which is exactly the defect that made spend invisible in the first
+// place (recording was per-call-site opt-in, and the three highest-volume
+// production paths forgot it).
+//
+// It does NOT reuse the balance breaker's state, because the balance breaker
+// half-opens after 10 minutes and probes. For an empty provider account that
+// is right. For a dollar cap it would be catastrophic: the probe succeeds
+// (the provider is perfectly healthy), the circuit closes, and spending
+// resumes past the cap the founder set. A spend cap has to hold until its
+// WINDOW rolls over, so it carries its own deadline.
+
+interface SpendCapStateShape {
+  /** Epoch ms at which the cap lifts on its own. null = not tripped. */
+  until: number | null;
+  reason: string | null;
+  trippedAt: number | null;
+  trips: number;
+}
+
+const spendCap: SpendCapStateShape = { until: null, reason: null, trippedAt: null, trips: 0 };
+
+/**
+ * Stop all generation until `untilMs`. Idempotent — re-tripping while already
+ * tripped only extends the deadline, so a repeating check does not re-count
+ * trips or re-log. Alerting is the caller's job (lib/spend/cap.ts), because
+ * the caller is the one that knows the numbers.
+ */
+export const tripSpendCap = (opts: { reason: string; untilMs: number }): void => {
+  const already = spendCap.until !== null && Date.now() < spendCap.until;
+  spendCap.until = Math.max(spendCap.until ?? 0, opts.untilMs);
+  spendCap.reason = opts.reason;
+  if (!already) {
+    spendCap.trippedAt = Date.now();
+    spendCap.trips += 1;
+    console.error(
+      `[SPEND-CAP] TRIPPED (count ${spendCap.trips}) — ${opts.reason}. ` +
+        `All generation is paused until ${new Date(spendCap.until).toISOString()}.`,
+    );
+  }
+};
+
+/** Lift the cap (the window rolled over, or spend fell back under it). */
+export const clearSpendCap = (why: string): void => {
+  if (spendCap.until === null) return;
+  console.warn(`[SPEND-CAP] lifted — ${why}. Generation resumed.`);
+  spendCap.until = null;
+  spendCap.reason = null;
+  spendCap.trippedAt = null;
+};
+
+/** Introspection for /api/health, the admin surface and tests. */
+export const spendCapState = (): {
+  tripped: boolean;
+  reason: string | null;
+  untilIso: string | null;
+  trips: number;
+} => {
+  // Self-expiring: nothing has to run for the cap to lift at the window
+  // boundary. A cap that needed a cron to release it would be an outage that
+  // outlives the condition.
+  if (spendCap.until !== null && Date.now() >= spendCap.until) {
+    clearSpendCap("the cap window rolled over");
+  }
+  return {
+    tripped: spendCap.until !== null,
+    reason: spendCap.reason,
+    untilIso: spendCap.until === null ? null : new Date(spendCap.until).toISOString(),
+    trips: spendCap.trips,
+  };
+};
+
+/** Test-only reset. */
+export const resetSpendCapForTests = (): void => {
+  spendCap.until = null;
+  spendCap.reason = null;
+  spendCap.trippedAt = null;
+  spendCap.trips = 0;
+};
+
 /**
  * Gate every spend entrypoint (build / generate / regen) with this BEFORE
  * doing any work. Throws ZaiUnavailableError while the circuit is open;
  * after the cooldown it lets exactly ONE caller through as the probe.
+ *
+ * Our own spend cap is checked FIRST: when both are true, "we stopped
+ * ourselves" is the truer explanation and the one that leads to the right
+ * action.
  */
 export const assertZaiAvailable = (): void => {
+  const cap = spendCapState();
+  if (cap.tripped) {
+    throw new SpendCapExceededError(cap.reason ?? "spend cap", cap.untilIso ?? "");
+  }
   if (state.openedAt === null) return;
   const elapsed = Date.now() - state.openedAt;
   if (elapsed >= COOLDOWN_MS && !state.probing) {

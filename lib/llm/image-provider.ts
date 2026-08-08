@@ -15,7 +15,14 @@
  * Transport discipline mirrors lib/llm/cast-provider.ts: bounded retries,
  * retry-after honored, jittered backoff, non-retryable 4xx, AbortSignal
  * timeout. Binary-response wire (Accept: image/png), no SSE.
+ *
+ * THE FOURTH DOOR. This transport bills PER IMAGE, not per token, and it
+ * bypasses both named "choke points" (castCall, callZaiVision) completely. A
+ * spend ledger that hooks only the token transports sees none of it — which
+ * is why the write below is here and not in lib/edit/insert-element.ts, where
+ * it survived until now only because someone hand-wired it.
  */
+import { recordSpend } from "../spend/record";
 
 export interface ImageCall {
   prompt: string;
@@ -30,6 +37,8 @@ export interface ImageCall {
   signal?: AbortSignal;
   /** Request timeout override (default 60s — probed SDXL latency is ~2-4s). */
   timeoutMs?: number;
+  /** Spend-ledger label; falls back to the ambient withSpend() context. */
+  stage?: string;
 }
 
 export interface ImageResult {
@@ -183,6 +192,7 @@ export const imageCall = async (call: ImageCall): Promise<ImageResult> => {
   let lastErr: ImageProviderError | null = null;
 
   for (let attempt = 0; attempt <= RETRIES; attempt++) {
+    const tAttempt = Date.now();
     let res: Response;
     try {
       res = await fetch(wire.url, {
@@ -201,6 +211,17 @@ export const imageCall = async (call: ImageCall): Promise<ImageResult> => {
         null,
         true,
       );
+      // No Response, so we cannot know whether the render completed and was
+      // billed. Zero-cost marker, never a guessed image count — same rule as
+      // the cast transport.
+      void recordSpend({
+        model,
+        stage: call.stage,
+        defaultStage: "image",
+        ok: false,
+        tokensUnknown: true,
+        latencyMs: Date.now() - tAttempt,
+      });
       if (attempt < RETRIES) await sleep(retryDelayMs(attempt, null));
       continue;
     }
@@ -234,6 +255,16 @@ export const imageCall = async (call: ImageCall): Promise<ImageResult> => {
         false,
       );
     }
+
+    // A PNG came back, so an image was generated and billed. Token fields stay
+    // zero by construction; imageCostUsd (lib/usage.ts) prices `images`.
+    void recordSpend({
+      model,
+      stage: call.stage,
+      defaultStage: "image",
+      images: 1,
+      latencyMs: Date.now() - t0,
+    });
 
     return {
       png: bytes,

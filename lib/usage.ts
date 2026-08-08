@@ -121,6 +121,23 @@ const IMAGE_RATE_FALLBACK = 0.005;
 export const imageCostUsd = (model: string, n: number): number =>
   n * (IMAGE_RATES[model] ?? IMAGE_RATE_FALLBACK);
 
+/**
+ * Was this model priced by a REAL rate row, or by a fallback?
+ *
+ * Both fallbacks above are silent: an unknown text model bills at the Sonnet
+ * rate ($3/$15) and an unknown image model at $0.005. That is deliberate —
+ * overstate, never understate — but it means a routing change to a model
+ * nobody added here produces a number that LOOKS exact and is not. The spend
+ * report calls this to say so out loud (lib/spend/ledger.ts integrity check)
+ * instead of quietly reporting a guess as the answer.
+ *
+ * Exported rather than re-listing the model ids in the reporting layer: two
+ * copies of the rate table is how they drift.
+ */
+export const isPricedModel = (model: string): boolean =>
+  Object.prototype.hasOwnProperty.call(RATES, model) ||
+  Object.prototype.hasOwnProperty.call(IMAGE_RATES, model);
+
 /** Cost in USD for a usage bundle on a given model. Unknown model → Sonnet rate. */
 export const costUsd = (model: string, u: Usage): number => {
   const r = RATES[model] ?? RATES["claude-sonnet-4-5"];

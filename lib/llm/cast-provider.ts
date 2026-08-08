@@ -25,6 +25,7 @@
  */
 
 import { noteZaiError, noteZaiSuccess } from "../zai-breaker";
+import { recordSpend } from "../spend/record";
 
 export type CastEffort = "none" | "low" | "medium" | "high";
 
@@ -55,6 +56,14 @@ export interface CastCall {
   /** Request timeout override (default 120s). The whole-composition build
    *  passes emit tens of k tokens and need more headroom. */
   timeoutMs?: number;
+  /**
+   * Spend-ledger label ("outline" | "build.fill" | "gate.repair" | …).
+   * Optional on purpose: the row is recorded either way, and an omitted label
+   * falls back to the ambient withSpend() context and then to "unattributed".
+   * A missing label must never be able to lose a row — that is how $31.17
+   * went uncounted in August.
+   */
+  stage?: string;
 }
 
 export interface CastResult {
@@ -180,6 +189,11 @@ export const castCall = async (call: CastCall): Promise<CastResult> => {
   let lastErr: CastProviderError | null = null;
 
   for (let attempt = 0; attempt <= RETRIES; attempt++) {
+    // Per-ATTEMPT clock, separate from t0. A castCall can be up to 5 provider
+    // requests and the ledger needs to know how long the one that died ran
+    // for — an attempt that dies after 1,529s (measured, August) generated
+    // something we were billed for; one that dies after 1s did not.
+    const tAttempt = Date.now();
     let res: Response;
     try {
       res = await fetch(wire.url, {
@@ -218,10 +232,33 @@ export const castCall = async (call: CastCall): Promise<CastResult> => {
         null,
         true,
       );
+      // STRUCTURALLY UNOBSERVABLE SPEND. There is no Response, so there is no
+      // usage object — the provider may have generated (and billed) a full
+      // completion that we aborted before reading. This is not fixable by
+      // better instrumentation; tokens consumed by a request whose response we
+      // never read are unknowable from our side, forever. What IS fixable is
+      // pretending it did not happen: record a ZERO-token marker so the count
+      // and the elapsed seconds are visible, and never a fabricated estimate.
+      // Same discipline as lib/agents/pipeline.ts:485, which learned it when a
+      // billed stream died mid-generation. In August 29 of these fired against
+      // 6 successful builds, 7 of them after >300s.
+      void recordSpend({
+        model,
+        stage: call.stage,
+        ok: false,
+        tokensUnknown: true,
+        latencyMs: Date.now() - tAttempt,
+      });
       if (attempt < RETRIES) await sleep(retryDelayMs(attempt, null));
       continue;
     }
 
+    // NO LEDGER ROW for 429 / 5xx / 4xx, deliberately. The provider REJECTED
+    // the request rather than serving it, so nothing was generated and
+    // nothing is billed; their bodies carry no usage object either way. A
+    // marker row here would drown the "we paid and could not measure it"
+    // count — which is the one signal on this table that has to stay
+    // trustworthy — in ordinary rate limiting.
     if (res.status === 429 || res.status >= 500) {
       lastErr = new CastProviderError(
         `cast HTTP ${res.status}: ${(await res.text().catch(() => "")).slice(0, 160)}`,
@@ -241,7 +278,16 @@ export const castCall = async (call: CastCall): Promise<CastResult> => {
     const j = (await res.json().catch(() => null)) as {
       error?: { message?: string };
       choices?: { message?: { content?: string; reasoning?: string; reasoning_content?: string }; finish_reason?: string }[];
-      usage?: { prompt_tokens?: number; completion_tokens?: number };
+      usage?: {
+        prompt_tokens?: number;
+        completion_tokens?: number;
+        // OpenAI-wire cache reporting. Captured for the ledger (it is free
+        // data and the only way to learn whether Fireworks caching is even
+        // engaging on this account) but NOT discounted when pricing — see
+        // lib/spend/record.ts makeSpendRow for why unverified semantics are
+        // priced at the full rate.
+        prompt_tokens_details?: { cached_tokens?: number };
+      };
     } | null;
 
     if (!res.ok || !j || j.error) {
@@ -266,6 +312,25 @@ export const castCall = async (call: CastCall): Promise<CastResult> => {
     noteZaiSuccess();
 
     const msg = j.choices?.[0]?.message ?? {};
+
+    // THE LEDGER WRITE. Here, not at the call site: castCall is reached from
+    // ~15 modules (the Anthropic-shim, pipeline, quality-loop, cast-build,
+    // script-generator, a dozen offline scripts) and every one of them would
+    // otherwise have to remember. They did not — that is the measured cause of
+    // August's $31.17 hole. Fire-and-forget: the user's call never waits on
+    // the ledger, and recordSpend never rejects.
+    void recordSpend({
+      model,
+      stage: call.stage,
+      inputTokens: j.usage?.prompt_tokens ?? 0,
+      outputTokens: j.usage?.completion_tokens ?? 0,
+      cachedTokens: j.usage?.prompt_tokens_details?.cached_tokens ?? 0,
+      latencyMs: Date.now() - tAttempt,
+      // A `finish_reason: "length"` completion is a real, fully billed call —
+      // it is ok:true and counted, even when the caller goes on to discard it.
+      ok: true,
+    });
+
     return {
       text: msg.content ?? "",
       thinking: msg.reasoning_content ?? msg.reasoning ?? "",

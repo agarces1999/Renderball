@@ -1,9 +1,10 @@
 import { NextResponse } from "next/server";
 import { prisma } from "../../../lib/db";
 import { isStorageConfigured } from "../../../lib/storage/r2";
-import { zaiBreakerState } from "../../../lib/zai-breaker";
+import { spendCapState, zaiBreakerState } from "../../../lib/zai-breaker";
 import { billingProvider } from "../../../lib/billing-provider";
 import { isAlertingConfigured } from "../../../lib/alert";
+import { noteSpendRecorded } from "../../../lib/spend/cap";
 
 /**
  * Is the app actually working?
@@ -56,6 +57,17 @@ const checkDb = async (): Promise<CheckState> => {
 
 export async function GET() {
   const now = Date.now();
+
+  // THE SPEND HEARTBEAT. Thresholds have to be evaluated by something that
+  // runs whether or not anyone is generating, and this app has no cron. Health
+  // is the one endpoint production is guaranteed to poll (Railway's healthcheck
+  // and any uptime monitor), which makes it the cheapest trigger available.
+  // noteSpendRecorded() is throttled to one ledger read a minute and never
+  // throws, so a flood of health checks costs one query and cannot fail this
+  // endpoint. Deliberately OUTSIDE the response cache: the tick should happen
+  // even when the cached body is served.
+  noteSpendRecorded();
+
   if (cached && now - cached.at < CACHE_MS) {
     return NextResponse.json(cached.body, {
       status: cached.healthy ? 200 : 503,
@@ -65,6 +77,7 @@ export async function GET() {
 
   const db = await checkDb();
   const breaker = zaiBreakerState();
+  const cap = spendCapState();
 
   const checks = {
     // Essential: without it nothing in the product works.
@@ -75,7 +88,17 @@ export async function GET() {
     // Open means every build, generate and regenerate is failing fast. The
     // product still serves and edits existing decks, so this is degraded, not
     // dead — but it is the thing most worth being woken up for.
-    generation: breaker.open ? ("down" as CheckState) : ("ok" as CheckState),
+    //
+    // Our own spend cap stops generation just as completely as an empty
+    // provider account, so it belongs in the same field: a monitor asking "can
+    // people generate?" must get "no" either way.
+    generation: breaker.open || cap.tripped ? ("down" as CheckState) : ("ok" as CheckState),
+    // WHY generation is down, without saying what anything cost. A boolean is
+    // the most this public endpoint may carry (see the docstring's rule): it
+    // is outage-shaped, and it distinguishes "the provider ran out" from "we
+    // stopped ourselves", which are opposite actions. No dollars, no
+    // thresholds, no counts — those are GET /api/admin/spend.
+    spendCap: cap.tripped ? ("down" as CheckState) : ("ok" as CheckState),
     billing: billingProvider() === "none" ? ("not-configured" as CheckState) : ("ok" as CheckState),
     alerting: isAlertingConfigured() ? ("ok" as CheckState) : ("not-configured" as CheckState),
     // Without this secret, deleting an account in Clerk's own UI silently

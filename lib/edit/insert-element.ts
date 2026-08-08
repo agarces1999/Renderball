@@ -36,6 +36,7 @@ import { emitFreetextSpan, DEFAULT_FORMAT } from "./freetext";
 import { saveImageAsset } from "./image-assets";
 import { imageCall, ImageProviderError } from "../llm/image-provider";
 import { recordUsage, EMPTY_USAGE, type Usage } from "../usage";
+import { withSpend } from "../spend/context";
 import { MODELS } from "../anthropic";
 
 const msg = (e: unknown): string => (e instanceof Error ? e.message : String(e));
@@ -196,7 +197,10 @@ export const insertElement = async (input: InsertElementInput): Promise<InsertEl
     return { ok: false, error: "bounds must be finite with positive width and height" };
   }
 
-  return withGenDirLock(genDir, async () => {
+  // Attributes both doors this path opens — the coding-agent text call AND the
+  // per-image SDXL call, which bills separately and bypasses castCall entirely.
+  return withSpend({ stage: "edit.insert", scriptId }, () =>
+  withGenDirLock(genDir, async () => {
     const snapshot = await readManifest(genDir);
     if (!snapshot.scenes.some((s) => s.sceneIndex === sceneIndex)) {
       return { ok: false, error: `scene ${sceneIndex} not found` };
@@ -284,5 +288,6 @@ export const insertElement = async (input: InsertElementInput): Promise<InsertEl
       logGenFail();
       return { ok: false, usage, error: `insert failed: ${msg(e)}` };
     }
-  });
+  }),
+  );
 };

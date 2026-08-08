@@ -25,6 +25,7 @@ import { withGenDirLock } from "./gendir-lock";
 import { findChildInScene, spliceChildBody, blockAsPiece } from "./nested-piece";
 import type { DecomposedPiece } from "../agents/lego-decompose";
 import { recordUsage, type Usage } from "../usage";
+import { withSpend } from "../spend/context";
 import { MODELS } from "../anthropic";
 
 export interface RegenerateElementInput {
@@ -63,7 +64,8 @@ export const regenerateElement = async (
 
   // Serialize with any other edit to the same video (move/delete/regen) so their
   // read-modify-write of manifest + Composition.tsx cannot interleave.
-  return withGenDirLock(genDir, async () => {
+  return withSpend({ stage: "edit.regen", scriptId }, () =>
+  withGenDirLock(genDir, async () => {
   const d = await readDecomposed(genDir);
   const scene = d.scenes.find((s) => s.sceneIndex === sceneIndex);
   if (!scene) return { ok: false, error: `scene ${sceneIndex} not found` };
@@ -144,5 +146,6 @@ export const regenerateElement = async (
 
   logUsage(regen.usage, false);
   return { ok: true, code: candidate, body: regen.body, usage: regen.usage };
-  });
+  }),
+  );
 };

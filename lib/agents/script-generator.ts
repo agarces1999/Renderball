@@ -364,6 +364,12 @@ export const flattenHistoryToUser = (history: ScriptMsg[]): string =>
  */
 export const fireworksScriptTransport: ScriptTransport = async (history) => {
   const r = await castCall({
+    // Spend label set HERE rather than at the routes on purpose: this one line
+    // attributes the production outline path, the dev route, AND the offline
+    // lab harness (.data/outline-matrix/gen.mjs esbuild-bundles generateScript
+    // directly). Those ~180 unlabelled lab generations were most of August's
+    // $31.17 accounting gap.
+    stage: "outline",
     // 300s, from 94 measured generations: median 79s, p95 185s, p99 463s. The
     // 120s default aborted roughly one in eight legitimate outlines and then
     // reported it as a provider error.

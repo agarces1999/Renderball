@@ -218,7 +218,7 @@ export const findBrandLogo = async (
   const visionCall =
     opts.visionCall ??
     ((images, prompt) =>
-      callZaiVision(images, prompt, { disableThinking: true, maxTokens: 1024 }));
+      callZaiVision(images, prompt, { disableThinking: true, maxTokens: 1024, stage: "crawl" }));
 
   const userAgent =
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36";

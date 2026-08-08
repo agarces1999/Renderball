@@ -44,6 +44,19 @@ for (const key of [
   delete process.env[key];
 }
 
+// DISARM THE SPEND LEDGER. Same reasoning as the alert channels above, one
+// step more expensive to get wrong: this runner loads .env.local, so every
+// test process is armed with a real DATABASE_URL, and lib/spend/record.ts now
+// writes from INSIDE the transports — which unit tests drive directly with a
+// mocked fetch. Without this, `npm test` would append fake money to the launch
+// ledger the founder is trying to reconcile to the cent, from a table whose
+// whole value is that it contains only real spend.
+//
+// Tests that need the ledger turn it back on themselves and install their own
+// writer (lib/spend/record.test.ts), exactly as lib/alert.test.ts sets its own
+// fake channel — off by construction, on only where it is the subject.
+process.env.RB_SPEND_DISABLE = "1";
+
 // Dependency-free recursive scan for *.test.ts under a root.
 const findTests = (dir) => {
   const out = [];
