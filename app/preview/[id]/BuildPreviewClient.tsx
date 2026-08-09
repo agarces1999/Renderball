@@ -111,6 +111,25 @@ export function BuildPreviewClient({
 
   const [phase, setPhase] = useState<Phase>({ kind: "building" });
   const [current, setCurrent] = useState(0);
+
+  /**
+   * Seconds since this build started — the ONE measured number on a screen
+   * whose step list is otherwise paced. Requested by the founder after
+   * watching a real production build with no sense of how long it had been
+   * running: the steps tick and the bar fills, but neither tells you whether
+   * you have been waiting forty seconds or four minutes.
+   *
+   * setInterval, not requestAnimationFrame: rAF is paused entirely in a
+   * background tab, and this panel explicitly invites you to leave.
+   */
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    if (phase.kind !== "building") return;
+    const started = Date.now();
+    setElapsed(0);
+    const t = window.setInterval(() => setElapsed(Math.round((Date.now() - started) / 1000)), 1000);
+    return () => window.clearInterval(t);
+  }, [phase.kind]);
   const [agentDone, setAgentDone] = useState(false);
   const [buildKey, setBuildKey] = useState(0);
   const lastStarted = useRef<number | null>(null);
@@ -357,11 +376,26 @@ export function BuildPreviewClient({
           : "Designing each scene, choreographing the motion, then compiling a live preview. About a minute — the story's already approved, so this is the last wait."}
       </p>
 
-      <div className="mb-6 h-1 w-full overflow-hidden rounded-full bg-surface-3">
+      <div className="mb-2 h-1 w-full overflow-hidden rounded-full bg-surface-3">
         <div
           className="h-full rounded-full bg-accent transition-all duration-500"
           style={{ width: `${pct}%` }}
         />
+      </div>
+
+      {/* The clock is MEASURED; the bar above it is paced. Keeping them on
+          adjacent lines is deliberate — the number is what a waiting person
+          actually trusts. Past ten minutes it stops implying the pace was
+          right, the same discipline the outline panel uses. */}
+      <div className="mb-6 flex w-full items-baseline justify-between gap-3">
+        <span className="font-mono text-[11.5px] tabular-nums text-muted">
+          {Math.floor(elapsed / 60)}:{String(elapsed % 60).padStart(2, "0")}
+        </span>
+        <span className="text-[11.5px] leading-relaxed text-faint">
+          {elapsed > 600
+            ? "Taking longer than usual — still working."
+            : "You can close this tab; it finishes on its own."}
+        </span>
       </div>
 
       <ul className="w-full space-y-2">
