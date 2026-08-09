@@ -64,6 +64,47 @@ export interface ResolvedFont {
   generic: "serif" | "sans-serif" | "monospace";
 }
 
+/**
+ * What the crawl actually YIELDED — the honest answer to "did we load this
+ * brand?", as distinct from "did the fetch return 200?".
+ *
+ * Why this exists: `BrandExtract.ok` means only that the crawl RAN. A sweep of
+ * 60 live sites (2026-08-09) reached 82% of them but recovered a usable colour
+ * AND font on 32% — 41% of the extracts marked `ok` cleared neither bar. The
+ * product told every one of them "brand loaded from {url}" and persisted a
+ * BrandKit for them. `ok` is a transport fact; this is a content fact, and the
+ * two had been standing in for each other everywhere.
+ *
+ * (Coupling: a parallel change is defining a richer honest-yield shape on the
+ * extract itself. When it lands, this becomes its consumer — the fields below
+ * are deliberately the smallest set the UI and the persistence gate need.)
+ */
+export interface BrandYield {
+  /** A signature colour resolved — palette/theme/logo carry real chroma. */
+  color: boolean;
+  /** A brand font family with a loadable web src survived — not a curated fallback. */
+  font: boolean;
+  /** A brand mark we can actually render. */
+  logo: boolean;
+  /** A brand NAME we observed (page title or hostname), not the placeholder. */
+  name: boolean;
+  /**
+   * The bar for claiming "brand loaded". Colour OR font, deliberately: a deck
+   * carrying either one still reads as the brand, and demanding both would
+   * call two thirds of real sites a failure. A logo alone does NOT clear it —
+   * the mark lands in a 28px corner chip; the LOOK comes from colour and type.
+   */
+  loaded: boolean;
+}
+
+const NO_YIELD: BrandYield = {
+  color: false,
+  font: false,
+  logo: false,
+  name: false,
+  loaded: false,
+};
+
 export interface BrandIdentity {
   /** The one logo to render, or null → render the wordmark instead. */
   logo:
@@ -75,8 +116,13 @@ export interface BrandIdentity {
         onDark: boolean;
       }
     | null;
-  /** Always present: brand name + display font, the fallback when logo is null. */
-  wordmark: { text: string; font: string };
+  /**
+   * Always present: brand name + display font, the fallback when logo is null.
+   * `placeholder` is true when `text` is the "Brand" last resort — no title
+   * and no hostname to derive from. A placeholder must never be handed to the
+   * design agent as the wordmark to set (see pipeline's brand-context block).
+   */
+  wordmark: { text: string; font: string; placeholder: boolean };
   fonts: { display: ResolvedFont; body: ResolvedFont; mono?: ResolvedFont };
   palette: string[];
   /**
@@ -95,6 +141,8 @@ export interface BrandIdentity {
    * carry the brand) instead of accidentally shipping a grey video.
    */
   signature_missing?: boolean;
+  /** What the crawl actually yielded — see BrandYield. Never inferred from `ok`. */
+  yield: BrandYield;
 }
 
 const isLoadableUrl = (u: string): boolean =>
@@ -168,12 +216,17 @@ const pickBrandSegment = (segs: string[]): string => {
  * shipping the sentence. Capped to BRAND_NAME_MAX so a leak can never fill a
  * lockup.
  */
-export const deriveBrandName = (extract: Partial<BrandExtract>): string => {
-  const host = (extract.url || "")
+/** "https://www.fusefinance.com/pricing" → "fusefinance". "" when there is no
+ *  host to read — the only condition under which a brand name is unknowable. */
+const hostLabelOf = (url: string | undefined): string =>
+  (url || "")
     .replace(/^https?:\/\//i, "")
     .replace(/^www\./i, "")
-    .split(/[/?#]/)[0];
-  const hostLabel = host.split(".")[0] || ""; // "fusefinance"
+    .split(/[/?#]/)[0]
+    .split(".")[0] || "";
+
+export const deriveBrandName = (extract: Partial<BrandExtract>): string => {
+  const hostLabel = hostLabelOf(extract.url); // "fusefinance"
   const title = extract.title?.trim();
   if (title) {
     const segs = splitTitleSegments(title);
@@ -323,6 +376,52 @@ const resolveFont = (
     ? { family: FALLBACK_DISPLAY_SERIF, fallback: true, generic: "serif" }
     : { family: FALLBACK_DISPLAY_SANS, fallback: true, generic: "sans-serif" };
 };
+
+// The NO-ROLE fallbacks: no font role was classified at all, so resolveFont
+// never ran and there is no family to style-match.
+//
+// `generic` is load-bearing and was missing here. The design pipeline emits
+// each role as `const FONT_X = '"${family}", ${generic}';` under a header that
+// tells the model to copy the value VERBATIM — so an absent generic shipped
+// `const FONT_DISPLAY = '"Inter", undefined';` into deck
+// 01KY7ZGC4MVDD5J1DSB35GAW5T (FONT_DISPLAY and FONT_BODY both; FONT_MONO was
+// fine, because the mono role goes through resolveFont, which always sets it).
+//
+// What that actually does, measured in Chrome rather than assumed: the
+// declaration is NOT rejected — `undefined` is a legal <custom-ident>, so the
+// parser keeps the stack as a family literally named "undefined" (a genuinely
+// invalid value like `1px` is what gets dropped). The damage is that the
+// generic slot is GONE. With the named face unavailable, `"X", undefined`
+// renders at exactly the width of `"X", serif` and 10% off `"X", sans-serif` —
+// text falls through to the UA's default SERIF. That is the Georgia bug this
+// module was written to prevent, walking back in through the fallback path,
+// and it bites whenever the Google-Fonts @import loses the race (first paint,
+// a Remotion render, a blocked font host).
+//
+// These are plain typed consts, not the `as ResolvedFont` casts that used to
+// sit at the call site: the cast is what told the compiler a half-built object
+// was a complete one, and it is the reason nothing caught this for 106 builds.
+const NO_ROLE_DISPLAY: ResolvedFont = {
+  family: FALLBACK_DISPLAY_SANS,
+  fallback: true,
+  generic: "sans-serif",
+};
+const NO_ROLE_BODY: ResolvedFont = {
+  family: FALLBACK_BODY,
+  fallback: true,
+  generic: "sans-serif",
+};
+
+/**
+ * The CSS font stack for a resolved role — the exact string the design agent
+ * is told to use verbatim. Single source of truth so the identity and the
+ * prompt cannot disagree about what a font stack looks like, and so a role
+ * that somehow arrives without a generic still emits parseable CSS.
+ */
+export const fontStackFor = (font: {
+  family: string;
+  generic?: string;
+}): string => `"${font.family}", ${font.generic || genericFor(font.family)}`;
 
 // Relative luminance (0=black, 1=white) of a #rrggbb color.
 const luminanceOf = (hex: string): number | null => {
@@ -654,15 +753,19 @@ export const resolveBrandIdentity = (
   // icon font `swiper-icons`). Re-classifying is the single source of truth.
   const roles = fonts.length > 0 ? classifyFontRoles(fonts) : e.font_roles ?? {};
 
-  const display =
-    resolveFont(roles.display, "display", fonts) ??
-    ({ family: FALLBACK_DISPLAY_SANS, fallback: true } as ResolvedFont);
-  const body =
-    resolveFont(roles.body, "body", fonts) ??
-    ({ family: FALLBACK_BODY, fallback: true } as ResolvedFont);
+  const display = resolveFont(roles.display, "display", fonts) ?? NO_ROLE_DISPLAY;
+  const body = resolveFont(roles.body, "body", fonts) ?? NO_ROLE_BODY;
   const mono = resolveFont(roles.mono, "mono", fonts);
 
   const brandName = opts?.brandName?.trim() || deriveBrandName(e);
+  // Did we OBSERVE a name, or is `brandName` deriveBrandName's "Brand" last
+  // resort? It returns a real answer from either a title segment or the
+  // hostname; only with neither does it fall through to the literal, which is
+  // a placeholder no one should ever be told to render.
+  const nameObserved =
+    !!opts?.brandName?.trim() ||
+    !!hostLabelOf(e.url) ||
+    splitTitleSegments(e.title ?? "").length > 0;
   const palette = e.palette ?? [];
 
   // Extract the logo's chromatic color from the PICKED logo's markup, BEFORE
@@ -683,14 +786,42 @@ export const resolveBrandIdentity = (
   // rescue inside signatureWithLogoFallback is the last line before null.
   const signature = signatureWithLogoFallback(palette, e.theme_color, logoColor);
 
+  const logo = recolorMonochromeLogo(rawLogo, palette);
+  // The honest tally. Every field is "did we OBSERVE this", never "did the
+  // crawl return ok" — a `fallback` font is our curated stand-in, not the
+  // brand's face, and so does not count as a font we recovered.
+  const yielded: BrandYield = {
+    color: signature !== null,
+    font: !display.fallback || !body.fallback,
+    logo: logo !== null,
+    name: nameObserved,
+    loaded: signature !== null || !display.fallback || !body.fallback,
+  };
+
   return {
-    logo: recolorMonochromeLogo(rawLogo, palette),
-    wordmark: { text: brandName, font: display.family },
+    logo,
+    wordmark: { text: brandName, font: display.family, placeholder: !nameObserved },
     fonts: { display, body, ...(mono ? { mono } : {}) },
     palette,
     signature,
     // No chroma ANYWHERE → say so explicitly. The design prompt switches to a
     // deliberate monochrome direction instead of accidentally shipping grey.
     ...(signature === null ? { signature_missing: true } : {}),
+    yield: yielded,
   };
+};
+
+/**
+ * What a raw extract actually yielded, without building the whole identity at
+ * the call site. The one predicate the UI banner and the BrandKit persistence
+ * gate share, so they cannot disagree about whether a brand was loaded.
+ *
+ * A crawl that FAILED yields nothing by definition — `ok: false` short-circuits
+ * before the identity resolver, which does not read `ok` at all.
+ */
+export const brandExtractYield = (
+  extract: Partial<BrandExtract> | undefined,
+): BrandYield => {
+  if (!extract || extract.ok === false) return NO_YIELD;
+  return resolveBrandIdentity(extract).yield;
 };

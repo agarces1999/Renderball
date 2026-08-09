@@ -4,7 +4,7 @@ import { useState, useEffect, useMemo, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { cn } from "../../lib/cn";
 import { submitBrief, crawlWebsite, loadSavedBrandKit } from "./actions";
-import type { BrandKitSummary } from "./actions";
+import type { BrandKitSummary, BrandYield } from "./actions";
 import type {
   BrandExtract,
   DistributionFormat,
@@ -128,6 +128,11 @@ export function BriefForm({
 
   // ─── Background crawl ────────────────────────────────────────────
   const [brandExtract, setBrandExtract] = useState<BrandExtract | null>(null);
+  // What the crawl actually YIELDED, computed on the server and carried back
+  // with the extract. `brandExtract.ok` means only that the fetch returned —
+  // 41% of `ok` extracts (measured, 60 live sites) carry neither a brand colour
+  // nor a brand font, and this screen told all of them "brand loaded".
+  const [brandYield, setBrandYield] = useState<BrandYield | null>(null);
   const crawledUrlRef = useRef<string | null>(null);
   const crawlInflightRef = useRef<Promise<BrandExtract> | null>(null);
 
@@ -173,6 +178,7 @@ export function BriefForm({
     crawledUrlRef.current = url;
     const p = crawlWebsite(url).then((extract) => {
       setBrandExtract(extract);
+      setBrandYield(extract.brand_yield);
       return extract;
     });
     crawlInflightRef.current = p;
@@ -198,14 +204,17 @@ export function BriefForm({
       setSelectedKitId(null);
       setKitBusy(null);
       setBrandExtract(null);
+      setBrandYield(null);
       const p = crawlWebsite(kit.host).then((extract) => {
         setBrandExtract(extract);
+        setBrandYield(extract.brand_yield);
         return extract;
       });
       crawlInflightRef.current = p;
       return;
     }
     setBrandExtract(saved.brand_extract);
+    setBrandYield(saved.brand_yield);
     setPaletteRoles(saved.palette_roles ?? {});
     // Switching identity: a logo uploaded for the previous brand doesn't carry.
     setLogoFile(null);
@@ -229,6 +238,7 @@ export function BriefForm({
     crawledUrlRef.current = kit.host;
     const p = crawlWebsite(kit.host).then((extract) => {
       setBrandExtract(extract);
+      setBrandYield(extract.brand_yield);
       return extract;
     });
     crawlInflightRef.current = p;
@@ -553,15 +563,25 @@ export function BriefForm({
           </div>
         )}
 
-        {/* Crawl status */}
+        {/* Crawl status. Three outcomes, not two: reached-and-read,
+            reached-but-empty, and unreachable. The middle one used to render as
+            a success — the accent dot and "brand loaded from {url}" keyed on
+            `ok`, which is only "the fetch returned". DESIGN.md: every claim on
+            the page must be demonstrated on the page or cut. */}
         <div className="mt-3 min-h-[20px] font-mono text-[12.5px]">
           {kitBusy === "loading" && !brandExtract && (
             <span className="text-muted">loading saved brand…</span>
           )}
-          {brandExtract?.ok && (
+          {brandExtract?.ok && brandYield?.loaded && (
             <span className="inline-flex items-center gap-2 text-accent-text">
               <span className="inline-block h-1.5 w-1.5 rounded-full bg-accent" />
               brand loaded from {brandExtract.url}
+            </span>
+          )}
+          {brandExtract?.ok && brandYield != null && !brandYield.loaded && (
+            <span className="text-muted">
+              read {brandExtract.url}, but found no brand colors or fonts there —
+              set them below, or the agent will choose
             </span>
           )}
           {brandExtract && !brandExtract.ok && (

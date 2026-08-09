@@ -9,6 +9,8 @@ import {
   writeBlankDocument,
 } from "../../../../lib/documents/blank-document";
 import { persistGenDir } from "../../../../lib/render/gen-store";
+import { startBrandCrawl } from "../../../../lib/documents/brand-crawl";
+import { normalizeSiteUrl } from "../../../../lib/documents/site-brand";
 
 /**
  * Create an empty document and open its editor.
@@ -87,6 +89,23 @@ export async function GET(request: Request) {
       err instanceof Error ? (err.stack ?? err.message) : String(err),
     );
     return redirectTo("/documents?error=create_failed");
+  }
+
+  // Brand, if we already know where to look. `?url=` is optional and the
+  // create path never waits on it: `startBrandCrawl` registers the job and
+  // returns, so this adds no measurable time to a route whose whole promise is
+  // that it is instant. The read it starts is the FREE tier — zero model calls
+  // — because nothing may be spent on creating a document (see brand-crawl.ts
+  // TIER_COST). With no url this is a no-op and the user sails through.
+  //
+  // Most documents get their URL a second later from the editor's own field
+  // (components/BlankDocumentPanel.tsx → POST /api/documents/brand), which is
+  // the same job under the same key. This parameter is here so a link that
+  // already knows the site — a landing-page hand-off, a "new document like
+  // this one" — starts the read at creation rather than after it.
+  const url = normalizeSiteUrl(new URL(request.url).searchParams.get("url") ?? "");
+  if (url) {
+    startBrandCrawl({ scriptId, ownerId: user.id, url, tier: "free" });
   }
 
   return redirectTo(`/preview/${scriptId}`);

@@ -151,7 +151,26 @@ export async function renderSceneDoc(
 <meta charset="utf-8" />
 <title>Preview · Scene ${sceneIndex}</title>
 <style>
-  html, body { margin: 0; padding: 0; background: #000; overflow: hidden; height: 100%; }
+  /* TRANSPARENT, never a colour. This document is always letterboxed inside
+     somebody else's frame — fit() below scales the canvas into whatever box it
+     lands in and centres it, so there is nearly always leftover space, even a
+     rounding rim when the aspect is exact. A colour here paints that leftover
+     ITSELF, on top of the host's frame. #000 did, and the black pillarbox
+     showed up inside the editor's white canvas frame: measured 214px wide at a
+     620px-tall viewport, 342px with a banner open, and still a 4px black rim at
+     heights where the aspect came out exactly 16:9.
+       Transparent hands the letterbox back to the host, the only party that
+     knows what colour it should be: white in the editor, #0b0d12 on the video
+     preview surface (PreviewClient sets that on the iframe element itself —
+     measured rgb(11,13,18) in its bars after this change), bg-surface in the
+     share viewer. No host can paint the wrong bars again.
+       Exports are unaffected: they screenshot at exactly dims.width×dims.height,
+     where fit() scales to 1 and the letterbox has zero area. Measured rather
+     than assumed — every page of a 5-page deck, captured the way
+     export-static.ts captures with omitBackground:true, came back with zero
+     translucent pixels (canvas 1920x1080 at 0,0 in a 1920x1080 viewport). What
+     is behind the canvas cannot reach a PNG or a PDF. */
+  html, body { margin: 0; padding: 0; background: transparent; overflow: hidden; height: 100%; }
   body { display: flex; align-items: center; justify-content: center; }${settleCss}
   .renderball-canvas {
     width: ${dims.width}px;

@@ -10,6 +10,7 @@ import { checkEntitlement, recordMeteredUsage } from "../../lib/entitlement";
 import { checkTokenAllowance, recordTokenUsage } from "../../lib/metering";
 import { assertZaiAvailable, ZaiUnavailableError } from "../../lib/zai-breaker";
 import { extractBrand } from "../../lib/crawl/extract-brand";
+import { brandExtractYield, type BrandYield } from "../../lib/crawl/brand-identity";
 import { upsertBrandKit, getBrandKit, type SavedBrandKit } from "../../lib/brand-kits";
 import { withDbRetry } from "../../lib/db";
 import { recordUsage, addUsage, EMPTY_USAGE, type Usage } from "../../lib/usage";
@@ -43,13 +44,35 @@ export type {
   UploadedFileRef,
 } from "./schema";
 export type { SavedBrandKit, BrandKitSummary } from "../../lib/brand-kits";
+// Re-exported so the (client) form can type the verdict without importing
+// lib/crawl/* — that module graph reaches logo-cache (`fs`) and the vision
+// transport, neither of which belongs in a browser bundle. The type is erased,
+// so this costs the client nothing.
+export type { BrandYield } from "../../lib/crawl/brand-identity";
+
+/**
+ * A crawl result plus the honest verdict on what it yielded. The extract's own
+ * `ok` flag only says the crawl RAN; `brand_yield.loaded` says whether a brand
+ * came back. The form needs the second one to describe the result truthfully,
+ * and computing it in the browser would mean a second implementation to drift.
+ */
+export type CrawledBrand = BrandExtract & { brand_yield: BrandYield };
+
+/** A crawl that never reached a site yielded nothing, by definition. */
+const NOTHING_YIELDED: BrandYield = {
+  color: false,
+  font: false,
+  logo: false,
+  name: false,
+  loaded: false,
+};
 
 /**
  * Fire a website crawl. Returns a BrandExtract — never throws.
  * Used by the wizard to fetch brand context in the background while
  * the user fills the rest of the form.
  */
-export async function crawlWebsite(url: string): Promise<BrandExtract> {
+export async function crawlWebsite(url: string): Promise<CrawledBrand> {
   // Crawling spends z.ai tokens (palette vision + design-language + logo agent)
   // — never let an unauthenticated caller trigger it.
   const user = await getCurrentUser();
@@ -59,6 +82,7 @@ export async function crawlWebsite(url: string): Promise<BrandExtract> {
       fetched_at: new Date().toISOString(),
       ok: false,
       error: "Please sign in to analyze a website.",
+      brand_yield: NOTHING_YIELDED,
     };
   }
   // Soft abuse-bound: a free user who exhausted their generate quota can
@@ -66,7 +90,7 @@ export async function crawlWebsite(url: string): Promise<BrandExtract> {
   // crawl when the generate quota is spent (no new schema/service needed).
   const ent = await checkEntitlement(user.id, "generate").catch(() => ({ allowed: true }));
   if (!ent.allowed) {
-    return { url, fetched_at: new Date().toISOString(), ok: false, error: "Monthly limit reached — It resets on the 1st — or email support@renderball.com." };
+    return { url, fetched_at: new Date().toISOString(), ok: false, error: "Monthly limit reached — It resets on the 1st — or email support@renderball.com.", brand_yield: NOTHING_YIELDED };
   }
   // Meter the crawl's model calls (previously unrecorded for real users — the
   // onUsage collector was wired only into the dev route, so this z.ai spend was
@@ -87,10 +111,17 @@ export async function crawlWebsite(url: string): Promise<BrandExtract> {
   // upsert the account's BrandKit for this host so the next document skips the
   // crawl. Crawl-path upsert refreshes the extract only; the user's locked
   // overrides (roles/logo) are preserved. Best-effort — never fails the crawl.
-  if (extract.ok) {
+  //
+  // Gated on YIELD, not on `ok`. `ok` only means the fetch came back: measured
+  // over 60 live sites, 41% of `ok` extracts carried neither a chromatic colour
+  // nor a real font. Saving those minted an empty BrandKit that the picker then
+  // offered back as a brand, and — worse — whose presence makes the next
+  // document SKIP the crawl, so an empty kit is self-perpetuating.
+  const brand_yield = brandExtractYield(extract);
+  if (extract.ok && brand_yield.loaded) {
     await upsertBrandKit({ ownerId: user.id, extract });
   }
-  return extract;
+  return { ...extract, brand_yield };
 }
 
 /**
@@ -99,10 +130,17 @@ export async function crawlWebsite(url: string): Promise<BrandExtract> {
  * user actually picks a kit. Ownership is the session's — an id that isn't
  * yours reads as null.
  */
-export async function loadSavedBrandKit(id: string): Promise<SavedBrandKit | null> {
+export async function loadSavedBrandKit(
+  id: string,
+): Promise<(SavedBrandKit & { brand_yield: BrandYield }) | null> {
   const user = await getCurrentUser();
   if (!user) return null;
-  return getBrandKit(user.id, id);
+  const kit = await getBrandKit(user.id, id);
+  if (!kit) return null;
+  // Kits saved before the yield gate below existed can still be empty, and
+  // hydrating from one sets the same form state a fresh crawl does — so the
+  // verdict has to travel with them or the banner lies on the reuse path too.
+  return { ...kit, brand_yield: brandExtractYield(kit.brand_extract) };
 }
 
 export type BriefSubmitResult =
@@ -254,7 +292,15 @@ export async function submitBrief(
   // The identity the user just locked (extract + confirmed roles + logo
   // source) becomes the account's saved BrandKit for this host — the submit
   // path is the only writer of overrides, and it mirrors them exactly.
-  if (brandExtract?.ok) {
+  //
+  // Same yield gate as the crawl path, with one addition: a thin extract the
+  // USER completed by hand (picked palette roles, uploaded/confirmed a logo) is
+  // a real kit even though the crawl recovered nothing — those locks are the
+  // brand knowledge, and they are exactly what this write exists to keep.
+  const userLockedIdentity =
+    !!logoSource ||
+    Object.keys(briefParsed.palette_roles ?? {}).length > 0;
+  if (brandExtract?.ok && (brandExtractYield(brandExtract).loaded || userLockedIdentity)) {
     await upsertBrandKit({
       ownerId: user.id,
       extract: brandExtract,

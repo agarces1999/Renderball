@@ -237,13 +237,52 @@ The old 5-step upfront wizard (site → format → colors → shape → prompt, 
 
 ### Flow principles
 - **Config is refinement, not a gate.** Format, colors, duration are crawl-defaulted side controls, never upfront steps.
-  - **Approved exception — brand identity (Alfonso, 2026-07-07):** the brand
-    kit IS a gate. The logo is required (upload, or one-click confirmation of
-    the crawled mark); the scanned palette must be user-confirmed (editable
-    first); font upload is optional with a license attestation. Rationale:
-    dead/blank logo assets were the #1 shipped-defect class (QA 2026-07-06),
-    and identity must be locked by the user, never silently guessed. Enforced
-    in lib/brand-kit.ts (form + submitBrief + /api/preview/build).
+- **Brand always runs, and never blocks (Alfonso, 2026-08-09).** The current
+  rule, and it supersedes both earlier ones:
+  - *superseded — 2026-07-07, "the brand kit IS a gate":* a required logo
+    (upload or one-click confirmation of the crawled mark) plus a
+    user-confirmed palette, before any generation. Written after dead/blank
+    logo assets were the #1 shipped-defect class (QA 2026-07-06). It solved
+    that, and it also made a mandatory upload the first thing a new user met.
+  - *superseded — 2026-07-23 (canvas pivot), "brand is editor-only and never
+    demanded":* nothing asked for a brand at all; the Brand panel could set one
+    later. The gate went away and so did the brand — the crawl lost its only
+    live call site in the move to `/api/documents/new`, and the database shows
+    no successful extract after 2026-07-24.
+
+  What is true now. The ask is **one optional field, visible from both branches
+  of the empty state** ("generate every page" and "build it yourself" — it used
+  to live only inside the first, so half the users could never answer it).
+  Typing a site starts a **free, deterministic read** — no model call, measured median 1.4s over ten live sites —
+  **off the request**, so document creation stays instant and blank. A blank
+  page then wears the brand immediately; a page with content keeps it in the
+  Brand panel, one deterministic 0-token click away.
+
+  Three hard rules inside it:
+  - **Never a gate.** No button waits for it and a user with no website sails
+    through untouched. A failed or thin read still opens a working editor.
+  - **Never a lie.** What the user is told comes from the honest-yield
+    predicate (`brandExtractYield`, lib/crawl/brand-identity.ts), not from
+    "the fetch returned 200" — measured over 60 live sites, 41% of `ok`
+    extracts carry neither a chromatic colour nor a real font, and every one
+    of them used to be told "brand loaded from {url}" with an accent dot
+    beside it. "We could not read much from yoursite.com" beats a confidently
+    wrong palette.
+  - **Never spends by itself.** The automatic tier makes zero model calls. The
+    vision read (~$0.004, 10-25s) is a separate button that says what it costs
+    and only appears when the free read came up short.
+
+  The 2026-07-06 defect that justified the gate is unchanged in force —
+  identity is still never silently guessed. It is now prevented by *saying
+  what was found* rather than by *refusing to continue*: `lib/brand-kit.ts`
+  still guards the legacy `/new` submit path, and on the pivot path the
+  pipeline emits an explicit "NO BRAND IDENTITY WAS EXTRACTED — do not invent
+  one" block instead of a plausible-looking default.
+
+  Surfaces: `components/BlankDocumentPanel.tsx` (the ask),
+  `app/api/documents/brand` (the job + poll), `lib/documents/brand-crawl.ts`
+  (the tiers and the cost threshold), `lib/documents/site-brand.ts` (the free
+  read), `components/BrandPanel.tsx` (the correction).
 - **Story before render.** Always show and let the user approve the narrative before spending expensive compute.
 - **The chrome recedes.** When a brand-color preview is on screen, the app UI goes quiet so the work is the loudest thing.
 
@@ -260,3 +299,4 @@ The old 5-step upfront wizard (site → format → colors → shape → prompt, 
 | 2026-06-06 | Built the flow's remaining screens: a shared quiet app header (crystal-ball mark + "Renderball" wordmark, "Your videos" + "New video"), a "Your videos" gallery at `/videos`, an on-brand build ceremony (crystal orb + honest per-scene progress), and a reskinned preview playback surface | Completes the create → review → build → preview → export loop and gives returning users a home base (surfaces `listBriefs`). Replaced off-brand developer UI — the yellow "build preview" box and raw `gray-900` / `amber` / `emerald-600` controls — with the design tokens. |
 | 2026-06-06 | Quiet chrome enforced on `/review` and `/preview`; the emerald-glass treatment stays exclusive to `/new`; MP4 export consolidated to a single point (preview) | Applies the "chrome recedes when a brand-color preview is on screen" rule so the user's video is the loudest thing. Removed the duplicate "Render MP4" action from `/review` (export lives at the end of the flow); fixed scenes rendering "Untitled scene" by promoting the best available scene text (headline → role → label). |
 | 2026-07-24 | Landing sandbox beat + persistence into activation shipped (the consultation's two deferred ideas) | The band accepts real visitor marquees from the first landed artifact until the deck beat; precomputed intents materialize instantly (zero LLM, mono `sandbox` label, user box is law, clamped to the BAND contract); the scripted artifacts drag with the handle affordance, additively over the pure scroll beats. Canvas state persists to localStorage; `/new` offers "Continue what you started" (seeds the brief prompt in editable words) with a mono `start clean` hatch. Picker is chips only — the no-prompt-box rule holds. |
+| 2026-08-09 | Brand becomes a step that always runs and never blocks; the 2026-07-07 brand-kit gate and the 2026-07-23 editor-only position are both superseded (see Flow principles) | The pivot moved the front door to `/api/documents/new` and the crawl did not come with it — `extractBrand` had no live call site and the database shows no successful extract after 2026-07-24. The URL field also lived only inside "generate every page", so the "build it yourself" half of the product could never state its brand. Now: one optional field on both branches, a free deterministic read off the request (0 model calls, measured median 1.4s / max 4.6s over ten live sites) that never gates anything, an honest sentence from `brandExtractYield` instead of "brand loaded" on a 200, and a paid vision read that waits for a click and says its price. |

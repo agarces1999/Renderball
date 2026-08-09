@@ -108,6 +108,22 @@ export const extractBrand = async (
         error: `HTTP ${res.status} from ${url}`,
       };
     }
+    // A 200 is not a page. ramp.com answers this User-Agent with
+    // `content-type: text/markdown; charset=utf-8` (verified 2026-08-09): the
+    // HTML regexes below then matched nothing, and the crawl still returned
+    // ok:true with an empty palette and no fonts — a silent failure the caller
+    // could not distinguish from a real extract. A missing content-type is
+    // tolerated (some origins omit it); a content-type that positively says
+    // "not HTML" is a failed crawl and must say so.
+    const contentType = res.headers.get("content-type") ?? "";
+    if (!isHtmlContentType(contentType)) {
+      return {
+        url,
+        fetched_at,
+        ok: false,
+        error: `Not an HTML page: ${url} served ${contentType.split(";")[0].trim()}`,
+      };
+    }
     html = await res.text();
   } catch (err) {
     return {
@@ -183,6 +199,9 @@ export const extractBrand = async (
     extractBrandColorRoles(og_image, { onUsage }),
     extractPaletteFromPixels(og_image, { maxColors: 8 }),
   ]).catch(() => null);
+  // The site's OWN icons, mined for colour (palette tier 3). Two small images,
+  // started here so they overlap the logo + CSS work like the vision pair above.
+  const iconColorsP = iconAccentColors([favicon, apple_touch_icon]);
 
   const logoResult = await discoverLogoHd(
     bodyWithoutLogoGrids,
@@ -247,7 +266,12 @@ export const extractBrand = async (
   const fontsFromInline = extractInlineFontFamilies(html);
   const fonts = mergeFonts(fontsFromCss, fontsFromGoogle, fontsFromInline);
   const font_roles = classifyFontRoles(fonts);
-  let palette = extractPalette(allCss, theme_color);
+  // Palette tiers 1 + 2 — see mergePaletteByProvenance for the ordering and why
+  // it exists. theme_color is NOT passed to extractPalette any more: it used to
+  // be unshifted to the FRONT of the palette, and it is the weakest source we
+  // have (3% of hosts declare one). It re-enters as the last tier in the merge.
+  const namedBrandColors = extractNamedBrandColors(allCss);
+  const cssPalette = extractPalette(allCss);
   // The page CANVAS color (Fuse burgundy #440b12) — the background the scenes
   // sit ON. SEPARATE from the signature accent (Fuse orange, the CTA hue). Read
   // by role from the share image so the Design Agent gets it as a hard
@@ -272,6 +296,14 @@ export const extractBrand = async (
   // ONE vision call (extractBrandColorRoles) feeds BOTH the flat palette and the
   // discrete background-color role — the role carries the canvas semantic the
   // flat palette loses.
+  //
+  // What CHANGED 2026-08-09: this block used to ASSIGN `palette` directly, so
+  // whichever arm ran last won and the image beat the site's own stylesheet
+  // every time (see mergePaletteByProvenance). It now produces a candidate list
+  // that the merge admits only as corroboration. The background ROLE is
+  // untouched — the canvas colour is genuinely a thing only the rendered page
+  // knows, and no CSS-frequency ranking carries that semantic.
+  let imagePalette: string[] = [];
   try {
     const pv = await paletteVisionP; // hoisted above — overlaps logo + CSS work
     if (!pv) throw new Error("palette vision unavailable");
@@ -283,11 +315,11 @@ export const extractBrand = async (
       ...roles.supporting,
     ].filter((h): h is string => !!h);
     if (visionPalette.length >= 3 && pixelPalette.length >= 2) {
-      palette = refinePaletteWithPixels(visionPalette, pixelPalette);
+      imagePalette = refinePaletteWithPixels(visionPalette, pixelPalette);
     } else if (visionPalette.length >= 3) {
-      palette = visionPalette;
+      imagePalette = visionPalette;
     } else if (pixelPalette.length >= 3) {
-      palette = pixelPalette.slice(0, 5); // pixel-only: trim noisy tail clusters
+      imagePalette = pixelPalette.slice(0, 5); // pixel-only: trim noisy tail clusters
     }
     // Pixel-snap the background role to its exact homepage value when a cluster
     // is close (vision estimates the hex by eye); keep the vision value when the
@@ -308,6 +340,13 @@ export const extractBrand = async (
   if (!background_color) {
     background_color = extractCssCanvasBackground(allCss);
   }
+  const palette = mergePaletteByProvenance({
+    named: namedBrandColors,
+    css: cssPalette,
+    icon: await iconColorsP,
+    image: imagePalette,
+    themeColor: theme_color,
+  });
 
   // Design-language analysis (best-effort): screenshot the LIVE homepage and read
   // its compositional design language — the qualitative layer that palette/fonts/
@@ -416,6 +455,25 @@ export const extractBrand = async (
     ok: true,
   };
 };
+
+/**
+ * Is this response body a page we can parse? An empty/absent content-type is
+ * accepted (origins do omit it, and the parsers are all forgiving); a
+ * content-type that positively names a non-HTML format is not.
+ */
+export const isHtmlContentType = (contentType: string | null): boolean => {
+  const ct = (contentType ?? "").trim();
+  if (!ct) return true;
+  return /text\/html|application\/xhtml\+xml/i.test(ct);
+};
+
+// HONEST YIELD lives in lib/crawl/brand-identity.ts as `brandExtractYield`
+// (another agent's file, landed in this same session). One predicate only: the
+// UI banner and the BrandKit persistence gate must not be able to disagree about
+// whether a brand was loaded, which is the bug that let "brand loaded from
+// {url}" print over `palette: []`. What this file contributes to it is upstream
+// and structural — a font role that holds `squarespace-ui-font` and a palette
+// carrying a share-card hue both LOOK like yield to any predicate.
 
 /**
  * R4b (audit-3): detect the brand's on-page copy LANGUAGE deterministically.
@@ -1465,8 +1523,23 @@ export interface FontRoles {
 // mis-detected as the BRAND font — corrupting the brand identity fed to the
 // design agent AND making the vision gate flag every scene as "missing the
 // brand's KaTeX_Caligraphic font". They are never a brand identity.
+// ALSO catches SITE-BUILDER and PLAYER CHROME faces. `squarespace-ui-font` is
+// Squarespace's own interface font, shipped on every Squarespace site: in the
+// 60-site sweep (2026-08-09) it appeared on 18 hosts and was crowned the DISPLAY
+// face on 13 of them — on 8 of those a real brand face (Montserrat, Raleway,
+// Poppins, Rubik, Varela Round, Inter) was sitting right there in the body role.
+// `VideoJS` is video.js's player font and took the BODY role on toadbakery.com.
+// `wf_<hex>` is Wix's hashed font alias (redbamboo-nyc.com shipped
+// `wf_36dfb692240b4f9a8a0a33393` as its body font) — an opaque hash is not a
+// family any downstream renderer can resolve, so it is worse than no font.
 const ICON_FONT_RX =
-  /\b(webflow-?icons?|material-?(?:icons?|symbols?(?:-[a-z]+)?)|font[\s-]*awesome|fa-[a-z0-9-]+|icon-[a-z0-9-]+|[a-z0-9]+[-_]icons?|glyph[a-z0-9-]*|simple-?icons|remixicon|feather-?icons|hero-?icons|lucide-?icons|bootstrap-?icons|ionicons|tabler-?icons|phosphor-?icons|octicons|ant-?design[-_]?icons|line-?icons|streamline|katex(?:[_-][a-z0-9]+)?|mathjax[_-]?[a-z0-9]*|mjx[a-z0-9-]*)\b/i;
+  /\b(webflow-?icons?|material-?(?:icons?|symbols?(?:-[a-z]+)?)|font[\s-]*awesome|fa-[a-z0-9-]+|icon-[a-z0-9-]+|[a-z0-9]+[-_]icons?|glyph[a-z0-9-]*|simple-?icons|remixicon|feather-?icons|hero-?icons|lucide-?icons|bootstrap-?icons|ionicons|tabler-?icons|phosphor-?icons|octicons|ant-?design[-_]?icons|line-?icons|streamline|katex(?:[_-][a-z0-9]+)?|mathjax[_-]?[a-z0-9]*|mjx[a-z0-9-]*|squarespace(?:[-_][a-z]+)*|video-?js|wf_[0-9a-f]{16,})\b/i;
+
+// A CSS variable reference that reached the font list as if it were a family
+// name — arc.net ships `var(--fonts-sans)` and Framer sites ship
+// `var(--framer-font-family)`. Never a font; emitting one downstream produces
+// `font-family: var(--fonts-sans)` in a document that has no such variable.
+const PLACEHOLDER_FAMILY_RX = /^\s*var\(|^\s*$/i;
 
 const MONO_RX =
   /\b(mono|code|courier|consol|menlo|jetbrains|ibm[\s-]*plex[\s-]*mono|source[\s-]*code|fira[\s-]*code|roboto[\s-]*mono|space[\s-]*mono)\b/i;
@@ -1492,6 +1565,31 @@ const DISPLAY_FAMILY_RX =
 const SYSTEM_FONT_RX =
   /\b(georgia|times(?:[\s-]*new[\s-]*roman)?|arial(?:[\s-]*black)?|helvetica(?:[\s-]*neue)?|verdana|tahoma|trebuchet(?:[\s-]*ms)?|courier(?:[\s-]*new)?|cambria|calibri|segoe(?:[\s-]*ui)?|palatino(?:[\s-]*linotype)?|book[\s-]*antiqua|lucida(?:[\s-]*grande|[\s-]*sans)?|geneva|impact|comic[\s-]*sans)\b/i;
 
+/**
+ * Real webfont families are CamelCase far more often than spaced, and every
+ * pattern in this section is `\b`-anchored. "SourceCodePro" has no word boundary
+ * between "code" and "Pro", so `source[\s-]*code\b` never fired and a MONOSPACE
+ * face was crowned the DISPLAY font — observed in the stored crawls
+ * (`display:SourceCodePro`) and again in the 60-site sweep. "JetBrainsMono"
+ * fails the same way; "IBMPlexMono" only survives by accident because its whole
+ * name is an alternative in MONO_RX.
+ *
+ * Splitting the camel humps into words gives every pattern a second, spaced
+ * spelling to match. Kept as an ADDITIONAL attempt rather than a replacement:
+ * normalization can only ever add matches, never remove one (it would otherwise
+ * break `KaTeX_Main`, whose ICON_FONT_RX alternative wants the underscore).
+ */
+export const normalizeFamilyName = (name: string): string =>
+  name
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2") // sourceCode → source Code
+    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2") // IBMPlex → IBM Plex
+    .replace(/_+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+const matchesFamily = (rx: RegExp, name: string): boolean =>
+  rx.test(name) || rx.test(normalizeFamilyName(name));
+
 export const classifyFontRoles = (fonts: CrawledFont[]): FontRoles => {
   const roles: FontRoles = {};
   // Collect distinct text faces in order; pull out mono. Icon fonts are skipped
@@ -1500,8 +1598,9 @@ export const classifyFontRoles = (fonts: CrawledFont[]): FontRoles => {
   for (const f of fonts) {
     const name = f.family;
     if (!name) continue;
-    if (ICON_FONT_RX.test(name)) continue;
-    if (!roles.mono && MONO_RX.test(name)) {
+    if (PLACEHOLDER_FAMILY_RX.test(name)) continue;
+    if (matchesFamily(ICON_FONT_RX, name)) continue;
+    if (!roles.mono && matchesFamily(MONO_RX, name)) {
       roles.mono = name;
       continue;
     }
@@ -1510,10 +1609,10 @@ export const classifyFontRoles = (fonts: CrawledFont[]): FontRoles => {
   if (text.length === 0) return roles;
 
   const isDisplayName = (n: string): boolean =>
-    SERIF_RX.test(n) ||
-    DISPLAY_HINT_RX.test(n) ||
-    SERIF_FAMILY_RX.test(n) ||
-    DISPLAY_FAMILY_RX.test(n);
+    matchesFamily(SERIF_RX, n) ||
+    matchesFamily(DISPLAY_HINT_RX, n) ||
+    matchesFamily(SERIF_FAMILY_RX, n) ||
+    matchesFamily(DISPLAY_FAMILY_RX, n);
 
   // Display = a name-recognized display/serif/slab face if present; otherwise the
   // FIRST face that differs from the body (the 2nd distinct face is almost always
@@ -1526,7 +1625,7 @@ export const classifyFontRoles = (fonts: CrawledFont[]): FontRoles => {
   // accent, not the brand's headline face. If a distinctive CUSTOM face is also
   // present, prefer that for display. (corgi.insure: georgia matched SERIF_RX and
   // beat the real display face f37Bolton — every headline came out generic serif.)
-  const isSystemNamed = (n: string): boolean => SYSTEM_FONT_RX.test(n);
+  const isSystemNamed = (n: string): boolean => matchesFamily(SYSTEM_FONT_RX, n);
   const namedDisplay = text.find(isDisplayName);
   if (namedDisplay && !isSystemNamed(namedDisplay)) {
     // A genuine, distinctive display/serif face — trust it.
@@ -1599,6 +1698,331 @@ export const extractPalette = (
     if (final.length >= 8) break;
   }
 
+  return final;
+};
+
+// ─── Palette provenance ────────────────────────────────────────────────
+//
+// The palette used to be assembled by LAST WRITER WINS: extractPalette read the
+// stylesheet, then the og:image arm REASSIGNED `palette` in every branch that
+// succeeded — so the CSS palette survived only when the image arm failed
+// outright. Measured over 60 live sites on 2026-08-09: 6/6 spot-checks had a
+// final palette byte-identical to `pixelPalette.slice(0,5)`. stripe.com's own
+// stylesheet declares #635bff and the crawl shipped the ORANGE of its share
+// card; raycast's #ff6363 became five near-blacks; posthog's #f54e00 became
+// olive; anthropic's #d97757 became greys.
+//
+// Colours now arrive in PROVENANCE order — how strong the site's own claim on
+// the colour is — and a weaker source can never displace a stronger one:
+//
+//   1. css-var-named   a custom property the site NAMED brand/primary/accent
+//                      (51% of hosts). The site literally told us.
+//   2. css-stylesheet  chromatic hexes from the site's own CSS (81%), minus
+//                      TEMPLATE_COLORS below.
+//   3. site-icon       the favicon / apple-touch icon's dominant chroma (25% /
+//                      15%). Startlingly accurate where present: stripe→#533afd
+//                      (true #635bff), raycast→#ff6666 (true #ff6363),
+//                      robinhood→#ccff00, cloudflare→#ff5500.
+//   4. image           og:image pixels + the vision read — CORROBORATION ONLY.
+//   5. theme-color     <meta name=theme-color>, declared by 3% of hosts.
+//
+export type PaletteSource =
+  | "css-var-named"
+  | "css-stylesheet"
+  | "site-icon"
+  | "image"
+  | "theme-color";
+
+/**
+ * Colours that belong to a TEMPLATE, never to the brand.
+ *
+ * The first eight travel TOGETHER in Squarespace's social-links block
+ * stylesheet — they are the SOCIAL PLATFORMS' brand colours (Facebook #3b5998,
+ * GitHub #4183c4, LinkedIn #0976b4, Instagram #e4405f, …) shipped on every
+ * Squarespace site whether or not it links to any of them. Measured in the
+ * 60-site sweep (2026-08-09): #3b5998 sits in the CSS palette of 16 hosts and is
+ * the TOP-ranked chromatic colour on 8 of them — a small business's whole
+ * palette read as Facebook blue. 42% of the small-business corpus is on a site
+ * builder, so this is not an edge case.
+ *
+ * Webflow's default link-blue is the same bug in a different flavour, and this
+ * file already knew about it in prose (fusefinance.com returned #3898ec when the
+ * brand is deep maroon + orange) without ever acting on it. One list now.
+ *
+ * ESCAPE HATCH: a hex here is dropped only when the site does NOT also name it
+ * in a --brand/--primary/--accent custom property. A brand whose colour really
+ * is Facebook blue keeps it by declaring it.
+ */
+const TEMPLATE_COLORS: Record<string, string> = {
+  "#3b5998": "Facebook — Squarespace social block",
+  "#0099e5": "social platform — Squarespace social block",
+  "#0063dc": "Flickr — Squarespace social block",
+  "#4183c4": "GitHub — Squarespace social block",
+  "#e4405f": "Instagram — Squarespace social block",
+  "#0976b4": "LinkedIn — Squarespace social block",
+  "#f94877": "social platform — Squarespace social block",
+  "#f0523d": "social platform — Squarespace social block",
+  "#3898ec": "Webflow default link blue",
+};
+
+const hslOfHexLocal = (
+  hex: string,
+): { h: number; s: number; l: number } | null => {
+  const norm = normalizeHex(hex);
+  if (!norm) return null;
+  const { r, g, b } = hexToRgb(norm);
+  const rr = r / 255,
+    gg = g / 255,
+    bb = b / 255;
+  const mx = Math.max(rr, gg, bb),
+    mn = Math.min(rr, gg, bb);
+  const l = (mx + mn) / 2;
+  if (mx === mn) return { h: 0, s: 0, l };
+  const d = mx - mn;
+  const s = d / (1 - Math.abs(2 * l - 1));
+  let h: number;
+  if (mx === rr) h = ((gg - bb) / d + (gg < bb ? 6 : 0)) * 60;
+  else if (mx === gg) h = ((bb - rr) / d + 2) * 60;
+  else h = ((rr - gg) / d + 4) * 60;
+  return { h, s, l };
+};
+
+/**
+ * "Is this a colour at all, as opposed to structure?" Same bar the deterministic
+ * icon reader uses (dominantColorFromImageBytes in brand-truth.ts) so the tiers
+ * agree: enough saturation to read as a hue, not sunk into black or blown out to
+ * white. Deliberately looser than isSignatureCandidate (which additionally wants
+ * mid-luminance) — a pale brand tint belongs in the palette even when it can't
+ * be the signature.
+ */
+const isChromatic = (hex: string): boolean => {
+  const c = hslOfHexLocal(hex);
+  return !!c && c.s >= 0.25 && c.l > 0.08 && c.l < 0.92;
+};
+
+/** Saturation, gently penalized away from mid-luminance — the same shape
+ *  pickSignatureColor scores with, so the palette leads with the colour the
+ *  signature picker is going to choose anyway. */
+const vividness = (hex: string): number => {
+  const c = hslOfHexLocal(hex);
+  if (!c) return -1;
+  return c.s * (1 - Math.abs(c.l - 0.5) * 0.6);
+};
+
+const hslToHex = (h: number, s: number, l: number): string => {
+  const sat = Math.max(0, Math.min(1, s));
+  const lum = Math.max(0, Math.min(1, l));
+  const c = (1 - Math.abs(2 * lum - 1)) * sat;
+  const hp = (((h % 360) + 360) % 360) / 60;
+  const x = c * (1 - Math.abs((hp % 2) - 1));
+  const [r1, g1, b1] =
+    hp < 1 ? [c, x, 0]
+    : hp < 2 ? [x, c, 0]
+    : hp < 3 ? [0, c, x]
+    : hp < 4 ? [0, x, c]
+    : hp < 5 ? [x, 0, c]
+    : [c, 0, x];
+  const m = lum - c / 2;
+  return `#${toHex(clamp255(Math.round((r1 + m) * 255)))}${toHex(clamp255(Math.round((g1 + m) * 255)))}${toHex(clamp255(Math.round((b1 + m) * 255)))}`;
+};
+
+/** Every `--x: value` in the stylesheet, FIRST definition winning — a later
+ *  `prefers-color-scheme: dark` override must not clobber the base value. */
+const collectCssVars = (allCss: string): Map<string, string> => {
+  const vars = new Map<string, string>();
+  for (const m of allCss.matchAll(/(--[\w-]+)\s*:\s*([^;{}]+?)\s*(?=[;}])/g)) {
+    if (!vars.has(m[1])) vars.set(m[1], m[2].trim());
+  }
+  return vars;
+};
+
+/** Substitute `var(--x[, fallback])` from the custom-property table, bounded so
+ *  a self-referential chain can't spin. */
+const expandCssVars = (
+  value: string,
+  vars: Map<string, string>,
+  depth = 0,
+): string => {
+  if (depth > 4 || !/var\(/i.test(value)) return value;
+  const next = value.replace(
+    /var\(\s*(--[\w-]+)\s*(?:,\s*([^)]*))?\)/gi,
+    (_m, name: string, fallback: string | undefined) =>
+      vars.get(name) ?? fallback ?? "",
+  );
+  return next === value ? value : expandCssVars(next, vars, depth + 1);
+};
+
+// Squarespace declares the site owner's palette as a BARE HSL TRIPLE
+// (`--accent-hsl: 21.99,100%,31.57%`) consumed as `hsla(var(--accent-hsl),1)`.
+// Probed on the sweep's Squarespace hosts 2026-08-09 — maonoseattle.com's
+// `--accent-hsl` is its deep orange, kasestyles.com's is its tan. That triple is
+// what the owner picked in the theme editor: the strongest colour claim a site
+// builder ever gives us, and the old reader threw it away because it is not a
+// CSS colour token.
+const BARE_HSL_RX = /^(-?[\d.]+)(?:deg)?\s*[, ]\s*([\d.]+)%\s*[, ]\s*([\d.]+)%$/;
+const HSL_FN_RX =
+  /hsla?\(\s*(-?[\d.]+)(?:deg)?\s*[, ]\s*([\d.]+)%\s*[, ]\s*([\d.]+)%\s*(?:[,/]\s*([\d.]+%?))?\s*\)/i;
+
+/** A custom-property VALUE → #rrggbb: hex / rgb() / hsl() / Squarespace's bare
+ *  HSL triple, with var() references resolved first. null when it isn't a
+ *  colour (font stacks, sizes, unresolvable var chains) or is transparent. */
+const cssBrandColorToHex = (
+  raw: string,
+  vars: Map<string, string>,
+): string | null => {
+  const v = expandCssVars(raw, vars).trim();
+  const fn = HSL_FN_RX.exec(v);
+  if (fn) {
+    const a =
+      fn[4] == null ? 1
+      : fn[4].endsWith("%") ? parseFloat(fn[4]) / 100
+      : parseFloat(fn[4]);
+    if (!(a > 0.05)) return null;
+    return hslToHex(parseFloat(fn[1]), parseFloat(fn[2]) / 100, parseFloat(fn[3]) / 100);
+  }
+  const bare = BARE_HSL_RX.exec(v);
+  if (bare) {
+    return hslToHex(parseFloat(bare[1]), parseFloat(bare[2]) / 100, parseFloat(bare[3]) / 100);
+  }
+  return cssColorToHex(v);
+};
+
+// A property whose NAME claims the brand. Kept to brand/primary/accent — the
+// floor probe also tried theme/main/key and those pull in furniture
+// (`--swiper-theme-color: #007aff` is Swiper's default, present on liquiddeath
+// and posthog; `--color-theme-bg-cta` is Shopify's).
+const BRAND_PROP_NAME_RX = /^--[\w-]*(?:brand|primary|accent)[\w-]*$/i;
+// …except when the name also says it belongs to a THIRD-PARTY WIDGET. Measured:
+// `--si-primary` / `--social-links-block-main-icon-color` (Squarespace social
+// icons, every Squarespace host) and `--cookiebot-primary-color: #141414`
+// (toadbakery.com) match the brand pattern and are chrome.
+const CHROME_PROP_NAME_RX = /^--si-|social|cookie|swiper|videojs/i;
+
+// How strong the NAME's claim is. "brand" is the site saying this colour IS the
+// brand; "accent" is the weakest — a design system's whole secondary scale is
+// named that way. Measured on stripe.com: ranking by vividness alone led its
+// palette with #ff9014 out of `--hds-color-accentColorMode-lemon-icon-*`, a
+// theme-mode illustration gradient, while `--hds-color-core-brand-600` (#533afd,
+// Stripe purple) sat below it. Same shape on klarna.com, where
+// `--colors-bg-brand` is the pink and `--colors-bg-accent` is a purple.
+const BRAND_PROP_RANK: [RegExp, number][] = [
+  [/brand/i, 0],
+  [/primary/i, 1],
+  [/accent/i, 2],
+];
+const brandPropRank = (name: string): number =>
+  BRAND_PROP_RANK.find(([rx]) => rx.test(name))?.[1] ?? 3;
+
+/**
+ * Palette tier 1 — colours the site NAMED brand / primary / accent.
+ *
+ * Sorted by name strength, then vividness — NOT by source order. A brand ramp is
+ * declared lightest-first (stripe.com's first `--hds-color-core-brand-*` is
+ * #f5f5ff, a 25-step tint of its purple), so "first declared" would lead the
+ * palette with a near-white; within one named ramp the most vivid step is the
+ * brand hue and the rest are washes of it.
+ */
+export const extractNamedBrandColors = (allCss: string): string[] => {
+  if (!allCss) return [];
+  const vars = collectCssVars(allCss);
+  const out: { hex: string; rank: number }[] = [];
+  const seen = new Set<string>();
+  for (const [name, value] of vars) {
+    if (!BRAND_PROP_NAME_RX.test(name)) continue;
+    if (CHROME_PROP_NAME_RX.test(name)) continue;
+    const hex = cssBrandColorToHex(value, vars);
+    if (!hex || seen.has(hex) || !isChromatic(hex)) continue;
+    seen.add(hex);
+    out.push({ hex, rank: brandPropRank(name) });
+  }
+  return out
+    .sort((a, b) => a.rank - b.rank || vividness(b.hex) - vividness(a.hex))
+    .slice(0, 4)
+    .map((c) => c.hex);
+};
+
+/**
+ * Palette tier 3 — the dominant CHROMA of the site's own icons.
+ *
+ * The crawl already fetched the favicon as a LOGO candidate but never mined it
+ * for colour unless the accent had resolved neutral. It is one of the most
+ * accurate deterministic sources we have and it is the site's own file, so it
+ * outranks anything read off a share card. Best-effort: an .ico that sharp
+ * can't decode, a 404, a monochrome mark → nothing, and the tier is simply
+ * absent. Favicon first: it is the one measured against known brand hexes.
+ */
+const ICON_COLOR_TIMEOUT_MS = 4_000;
+const iconAccentColors = async (
+  urls: (string | undefined)[],
+): Promise<string[]> => {
+  const wanted = urls.filter((u): u is string => !!u).slice(0, 2);
+  if (wanted.length === 0) return [];
+  const found = await Promise.all(
+    wanted.map(async (url) => {
+      try {
+        const res = await safeFetch(url, {
+          signal: AbortSignal.timeout(ICON_COLOR_TIMEOUT_MS),
+          headers: { "User-Agent": USER_AGENT, Accept: "image/*,*/*;q=0.5" },
+          redirect: "follow",
+        });
+        if (!res.ok) return null;
+        const bytes = Buffer.from(await res.arrayBuffer());
+        if (bytes.byteLength === 0 || bytes.byteLength > 4_000_000) return null;
+        return await dominantColorFromImageBytes(bytes);
+      } catch {
+        return null;
+      }
+    }),
+  );
+  return found.filter((h): h is string => !!h && isChromatic(h));
+};
+
+/**
+ * Assemble the palette from the provenance tiers. Pure — the network work
+ * happens in the callers, so this is directly testable.
+ *
+ * The load-bearing rule is tier 4. An og:image colour may CORROBORATE a colour
+ * the site already declares (the near-duplicate merge then keeps the
+ * deterministic hex, which is the exact one), but it may not introduce a NEW hue
+ * while the site's own stylesheet or icons have one. That is precisely the
+ * Stripe failure: the stylesheet says #635bff, the share card is orange, and the
+ * orange won. When NO deterministic tier yields chroma — 19% of hosts, an
+ * all-image site with a JS-injected stylesheet — the image tier is all we have
+ * and it becomes the palette exactly as before.
+ */
+export const mergePaletteByProvenance = (tiers: {
+  named: string[];
+  css: string[];
+  icon: string[];
+  image: string[];
+  themeColor?: string;
+}): string[] => {
+  const named = tiers.named.map((h) => h.toLowerCase());
+  const namedSet = new Set(named);
+  const allowed = (hex: string): boolean =>
+    !TEMPLATE_COLORS[hex.toLowerCase()] || namedSet.has(hex.toLowerCase());
+  const deterministic = [
+    ...tiers.named,
+    ...tiers.css.filter(allowed),
+    ...tiers.icon.filter(allowed),
+  ];
+  const image = deterministic.some(isChromatic)
+    ? [] // corroboration only — see the doc comment
+    : tiers.image.filter(allowed);
+  const themeHex = tiers.themeColor ? normalizeHex(tiers.themeColor) : null;
+  const ordered = [...deterministic, ...image, ...(themeHex ? [themeHex] : [])];
+
+  // Same near-duplicate rule extractPalette applies within the CSS tier, so a
+  // colour doesn't appear twice just because two sources agree on it — and the
+  // FIRST (highest-provenance) spelling of it is the one kept.
+  const final: string[] = [];
+  for (const raw of ordered) {
+    const hex = normalizeHex(raw);
+    if (!hex) continue;
+    if (final.some((kept) => rgbDistance(kept, hex) < 12)) continue;
+    final.push(hex);
+    if (final.length >= 8) break;
+  }
   return final;
 };
 

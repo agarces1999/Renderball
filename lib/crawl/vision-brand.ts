@@ -160,6 +160,58 @@ const saturation = (c: { r: number; g: number; b: number }): number => {
   return mx === 0 ? 0 : (mx - mn) / mx;
 };
 
+/** A colour cluster: its pixel count and the precise mean of its pixels. */
+export interface PixelBucket {
+  n: number;
+  r: number;
+  g: number;
+  b: number;
+}
+
+/**
+ * Pick the representative colours out of frequency-ordered clusters.
+ *
+ * Greedy by frequency, skipping any colour within ~38 euclidean of an
+ * already-chosen one (so we don't return five near-identical off-whites), then
+ * GUARANTEE one vivid accent: brand accents are small-area — a button on a busy
+ * share card — and routinely miss the frequency cut.
+ *
+ * The guarantee was FIXED, not deleted, on 2026-08-09. It could not fire as
+ * written: it was gated on `chosen.length < maxColors`, i.e. on the list NOT
+ * being full, and the crawl calls this with maxColors: 8 — which the greedy fill
+ * reaches on the great majority of real og:images. So on exactly the busy images
+ * that needed rescuing, the rescue stood down. It now DISPLACES the weakest
+ * member instead: `chosen` is frequency-ordered, so its last entry is the
+ * least-present colour in the image and a real brand accent outranks it. The
+ * caller's maxColors contract is preserved.
+ *
+ * Split out of extractPaletteFromPixels so it can be tested without a network
+ * fetch or a sharp decode — the reason the dead guard survived this long.
+ */
+export const choosePaletteBuckets = (
+  reps: PixelBucket[],
+  maxColors: number,
+  totalPx: number,
+): PixelBucket[] => {
+  const MIN_DIST2 = 38 * 38;
+  const chosen: PixelBucket[] = [];
+  for (const c of reps) {
+    if (chosen.some((x) => dist2(x, c) < MIN_DIST2)) continue;
+    chosen.push(c);
+    if (chosen.length >= maxColors) break;
+  }
+  if (!chosen.some((c) => saturation(c) > 0.45)) {
+    const accent = reps
+      .filter((c) => totalPx > 0 && c.n / totalPx > 0.01 && saturation(c) > 0.45)
+      .sort((a, b) => saturation(b) - saturation(a))[0];
+    if (accent && !chosen.some((x) => dist2(x, accent) < MIN_DIST2)) {
+      if (chosen.length >= maxColors) chosen[chosen.length - 1] = accent;
+      else chosen.push(accent);
+    }
+  }
+  return chosen;
+};
+
 /**
  * Read a brand's color palette by sampling ACTUAL pixels of its hero/share
  * image. Returns precise dominant hexes (mean of each cluster), dominant
@@ -226,29 +278,9 @@ export const extractPaletteFromPixels = async (
     reps.sort((a, b) => b.n - a.n); // dominant first
     const totalPx = reps.reduce((s, c) => s + c.n, 0);
 
-    // Greedy pick by frequency, skipping any color within ~38 euclidean of an
-    // already-chosen one (so we don't return five near-identical off-whites).
-    const MIN_DIST2 = 38 * 38;
-    const chosen: typeof reps = [];
-    for (const c of reps) {
-      if (chosen.some((x) => dist2(x, c) < MIN_DIST2)) continue;
-      chosen.push(c);
-      if (chosen.length >= maxColors) break;
-    }
-
-    // Guarantee one vivid accent: brand accents are small-area and can miss the
-    // frequency cut. If nothing chosen is saturated, append the most-saturated
-    // bucket that covers ≥1% of pixels.
-    if (chosen.length < maxColors && !chosen.some((c) => saturation(c) > 0.45)) {
-      const accent = reps
-        .filter((c) => c.n / totalPx > 0.01 && saturation(c) > 0.45)
-        .sort((a, b) => saturation(b) - saturation(a))[0];
-      if (accent && !chosen.some((x) => dist2(x, accent) < MIN_DIST2)) {
-        chosen.push(accent);
-      }
-    }
-
-    return chosen.map((c) => toHex(c.r, c.g, c.b));
+    return choosePaletteBuckets(reps, maxColors, totalPx).map((c) =>
+      toHex(c.r, c.g, c.b),
+    );
   } catch {
     return []; // best-effort — fall back to the vision/CSS palette
   }

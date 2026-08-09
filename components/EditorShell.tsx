@@ -108,11 +108,40 @@ export function EditorShell({
         {banner}
 
         {/* the canvas: a framed, light stage — the letterbox recedes so the
-            user's brand-coloured slide is the loudest thing (DESIGN.md) */}
-        <div className="flex flex-1 items-center justify-center overflow-hidden rounded-xl border border-hairline bg-surface-2 p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.4)]">
+            user's brand-coloured slide is the loudest thing (DESIGN.md).
+            `container-type: size` makes this stage the measuring stick for the
+            frame below; it is the only reason the frame can size itself off
+            real available space instead of guessing. */}
+        <div
+          className="flex flex-1 items-center justify-center overflow-hidden rounded-xl border border-hairline bg-surface-2 p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.4)]"
+          style={{ containerType: "size" }}
+        >
+          {/* The frame's width is capped by the stage's own HEIGHT, not the
+              viewport's.
+                The cap used to be `maxWidth: calc(100vh * w/h)`, and 100vh is a
+              lie here: the stage never gets the whole viewport, it gets what is
+              left after the shell padding, the toolbar, the gaps and any banner
+              (~141px, more with a banner). So the width cap never bound,
+              `max-h-full` clamped the height instead, and — measured in Chrome —
+              clamping one axis of an aspect-ratio box does NOT pull the other
+              back: the frame went to 1.90:1 at a 700px viewport and 2.61:1 with
+              a banner at 620px, which is where the black pillarbox came from.
+                `100cqh` is the stage's content-box height, so this cap tracks
+              whatever chrome is actually on screen and cannot drift when the
+              chrome changes. min() picks the binding axis, aspect-ratio derives
+              the other, and nothing clamps afterwards. Measured 16:9 to within
+              0.00008 at viewport heights 1400/1000/800/700/620/540/500, with and
+              without a banner, at both 1440 and 1100 wide.
+                `w-full` and `max-h-full` stay as the graceful fallback: on an
+              engine without container-query units the whole inline width
+              declaration is invalid and the class takes over, i.e. exactly the
+              old behaviour rather than a zero-width frame. */}
           <div
             className="relative max-h-full w-full overflow-hidden rounded-lg border border-hairline bg-surface shadow-[0_30px_80px_-42px_rgba(18,26,43,0.5)]"
-            style={{ aspectRatio: `${width}/${height}`, maxWidth: `calc(100vh * ${width} / ${height})` }}
+            style={{
+              aspectRatio: `${width}/${height}`,
+              width: `min(100%, calc(100cqh * ${width} / ${height}))`,
+            }}
           >
             {children}
           </div>

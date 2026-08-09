@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 /**
  * The first thing a user sees in a brand-new document.
@@ -61,6 +61,106 @@ export const generatingSteps = (pages: number, url: string): string[] => {
 };
 
 /**
+ * How long "Generate" will wait for a brand read that is already running.
+ * The free read measured a 1.4s median and a 4.6s max over ten live sites;
+ * this is a generous multiple of that, and far below the ~79s median outline
+ * it precedes, so nobody perceives it. Past it
+ * we generate without the brand rather than hold the user up — brand never
+ * gates generation.
+ */
+const BRAND_WAIT_MS = 8_000;
+
+/**
+ * Does this look enough like a website to try? PRESENTATION ONLY.
+ *
+ * The authority is `normalizeSiteUrl` on the server — this cannot import it,
+ * because lib/documents/site-brand.ts reaches lib/crawl, and that graph pulls
+ * `fs` and the vision transport into a browser bundle. So the rule is
+ * deliberately dumber than the server's and only decides whether to bother
+ * firing a request while somebody is still typing. It may be STRICTER than
+ * the server, never looser.
+ *
+ * The two-character TLD floor is the part that earns its keep: without it
+ * "stripe.c" — a hostname three keystrokes from finished — read as a site and
+ * fired a real fetch at somebody's origin. Every accepted value here is a
+ * request to a stranger's server, so the bar is "plausibly complete", not
+ * "contains a dot".
+ */
+export const looksLikeSite = (raw: string): boolean => {
+  const host = raw.trim().replace(/^https?:\/\//i, "").split(/[/?#]/)[0];
+  return host.length >= 4 && /^[^\s.]+(\.[^\s.]+)*\.[a-z]{2,}$/i.test(host);
+};
+
+/**
+ * Turn a route's reply into something a person can act on.
+ *
+ * Routes answer `{ error: "unauthorized" }` because that is the right thing
+ * to say to an API consumer — and this panel used to print it verbatim. A
+ * user whose session had lapsed attached a document and was told, in full,
+ * "unauthorized". Caught by attaching a file to the signed-out harness. A
+ * status the user can DO something about gets a sentence about what to do.
+ *
+ * Module scope, not the component body: the brand read's callback closes over
+ * it, and a `const` declared further down the body is a trap waiting for
+ * whoever next reorders these hooks.
+ */
+const humanError = (status: number, raw: unknown, fallback: string): string => {
+  if (status === 401)
+    return "You have been signed out. Refresh the page, sign in, and it will still be here.";
+  if (status === 413) return typeof raw === "string" ? raw : "That file is too large.";
+  const text = typeof raw === "string" ? raw.trim() : "";
+  // A bare one-word code is wire vocabulary, not a message.
+  if (!text || (!/\s/.test(text) && text.length < 24)) return fallback;
+  return text;
+};
+
+/** What the brand read is doing, as far as this panel is concerned. */
+type BrandRead = {
+  phase: "reading" | "done";
+  /** The honest sentence from the server. Never composed here. */
+  message?: string;
+  /** Set only when a signature colour was actually observed. */
+  accent?: string;
+  /** The free read came up short and the paid one is worth offering. */
+  canGoDeeper?: boolean;
+  /** Which read produced this — so "look deeper" cannot be offered twice. */
+  tier?: "free" | "vision";
+};
+
+/**
+ * Wait for a brand read that is running server-side.
+ *
+ * Shorter patience than the outline on purpose: the free read measured a 1.4s
+ * median (4.6s max) over ten live sites and the paid one 10-25s, and nothing
+ * on this screen is waiting for either. Running
+ * out of patience is not an error — it just stops the spinner. The document is
+ * open and editable the whole time.
+ */
+const pollBrand = async (
+  scriptId: string,
+  deadlineMs: number,
+): Promise<Record<string, unknown> | null> => {
+  const until = Date.now() + deadlineMs;
+  while (Date.now() < until) {
+    await new Promise((r) => setTimeout(r, 1_200));
+    let res: Response;
+    try {
+      res = await fetch(`/api/documents/brand?scriptId=${encodeURIComponent(scriptId)}`);
+    } catch {
+      continue; // a dropped poll is not news
+    }
+    if (!res.ok) continue;
+    const data = (await res.json().catch(() => null)) as
+      | { status?: string; result?: Record<string, unknown> }
+      | null;
+    if (!data) continue;
+    if (data.status === "done") return data.result ?? null;
+    if (data.status === "error") return null;
+  }
+  return null;
+};
+
+/**
  * Wait for an outline that is being written server-side.
  *
  * A network blip must NOT be read as failure — the outline is still being
@@ -100,12 +200,116 @@ const pollOutline = async (
   return null;
 };
 
+/**
+ * "Where does your brand live?" — optional, on both branches, never a gate.
+ *
+ * Three states, not two. The 41% case — the crawl reached the site and
+ * recovered neither a colour nor a font — used to print "brand loaded from
+ * {url}" with an accent dot beside it, which is a confident lie. The sentence
+ * shown here is composed on the SERVER from `brandExtractYield`, the one
+ * predicate the persistence gate uses, so the banner and the database can
+ * never disagree about whether a brand was found.
+ *
+ * The swatch appears only when a signature colour was actually observed, so
+ * the dot is evidence rather than decoration.
+ */
+function BrandAsk({
+  url,
+  onUrl,
+  brand,
+  deepBusy,
+  onLookDeeper,
+}: {
+  url: string;
+  onUrl: (v: string) => void;
+  brand: BrandRead | null;
+  deepBusy: boolean;
+  onLookDeeper: () => void;
+}) {
+  return (
+    <div className="mt-4">
+      <label className="block">
+        <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-faint">
+          Your site — so it looks like you (optional)
+        </span>
+        <input
+          type="text"
+          value={url}
+          onChange={(e) => onUrl(e.target.value)}
+          placeholder="yoursite.com"
+          spellCheck={false}
+          autoCapitalize="off"
+          autoCorrect="off"
+          className="mt-1 w-full rounded-md border border-hairline bg-surface-2 px-3 py-2 font-mono text-[12px] text-ink outline-none focus:border-accent-line"
+        />
+      </label>
+
+      {brand?.phase === "reading" && (
+        <p className="mt-1.5 flex items-center gap-2 text-[11.5px] text-muted">
+          <span
+            aria-hidden
+            className="inline-block h-1.5 w-1.5 rounded-full bg-accent"
+            style={{ animation: "rb-step-pulse 1.4s ease-in-out infinite" }}
+          />
+          Reading your site — this is free and nothing is waiting for it.
+        </p>
+      )}
+
+      {brand?.phase === "done" && brand.message && (
+        <div className="mt-1.5">
+          <p className="flex items-start gap-2 text-[11.5px] leading-relaxed text-muted">
+            {brand.accent && (
+              <span
+                aria-hidden
+                className="mt-1 inline-block h-2.5 w-2.5 shrink-0 rounded-full border border-hairline"
+                style={{ background: brand.accent }}
+              />
+            )}
+            <span className="text-ink-soft">{brand.message}</span>
+          </p>
+          {brand.canGoDeeper && (
+            /* THE ONLY PAID BRAND ACTION IN THE PRODUCT, and it is a button.
+               The free read is deterministic; this one screenshots the page
+               and reads it with a vision model — ~$0.004 and 10-25s. It is
+               offered only after the free read came up short, and it says what
+               it costs before it is pressed. Nothing spends on its own. */
+            <button
+              type="button"
+              onClick={onLookDeeper}
+              disabled={deepBusy}
+              className="mt-1.5 rounded-md border border-hairline px-2.5 py-1 text-[11.5px] text-muted transition-colors hover:border-accent-line hover:text-ink disabled:opacity-60"
+            >
+              {deepBusy ? "Looking…" : "Look harder (uses a few tokens)"}
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function BlankDocumentPanel({
   scriptId,
   onDismiss,
+  onBrandApplied,
 }: {
   scriptId: string;
   onDismiss: () => void;
+  /**
+   * The brand read re-skinned this (blank) document server-side and the canvas
+   * on screen is now stale by one version.
+   *
+   * OPTIONAL AND CURRENTLY UNWIRED. The host page owns the iframe's cache
+   * key — `PreviewClient` already passes `onApplied={() => setReloadKey(k =>
+   * k + 1)}` to BrandPanel for exactly this, and the same one line here would
+   * make the brand appear the instant it lands. That file is another agent's,
+   * so the prop is defined and called and the wiring is reported rather than
+   * made. Until it is wired the document IS branded — the sources are
+   * rewritten and published — it just shows up on the next render of the
+   * canvas rather than immediately. Deliberately NOT a `location.reload()`:
+   * that would throw away whatever the user has typed into this panel.
+   */
+  onBrandApplied?: () => void;
 }) {
   // Render NOTHING until hydrated. This panel arrives server-rendered on a
   // heavy editor page, so for the first seconds it was a pixel-perfect card
@@ -131,23 +335,95 @@ export function BlankDocumentPanel({
   }, [busy]);
   const [error, setError] = useState<string | null>(null);
 
-  /**
-   * Turn a route's reply into something a person can act on.
-   *
-   * Routes answer `{ error: "unauthorized" }` because that is the right thing
-   * to say to an API consumer — and this panel used to print it verbatim. A
-   * user whose session had lapsed attached a document and was told, in full,
-   * "unauthorized". Caught by attaching a file to the signed-out harness. A
-   * status the user can DO something about gets a sentence about what to do.
-   */
-  const humanError = (status: number, raw: unknown, fallback: string): string => {
-    if (status === 401)
-      return "You have been signed out. Refresh the page, sign in, and it will still be here.";
-    if (status === 413) return typeof raw === "string" ? raw : "That file is too large.";
-    const text = typeof raw === "string" ? raw.trim() : "";
-    // A bare one-word code is wire vocabulary, not a message.
-    if (!text || (!/\s/.test(text) && text.length < 24)) return fallback;
-    return text;
+  // ── the brand read ────────────────────────────────────────────────────────
+  //
+  // The URL now lives on the CHOICE screen, under both choices, because the
+  // gap it closes is exactly the "build it yourself" branch: the field used to
+  // exist only inside "generate every page", so half the product's users could
+  // never tell us what their brand was. It is optional and it gates nothing —
+  // someone with no website types nothing and never sees any of this.
+  //
+  // Typing a URL fires the FREE read (no model call, ~1.4s median). The paid read is
+  // a separate button that only appears when the free one came up short.
+  const [brand, setBrand] = useState<BrandRead | null>(null);
+  const [deepBusy, setDeepBusy] = useState(false);
+  // The URL the server has already been asked about, so re-blurring an
+  // unchanged field does not re-crawl.
+  const readUrl = useRef<string>("");
+  // Resolves when the in-flight read settles. `generate()` waits on it so the
+  // brand actually reaches the outline: the read persists `brand_extract` onto
+  // the brief, and the generate route reads that brief when it starts.
+  const reading = useRef<Promise<void> | null>(null);
+
+  const startBrandRead = useCallback(
+    async (site: string, vision: boolean) => {
+      readUrl.current = site;
+      setBrand({ phase: "reading" });
+      const done = (async () => {
+        try {
+          const res = await fetch("/api/documents/brand", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ scriptId, url: site, ...(vision ? { vision: true } : {}) }),
+          });
+          if (!res.ok && res.status !== 202) {
+            const data = await res.json().catch(() => null);
+            // A refusal here must never look like a failure of the DOCUMENT.
+            setBrand({
+              phase: "done",
+              message: humanError(res.status, data?.error, "We could not read that address."),
+            });
+            return;
+          }
+          const result = await pollBrand(scriptId, vision ? 90_000 : 30_000);
+          if (!result) {
+            setBrand(null); // nothing to say; the document is unaffected
+            return;
+          }
+          const palette = (result.brand as { palette?: { accent?: string } } | undefined)?.palette;
+          if (result.applied === true) onBrandApplied?.();
+          setBrand({
+            phase: "done",
+            message: typeof result.message === "string" ? result.message : undefined,
+            accent: palette?.accent,
+            canGoDeeper: result.canGoDeeper === true,
+            tier: result.tier === "vision" ? "vision" : "free",
+          });
+        } catch {
+          setBrand(null);
+        }
+      })();
+      reading.current = done;
+      await done;
+      reading.current = null;
+    },
+    [scriptId, onBrandApplied],
+  );
+
+  // Debounced on the URL field. 900ms after the last keystroke, not on every
+  // one: each fire is a real fetch of somebody's homepage, and half-typed
+  // hostnames are somebody else's server.
+  //
+  // The "already read this" guard is checked AGAIN when the timer fires, not
+  // only when it is set: pressing Generate starts the read early (see below),
+  // and without the second check this timer would then fetch the same site a
+  // second time.
+  useEffect(() => {
+    const site = url.trim();
+    if (!looksLikeSite(site) || site === readUrl.current) return;
+    const t = window.setTimeout(() => {
+      if (site === readUrl.current) return;
+      void startBrandRead(site, false);
+    }, 900);
+    return () => window.clearTimeout(t);
+  }, [url, startBrandRead]);
+
+  const lookDeeper = async () => {
+    const site = url.trim();
+    if (!looksLikeSite(site) || deepBusy) return;
+    setDeepBusy(true);
+    await startBrandRead(site, true);
+    setDeepBusy(false);
   };
 
   // ── attaching a document ──────────────────────────────────────────────────
@@ -190,6 +466,28 @@ export function BlankDocumentPanel({
     setBusy(true);
     setError(null);
     try {
+      // Let the brand read land first. The read writes the extract onto the
+      // BRIEF, and the generate route loads that brief when it starts — so a
+      // user who types a URL and hits generate two seconds later would
+      // otherwise pay for an outline that never saw their brand, and the
+      // route's own write-back would then drop the extract that arrived a
+      // moment too late.
+      //
+      // Typing a URL and pressing Generate immediately is the ordinary case,
+      // so the 900ms debounce has usually not even fired yet — start it here
+      // rather than only waiting on something that was never begun.
+      const site = url.trim();
+      if (looksLikeSite(site) && site !== readUrl.current) {
+        void startBrandRead(site, false);
+      }
+      // Bounded and non-fatal: past the wait we generate anyway, because brand
+      // is never allowed to become a gate.
+      if (reading.current) {
+        await Promise.race([
+          reading.current,
+          new Promise((r) => setTimeout(r, BRAND_WAIT_MS)),
+        ]);
+      }
       const res = await fetch("/api/documents/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -290,6 +588,22 @@ export function BlankDocumentPanel({
               </span>
             </button>
 
+            {/* BOTH branches, deliberately. This ask used to live inside
+                "generate every page" only, so a user who chose to build it
+                themselves had no way to tell us their brand at all — which is
+                the actual gap behind the founder's "brand should always run".
+                It sits BELOW the two choices, not above them, because
+                DESIGN.md is explicit that config is refinement and never an
+                upfront wizard step: nothing here is required and neither
+                button waits for it. */}
+            <BrandAsk
+              url={url}
+              onUrl={setUrl}
+              brand={brand}
+              deepBusy={deepBusy}
+              onLookDeeper={() => void lookDeeper()}
+            />
+
             <p className="mt-4 font-mono text-[10.5px] text-faint">
               You can do both — generate a deck, then edit every element by hand.
             </p>
@@ -371,18 +685,16 @@ export function BlankDocumentPanel({
               />
             </div>
 
-            <label className="mt-2.5 block">
-              <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-faint">
-                Your site — so it looks like you (optional)
-              </span>
-              <input
-                type="text"
-                value={url}
-                onChange={(e) => setUrl(e.target.value)}
-                placeholder="yoursite.com"
-                className="mt-1 w-full rounded-md border border-hairline bg-surface-2 px-3 py-2 font-mono text-[12px] text-ink outline-none focus:border-accent-line"
-              />
-            </label>
+            {/* The same field as the choice screen, same state, same job.
+                Kept here too so somebody who came straight to the brief does
+                not have to go back a screen to say where their brand lives. */}
+            <BrandAsk
+              url={url}
+              onUrl={setUrl}
+              brand={brand}
+              deepBusy={deepBusy}
+              onLookDeeper={() => void lookDeeper()}
+            />
 
             <label className="mt-2.5 flex items-center gap-2">
               <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-faint">

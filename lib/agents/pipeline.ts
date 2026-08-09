@@ -55,7 +55,7 @@ import {
   type AspectRatio,
 } from "./quality-gates";
 import { buildDesignConstraints } from "./design-constraints";
-import { resolveBrandIdentity, resolveCanvasPlan, genericFor, type BrandIdentity } from "../crawl/brand-identity";
+import { resolveBrandIdentity, resolveCanvasPlan, genericFor, fontStackFor, type BrandIdentity } from "../crawl/brand-identity";
 import { formatDesignLanguage } from "../crawl/design-language";
 import { makeFontFetcher, inlineFontFaces } from "../render/font-inline";
 import { makeImageProbe, repairBrokenImages } from "../render/image-integrity";
@@ -249,7 +249,17 @@ export const buildAgentInputFromBrief = (
     // Let resolveBrandIdentity derive a CLEAN brand name (deriveBrandName picks
     // the brand segment of the title by hostname match) — don't pass the raw
     // page title, which becomes a junk wordmark ("AI-Powered … | Fuse").
-    brand_identity: resolveBrandIdentity(be),
+    //
+    // With no extract at all, hand it the URL the user typed rather than
+    // nothing. Since the 2026-07-23 pivot the live front door
+    // (/api/documents/new) never calls extractBrand, so `be` is routinely
+    // undefined while a URL sits right there in the brief — and
+    // resolveBrandIdentity({}) has no host to read, so its wordmark falls
+    // through to the literal string "Brand". The hostname is a fact the user
+    // gave us; "Brand" is a fabrication.
+    brand_identity: resolveBrandIdentity(
+      be ?? (brief?.brand_kit_url ? { url: brief.brand_kit_url } : undefined),
+    ),
   };
 };
 
@@ -3164,7 +3174,15 @@ const appendBrandContext = (
   // below (which is how a search-icon SVG became the "logo" and an icon font
   // forced a Georgia fallback). The raw lists that follow are reference only.
   const id = input.brand_identity;
-  if (id) {
+  // …but "LOCKED" is a promise that we OBSERVED these assets, and
+  // resolveBrandIdentity returns a full-looking object no matter how little it
+  // was given: Inter/Inter, an empty palette, and a wordmark. With only a bare
+  // URL in the brief — the normal state since the pivot moved the front door
+  // to /api/documents/new, which never crawls — that block instructed the
+  // agent to set the brand's face in a font we never saw and to render the
+  // literal word "Brand" as the mark. A logo alone still earns the block (a
+  // user upload arrives with no palette or fonts); nothing at all does not.
+  if (id && (id.yield.loaded || id.yield.logo)) {
     lines.push("");
     lines.push(
       "### ⚠️ LOCKED brand identity — use VERBATIM (do NOT invent a URL, pick an SVG icon, or substitute a font)",
@@ -3191,6 +3209,13 @@ const appendBrandContext = (
       lines.push(
         `    Placement: ${place}. Do NOT use any other image as the logo, do NOT use a page URL as an <img src>, do NOT grab a UI/search SVG.`,
       );
+    } else if (id.wordmark.placeholder) {
+      // No mark AND no name — there is nothing to letter. The old line handed
+      // the agent `id.wordmark.text`, which in this state is the string
+      // "Brand", under a "use VERBATIM" header.
+      lines.push(
+        `- NO usable logo was found, and this brand's NAME is unknown. Do NOT render a logo <Img>, do NOT invent a URL, and do NOT render a wordmark — in particular NEVER letter the literal word "Brand". Let the document's own subject carry the top-level text.`,
+      );
     } else {
       lines.push(
         `- NO usable logo was found. Do NOT render a logo <Img> and do NOT invent a URL. Render the brand WORDMARK as styled text: "${id.wordmark.text}" set in FONT_DISPLAY.`,
@@ -3205,12 +3230,38 @@ const appendBrandContext = (
         : ff.fallback
           ? `load "${ff.family}" from Google Fonts (the brand's own face had no usable web file)`
           : "system font";
-      lines.push(`    const ${label} = '"${ff.family}", ${ff.generic}'; // ${load}`);
+      // fontStackFor, not an inline template: this line is copied verbatim into
+      // the deck, and building the stack by hand here is what shipped
+      // `'"Inter", undefined'` when a role arrived without its CSS generic.
+      lines.push(`    const ${label} = '${fontStackFor(ff)}'; // ${load}`);
     };
     lines.push("  Use these FONT_* constants verbatim (the raw font list below is reference only):");
     fontLine("FONT_DISPLAY", id.fonts.display);
     fontLine("FONT_BODY", id.fonts.body);
     if (id.fonts.mono) fontLine("FONT_MONO", id.fonts.mono);
+    lines.push("");
+  } else if (id) {
+    // The absence, stated. Saying nothing here is not neutral — the design
+    // system prompt tells the agent to letter a wordmark whenever no logo is
+    // locked, so silence still produces an invented mark.
+    lines.push("");
+    lines.push("### ⚠️ NO BRAND IDENTITY WAS EXTRACTED — do not invent one");
+    lines.push(
+      input.brand_kit_url
+        ? `- Nothing was read from ${input.brand_kit_url}: no logo, no palette, no fonts. A URL in the brief is not a brand.`
+        : "- No logo, palette, or fonts are available for this document.",
+    );
+    lines.push(
+      "- Do NOT render a logo <Img>, do NOT invent a logo URL, and do NOT draw a substitute mark (monogram, initials-in-a-box, two squares, an abstract glyph).",
+    );
+    lines.push(
+      id.wordmark.placeholder
+        ? `- The brand's NAME is unknown as well. Do NOT render a wordmark, and NEVER letter the literal word "Brand" — the document's own subject is the top-level text.`
+        : `- The one brand fact available is the NAME "${id.wordmark.text}", read off the URL. It may be set as TEXT in your display face. Nothing else may be presented as this brand's.`,
+    );
+    lines.push(
+      "- No brand colors and no brand fonts were observed, so there is nothing to copy verbatim: choose the type and color system yourself and commit to it. Do not label any of it as the brand's own.",
+    );
     lines.push("");
   }
 
@@ -3534,9 +3585,18 @@ const assessStructuralGates = (
   // low false-positive.
   const noRealLogo = input.brand_identity ? !input.brand_identity.logo : false;
   if (noRealLogo && /\b(logo[-\s]?mark|brand[-\s]?mark)\b/i.test(code)) {
+    // The repair instruction has to survive the case where the brand name is
+    // unknown too: the old message interpolated wordmark.text unconditionally,
+    // so a nameless brand was told to render the placeholder "Brand" as its
+    // mark — the gate against fabricating a logo prescribing a fabrication.
+    const mark = input.brand_identity?.wordmark;
+    const remedy =
+      mark && !mark.placeholder
+        ? `the brand mark MUST be the WORDMARK "${mark.text}" rendered as styled text in BrandChrome`
+        : `this brand has no name we could read either, so there is NO brand mark at all — render none, and never letter the literal word "Brand"`;
     failures.push({
       key: "fabricated_logo",
-      message: `No real logo exists for this brand — the brand mark MUST be the WORDMARK "${input.brand_identity?.wordmark?.text ?? ""}" rendered as styled text in BrandChrome. Your output references a drawn logo/brand-mark. Remove any INVENTED mark (geometric shapes, monogram, "two squares", abstract glyph) and render the wordmark text instead. Never fabricate a logo, and never make a drawn mark the throughline.`,
+      message: `No real logo exists for this brand — ${remedy}. Your output references a drawn logo/brand-mark. Remove any INVENTED mark (geometric shapes, monogram, "two squares", abstract glyph). Never fabricate a logo, and never make a drawn mark the throughline.`,
       summary: "invented logo/brand-mark for a brand with no real logo",
     });
   }
