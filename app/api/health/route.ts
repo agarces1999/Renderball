@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "../../../lib/db";
 import { isStorageConfigured } from "../../../lib/storage/r2";
 import { spendCapState, zaiBreakerState } from "../../../lib/zai-breaker";
+import { checkLedgerSilence } from "../../../lib/spend/silence";
 import { billingProvider } from "../../../lib/billing-provider";
 import { isAlertingConfigured } from "../../../lib/alert";
 import { noteSpendRecorded } from "../../../lib/spend/cap";
@@ -78,6 +79,7 @@ export async function GET() {
   const db = await checkDb();
   const breaker = zaiBreakerState();
   const cap = spendCapState();
+  const silence = await checkLedgerSilence();
 
   const checks = {
     // Essential: without it nothing in the product works.
@@ -99,6 +101,12 @@ export async function GET() {
     // stopped ourselves", which are opposite actions. No dollars, no
     // thresholds, no counts — those are GET /api/admin/spend.
     spendCap: cap.tripped ? ("down" as CheckState) : ("ok" as CheckState),
+    // "Are we spending BLIND?" — the question a spend ledger cannot ask about
+    // itself. Documents are being generated and no spend row has appeared, so
+    // the number we would launch on can only be too low. A boolean, like every
+    // other field here: no dollars on a public route. This is the $31 failure
+    // wired as a monitor instead of a billing chart read three weeks late.
+    spendLedger: silence.silent ? ("down" as CheckState) : ("ok" as CheckState),
     billing: billingProvider() === "none" ? ("not-configured" as CheckState) : ("ok" as CheckState),
     alerting: isAlertingConfigured() ? ("ok" as CheckState) : ("not-configured" as CheckState),
     // Without this secret, deleting an account in Clerk's own UI silently
