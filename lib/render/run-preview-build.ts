@@ -759,7 +759,7 @@ async function runCastPreviewBuild(args: {
     const be: any = brief?.brand_extract?.ok ? brief.brand_extract : undefined;
     const canvasPlan = resolveCanvasPlan(be);
     const signature =
-      signatureWithLogoFallback(be?.palette ?? [], be?.theme_color, be?.logo_color) ??
+      signatureWithLogoFallback(be?.palette ?? [], be?.theme_color, be?.logo_color, be?.named) ??
       be?.theme_color ??
       (be?.palette ?? [])[0] ??
       "#666666";

@@ -46,9 +46,27 @@ const assert = (cond: boolean, msg: string) => {
 };
 
 // ── The bug: leading with the dark neutral instead of the brand hue ──────
-check("Fuse → the blue brand hue, NOT the dark maroon", () => {
+//
+// EXPECTATION CHANGED 2026-08-09, from #1e5fb8 to #ff8c42. pickSignatureColor
+// no longer re-sorts the palette by vividness (see its doc comment: the re-rank
+// cost 17 of 38 tune sites and gained 2), so it now walks the palette IN ORDER
+// and returns the first entry that can carry a brand hue. On this fixture that
+// is the orange rather than the blue.
+//
+// The orange is also the better answer on the evidence, which is why the
+// assertion was changed rather than the code: TWO independent records in this
+// repo — vision-brand.ts's header and extract-brand.ts's palette-vision block,
+// written months apart — both say fusefinance.com's brand is "deep maroon +
+// orange", and both were written to warn that Fuse's crawl surfaces a BLUE it
+// does not own (Webflow's default link-blue out-counts the real colours on that
+// site). #1e5fb8 led only because HSV saturation scored it above the orange.
+//
+// What the test still locks is the thing the bug was about, unchanged: a dark
+// near-black neutral must never be the signature. That is the next check, and
+// it passed before and after.
+check("Fuse → the orange brand hue, NOT the dark maroon", () => {
   const sig = pickSignatureColor(FUSE);
-  assert(sig === "#1e5fb8", `expected #1e5fb8, got ${sig}`);
+  assert(sig === "#ff8c42", `expected #ff8c42, got ${sig}`);
 });
 
 check("Fuse → never a near-black/deep-shade neutral", () => {
@@ -65,9 +83,26 @@ check("chromatic theme_color wins (Tony's red)", () => {
   assert(sig === "#eb0000", `expected #eb0000, got ${sig}`);
 });
 
-check("a NEUTRAL theme_color is ignored → falls back to a vivid palette hue", () => {
+check("a NEUTRAL theme_color is ignored → falls back to the palette", () => {
   const sig = pickSignatureColor(FUSE, "#000000");
-  assert(sig === "#1e5fb8", `expected #1e5fb8, got ${sig}`);
+  assert(sig === "#ff8c42", `expected #ff8c42, got ${sig}`);
+});
+
+// theme_color is now a FALLBACK, not an override: the palette is provenance-
+// ranked and its head is a stronger claim than a meta tag ~3% of hosts set.
+// Measured on hubspot.com, where `--light-theme-hubspot-brand-01` is #ff4800
+// and the theme-color meta still carries the older #ff7a59 — 102 apart.
+check("a chromatic theme_color does NOT override a ranked palette head", () => {
+  const sig = pickSignatureColor(["#ff4800", "#c93700"], "#ff7a59");
+  assert(sig === "#ff4800", `expected the palette head #ff4800, got ${sig}`);
+});
+
+check("theme_color is still used when the palette offers nothing", () => {
+  assert(
+    pickSignatureColor(MONO, "#eb0000") === "#eb0000",
+    "a greyscale palette must fall through to a chromatic theme_color",
+  );
+  assert(pickSignatureColor([], "#eb0000") === "#eb0000", "empty palette → theme_color");
 });
 
 // ── Monochrome brands keep their monochrome (never invent a color) ────────
@@ -129,7 +164,9 @@ check("achromatic palette + orange logo → the logo orange (corgi)", () => {
 
 check("chromatic palette wins over the logo color (palette is authoritative)", () => {
   const sig = signatureWithLogoFallback(FUSE, undefined, "#f47b20");
-  assert(sig === "#1e5fb8", `expected the palette blue #1e5fb8, got ${sig}`);
+  // #ff8c42 not #1e5fb8 for the reason recorded at the first Fuse check above;
+  // what this locks is that the LOGO colour never displaces a palette answer.
+  assert(sig === "#ff8c42", `expected the palette hue #ff8c42, got ${sig}`);
 });
 
 check("monochrome brand with no logo color → null (never invent)", () => {

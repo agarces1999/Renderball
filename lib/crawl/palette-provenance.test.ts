@@ -70,15 +70,64 @@ check("a named --brand/--primary/--accent colour outranks the frequency-ranked s
 });
 
 check("the site's own icon outranks its share card, and both sit under the stylesheet", () => {
+  // The icon hex was #00b3a4 until 2026-08-09. It now has to be a colour the
+  // stylesheet AGREES with (this one is 46 away), because a sharply disagreeing
+  // icon is exactly the case iconOverridesCss was added for and it would
+  // legitimately lead here. Agreement is the common case — 6 of the 8 eligible
+  // tune sites — so this fixture is the ordinary one, and the override gets its
+  // own checks below.
   const out = mergePaletteByProvenance({
     named: [],
     css: ["#7a2f1e"],
-    icon: ["#00b3a4"],
+    icon: ["#a04628"],
     image: ["#c0ffee"],
   });
-  assert(out[0] === "#7a2f1e" && out[1] === "#00b3a4",
+  assert(out[0] === "#7a2f1e" && out[1] === "#a04628",
     `css then icon, got ${out.join(" ")}`);
   assert(!out.includes("#c0ffee"), `image tier is corroboration only, got ${out.join(" ")}`);
+});
+
+// ── Corroboration: two independent reads disagreeing is itself evidence ────
+//
+// duolingo.com, measured: the only chromatic colour its stylesheet yields is
+// #00b086 (161 from the real #58cc02) and its own favicon decodes to #77cc00
+// (31 away). With no named --brand token to arbitrate, "most frequent chromatic
+// hex" is the weakest signal we have and the independent read wins.
+check("a favicon that SHARPLY disagrees with an unnamed stylesheet head leads (duolingo)", () => {
+  const out = mergePaletteByProvenance({
+    named: [],
+    css: ["#00b086"],
+    icon: ["#77cc00"],
+    image: [],
+  });
+  assert(out[0] === "#77cc00", `favicon should lead, got ${out.join(" ")}`);
+  assert(out.includes("#00b086"), `the stylesheet colour is demoted, not dropped: ${out.join(" ")}`);
+});
+
+check("…but a NAMED brand token is never overruled by the favicon (slack)", () => {
+  // slack.com's favicon decodes to #33ccff off the four-colour hash — 257 from
+  // the real #4a154b, which the site names itself. The named tier is the site
+  // telling us directly; an icon read cannot outrank it.
+  const out = mergePaletteByProvenance({
+    named: ["#4a154b"],
+    css: ["#1264a3"],
+    icon: ["#33ccff"],
+    image: [],
+  });
+  assert(out[0] === "#4a154b", `named token must lead, got ${out.join(" ")}`);
+});
+
+check("…and a SILHOUETTE favicon never overrules a vivid stylesheet head (deathwishcoffee)", () => {
+  // deathwishcoffee.com's favicon is a black skull decoding to #330000 — 183
+  // from its correct #e12727. Disagreement alone would promote it; carrying
+  // less chroma than the colour it disagrees with is what stops it.
+  const out = mergePaletteByProvenance({
+    named: [],
+    css: ["#e12727"],
+    icon: ["#330000"],
+    image: [],
+  });
+  assert(out[0] === "#e12727", `stylesheet must hold, got ${out.join(" ")}`);
 });
 
 check("no deterministic chroma anywhere → the image tier IS the palette (no yield lost)", () => {
@@ -205,6 +254,83 @@ check("third-party widget properties are not brand colours", () => {
   const css = ":root{--si-primary:#3b5998;--cookiebot-primary-color:#0063dc;--swiper-theme-color:#007aff;--brand:#118844}";
   const out = extractNamedBrandColors(css);
   assert(out.length === 1 && out[0] === "#118844", `only the real brand var, got ${out.join(" ")}`);
+});
+
+// ─── 3b. a named token is not a blank cheque (2026-08-09) ─────────────
+//
+// The named tier was trusted absolutely: any --brand/--primary/--accent
+// property led the palette. Four ways that was wrong, each measured on the
+// 38-site tune half.
+
+check("A GREY MUST NEVER WIN, even when the site NAMES it", () => {
+  // shopify.com's palette was led by #71717a. Its absolute chroma is 9 and the
+  // old gate rejected only <= 8 — it cleared by one. #eee9e2 is dropbox's
+  // `--DWG__TEMP__color__brand__coconut_600`, a near-white cream carrying 12,
+  // which held rank "brand" and pushed the real #0061fe out of the palette head.
+  const css = ":root{--color-brand:#71717a;--brand-coconut:#eee9e2;--brand-slate:#222a35;--color-primary:#0061fe}";
+  const out = extractNamedBrandColors(css);
+  assert(!out.includes("#71717a"), `a named grey is still a grey, got ${out.join(" ")}`);
+  assert(!out.includes("#eee9e2"), `a named cream is still a cream, got ${out.join(" ")}`);
+  assert(!out.includes("#222a35"), `a named near-black is still a near-black, got ${out.join(" ")}`);
+  assert(out[0] === "#0061fe", `the real hue leads, got ${out.join(" ")}`);
+});
+
+check("the floor keeps genuinely dark BRAND colours (slack aubergine, olipop pine)", () => {
+  // The counterweight to the check above: the least colourful true accent in
+  // the tune half is slack's #4a154b at chroma 54, and drinkolipop's #034638 is
+  // 67. The floor sits at 32 — below both, above the 27 that furniture reaches.
+  assert(extractNamedBrandColors(":root{--brand:#4a154b}")[0] === "#4a154b", "slack aubergine");
+  assert(extractNamedBrandColors(":root{--brand:#034638}")[0] === "#034638", "olipop pine");
+});
+
+check("a colour keeps its BEST name, not the first one seen (the hubspot inversion)", () => {
+  // hubspot.com declares #ff4800 twice — as `--light-theme-button-primary-fill-
+  // idle` and as `--light-theme-hubspot-brand-01`. The primary-named one comes
+  // first in the sheet, so the orange got frozen at rank "primary" and lost the
+  // palette head to a tint that happened to own a "brand" name.
+  const css = ":root{--light-theme-button-primary-fill-idle:#ff4800;--brand-tint:#ff7d4c;--light-theme-hubspot-brand-01:#ff4800}";
+  const out = extractNamedBrandColors(css);
+  assert(out[0] === "#ff4800", `the strongest name a colour holds wins, got ${out.join(" ")}`);
+});
+
+check("many properties agreeing beats one (thesaucycow's derived tint)", () => {
+  // Squarespace derives --lightAccent-hsl / --darkAccent-hsl from the owner's
+  // --accent-hsl. #bd005b is the single dark derivation and it led the palette,
+  // 104 from truth, because it scored more vivid than the real #e55937 — which
+  // five separate properties resolve to.
+  const css = ":root{--accent-hsl:14.6,76.3%,55.7%;--safeLightAccent:#e55937;--safeDarkAccent:#e55937;" +
+    "--primaryButtonBackgroundColor:#e55937;--scheduling-block-button-accent-color:#e55937;--darkAccent:#bd005b}";
+  const out = extractNamedBrandColors(css);
+  assert(out[0] === "#e55937", `the corroborated colour leads, got ${out.join(" ")}`);
+});
+
+check("a ROLE name describes where a colour is painted, not what the brand is", () => {
+  // sentry.io's ONLY named token is `--text-primary:#362d59` — body copy, 127
+  // from the real #6a5fc1. `background`/`fill` are deliberately NOT role words:
+  // a CTA fill is one of the strongest brand claims a stylesheet makes.
+  const css = ":root{--text-primary:#362d59;--glyph-primary:#1e1919;--primaryButtonBackgroundColor:#6a5fc1}";
+  const out = extractNamedBrandColors(css);
+  assert(!out.includes("#362d59"), `a text colour is not the brand, got ${out.join(" ")}`);
+  assert(out[0] === "#6a5fc1", `the button fill IS a brand claim, got ${out.join(" ")}`);
+});
+
+check("a Shopify app's default brand token is the APP's colour, not the store's", () => {
+  // `--recharge-color-brand:#467c99` is byte-identical on hellotushy.com and
+  // nativecos.com — two unrelated stores — which is what makes it the app's
+  // default rather than either brand. It beat the real accent on both.
+  const css = ":root{--recharge-color-brand:#467c99;--oke-text-primaryColor:#22aa44;--loop-primary-color:#993322;--color-primary:#71a7f4}";
+  const out = extractNamedBrandColors(css);
+  assert(out[0] === "#71a7f4", `the store's own colour leads, got ${out.join(" ")}`);
+  assert(!out.includes("#467c99"), `ReCharge's default is not a brand, got ${out.join(" ")}`);
+});
+
+check("vividness ranks a brand ramp by CHROMA, not by HSL saturation", () => {
+  // blueland.com declares --brand-10 … --brand-95. HSL `s` pins to 1.00 for
+  // every step with a zero channel, so the DARKEST step always won: #0033a7
+  // (s 1.00, chroma 167) beat the real #133cd1 (s 0.83, chroma 190).
+  const css = ":root{--brand-30:#0033a7;--brand-20:#001589;--brand-35:#133cd1}";
+  const out = extractNamedBrandColors(css);
+  assert(out[0] === "#133cd1", `chroma orders the ramp, got ${out.join(" ")}`);
 });
 
 // ─── 4. font classification ───────────────────────────────────────────

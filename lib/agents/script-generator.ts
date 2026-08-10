@@ -50,6 +50,15 @@ export interface AgentBrandFont {
 export type AgentMotionSignal = "high" | "medium" | "low";
 
 export interface AgentBrandExtract {
+  /**
+   * Colours the SITE named --brand/--primary/--accent. Carried because a
+   * DECLARED colour earns the wider chromaticity band in pickSignatureColor:
+   * a brand is allowed to be dark (slack aubergine, midnight navy), but only
+   * when the site itself made the claim. A merely-frequent dark colour is a
+   * background, which is the bug that band was written to stop.
+   */
+  named?: string[];
+
   url: string;
   title?: string;
   description?: string;
@@ -1262,7 +1271,7 @@ export const buildUserMessage = (brief: AgentBrief): string => {
       // it", which let an off-brand hue leak into the throughline (Fuse's
       // throughline literally said "brand-orange" when Fuse is blue). Lead with
       // the signature instead so the script names the RIGHT color.
-      const signature = signatureWithLogoFallback(b.palette ?? [], b.theme_color, b.logo_color);
+      const signature = signatureWithLogoFallback(b.palette ?? [], b.theme_color, b.logo_color, b.named);
       if (signature) {
         lines.push(
           `    SIGNATURE BRAND COLOR: ${signature}  ← the hue a viewer associates with this brand; THE accent to lean on (headlines, accent bars, glows) and the only color to name in the throughline. Never call a different/off-brand hue "the brand color".`,

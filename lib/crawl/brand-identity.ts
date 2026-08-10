@@ -467,37 +467,97 @@ const isSignatureCandidate = (hex: string): boolean => {
 /**
  * Pick the brand's SIGNATURE color from its palette.
  *
- * Problem this solves: the palette is a flat list, so the design agent led with
- * whatever color covered the most pixels — usually a dark neutral (Fuse maroon,
- * Tony's brown) — leaving the actual brand hue (Fuse blue, Tony's red) buried.
+ * Problem this solves: the palette USED to be a flat frequency list, so the
+ * design agent led with whatever color covered the most pixels — usually a dark
+ * neutral (Fuse maroon, Tony's brown) — leaving the actual brand hue (Fuse blue,
+ * Tony's red) buried. This function's answer to that was to re-sort the list by
+ * vividness and take the top.
  *
- * Strategy, most-authoritative first:
- *   1. theme_color (<meta name="theme-color">) when it's a real chromatic color
- *      — brands set this to their primary far more often than not.
- *   2. else the most "vivid" palette member: saturation, biased toward
- *      mid-luminance so a deep shade doesn't beat a clean brand hue. Still
- *      strictly better than leading with a near-black neutral.
+ * That is no longer the right answer, and measurement says it is now the single
+ * biggest source of wrong accents. `palette` is not a flat list any more — since
+ * mergePaletteByProvenance it is RANKED by how strong the site's own claim on
+ * each colour is (named --brand token > stylesheet frequency > favicon >
+ * og:image > theme-color). Re-sorting by vividness discards that ranking and
+ * substitutes a proxy. Scored over the 38-site tune half (2026-08-09) with the
+ * ranked palette in place: the vividness re-rank moved the answer to a WORSE
+ * band on 17 sites and a better one on 2. It took slack's #4a154b to a green,
+ * mailchimp's #ffe01b to a teal, deathwishcoffee's #e12727 to a blue, monzo's
+ * #ff4f40 to a cyan — in every case the site's own named brand token was
+ * sitting at palette[0] and lost to a more saturated colour further down.
+ *
+ * Strategy now:
+ *   1. the highest-ranked palette entry that can carry a brand hue at all
+ *      (isSignatureCandidate: chromatic, neither near-black nor near-white).
+ *      Rank is the crawl's provenance order — trust it.
+ *   2. else theme_color (<meta name="theme-color">). Demoted from first to a
+ *      fallback: only ~3% of hosts declare one, and where it disagrees with a
+ *      named token the token is right more often (hubspot declares
+ *      `--light-theme-hubspot-brand-01: #ff4800` and a stale theme-color
+ *      #ff7a59, 102 apart — a whole band).
  *   3. null when nothing qualifies — a genuinely monochrome brand (Liquid
  *      Death). We never invent a color for a brand that doesn't have one.
  */
+const RESCUE_LUM_MIN = 0.04; // below: noise-level darks where (max-min)/max explodes
+const RESCUE_LUM_MAX = 0.96;
+
+/**
+ * The WIDE chromaticity band: saturated, and anything but a noise-level black
+ * or a near-white. Shared by the head-of-palette check in pickSignatureColor
+ * and by the rescue pass, so the two can never drift apart.
+ */
+const isRescueCandidate = (hex: string): boolean => {
+  const sat = saturationOf(hex),
+    lum = luminanceOf(hex);
+  return (
+    sat !== null && lum !== null && sat >= 0.3 &&
+    lum >= RESCUE_LUM_MIN && lum <= RESCUE_LUM_MAX
+  );
+};
+
 export const pickSignatureColor = (
   palette: string[],
   themeColor?: string,
+  /** Colours the SITE named --brand/--primary/--accent. See below. */
+  named?: string[],
 ): string | null => {
+  // PROVENANCE FIRST, band second.
+  //
+  // The strict band (sat >= .3, lum .15-.85) was written when the palette was a
+  // flat FREQUENCY list, where a dark entry really was likely to be a
+  // background rather than the brand. The palette is provenance-ordered now —
+  // palette[0] is the colour the site itself named `--brand` — and against that
+  // list the band does the opposite of its job: it rejects the named brand hue
+  // for being dark and hands the page to a lighter colour further down.
+  //
+  // Measured: slack.com's #4a154b (its actual aubergine, lum 0.13) was rejected
+  // and #1264a3 shipped instead — a blue from further down the list, WRONG by
+  // 131. Plenty of real brands are dark: aubergine, midnight navy, wine red,
+  // forest green. Darkness is not evidence of not-being-the-brand.
+  //
+  // The wider band is earned by being DECLARED, not by being first. Keying it
+  // on position alone reintroduced the exact bug this function was built to
+  // stop: Fuse's #440b12 is a saturated dark maroon that happened to head a
+  // frequency-ranked palette, and it sailed through as "the brand" — the
+  // background, again, exactly as before. Three existing tests caught it, which
+  // is what they were written for.
+  //
+  // `named` is the set the SITE called --brand/--primary/--accent. A colour in
+  // it is a claim the site made about itself, and a dark claim is still a
+  // claim. A colour that is merely frequent gets no such benefit.
+  const declared = new Set((named ?? []).filter(isHex6).map(normHex));
+  const head = (palette ?? [])[0];
+  if (isHex6(head) && declared.has(normHex(head)) && isRescueCandidate(head)) {
+    return normHex(head);
+  }
+
+  const ranked = (palette ?? []).find(
+    (h) => isHex6(h) && isSignatureCandidate(h),
+  );
+  if (ranked) return normHex(ranked);
   if (isHex6(themeColor) && isSignatureCandidate(themeColor)) {
     return normHex(themeColor);
   }
-  const scored = (palette ?? [])
-    .filter((h) => isHex6(h) && isSignatureCandidate(h))
-    .map((h) => {
-      const sat = saturationOf(h) as number;
-      const lum = luminanceOf(h) as number;
-      // Vividness: saturation, gently penalized away from mid-luminance so a
-      // very dark or very pale-but-saturated color loses to a clean brand hue.
-      return { h: normHex(h), score: sat * (1 - Math.abs(lum - 0.5) * 0.6) };
-    })
-    .sort((a, b) => b.score - a.score);
-  return scored.length > 0 ? scored[0].h : null;
+  return null;
 };
 
 /**
@@ -509,8 +569,6 @@ export const pickSignatureColor = (
  * chroma and beats shipping grey. Saturation stays the chromaticity bar; only
  * the true greys fall through to null.
  */
-const RESCUE_LUM_MIN = 0.04; // below: noise-level darks where (max-min)/max explodes
-const RESCUE_LUM_MAX = 0.96;
 
 const rescueSaturatedAccent = (
   palette: string[],
@@ -518,14 +576,7 @@ const rescueSaturatedAccent = (
 ): string | null => {
   const scored = [themeColor, ...(palette ?? [])]
     .filter(isHex6)
-    .filter((h) => {
-      const sat = saturationOf(h),
-        lum = luminanceOf(h);
-      return (
-        sat !== null && lum !== null && sat >= 0.3 &&
-        lum >= RESCUE_LUM_MIN && lum <= RESCUE_LUM_MAX
-      );
-    })
+    .filter(isRescueCandidate)
     .map((h) => {
       const sat = saturationOf(h) as number;
       const lum = luminanceOf(h) as number;
@@ -548,8 +599,10 @@ export const signatureWithLogoFallback = (
   palette: string[],
   themeColor: string | undefined,
   logoColor: string | undefined,
+  /** The site's own --brand/--primary tokens, when the crawl found any. */
+  named?: string[],
 ): string | null =>
-  pickSignatureColor(palette, themeColor) ??
+  pickSignatureColor(palette, themeColor, named) ??
   (isHex6(logoColor) && isSignatureCandidate(logoColor) ? normHex(logoColor) : null) ??
   rescueSaturatedAccent(palette, themeColor);
 

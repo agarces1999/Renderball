@@ -6,6 +6,12 @@ import {
   refinePaletteWithPixels,
   snapHexToPixels,
 } from "./vision-brand";
+import {
+  GENERIC_FAMILIES,
+  annotateFontUsage,
+  classifyFontRoles,
+  type CrawledFont,
+} from "./font-roles";
 import { readLogoCache, writeLogoCache } from "./logo-cache";
 import { dominantSvgColor, signatureWithLogoFallback } from "./brand-identity";
 import { extractDesignLanguage } from "./design-language";
@@ -264,7 +270,15 @@ export const extractBrand = async (
   ];
   const fontsFromGoogle = extractGoogleFontsFromLinks(html);
   const fontsFromInline = extractInlineFontFamilies(html);
-  const fonts = mergeFonts(fontsFromCss, fontsFromGoogle, fontsFromInline);
+  // Staple on what the site's own CSS says it PUTS each family on, before the
+  // roles are decided — a family that is merely @font-face'd is not the display
+  // face (vercel.com declares five GeistPixel* novelty cuts and was crowned by
+  // declaration order). The counts ride along in `fonts` so resolveBrandIdentity
+  // can re-classify later without the CSS. See ./font-roles.
+  const fonts = annotateFontUsage(
+    mergeFonts(fontsFromCss, fontsFromGoogle, fontsFromInline),
+    allCss,
+  );
   const font_roles = classifyFontRoles(fonts);
   // Palette tiers 1 + 2 — see mergePaletteByProvenance for the ordering and why
   // it exists. theme_color is NOT passed to extractPalette any more: it used to
@@ -390,7 +404,7 @@ export const extractBrand = async (
     if (favicon_final && dead.has(favicon_final)) favicon_final = undefined;
     page_images_final = photoCheck.kept;
     // Accent sanity: neutral/missing signature → logo dominant color fallback.
-    const sigNow = signatureWithLogoFallback(palette, theme_color, logo_color_final);
+    const sigNow = signatureWithLogoFallback(palette, theme_color, logo_color_final, namedBrandColors);
     if ((sigNow === null || isNeutralAccentHex(sigNow)) && logoChain.effectiveBytes) {
       const fromLogo = await dominantColorFromImageBytes(logoChain.effectiveBytes);
       if (fromLogo && !isNeutralAccentHex(fromLogo)) logo_color_final = fromLogo;
@@ -1251,14 +1265,6 @@ const fetchCss = async (href: string): Promise<string> => {
 
 // ─── CSS parsing ──────────────────────────────────────────────────────
 
-export interface CrawledFont {
-  family: string;
-  src: string;
-  weight?: string; // raw CSS value, e.g. "400", "700", "100 900"
-  style?: string; // "normal" | "italic"
-  format?: string; // "woff2" | "woff" | "ttf" | "otf"
-}
-
 export const extractFonts = (
   css: string,
   baseUrl: string,
@@ -1427,27 +1433,6 @@ const extractInlineFontFamilies = (html: string): CrawledFont[] => {
  * Input: `"Inter", "Helvetica Neue", system-ui, sans-serif`
  * Output: ["Inter", "Helvetica Neue"]
  */
-const GENERIC_FAMILIES = new Set([
-  "serif",
-  "sans-serif",
-  "monospace",
-  "cursive",
-  "fantasy",
-  "system-ui",
-  "ui-sans-serif",
-  "ui-serif",
-  "ui-monospace",
-  "ui-rounded",
-  "math",
-  "emoji",
-  "fangsong",
-  "-apple-system",
-  "blinkmacsystemfont",
-  "inherit",
-  "initial",
-  "unset",
-  "revert",
-]);
 const extractFirstFamily = (raw: string): string[] => {
   const names = raw
     .split(",")
@@ -1478,170 +1463,19 @@ const mergeFonts = (
   return Array.from(seen.values()).slice(0, 12);
 };
 
-/**
- * Classify the crawled fonts into three roles: display (large headlines),
- * body (paragraphs/lede), mono (URLs/code/diegetic UI).
- *
- * Heuristic — family names usually signal role. We don't render to detect
- * x-height / contrast, so we lean on naming conventions:
- *   - MONO:  contains "mono", "code", "courier", "consol", "menlo", "fira code",
- *            "jetbrains", "ibm plex mono", "source code"
- *   - DISPLAY: serif-feeling family names ("tiempos", "merriweather",
- *              "playfair", "lora", "freight", "garamond", "caslon", "bodoni",
- *              "didot", "minion", "miller", "noe", "times", "georgia",
- *              "serif" in name), OR contains "headline" / "display" hint
- *   - BODY: everything else (sans-serif default)
- *
- * Returns the FIRST family matching each role (the most "canonical" pick).
- * If a role has no match, the caller falls back to system fonts.
- */
-export interface FontRoles {
-  display?: string;
-  body?: string;
-  mono?: string;
-}
-
-/**
- * Icon-font name patterns — these are not text fonts and must NOT be
- * routed to display/body/mono roles. Common offenders:
- *   - webflow-icons (Webflow's stock icon set, dropped on every site)
- *   - material-icons / material-symbols-* (Google Material icons)
- *   - fa-* / Font Awesome
- *   - icon-* / glyph* / glyphicons (generic naming)
- *   - simple-icons (brand-logo glyphs)
- * Without this filter, the first @font-face block on most Webflow sites
- * (which is webflow-icons) was being picked as the display font, then
- * routed onto h1/h2/h3 elements — garbling them into icon-glyph soup.
- */
-// Catches: prefix `icon-foo`, AND the `<brand>-icons` / `<brand>_icon` SUFFIX
-// form (`swiper-icons`, `oatly-icons` — these slipped through the prefix-only
-// pattern and got routed onto headlines as a "display font", forcing a generic
-// serif fallback). The suffix alternative requires a word + `-icon(s)`, so real
-// names like `sodimac` or `Recoleta` are NOT caught.
-// ALSO catches math-rendering LIBRARY fonts (KaTeX_*, MathJax/MJX*): edu/math
-// sites (Duolingo embeds KaTeX for lessons) ship these in CSS, and they were
-// mis-detected as the BRAND font — corrupting the brand identity fed to the
-// design agent AND making the vision gate flag every scene as "missing the
-// brand's KaTeX_Caligraphic font". They are never a brand identity.
-// ALSO catches SITE-BUILDER and PLAYER CHROME faces. `squarespace-ui-font` is
-// Squarespace's own interface font, shipped on every Squarespace site: in the
-// 60-site sweep (2026-08-09) it appeared on 18 hosts and was crowned the DISPLAY
-// face on 13 of them — on 8 of those a real brand face (Montserrat, Raleway,
-// Poppins, Rubik, Varela Round, Inter) was sitting right there in the body role.
-// `VideoJS` is video.js's player font and took the BODY role on toadbakery.com.
-// `wf_<hex>` is Wix's hashed font alias (redbamboo-nyc.com shipped
-// `wf_36dfb692240b4f9a8a0a33393` as its body font) — an opaque hash is not a
-// family any downstream renderer can resolve, so it is worse than no font.
-const ICON_FONT_RX =
-  /\b(webflow-?icons?|material-?(?:icons?|symbols?(?:-[a-z]+)?)|font[\s-]*awesome|fa-[a-z0-9-]+|icon-[a-z0-9-]+|[a-z0-9]+[-_]icons?|glyph[a-z0-9-]*|simple-?icons|remixicon|feather-?icons|hero-?icons|lucide-?icons|bootstrap-?icons|ionicons|tabler-?icons|phosphor-?icons|octicons|ant-?design[-_]?icons|line-?icons|streamline|katex(?:[_-][a-z0-9]+)?|mathjax[_-]?[a-z0-9]*|mjx[a-z0-9-]*|squarespace(?:[-_][a-z]+)*|video-?js|wf_[0-9a-f]{16,})\b/i;
-
-// A CSS variable reference that reached the font list as if it were a family
-// name — arc.net ships `var(--fonts-sans)` and Framer sites ship
-// `var(--framer-font-family)`. Never a font; emitting one downstream produces
-// `font-family: var(--fonts-sans)` in a document that has no such variable.
-const PLACEHOLDER_FAMILY_RX = /^\s*var\(|^\s*$/i;
-
-const MONO_RX =
-  /\b(mono|code|courier|consol|menlo|jetbrains|ibm[\s-]*plex[\s-]*mono|source[\s-]*code|fira[\s-]*code|roboto[\s-]*mono|space[\s-]*mono)\b/i;
-const SERIF_RX =
-  /\b(tiempos|merriweather|playfair|lora|freight|garamond|caslon|bodoni|didot|minion|miller|noe|times|georgia|cambria|baskerville|crimson|cormorant|libre[\s-]*baskerville|source[\s-]*serif|noto[\s-]*serif|roboto[\s-]*serif|pt[\s-]*serif|sentinel|chronicle|gt[\s-]*super|portrait|larken|fraunces|signifier|romana|literata|recoleta|reckless|romie|domaine|saol)\b/i;
-const DISPLAY_HINT_RX = /\b(headline|display|hero|h1|h2|title)\b/i;
-const SERIF_FAMILY_RX = /\bserif\b/i; // catches "X Serif" naming
-// Distinctive display / slab / condensed family names so a real headline face
-// (SuperClarendon, Druk, Anton, Splash, …) is recognized as DISPLAY rather than
-// silently demoted to the body sans (the Liquid Death miss: FONT_DISPLAY became
-// "Acumin Pro" because SuperClarendon/Splash matched no display regex).
-const DISPLAY_FAMILY_RX =
-  /\b(clarendon|druk|knockout|trade[\s-]*gothic|bebas|anton|oswald|teko|tungsten|rockwell|sentinel|recoleta|migra|canela|austin|ogg|reckless|romie|signifier|splash|monument|druk|condensed|compressed|poster)\b/i;
-// Web-safe / OS-bundled system font names. When a site self-hosts a @font-face
-// under one of these names it's almost never the brand's intentional DISPLAY
-// face — it's a minor accent or a fallback declaration (corgi.insure ships a
-// self-hosted "georgia" used 4× vs its distinctive custom "f37Bolton" used 8×,
-// yet "georgia" matched SERIF_RX and got crowned the display font, forcing every
-// headline into a generic serif). A distinctive CUSTOM face should outrank a
-// system-named one for display. NOTE: deliberately excludes licensed display
-// serifs brands actually choose (garamond, caslon, baskerville) — only the
-// classic web-safe set lands here.
-const SYSTEM_FONT_RX =
-  /\b(georgia|times(?:[\s-]*new[\s-]*roman)?|arial(?:[\s-]*black)?|helvetica(?:[\s-]*neue)?|verdana|tahoma|trebuchet(?:[\s-]*ms)?|courier(?:[\s-]*new)?|cambria|calibri|segoe(?:[\s-]*ui)?|palatino(?:[\s-]*linotype)?|book[\s-]*antiqua|lucida(?:[\s-]*grande|[\s-]*sans)?|geneva|impact|comic[\s-]*sans)\b/i;
-
-/**
- * Real webfont families are CamelCase far more often than spaced, and every
- * pattern in this section is `\b`-anchored. "SourceCodePro" has no word boundary
- * between "code" and "Pro", so `source[\s-]*code\b` never fired and a MONOSPACE
- * face was crowned the DISPLAY font — observed in the stored crawls
- * (`display:SourceCodePro`) and again in the 60-site sweep. "JetBrainsMono"
- * fails the same way; "IBMPlexMono" only survives by accident because its whole
- * name is an alternative in MONO_RX.
- *
- * Splitting the camel humps into words gives every pattern a second, spaced
- * spelling to match. Kept as an ADDITIONAL attempt rather than a replacement:
- * normalization can only ever add matches, never remove one (it would otherwise
- * break `KaTeX_Main`, whose ICON_FONT_RX alternative wants the underscore).
- */
-export const normalizeFamilyName = (name: string): string =>
-  name
-    .replace(/([a-z0-9])([A-Z])/g, "$1 $2") // sourceCode → source Code
-    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2") // IBMPlex → IBM Plex
-    .replace(/_+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-
-const matchesFamily = (rx: RegExp, name: string): boolean =>
-  rx.test(name) || rx.test(normalizeFamilyName(name));
-
-export const classifyFontRoles = (fonts: CrawledFont[]): FontRoles => {
-  const roles: FontRoles = {};
-  // Collect distinct text faces in order; pull out mono. Icon fonts are skipped
-  // (routing them onto h*/p would render glyphs).
-  const text: string[] = [];
-  for (const f of fonts) {
-    const name = f.family;
-    if (!name) continue;
-    if (PLACEHOLDER_FAMILY_RX.test(name)) continue;
-    if (matchesFamily(ICON_FONT_RX, name)) continue;
-    if (!roles.mono && matchesFamily(MONO_RX, name)) {
-      roles.mono = name;
-      continue;
-    }
-    if (!text.includes(name)) text.push(name);
-  }
-  if (text.length === 0) return roles;
-
-  const isDisplayName = (n: string): boolean =>
-    matchesFamily(SERIF_RX, n) ||
-    matchesFamily(DISPLAY_HINT_RX, n) ||
-    matchesFamily(SERIF_FAMILY_RX, n) ||
-    matchesFamily(DISPLAY_FAMILY_RX, n);
-
-  // Display = a name-recognized display/serif/slab face if present; otherwise the
-  // FIRST face that differs from the body (the 2nd distinct face is almost always
-  // the headline/accent — body is the most-used face and is listed first). This
-  // stops a plain body sans (Acumin/Inter/Helvetica) from being chosen as display
-  // just because no curated name matched.
-  //
-  // BUT: a display/serif NAME that collides with a web-safe system font (a
-  // self-hosted "georgia"/"times") is a weak signal — it's usually a minor
-  // accent, not the brand's headline face. If a distinctive CUSTOM face is also
-  // present, prefer that for display. (corgi.insure: georgia matched SERIF_RX and
-  // beat the real display face f37Bolton — every headline came out generic serif.)
-  const isSystemNamed = (n: string): boolean => matchesFamily(SYSTEM_FONT_RX, n);
-  const namedDisplay = text.find(isDisplayName);
-  if (namedDisplay && !isSystemNamed(namedDisplay)) {
-    // A genuine, distinctive display/serif face — trust it.
-    roles.display = namedDisplay;
-    roles.body = text.find((n) => n !== namedDisplay) ?? namedDisplay;
-  } else {
-    // No display-named face, OR the only one is a system-font name. Body is the
-    // most-canonical (first) face; for display prefer the next DISTINCTIVE
-    // (non-system) face, then fall back to the system-named serif, then any 2nd.
-    roles.body = text[0];
-    const distinctive = text.find((n) => n !== text[0] && !isSystemNamed(n));
-    roles.display =
-      distinctive ?? namedDisplay ?? text.find((n) => n !== text[0]) ?? text[0];
-  }
-  return roles;
-};
+// The font-role classifier moved to ./font-roles — see that file's header for
+// why (the answer stopped being about NAMES and became about USE). Re-exported
+// here because site-brand.ts, brand-identity.ts and two test files import it
+// from this module and there is no reason to churn their import lines.
+export {
+  annotateFontUsage,
+  classifyFontRoles,
+  extractFontUsage,
+  normalizeFamilyName,
+  type CrawledFont,
+  type FontRoles,
+  type FontUsage,
+} from "./font-roles";
 
 // ----- Palette ---------------------------------------------------------
 
@@ -1674,10 +1508,14 @@ export const extractPalette = (
     counts.set(hex, (counts.get(hex) ?? 0) + 1);
   }
 
-  // Score: frequency, but penalize near-grays / pure black-or-white so
-  // brand accents float to the top.
+  // Score: frequency, but drop anything without enough colour in it to BE a
+  // brand accent. The old bar here was isVeryNearMonochrome (chroma <= 8),
+  // which is a grey detector, not a brand-colour detector: it passed gitlab's
+  // #171321, mailchimp's #231e15, clerk's #222a35, render's #373145 and
+  // monzo's #091723 — dark page furniture that is the most FREQUENT hex on
+  // those sites and therefore led each palette. See BRAND_CHROMA_FLOOR.
   const ranked = Array.from(counts.entries())
-    .filter(([hex]) => !isVeryNearMonochrome(hex))
+    .filter(([hex]) => isChromatic(hex))
     .sort((a, b) => b[1] - a[1])
     .map(([hex]) => hex);
 
@@ -1788,25 +1626,66 @@ const hslOfHexLocal = (
 };
 
 /**
+ * ABSOLUTE chroma — max(r,g,b) − min(r,g,b), 0…255. The honest "how much colour
+ * is in here at all" measure, and the one HSL saturation is not.
+ *
+ * WHY THIS EXISTS. HSL `s` is a RATIO, so it explodes towards black and white:
+ * the near-black #171321 (gitlab's page background) reports s = 0.27 and the
+ * near-white cream #eee9e2 (a dropbox `--…brand__coconut_600` token) reports
+ * s = 0.26 — both cleared the old `s >= 0.25` bar and both read as grey to a
+ * human. Shopify's #71717a, the grey the brief caught winning outright, has an
+ * absolute chroma of 9 and cleared `isVeryNearMonochrome`'s `<= 8` by ONE.
+ */
+const chromaRange = (hex: string): number => {
+  const { r, g, b } = hexToRgb(hex);
+  return Math.max(r, g, b) - Math.min(r, g, b);
+};
+
+/**
+ * The floor a colour must clear to be a brand colour at all, measured rather
+ * than guessed. Over the 38-site tune half (2026-08-09) the LEAST colourful
+ * true brand accent is slack's aubergine #4a154b at chroma 54; the neutrals
+ * that were beating real accents top out at 27 (#0e1029 nativecos, #091723
+ * monzo, #373145 render, #222a35 clerk, #231e15 mailchimp, #171321 gitlab,
+ * #eee9e2 dropbox, #71717a shopify). 32 sits in that gap with a 22-point
+ * margin under the lowest real accent, so it is not a knife-edge cut.
+ */
+const BRAND_CHROMA_FLOOR = 32;
+
+/**
  * "Is this a colour at all, as opposed to structure?" Same bar the deterministic
  * icon reader uses (dominantColorFromImageBytes in brand-truth.ts) so the tiers
  * agree: enough saturation to read as a hue, not sunk into black or blown out to
  * white. Deliberately looser than isSignatureCandidate (which additionally wants
  * mid-luminance) — a pale brand tint belongs in the palette even when it can't
  * be the signature.
+ *
+ * The chroma floor is applied HERE, which means a custom property the site
+ * NAMED `--brand-…` is subject to it too. A named token that resolves to a grey
+ * is still a grey.
  */
 const isChromatic = (hex: string): boolean => {
   const c = hslOfHexLocal(hex);
-  return !!c && c.s >= 0.25 && c.l > 0.08 && c.l < 0.92;
+  if (!c || c.s < 0.25 || c.l <= 0.08 || c.l >= 0.92) return false;
+  return chromaRange(hex) >= BRAND_CHROMA_FLOOR;
 };
 
-/** Saturation, gently penalized away from mid-luminance — the same shape
- *  pickSignatureColor scores with, so the palette leads with the colour the
- *  signature picker is going to choose anyway. */
+/**
+ * How strongly a colour reads as A BRAND HUE: absolute chroma, gently penalized
+ * away from mid-luminance.
+ *
+ * This used HSL `s` and that measure cannot rank a brand ramp. `s` pins to 1.0
+ * for EVERY colour with a zero channel, so within one ramp the DARKEST step
+ * always won: blueland declares `--brand-10 … --brand-95` and the old score put
+ * #0033a7 (s 1.00) above the real #133cd1 (s 0.83), 47 away from truth, purely
+ * because #0033a7's red channel is 0. Absolute chroma separates them the way an
+ * eye does — #133cd1 carries 190 of chroma, #0033a7 only 167 — and it is the
+ * same number the BRAND_CHROMA_FLOOR gate is expressed in, so the two agree.
+ */
 const vividness = (hex: string): number => {
   const c = hslOfHexLocal(hex);
   if (!c) return -1;
-  return c.s * (1 - Math.abs(c.l - 0.5) * 0.6);
+  return (chromaRange(hex) / 255) * (1 - Math.abs(c.l - 0.5) * 0.6);
 };
 
 const hslToHex = (h: number, s: number, l: number): string => {
@@ -1896,7 +1775,30 @@ const BRAND_PROP_NAME_RX = /^--[\w-]*(?:brand|primary|accent)[\w-]*$/i;
 // `--si-primary` / `--social-links-block-main-icon-color` (Squarespace social
 // icons, every Squarespace host) and `--cookiebot-primary-color: #141414`
 // (toadbakery.com) match the brand pattern and are chrome.
-const CHROME_PROP_NAME_RX = /^--si-|social|cookie|swiper|videojs/i;
+//
+// The Shopify-app prefixes were measured the same way TEMPLATE_COLORS was: the
+// SAME hex on two unrelated stores is the app's default, not either brand.
+// `--recharge-color-brand: #467c99` (ReCharge subscriptions) is byte-identical
+// on hellotushy.com and nativecos.com, and on both it beat the real accent —
+// hellotushy's own #71a7f4 is the most frequent chromatic hex in its stylesheet,
+// nativecos' #0a1f8f is corroborated by its own favicon (#002277, 26 away).
+// `--oke-` is Okendo reviews, `--loop-` is Loop returns, `--flyout-` is a cart
+// drawer. All are prefix-anchored so a real token like `--brand-loop` is safe.
+const CHROME_PROP_NAME_RX =
+  /^--si-|^--recharge-|^--oke-|^--loop-|^--flyout-|social|cookie|swiper|videojs/i;
+
+// A property naming a TEXT/ICON/BORDER role is describing where a colour is
+// painted, not claiming it is the brand. Measured: sentry.io's ONLY named token
+// is `--text-primary: #362d59` (a dark violet used for body copy, 127 from the
+// real #6a5fc1 — which sentry's own stylesheet carries as its most frequent
+// chromatic hex and its theme-color meta). monzo declares
+// `--semantic-content-primary: #091723` alongside the real `--color-brand`, and
+// dropbox declares `--color__glyph__primary: #1e1919`.
+//
+// `background`/`surface`/`fill` are deliberately NOT here: Squarespace's
+// `--primaryButtonBackgroundColor` is thesaucycow's real accent, and a CTA fill
+// is one of the strongest brand claims a stylesheet makes.
+const ROLE_PROP_NAME_RX = /(?:^|[-_])(?:text|glyph|content|border|divider|outline|shadow|ring|caret|placeholder)(?:$|[-_])/i;
 
 // How strong the NAME's claim is. "brand" is the site saying this colour IS the
 // brand; "accent" is the weakest — a design system's whole secondary scale is
@@ -1916,26 +1818,55 @@ const brandPropRank = (name: string): number =>
 /**
  * Palette tier 1 — colours the site NAMED brand / primary / accent.
  *
- * Sorted by name strength, then vividness — NOT by source order. A brand ramp is
- * declared lightest-first (stripe.com's first `--hds-color-core-brand-*` is
- * #f5f5ff, a 25-step tint of its purple), so "first declared" would lead the
- * palette with a near-white; within one named ramp the most vivid step is the
- * brand hue and the rest are washes of it.
+ * Sorted by name strength, then how many properties AGREE, then vividness —
+ * NOT by source order. A brand ramp is declared lightest-first (stripe.com's
+ * first `--hds-color-core-brand-*` is #f5f5ff, a 25-step tint of its purple),
+ * so "first declared" would lead the palette with a near-white; within one
+ * named ramp the most vivid step is the brand hue and the rest are washes of it.
+ *
+ * A colour is scored over EVERY property that resolves to it, not the first one
+ * seen. The old `seen` set froze both rank and identity at first sight, and
+ * source order is arbitrary, so a colour could be locked to a weaker name than
+ * the site actually gave it: hubspot declares #ff4800 as `--light-theme-
+ * hubspot-brand-01` (rank "brand") AND as `--light-theme-button-primary-fill-
+ * idle` (rank "primary"), the primary one appears first in the sheet, and the
+ * orange was therefore ranked below a tint that happened to own a `brand` name.
+ *
+ * VOTES is the same corroboration argument the icon tier makes, applied inside
+ * one source: a real brand colour gets referenced by many tokens (dropbox's
+ * #0061fe by six, thesaucycow's #e55937 by five) while a derived tint is
+ * referenced once (thesaucycow's `--darkAccent-hsl` #bd005b, which used to lead
+ * its palette 104 away from truth).
  */
 export const extractNamedBrandColors = (allCss: string): string[] => {
   if (!allCss) return [];
   const vars = collectCssVars(allCss);
-  const out: { hex: string; rank: number }[] = [];
-  const seen = new Set<string>();
+  // NO VOTE COUNTING. Ranking by how MANY tokens resolve to a hex was measured
+  // and removed: held out on 14 sites it cost more than it bought — asana went
+  // #f06a6a (its actual brand red) to #879fc8, a pale UI blue that merely
+  // appeared under more names. It bought exactly one row on the half it was
+  // tuned against and lost one on the half it had never seen, which is the
+  // definition of fitting the sample rather than the problem. Popularity among
+  // token names is not brand-ness; a design system names its greys the most.
+  const byHex = new Map<string, { hex: string; rank: number }>();
   for (const [name, value] of vars) {
     if (!BRAND_PROP_NAME_RX.test(name)) continue;
     if (CHROME_PROP_NAME_RX.test(name)) continue;
+    if (ROLE_PROP_NAME_RX.test(name)) continue;
     const hex = cssBrandColorToHex(value, vars);
-    if (!hex || seen.has(hex) || !isChromatic(hex)) continue;
-    seen.add(hex);
-    out.push({ hex, rank: brandPropRank(name) });
+    if (!hex || !isChromatic(hex)) continue;
+    const rank = brandPropRank(name);
+    const prev = byHex.get(hex);
+    if (prev) {
+      // Keep the STRONGEST name a hex ever appeared under. That is what fixed
+      // hubspot, dropbox and thesaucycow — verified by ablation, not the vote
+      // count they were once credited to.
+      prev.rank = Math.min(prev.rank, rank);
+    } else {
+      byHex.set(hex, { hex, rank });
+    }
   }
-  return out
+  return Array.from(byHex.values())
     .sort((a, b) => a.rank - b.rank || vividness(b.hex) - vividness(a.hex))
     .slice(0, 4)
     .map((c) => c.hex);
@@ -1990,6 +1921,48 @@ const iconAccentColors = async (
  * all-image site with a JS-injected stylesheet — the image tier is all we have
  * and it becomes the palette exactly as before.
  */
+/**
+ * Two independent reads DISAGREEING is evidence, and this is the one place we
+ * act on it.
+ *
+ * When the site names no --brand/--primary/--accent token at all, the head of
+ * the CSS tier is nothing more than "the most frequent chromatic hex in the
+ * stylesheet" — the weakest deterministic signal we have, and the one that put
+ * a page background at the top of gitlab's, clerk's, render's and mailchimp's
+ * palettes. The favicon is a genuinely INDEPENDENT read: a different file,
+ * decoded rather than parsed. When it disagrees SHARPLY with that weak
+ * candidate, the stylesheet candidate is furniture and the icon is the brand.
+ * duolingo.com is the case: its stylesheet's one chromatic colour is #00b086
+ * (a teal from a promo band, 161 from the real green) and its own favicon reads
+ * #77cc00 — 31 from Duolingo green.
+ *
+ * Three conditions, and the third is what makes it safe. Without it,
+ * deathwishcoffee.com — whose favicon is a black skull reading #330000 — would
+ * lose its correct #e12727 to a near-black. A favicon that carries LESS chroma
+ * than the stylesheet candidate is a silhouette, not a brand colour.
+ *
+ * Measured over the 8 tune sites where the rule is eligible (no named token AND
+ * a favicon colour): it fires once, on duolingo, and correctly abstains on the
+ * other seven — discord, mailchimp, raycast, neon, netlify, drinkolipop agree
+ * with their icons already, and deathwishcoffee is held back by the chroma
+ * guard. It deliberately does NOT let the favicon outrank a NAMED token:
+ * slack's favicon reads #33ccff off the four-colour hash and would have taken
+ * its palette from the real #4a154b to a cyan.
+ */
+const ICON_DISAGREEMENT_MIN = 90; // = the scorer's WRONG band: a whole hue apart
+
+const iconOverridesCss = (
+  named: string[],
+  css: string[],
+  icon: string[],
+): boolean => {
+  if (named.length > 0 || icon.length === 0 || css.length === 0) return false;
+  return (
+    rgbDistance(css[0], icon[0]) >= ICON_DISAGREEMENT_MIN &&
+    vividness(icon[0]) > vividness(css[0])
+  );
+};
+
 export const mergePaletteByProvenance = (tiers: {
   named: string[];
   css: string[];
@@ -2001,10 +1974,11 @@ export const mergePaletteByProvenance = (tiers: {
   const namedSet = new Set(named);
   const allowed = (hex: string): boolean =>
     !TEMPLATE_COLORS[hex.toLowerCase()] || namedSet.has(hex.toLowerCase());
+  const css = tiers.css.filter(allowed);
+  const icon = tiers.icon.filter(allowed);
   const deterministic = [
     ...tiers.named,
-    ...tiers.css.filter(allowed),
-    ...tiers.icon.filter(allowed),
+    ...(iconOverridesCss(named, css, icon) ? [icon[0], ...css] : [...css, ...icon]),
   ];
   const image = deterministic.some(isChromatic)
     ? [] // corroboration only — see the doc comment
@@ -2119,15 +2093,11 @@ const normalizeHex = (raw: string): string | null => {
   return null;
 };
 
-const isVeryNearMonochrome = (hex: string): boolean => {
-  const { r, g, b } = hexToRgb(hex);
-  const max = Math.max(r, g, b);
-  const min = Math.min(r, g, b);
-  if (max - min <= 8) return true; // near-gray
-  // Don't kill brand light/dark neutrals entirely — but the strict near-gray
-  // filter above already exempts saturated colors close to black or white.
-  return false;
-};
+// isVeryNearMonochrome lived here: `max - min <= 8`, the only bar the CSS
+// palette had to clear. Removed 2026-08-09 — it is a GREY detector, not a
+// brand-colour detector, and shopify.com's #71717a cleared it by one point and
+// led that site's palette. Its job is now done by isChromatic + the measured
+// BRAND_CHROMA_FLOOR.
 
 const hexToRgb = (hex: string): { r: number; g: number; b: number } => {
   const clean = hex.replace("#", "");

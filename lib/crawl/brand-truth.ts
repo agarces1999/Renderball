@@ -83,6 +83,15 @@ export interface BrandTruthReport {
 /** Structural subset of BrandExtract the detector reads — no schema import,
  *  so app/new/schema.ts can type-import BrandTruthReport without a cycle. */
 export interface BrandTruthInput {
+  /**
+   * Colours the SITE named --brand/--primary/--accent. Carried because a
+   * DECLARED colour earns the wider chromaticity band in pickSignatureColor:
+   * a brand is allowed to be dark (slack aubergine, midnight navy), but only
+   * when the site itself made the claim. A merely-frequent dark colour is a
+   * background, which is the bug that band was written to stop.
+   */
+  named?: string[];
+
   url?: string;
   title?: string;
   description?: string;
@@ -599,7 +608,7 @@ export const assessBrandTruth = (
   }
 
   // ── accent signal ──
-  const resolved = signatureWithLogoFallback(e.palette ?? [], e.theme_color, e.logo_color);
+  const resolved = signatureWithLogoFallback(e.palette ?? [], e.theme_color, e.logo_color, e.named);
   const accent: BrandTruthReport["signals"]["accent"] =
     resolved === null
       ? { status: "missing", resolved: null }

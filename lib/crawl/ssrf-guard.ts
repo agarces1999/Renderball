@@ -51,13 +51,21 @@ const parseIpv4 = (host: string): [number, number, number, number] | null => {
 export const isBlockedIpv4 = (ip: string): boolean => {
   const octets = parseIpv4(ip);
   if (!octets) return true;
-  const [a, b] = octets;
+  const [a, b, c] = octets;
   if (a === 0) return true; // 0.0.0.0/8 "this host"
   if (a === 10) return true; // 10.0.0.0/8 private
   if (a === 127) return true; // 127.0.0.0/8 loopback
   if (a === 169 && b === 254) return true; // 169.254.0.0/16 link-local (cloud metadata)
   if (a === 172 && b >= 16 && b <= 31) return true; // 172.16.0.0/12 private
-  if (a === 192 && b === 0) return true; // 192.0.0.0/24 + 192.0.2.0/24 (IETF/test)
+  // /24s, NOT /16 — the predicate and its own comment disagreed, and the
+  // predicate won: `b === 0` blocks all 65,536 addresses of 192.0.0.0/16.
+  // heroku.com resolves to 192.0.66.110, a public Automattic/WP-VIP address,
+  // so it and every customer hosted on WP VIP was silently unreachable —
+  // "resolves to a private address" for a host that answers 200 to a plain
+  // fetch. Found while assembling a brand truth set, where it looked like a
+  // crawl failure.
+  if (a === 192 && b === 0 && c === 0) return true; // 192.0.0.0/24 IETF protocol assignments
+  if (a === 192 && b === 0 && c === 2) return true; // 192.0.2.0/24 TEST-NET-1
   if (a === 192 && b === 168) return true; // 192.168.0.0/16 private
   if (a === 100 && b >= 64 && b <= 127) return true; // 100.64.0.0/10 CGNAT
   if (a === 198 && (b === 18 || b === 19)) return true; // 198.18.0.0/15 benchmarking

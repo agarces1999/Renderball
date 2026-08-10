@@ -37,6 +37,7 @@
 import type { BrandExtract } from "../../app/new/schema";
 import { safeFetch } from "../crawl/ssrf-guard";
 import {
+  annotateFontUsage,
   classifyFontRoles,
   extractCssCanvasBackground,
   extractFonts,
@@ -314,17 +315,21 @@ export const readSiteBrand = async (rawUrl: string): Promise<BrandExtract> => {
 
   // A CSS url() resolves against ITS OWN stylesheet, not the page — resolving
   // against the page root drops path segments and the font 404s.
-  const fonts = [
+  const declared = [
     ...extractFonts(inlineCss, url),
     ...fetchedCss.flatMap((css, i) => extractFonts(css, cssLinks[i])),
     ...importedCss.flatMap((css, i) => extractFonts(css, importHrefs[i])),
   ];
-  const seen = new Set(fonts.map((f) => f.family.toLowerCase()));
+  const seen = new Set(declared.map((f) => f.family.toLowerCase()));
   for (const g of googleFamiliesOf(html)) {
     if (seen.has(g.family.toLowerCase())) continue;
     seen.add(g.family.toLowerCase());
-    fonts.push(g);
+    declared.push(g);
   }
+  // Which of those the site actually puts on a headline — the difference
+  // between a face that is downloaded and a face a reader sees. Same judgement
+  // as the full crawl, imported not re-implemented; see lib/crawl/font-roles.
+  const fonts = annotateFontUsage(declared, allCss);
 
   const palette = mergePaletteByProvenance({
     named: extractNamedBrandColors(allCss),
