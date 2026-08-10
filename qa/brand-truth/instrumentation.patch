@@ -1,0 +1,126 @@
+diff --git a/app/new/schema.ts b/app/new/schema.ts
+index 80a3481..1185ed7 100644
+--- a/app/new/schema.ts
++++ b/app/new/schema.ts
+@@ -230,6 +230,12 @@ export interface BrandExtract {
+   };
+   /** Top brand colors (hex), ranked by frequency, near-grays filtered out. theme_color (if present) is prepended. */
+   palette?: string[];
++  /** MEASUREMENT ONLY — see docs/BRAND_ACCURACY.md. */
++  declared_achromatic?: boolean;
++  /** MEASUREMENT ONLY — see docs/BRAND_ACCURACY.md. */
++  chromatic_ink?: { share: number; leader: string | null; leaderCount: number; total: number };
++  /** MEASUREMENT ONLY — see docs/BRAND_ACCURACY.md. */
++  declared_tokens?: { chromatic: number; achromatic: number };
+   /** The brand's actual page/canvas background color, sampled by role from its homepage share image (Fuse burgundy #440b12) — the canvas scenes sit on, distinct from the signature accent (the CTA hue). Undefined when not confidently read. */
+   background_color?: string;
+   /** Heuristic: how motion-heavy the site's CSS is. Drives Agent 2's choreography density. */
+diff --git a/lib/crawl/extract-brand.ts b/lib/crawl/extract-brand.ts
+index bd35c45..25c2513 100644
+--- a/lib/crawl/extract-brand.ts
++++ b/lib/crawl/extract-brand.ts
+@@ -1479,10 +1479,7 @@ export {
+ 
+ // ----- Palette ---------------------------------------------------------
+ 
+-export const extractPalette = (
+-  css: string,
+-  themeColor?: string,
+-): string[] => {
++const countColorLiterals = (css: string): Map<string, number> => {
+   const counts = new Map<string, number>();
+ 
+   // hex colors: #abc / #aabbcc / #aabbccdd
+@@ -1508,6 +1505,33 @@ export const extractPalette = (
+     counts.set(hex, (counts.get(hex) ?? 0) + 1);
+   }
+ 
++  return counts;
++};
++
++/** Leading hue FAMILY's share of all chromatic colour occurrences. */
++export const chromaticInkShare = (
++  css: string,
++): { share: number; leader: string | null; leaderCount: number; total: number } => {
++  const chromatic = Array.from(countColorLiterals(css))
++    .filter(([hex]) => isChromatic(hex))
++    .sort((a, b) => b[1] - a[1]);
++  const total = chromatic.reduce((s, [, n]) => s + n, 0);
++  if (total === 0 || !chromatic[0]) {
++    return { share: 0, leader: null, leaderCount: 0, total: 0 };
++  }
++  const leader = chromatic[0][0];
++  const family = chromatic
++    .filter(([hex]) => rgbDistance(hex, leader) < 90)
++    .reduce((s, [, n]) => s + n, 0);
++  return { share: family / total, leader, leaderCount: family, total };
++};
++
++export const extractPalette = (
++  css: string,
++  themeColor?: string,
++): string[] => {
++  const counts = countColorLiterals(css);
++
+   // Score: frequency, but drop anything without enough colour in it to BE a
+   // brand accent. The old bar here was isVeryNearMonochrome (chroma <= 8),
+   // which is a grey detector, not a brand-colour detector: it passed gitlab's
+@@ -1838,6 +1862,27 @@ const brandPropRank = (name: string): number =>
+  * referenced once (thesaucycow's `--darkAccent-hsl` #bd005b, which used to lead
+  * its palette 104 away from truth).
+  */
++/** Named brand/primary/accent tokens split by the chroma floor — the
++ *  distinction extractNamedBrandColors erases (a grey token and no token both
++ *  come back as an empty list, and those are different claims). */
++export const declaredBrandTokens = (
++  allCss: string,
++): { chromatic: number; achromatic: number } => {
++  if (!allCss) return { chromatic: 0, achromatic: 0 };
++  const vars = collectCssVars(allCss);
++  const chromatic = new Set<string>();
++  const achromatic = new Set<string>();
++  for (const [name, value] of vars) {
++    if (!BRAND_PROP_NAME_RX.test(name)) continue;
++    if (CHROME_PROP_NAME_RX.test(name)) continue;
++    if (ROLE_PROP_NAME_RX.test(name)) continue;
++    const hex = cssBrandColorToHex(value, vars);
++    if (!hex) continue;
++    (isChromatic(hex) ? chromatic : achromatic).add(hex.toLowerCase());
++  }
++  return { chromatic: chromatic.size, achromatic: achromatic.size };
++};
++
+ export const extractNamedBrandColors = (allCss: string): string[] => {
+   if (!allCss) return [];
+   const vars = collectCssVars(allCss);
+diff --git a/lib/documents/site-brand.ts b/lib/documents/site-brand.ts
+index ac52208..cf5b325 100644
+--- a/lib/documents/site-brand.ts
++++ b/lib/documents/site-brand.ts
+@@ -42,6 +42,8 @@ import {
+   extractCssCanvasBackground,
+   extractFonts,
+   extractNamedBrandColors,
++  declaredBrandTokens,
++  chromaticInkShare,
+   extractPalette,
+   isHtmlContentType,
+   mergePaletteByProvenance,
+@@ -331,6 +333,7 @@ export const readSiteBrand = async (rawUrl: string): Promise<BrandExtract> => {
+   // as the full crawl, imported not re-implemented; see lib/crawl/font-roles.
+   const fonts = annotateFontUsage(declared, allCss);
+ 
++  const declaredTokens = declaredBrandTokens(allCss);
+   const palette = mergePaletteByProvenance({
+     named: extractNamedBrandColors(allCss),
+     css: extractPalette(allCss),
+@@ -356,5 +359,9 @@ export const readSiteBrand = async (rawUrl: string): Promise<BrandExtract> => {
+     font_roles: classifyFontRoles(fonts),
+     palette,
+     background_color: extractCssCanvasBackground(allCss),
++    declared_achromatic:
++      declaredTokens.chromatic === 0 && declaredTokens.achromatic > 0,
++    chromatic_ink: chromaticInkShare(allCss),
++    declared_tokens: declaredTokens,
+   };
+ };

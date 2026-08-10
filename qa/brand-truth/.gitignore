@@ -1,0 +1,5 @@
+# The recorded network. ~18MB of gzipped real responses — regenerable by
+# re-running any probe (it re-fetches and re-records what it cannot find), so
+# it is deliberately not in git. Copy it between machines if you want the
+# numbers to be byte-comparable rather than re-measured.
+cache/
