@@ -22,6 +22,19 @@ export class BuildTimeline {
   private readonly t0 = Date.now();
   private last = this.t0;
   readonly events: TimelineEvent[] = [];
+  private readonly onMark?: (e: TimelineEvent) => void;
+
+  /**
+   * `onMark` fires on every phase boundary — the ONE wiring point that turns
+   * this from a post-mortem artifact into a live signal. run-preview-build
+   * uses it to (a) surface real progress to the polling client and (b) check
+   * the cooperative cancel flag, so a stop lands at the next boundary instead
+   * of needing threading through every pipeline stage. It MAY THROW (that is
+   * how cancellation propagates); mark() deliberately does not catch.
+   */
+  constructor(opts?: { onMark?: (e: TimelineEvent) => void }) {
+    this.onMark = opts?.onMark;
+  }
 
   /** Record a phase boundary. Also logs, so live consoles see it too. */
   mark(phase: string): TimelineEvent {
@@ -35,6 +48,7 @@ export class BuildTimeline {
     this.last = now;
     this.events.push(e);
     console.warn(`[timeline] ${phase} +${e.elapsed_s}s (step ${e.step_s}s)`);
+    this.onMark?.(e);
     return e;
   }
 

@@ -1536,6 +1536,16 @@ export const buildAnimatedSections = async (
             onAttemptError: (err) => {
               if (isOverloadSignal(err)) gate.overload();
             },
+          }).then((r) => {
+            // Fills run in parallel and finish out of order; a per-scene mark
+            // lets the ceremony tick each page's row when THAT page is really
+            // done, instead of pacing all of them on a timer. Also a stop
+            // checkpoint — but mark() can throw (cancellation), and inside a
+            // settled-map that throw would be swallowed as a rejected fill,
+            // so let it reject: the assembling code treats it as a missing
+            // block and the NEXT top-level mark stops the build for real.
+            timeline.mark(`design:fill:scene:${i}:done`);
+            return r;
           }),
         ),
       );
@@ -1849,6 +1859,9 @@ export const buildAnimatedSections = async (
       sectionsAreSpliceable(designCode, scopeScenes.length);
 
     if (canScope) {
+      timeline.mark(
+        `gates:scoped-retry:start (${grouped.length} scene(s): ${grouped.map((g) => g.scene).join(", ")})`,
+      );
       console.warn(
         `[pipeline] scoped retry: regenerating ${grouped.length} scene(s) [${grouped
           .map((g) => g.scene)

@@ -80,6 +80,13 @@ export interface StoredBrief {
    */
   owner_id: string;
   purpose: string;
+  /**
+   * The user's brief, VERBATIM — what the outline was generated from. The
+   * generate route has always written it onto the brief (auto mode); it was
+   * just never declared here, which is why no surface could show it back.
+   * The review screen now renders and edits it (founder, 2026-08-12).
+   */
+  freeform_prompt?: string;
   duration_seconds: number;
   /**
    * User's distribution choice from the wizard ("mobile-feed" | "square"

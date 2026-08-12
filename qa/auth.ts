@@ -203,6 +203,41 @@ export const authenticator = (
   return async (context: BrowserContext): Promise<void> => {
     if (storageState) return replaySession(context);
 
+    // Across-RUNS cache. Clerk rate-limits sign-ins, and a night of probe
+    // runs — each doing its own fresh sign-in — measurably starts failing at
+    // the second factor (2026-08-12: three probes in an hour, the third could
+    // no longer sign in). A session replayed from disk is validated against
+    // /api/usage before it is trusted, so a revoked/expired file just falls
+    // through to a real sign-in. Location: .data/ (gitignored).
+    const diskPath = `${process.cwd()}/.data/qa-session.json`;
+    try {
+      const { readFileSync, writeFileSync } = await import("node:fs");
+      const cached = JSON.parse(readFileSync(diskPath, "utf8"));
+      await context.addCookies(cached.cookies ?? []);
+      // Validate by loading a real page, NOT by a raw request: the __session
+      // JWT expires in about a minute, and only ClerkJS running in a page can
+      // refresh it from the long-lived client cookie. A raw fetch saw the
+      // stale JWT, called the whole session dead, and sent every run back to
+      // a rate-limited sign-in — the exact failure this cache exists to stop.
+      const page = await context.newPage();
+      await page.goto(`${base}/documents`, { waitUntil: "domcontentloaded", timeout: 30_000 });
+      await page.waitForTimeout(1_500); // ClerkJS refresh
+      const alive =
+        !page.url().includes("/sign-in") &&
+        (await page.request.fetch(`${base}/api/usage`, { failOnStatusCode: false })).status() === 200;
+      await page.close();
+      if (alive) {
+        storageState = await context.storageState(); // refreshed cookies
+        try {
+          writeFileSync(diskPath, JSON.stringify(storageState));
+        } catch { /* next run signs in again — no worse than before */ }
+        return;
+      }
+      await context.clearCookies();
+    } catch {
+      /* no cached session, or it expired — sign in for real below */
+    }
+
     if (!signInFlight) {
       // This context does the work — and ends up signed in directly, which is
       // also why the sign-in PAGE is covered by every run without a flow
@@ -210,6 +245,16 @@ export const authenticator = (
       signInFlight = (async () => {
         await signIn(context, base, creds);
         storageState = await context.storageState();
+        try {
+          const { writeFileSync, mkdirSync } = await import("node:fs");
+          mkdirSync(`${process.cwd()}/.data`, { recursive: true });
+          writeFileSync(
+            `${process.cwd()}/.data/qa-session.json`,
+            JSON.stringify(storageState),
+          );
+        } catch {
+          /* a session that can't persist just means one more sign-in next run */
+        }
       })();
       try {
         await signInFlight;

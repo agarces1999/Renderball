@@ -20,12 +20,92 @@ import { cn } from "../../../lib/cn";
  */
 export function EditableReview({
   initialScript,
+  briefPrompt,
 }: {
   initialScript: Script;
+  /** The user's original brief, verbatim — editable here (founder ask
+   *  2026-08-12: "i should be able to edit the brief after renderball
+   *  generates it"). Absent on legacy briefs created before freeform mode. */
+  briefPrompt?: string;
 }) {
   const [script, setScript] = useState<Script>(initialScript);
   const [pendingSave, startSave] = useTransition();
   const [saveError, setSaveError] = useState<string | null>(null);
+
+  // ── the brief, editable after the fact ────────────────────────────────────
+  const [briefOpen, setBriefOpen] = useState(false);
+  const [briefText, setBriefText] = useState(briefPrompt ?? "");
+  const [rewriting, setRewriting] = useState(false);
+  const [rewriteError, setRewriteError] = useState<string | null>(null);
+  const rewriteOutline = async () => {
+    if (rewriting || !briefText.trim()) return;
+    setRewriting(true);
+    setRewriteError(null);
+    try {
+      const res = await fetch("/api/documents/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          scriptId: script.id,
+          prompt: briefText.trim(),
+          pages: script.scenes.length,
+        }),
+      });
+      if (!res.ok && res.status !== 202) {
+        const data = await res.json().catch(() => null);
+        setRewriteError(
+          typeof data?.error === "string" && /\s/.test(data.error)
+            ? data.error
+            : "Could not start the rewrite. Your outline is unchanged.",
+        );
+        setRewriting(false);
+        return;
+      }
+      // Poll the outline job (the same machinery the first generation used);
+      // the current outline stays on screen until the new one is really here.
+      const until = Date.now() + 8 * 60_000;
+      while (Date.now() < until) {
+        await new Promise((r) => setTimeout(r, 2_500));
+        let poll: Response;
+        try {
+          poll = await fetch(
+            `/api/documents/generate?scriptId=${encodeURIComponent(script.id)}`,
+          );
+        } catch {
+          continue;
+        }
+        if (!poll.ok) continue;
+        const data = (await poll.json().catch(() => null)) as
+          | { status?: string; resultStatus?: number; result?: { error?: string } }
+          | null;
+        if (!data) continue;
+        if (data.status === "done") {
+          const status = data.resultStatus ?? 200;
+          if (status >= 200 && status < 300) {
+            window.location.reload();
+            return;
+          }
+          setRewriteError(
+            data.result?.error ?? "The rewrite didn't come together. Your outline is unchanged.",
+          );
+          setRewriting(false);
+          return;
+        }
+        if (data.status === "error") {
+          setRewriteError("The rewrite failed partway. Your outline is unchanged.");
+          setRewriting(false);
+          return;
+        }
+      }
+      setRewriteError(
+        "The rewrite is taking unusually long. Refresh in a minute — it may have landed.",
+      );
+      setRewriting(false);
+    } catch {
+      setRewriteError("Network error. Your outline is unchanged.");
+      setRewriting(false);
+    }
+  };
 
   const isDeck = script.config.kind === "deck";
   const RENDER_FPS = 30;
@@ -132,6 +212,78 @@ export function EditableReview({
           ) : null}
         </div>
       </header>
+
+      {/* The brief, on the record and editable. It used to vanish the moment
+          Generate was pressed — the one input the whole outline came from was
+          the one thing this screen could not show or change (founder,
+          2026-08-12). Editing rewrites the outline through the same generate
+          job, with the same approval step after; the current outline stays
+          until the new one actually lands. */}
+      {briefPrompt !== undefined && (
+        <section className="mb-10 rounded-md border border-hairline bg-surface p-5">
+          <div className="mb-1 flex items-center justify-between">
+            <span className="font-mono text-[11px] uppercase tracking-[0.18em] text-accent-text">
+              Your brief
+            </span>
+            {!briefOpen && (
+              <button
+                type="button"
+                onClick={() => setBriefOpen(true)}
+                className="rounded-md border border-hairline px-2.5 py-1 text-[11.5px] text-muted transition-colors hover:border-accent-line hover:text-ink"
+              >
+                Edit the brief
+              </button>
+            )}
+          </div>
+          {!briefOpen ? (
+            <p className="whitespace-pre-wrap text-[13px] leading-relaxed text-ink-soft">
+              {briefText || "(no brief text was saved with this document)"}
+            </p>
+          ) : (
+            <>
+              <textarea
+                value={briefText}
+                onChange={(e) => setBriefText(e.target.value)}
+                rows={5}
+                autoFocus
+                disabled={rewriting}
+                className="w-full resize-y rounded-md border border-hairline bg-surface-2 px-3 py-2.5 text-[13px] leading-relaxed text-ink outline-none focus:border-accent-line disabled:opacity-60"
+              />
+              <div className="mt-2.5 flex flex-wrap items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => void rewriteOutline()}
+                  disabled={rewriting || !briefText.trim()}
+                  className="rounded-md bg-accent px-4 py-2 text-[13px] font-semibold text-accent-ink transition-all hover:brightness-110 disabled:opacity-50"
+                >
+                  {rewriting ? "Rewriting your outline…" : "Rewrite the outline from this"}
+                </button>
+                {!rewriting && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setBriefOpen(false);
+                      setBriefText(briefPrompt ?? "");
+                      setRewriteError(null);
+                    }}
+                    className="font-mono text-[10.5px] uppercase tracking-[0.14em] text-faint transition-colors hover:text-ink"
+                  >
+                    cancel
+                  </button>
+                )}
+                <span className="font-mono text-[10.5px] text-faint">
+                  {rewriting
+                    ? "your current outline stays until the new one lands"
+                    : "uses tokens · you approve the new outline before anything is designed"}
+                </span>
+              </div>
+              {rewriteError && (
+                <p className="mt-2.5 text-[12.5px] leading-relaxed text-ink">{rewriteError}</p>
+              )}
+            </>
+          )}
+        </section>
+      )}
 
       {/* Uncertainty checkpoint — batched calls the agent couldn't make from
           the brief alone. The story already follows each first option, so

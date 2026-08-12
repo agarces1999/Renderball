@@ -6,7 +6,7 @@ import { checkEntitlement } from "../../../../lib/entitlement";
 import { checkTokenAllowance } from "../../../../lib/metering";
 import { runPreviewBuild } from "../../../../lib/render/run-preview-build";
 import { runBuildLocked } from "../../../../lib/render/build-lock";
-import { buildStatus, startBuild } from "../../../../lib/render/build-jobs";
+import { buildStatus, requestBuildCancel, startBuild } from "../../../../lib/render/build-jobs";
 
 /**
  * Preview-only build endpoint. Runs the Design + Choreography agents and the
@@ -143,7 +143,35 @@ export async function GET(request: Request) {
   if (job.state === "error") {
     return NextResponse.json({ status: "error", error: job.message });
   }
+  if (job.state === "cancelled") {
+    return NextResponse.json({ status: "cancelled" });
+  }
+  if (job.state === "running") {
+    // The REAL phase boundaries the build has crossed (BuildTimeline.onMark →
+    // reportBuildProgress) — what lets the ceremony tick pages when they are
+    // actually done instead of pacing a 48-second animation while the repair
+    // ladder grinds invisibly.
+    return NextResponse.json({ status: "running", progress: job.progress ?? [] });
+  }
   // "unknown" after a container restart is not a failure — the client reloads
   // and the page decides from whether the document actually exists.
   return NextResponse.json({ status: job.state });
+}
+
+/**
+ * DELETE ?scriptId= — stop a running build (founder ask 2026-08-12: a build
+ * needs an exit). Cooperative: the flag is checked at every timeline boundary,
+ * so the in-flight model call finishes and the stop lands at the next phase
+ * edge — tokens already spent are spent, the approved outline is untouched,
+ * and the job reports "cancelled" (not an error; nothing is wrong).
+ */
+export async function DELETE(request: Request) {
+  const user = await getCurrentUser();
+  if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  const scriptId = new URL(request.url).searchParams.get("scriptId");
+  if (!scriptId) return NextResponse.json({ error: "scriptId required" }, { status: 400 });
+  const owned = await loadScript(scriptId, user.id);
+  if (!owned) return NextResponse.json({ error: "not found" }, { status: 404 });
+  const asked = requestBuildCancel(scriptId);
+  return NextResponse.json({ ok: true, stopping: asked });
 }

@@ -2,9 +2,14 @@ process.env.RB_BUILD_GRACE_MS = "150";
 
 import { strict as assert } from "assert";
 import {
+  BUILD_CANCELLED_SENTINEL,
+  BuildCancelledError,
   GATE_GRACE_MS,
   __resetBuildJobs,
+  buildCancelRequested,
   buildStatus,
+  reportBuildProgress,
+  requestBuildCancel,
   startBuild,
 } from "./build-jobs";
 
@@ -90,6 +95,83 @@ test("a duplicate POST attaches instead of starting a second paid build", async 
   const second = await startBuild("dup", work);
   assert.equal(second.kind, "running");
   assert.equal(runs, 1, "the expensive work must run exactly once");
+});
+
+// ── live progress + stop (founder asks, 2026-08-12) ──────────────────────────
+
+test("progress marks accumulate on the running job and ride buildStatus", async () => {
+  __resetBuildJobs();
+  let release: () => void = () => {};
+  const gate = new Promise<void>((r) => (release = r));
+  void startBuild("prog", async () => {
+    await gate;
+    return { status: 200, body: {} };
+  });
+  reportBuildProgress("prog", "design:scaffold:done");
+  reportBuildProgress("prog", "design:fill:scene:0:done");
+  const job = buildStatus("prog");
+  assert.equal(job.state, "running");
+  assert.deepEqual(
+    (job as { progress?: { phase: string }[] }).progress?.map((p) => p.phase),
+    ["design:scaffold:done", "design:fill:scene:0:done"],
+  );
+  release();
+  await sleep(20);
+});
+
+test("progress after settle is dropped — a late mark must not resurrect state", async () => {
+  __resetBuildJobs();
+  await startBuild("late", async () => ({ status: 200, body: {} }));
+  reportBuildProgress("late", "ghost");
+  const job = buildStatus("late");
+  assert.equal(job.state, "done", "the settled job must stay settled");
+});
+
+test("a stop lands as CANCELLED, not error — stopping is not breaking", async () => {
+  __resetBuildJobs();
+  let checkCancel: () => void = () => {};
+  void startBuild("stopme", async () => {
+    // Simulate the timeline's onMark checkpoint loop.
+    await new Promise<void>((resolve, reject) => {
+      checkCancel = () => {
+        if (buildCancelRequested("stopme")) reject(new BuildCancelledError());
+        else resolve();
+      };
+      setTimeout(() => checkCancel(), 50);
+    });
+    return { status: 200, body: {} };
+  });
+  assert.equal(requestBuildCancel("stopme"), true, "a running build accepts the stop");
+  await sleep(120);
+  assert.equal(buildStatus("stopme").state, "cancelled");
+});
+
+test("a WRAPPED cancellation still reads as cancelled (substring, not instanceof)", async () => {
+  __resetBuildJobs();
+  void startBuild("wrapped", async () => {
+    throw new Error(`pipeline stage failed: ${BUILD_CANCELLED_SENTINEL} during fills`);
+  });
+  await sleep(GATE_GRACE_MS + 60);
+  assert.equal(buildStatus("wrapped").state, "cancelled");
+});
+
+test("a cancel aimed at a previous build never kills the next one", async () => {
+  __resetBuildJobs();
+  await startBuild("reuse", async () => ({ status: 200, body: {} }));
+  requestBuildCancel("reuse"); // returns false — nothing running — but even so:
+  __resetBuildJobs();
+  void startBuild("reuse", async () => {
+    await sleep(30);
+    return { status: 200, body: {} };
+  });
+  assert.equal(buildCancelRequested("reuse"), false, "fresh build starts unflagged");
+  await sleep(80);
+  assert.equal(buildStatus("reuse").state, "done");
+});
+
+test("stopping a build that is not running is refused honestly", async () => {
+  __resetBuildJobs();
+  assert.equal(requestBuildCancel("nothing"), false);
 });
 
 let pass = 0;

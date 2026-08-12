@@ -31,7 +31,16 @@ const POLL_MS = 4000;
 // is honest — the other build runs for minutes, not seconds.
 const BUSY_RETRY_MS = 15_000;
 
-async function pollUntilSettled(scriptId: string): Promise<Response> {
+/** Client-side marker for "the user stopped it" — not a real HTTP status. */
+const CANCELLED_STATUS = 499;
+
+/** A real phase boundary the server-side build crossed. */
+export type ProgressEvent = { phase: string; at: number };
+
+async function pollUntilSettled(
+  scriptId: string,
+  onProgress?: (events: ProgressEvent[]) => void,
+): Promise<Response> {
   for (;;) {
     await new Promise((r) => setTimeout(r, POLL_MS));
     let res: Response;
@@ -49,6 +58,7 @@ async function pollUntilSettled(scriptId: string): Promise<Response> {
       result?: unknown;
       resultStatus?: number;
       error?: string;
+      progress?: ProgressEvent[];
     } | null;
     if (!data) continue;
 
@@ -64,6 +74,9 @@ async function pollUntilSettled(scriptId: string): Promise<Response> {
         headers: { "Content-Type": "application/json" },
       });
     }
+    if (data.status === "cancelled") {
+      return new Response("{}", { status: CANCELLED_STATUS });
+    }
     // "unknown" means this container never saw the job — most likely it
     // restarted mid-build. Reload: if the document exists the page mounts the
     // editor, otherwise the build ceremony starts cleanly again.
@@ -71,12 +84,14 @@ async function pollUntilSettled(scriptId: string): Promise<Response> {
       window.location.reload();
       return new Response("{}", { status: 202 });
     }
-    // "running" — keep waiting.
+    // "running" — hand the ceremony the REAL phase boundaries and keep waiting.
+    if (Array.isArray(data.progress)) onProgress?.(data.progress);
   }
 }
 
 type Phase =
   | { kind: "building" }
+  | { kind: "stopped" }
   | { kind: "error"; message: string }
   // 402 from the metering gate — a real plan limit, not a failure. Retrying
   // re-hits the same 402 forever; the way forward is /billing. (A fail-closed
@@ -91,10 +106,13 @@ export function BuildPreviewClient({
   scriptId,
   kind = "video",
   sceneLabels,
+  outlineHref = "/documents",
 }: {
   scriptId: string;
   kind?: "deck" | "video";
   sceneLabels: string[];
+  /** The approved outline's review page — the exit and the stop both land here. */
+  outlineHref?: string;
 }) {
   const isDeck = kind === "deck";
   const steps = useMemo(() => {
@@ -105,9 +123,54 @@ export function BuildPreviewClient({
       ),
     );
     s.push(isDeck ? "Composing the layout" : "Choreographing the motion");
+    // The step that used to not exist — and therefore lived inside "Opening
+    // the editor" for minutes: the measurement gates and the repair ladder.
+    // A measured Klarna build spent TEN minutes here (two repair rounds, a
+    // full rebuild, two more rounds) while the ceremony claimed everything
+    // was done but the editor.
+    s.push("Checking every page against the layout gates");
     s.push(isDeck ? "Opening the editor" : "Compiling your live preview");
     return s;
   }, [sceneLabels, isDeck]);
+
+  // REAL phase boundaries from the server (BuildTimeline → build-jobs → the
+  // poll). Empty on old containers — everything below falls back to pacing.
+  const [progress, setProgress] = useState<ProgressEvent[]>([]);
+  const phases = useMemo(() => progress.map((p) => p.phase), [progress]);
+  const seen = (prefix: string) => phases.some((ph) => ph.startsWith(prefix));
+  const repairRounds = phases.filter((ph) => ph.startsWith("repair:")).length;
+
+  /**
+   * Map the ceremony's rows onto the real signals. Per-page rows tick when
+   * THAT page's fill lands (fills are parallel, so out of order is normal);
+   * everything else keys on its phase boundary. Returns null when no real
+   * signal has arrived yet — the paced fallback then drives the row.
+   */
+  const realStatus = (i: number): Status | null => {
+    if (progress.length === 0) return null;
+    const pageCount = sceneLabels.length;
+    const fillsDone = seen("design:fills:done") || seen("gates:structural");
+    if (i === 0) {
+      return seen("design:scaffold:done") || fillsDone ? "done" : "active";
+    }
+    if (i >= 1 && i <= pageCount) {
+      const scene = i - 1;
+      if (seen(`design:fill:scene:${scene}:done`) || fillsDone) return "done";
+      return seen("design:scaffold:done") ? "active" : "pending";
+    }
+    if (i === pageCount + 1) {
+      // Composing: the structural-gate + motion block.
+      if (seen("pipeline:done")) return "done";
+      return fillsDone ? "active" : "pending";
+    }
+    if (i === pageCount + 2) {
+      // Checking: render-truth measurement + the repair ladder.
+      if (seen("gate:render-truth:passed") || seen("gate:vision")) return "done";
+      return seen("pipeline:done") ? "active" : "pending";
+    }
+    // Opening the editor — the LAST row; the reload effect owns its finish.
+    return seen("gate:render-truth:passed") || seen("gate:vision") ? "active" : "pending";
+  };
 
   const [phase, setPhase] = useState<Phase>({ kind: "building" });
   const [current, setCurrent] = useState(0);
@@ -153,7 +216,12 @@ export function BuildPreviewClient({
         // 409 busy, 422 brand kit) still arrives on this first response and
         // falls through to the handling below unchanged.
         if (res.status === 202) {
-          res = await pollUntilSettled(scriptId);
+          res = await pollUntilSettled(scriptId, setProgress);
+        }
+
+        if (res.status === CANCELLED_STATUS) {
+          setPhase({ kind: "stopped" });
+          return;
         }
 
         if (!res.ok) {
@@ -165,6 +233,29 @@ export function BuildPreviewClient({
             /* non-JSON body — wire text; it goes to the console below */
           }
           const friendly = body?.error ?? null;
+          // The layout-gate hard fail carries structure — name the pages in
+          // the user's own terms instead of leaking "render-truth gate:
+          // ladder-exhausted" (measured leak: a founder screenshot).
+          const rt = (body as { render_truth?: { blocking?: { scene: number }[] } } | null)
+            ?.render_truth;
+          if (rt) {
+            const pages = [...new Set((rt.blocking ?? []).map((b) => b.scene + 1))].sort(
+              (a, b) => a - b,
+            );
+            const which =
+              pages.length > 0
+                ? `${isDeck ? "Page" : "Scene"}${pages.length > 1 ? "s" : ""} ${pages.join(", ")}`
+                : "Some pages";
+            setPhase({
+              kind: "error",
+              message:
+                `${which} kept failing our layout check even after automatic repairs, ` +
+                `so we didn't ship a deck we knew was broken. Your approved outline is safe — ` +
+                `simplifying ${pages.length === 1 ? "that page's" : "those pages'"} content on the outline, ` +
+                `or just building again, usually gets it through.`,
+            });
+            return;
+          }
           if (res.status === 402) {
             // The entitlement gate FAILS CLOSED: when the plan lookup itself
             // errors (a DB blip), it denies with limit 0 — the only 402 shape
@@ -280,7 +371,24 @@ export function BuildPreviewClient({
     setPhase({ kind: "building" });
     setCurrent(0);
     setAgentDone(false);
+    setProgress([]);
     setBuildKey((k) => k + 1);
+  };
+
+  // ── stop (founder ask 2026-08-12: a build needs an exit) ──────────────────
+  const [stopping, setStopping] = useState(false);
+  const stopBuild = async () => {
+    if (stopping) return;
+    setStopping(true);
+    try {
+      await fetch(`/api/preview/build?scriptId=${encodeURIComponent(scriptId)}`, {
+        method: "DELETE",
+      });
+      // The poll notices the cancelled job and flips the phase; nothing else
+      // to do here. Cooperative stop: the call in flight finishes first.
+    } catch {
+      setStopping(false);
+    }
   };
 
   if (phase.kind === "limit") {
@@ -329,6 +437,40 @@ export function BuildPreviewClient({
     );
   }
 
+  if (phase.kind === "stopped") {
+    return (
+      <main className="mx-auto flex min-h-[70vh] max-w-[560px] flex-col items-center justify-center px-6 py-16 text-center">
+        <div className="orb mx-auto mb-6 h-14 w-14" aria-hidden />
+        <div className="mb-2 font-mono text-[11px] uppercase tracking-[0.18em] text-accent-text">
+          Build stopped
+        </div>
+        <h1 className="font-display text-[24px] font-semibold tracking-tight text-ink">
+          You stopped this build
+        </h1>
+        <p className="mt-3 max-w-[46ch] text-[14px] leading-relaxed text-muted">
+          Nothing is broken. Your approved {isDeck ? "outline" : "story"} is
+          saved exactly as it was; the work already done was set aside, and the
+          tokens it used were spent.
+        </p>
+        <div className="mt-6 flex items-center gap-3">
+          <a
+            href={outlineHref}
+            className="rounded-md bg-accent px-5 py-2.5 text-[14px] font-semibold text-accent-ink transition-all hover:brightness-110"
+          >
+            Back to your {isDeck ? "outline" : "story"}
+          </a>
+          <button
+            type="button"
+            onClick={retry}
+            className="rounded-md border border-hairline-strong bg-surface px-5 py-2.5 text-[14px] font-medium text-ink transition-colors hover:bg-surface-2"
+          >
+            Build again
+          </button>
+        </div>
+      </main>
+    );
+  }
+
   if (phase.kind === "error") {
     return (
       <main className="mx-auto flex min-h-[70vh] max-w-[560px] flex-col items-center justify-center px-6 py-16 text-center">
@@ -344,13 +486,21 @@ export function BuildPreviewClient({
         <p className="mt-3 max-w-[46ch] text-[14px] leading-relaxed text-muted">
           {phase.message}
         </p>
-        <button
-          type="button"
-          onClick={retry}
-          className="mt-6 rounded-md bg-accent px-5 py-2.5 text-[14px] font-semibold text-accent-ink transition-all hover:brightness-110"
-        >
-          Try the build again
-        </button>
+        <div className="mt-6 flex items-center gap-3">
+          <button
+            type="button"
+            onClick={retry}
+            className="rounded-md bg-accent px-5 py-2.5 text-[14px] font-semibold text-accent-ink transition-all hover:brightness-110"
+          >
+            Try the build again
+          </button>
+          <a
+            href={outlineHref}
+            className="rounded-md border border-hairline-strong bg-surface px-5 py-2.5 text-[14px] font-medium text-ink transition-colors hover:bg-surface-2"
+          >
+            Back to your {isDeck ? "outline" : "story"}
+          </a>
+        </div>
       </main>
     );
   }
@@ -400,11 +550,45 @@ export function BuildPreviewClient({
 
       <ul className="w-full space-y-2">
         {steps.map((label, i) => {
+          // Real signals first; the paced counter only drives rows the server
+          // has not spoken for (old container, or the seconds before the
+          // first poll lands).
           const status: Status =
-            i < current ? "done" : i === current ? "active" : "pending";
-          return <StepRow key={i} label={label} status={status} />;
+            realStatus(i) ?? (i < current ? "done" : i === current ? "active" : "pending");
+          const checking = i === steps.length - 2;
+          return (
+            <StepRow
+              key={i}
+              label={
+                checking && repairRounds > 0
+                  ? `${label} — fixing what failed (round ${repairRounds})`
+                  : label
+              }
+              status={status}
+            />
+          );
         })}
       </ul>
+
+      {/* The exits (founder ask 2026-08-12). Leaving keeps the build running —
+          the busy screen reattaches on return. Stopping is cooperative: the
+          call in flight finishes, then the build ends at the next phase edge. */}
+      <div className="mt-6 flex w-full items-center justify-between">
+        <a
+          href={outlineHref}
+          className="font-mono text-[10.5px] uppercase tracking-[0.14em] text-faint transition-colors hover:text-ink"
+        >
+          ← Back to your {isDeck ? "outline" : "story"} — the build keeps going
+        </a>
+        <button
+          type="button"
+          onClick={() => void stopBuild()}
+          disabled={stopping}
+          className="rounded-md border border-hairline px-3 py-1.5 text-[12px] text-muted transition-colors hover:border-red-500/40 hover:text-ink disabled:opacity-60"
+        >
+          {stopping ? "Stopping — letting the current step finish…" : "Stop this build"}
+        </button>
+      </div>
     </main>
   );
 }

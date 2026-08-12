@@ -41,6 +41,11 @@ import { recordMeteredUsage } from "../entitlement";
 import { recordTokenUsage } from "../metering";
 import { assertZaiAvailable, ZaiUnavailableError } from "../zai-breaker";
 import { BuildTimeline } from "../agents/build-timeline";
+import {
+  BuildCancelledError,
+  buildCancelRequested,
+  reportBuildProgress,
+} from "./build-jobs";
 import { runQualityLoop, type SceneVisionVerdict, type GateRoundReport, type LoopScript, type BrandTruthLite } from "./quality-loop";
 import { deriveCrawlTheme } from "./crawl-theme";
 import { castCall, castConfigured } from "../llm/cast-provider";
@@ -181,7 +186,19 @@ async function runPreviewBuildInner(
   // Phase-boundary clock, persisted as <genDir>/build-timeline.json at the
   // end — the 57-min HubSpot run was unattributable because the only phase
   // data lived in discarded console logs. Never again.
-  const timeline = new BuildTimeline();
+  //
+  // onMark is the live half (2026-08-12, founder watching a Klarna build):
+  // every boundary is reported to the polling client — the ceremony's steps
+  // used to be a 48-second pacing animation while the repair ladder ground
+  // for ten real minutes under "Opening the editor" — and the same hook is
+  // the cooperative STOP checkpoint, so a cancel lands at the next boundary
+  // without threading a flag through every pipeline stage.
+  const timeline = new BuildTimeline({
+    onMark: (e) => {
+      reportBuildProgress(scriptId, e.phase);
+      if (buildCancelRequested(scriptId)) throw new BuildCancelledError();
+    },
+  });
 
   // ── RB_BUILD_MODE=cast: the LEGO product path (head → cast → assemble →
   // runQualityLoop) instead of the monolithic buildAnimatedSections. Unset →
@@ -423,7 +440,14 @@ async function runPreviewBuildInner(
         await writeCurrent(rb.warnings, rb.asset_manifest);
         return { ok: true, usage: rb.usage };
       },
-      onStep: (m) => console.warn(`[preview/build] render-truth: ${m}`),
+      // The ladder's steps ARE the invisible minutes (a measured Klarna
+      // build: two repair rounds, a full rebuild, two more rounds — all under
+      // one held ceremony step). Marking them makes each round visible to
+      // the polling client AND makes every round a stop checkpoint.
+      onStep: (m) => {
+        console.warn(`[preview/build] render-truth: ${m}`);
+        timeline.mark(`repair:${m}`);
+      },
     },
     { spentSoFarUsd: costUsd(model, result.usage), model },
   );

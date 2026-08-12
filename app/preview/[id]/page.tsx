@@ -118,6 +118,7 @@ export default async function PreviewPage({
           scriptId={params.id}
           kind={isDeck ? "deck" : "video"}
           sceneLabels={script.scenes.map((s) => s.label ?? "")}
+          outlineHref={backHref}
         />
       ) : (
         <main className="mx-auto max-w-5xl px-6 py-8">

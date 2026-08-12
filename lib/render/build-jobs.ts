@@ -26,13 +26,63 @@
  *   in-process already converts "impossible through the UI" into "works".
  */
 
+/** One real phase boundary the build crossed, for the ceremony to show. */
+export interface BuildProgressEvent {
+  phase: string;
+  at: number;
+}
+
 export type BuildJob =
-  | { state: "running"; startedAt: number }
+  | { state: "running"; startedAt: number; progress?: BuildProgressEvent[] }
   | { state: "done"; finishedAt: number; status: number; body: unknown }
-  | { state: "error"; finishedAt: number; message: string };
+  | { state: "error"; finishedAt: number; message: string }
+  /** The user pressed stop. Distinct from error: nothing is wrong, and the
+   *  client must not offer "try again" framing as if something failed. */
+  | { state: "cancelled"; finishedAt: number };
 
 /** scriptId → latest known job. */
 const jobs = new Map<string, BuildJob>();
+
+/** Documents whose running build the user asked to stop. Checked by the
+ *  build at every timeline boundary — cooperative, so an in-flight model
+ *  call finishes and the stop lands at the next phase edge. */
+const cancels = new Set<string>();
+
+/** Thrown out of the build at a phase boundary after a stop request. The
+ *  message is a sentinel because the pipeline's own catch-alls may wrap the
+ *  error — DETECTION IS BY SUBSTRING, never instanceof. */
+export const BUILD_CANCELLED_SENTINEL = "RB_BUILD_CANCELLED";
+export class BuildCancelledError extends Error {
+  constructor() {
+    super(BUILD_CANCELLED_SENTINEL);
+    this.name = "BuildCancelledError";
+  }
+}
+
+/** How many boundary events a running job retains. The ceremony only needs
+ *  the recent tail; an unbounded array on a 45-minute pathological build is
+ *  a leak. */
+const MAX_PROGRESS_EVENTS = 120;
+
+/** Record a real phase boundary on the running job. No-op when the job is
+ *  not running (a late mark after settle must not resurrect state). */
+export const reportBuildProgress = (scriptId: string, phase: string): void => {
+  const job = jobs.get(scriptId);
+  if (job?.state !== "running") return;
+  const progress = job.progress ?? [];
+  progress.push({ phase, at: Date.now() });
+  if (progress.length > MAX_PROGRESS_EVENTS) progress.shift();
+  jobs.set(scriptId, { ...job, progress });
+};
+
+/** Ask the running build to stop. True = there was a running build to ask. */
+export const requestBuildCancel = (scriptId: string): boolean => {
+  if (jobs.get(scriptId)?.state !== "running") return false;
+  cancels.add(scriptId);
+  return true;
+};
+
+export const buildCancelRequested = (scriptId: string): boolean => cancels.has(scriptId);
 
 /** How long a finished job stays queryable, so a slow poll still sees it. */
 const RETAIN_MS = 15 * 60_000;
@@ -51,6 +101,7 @@ const sweep = (): void => {
   for (const [id, job] of jobs) {
     if (job.state === "running") {
       if (now - job.startedAt > MAX_RUN_MS) {
+        cancels.delete(id);
         jobs.set(id, {
           state: "error",
           finishedAt: now,
@@ -59,7 +110,10 @@ const sweep = (): void => {
       }
       continue;
     }
-    if (now - job.finishedAt > RETAIN_MS) jobs.delete(id);
+    if (now - job.finishedAt > RETAIN_MS) {
+      jobs.delete(id);
+      cancels.delete(id);
+    }
   }
 };
 
@@ -91,10 +145,13 @@ export const startBuild = async (
   const existing = jobs.get(scriptId);
   if (existing?.state === "running") return { kind: "running" };
 
+  // A cancel aimed at a PREVIOUS build must not kill this fresh one.
+  cancels.delete(scriptId);
   jobs.set(scriptId, { state: "running", startedAt: Date.now() });
 
   const run = work()
     .then((result) => {
+      cancels.delete(scriptId);
       jobs.set(scriptId, {
         state: "done",
         finishedAt: Date.now(),
@@ -105,6 +162,15 @@ export const startBuild = async (
     })
     .catch((err: unknown) => {
       const message = err instanceof Error ? err.message : String(err);
+      cancels.delete(scriptId);
+      // Substring, not instanceof: the pipeline's catch-alls wrap errors, and
+      // a wrapped cancellation reported as "build failed" would make stopping
+      // look like breaking.
+      if (message.includes(BUILD_CANCELLED_SENTINEL)) {
+        jobs.set(scriptId, { state: "cancelled", finishedAt: Date.now() });
+        console.warn(`[build-jobs] ${scriptId} stopped by the user`);
+        return null;
+      }
       jobs.set(scriptId, { state: "error", finishedAt: Date.now(), message });
       // Swallowed deliberately: nothing awaits this after the grace window, and
       // an unhandled rejection would take the process down mid-build.
@@ -132,4 +198,7 @@ export const buildStatus = (scriptId: string): BuildJob | { state: "unknown" } =
 };
 
 /** Test seam. */
-export const __resetBuildJobs = (): void => jobs.clear();
+export const __resetBuildJobs = (): void => {
+  jobs.clear();
+  cancels.clear();
+};

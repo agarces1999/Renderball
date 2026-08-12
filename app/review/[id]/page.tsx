@@ -53,7 +53,9 @@ export default async function ReviewPage({
           </div>
         )}
 
-        {script && <EditableReview initialScript={script} />}
+        {script && (
+          <EditableReview initialScript={script} briefPrompt={brief.freeform_prompt} />
+        )}
 
         <footer className="mt-16 border-t border-hairline pt-6 font-mono text-[11px] text-faint">
           brief {brief.id} · {brief.status}
