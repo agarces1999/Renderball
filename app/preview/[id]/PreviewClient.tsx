@@ -501,6 +501,7 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
             <BlankDocumentPanel
               scriptId={scriptId}
               onDismiss={() => setShowBlankPanel(false)}
+              onBrandApplied={() => setReloadKey((k) => k + 1)}
             />
           )}
           <iframe

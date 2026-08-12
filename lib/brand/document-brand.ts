@@ -106,6 +106,25 @@ export const readDocumentBrand = async (genDir: string): Promise<DocumentBrand> 
   }
 };
 
+/**
+ * Merge an IDENTITY (palette + fonts) onto a document's existing brand,
+ * keeping its MATERIALS (logo, assets, guidelines). Every writer that derives
+ * identity from a crawl or a kit must use this rather than a plain write:
+ * the ceremony's logo upload lands in brand.json immediately, and a plain
+ * overwrite (crawl re-read, "look harder") was measured to erase it.
+ */
+export const mergeBrandIdentity = (
+  existing: DocumentBrand,
+  incoming: DocumentBrand,
+): DocumentBrand => ({
+  v: 1,
+  palette: incoming.palette,
+  fonts: incoming.fonts,
+  logo: existing.logo,
+  assets: existing.assets,
+  guidelines: existing.guidelines,
+});
+
 export const writeDocumentBrand = async (
   genDir: string,
   brand: DocumentBrand,

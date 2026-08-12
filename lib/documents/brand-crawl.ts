@@ -35,6 +35,8 @@ import { extractBrand } from "../crawl/extract-brand";
 import { brandExtractYield, fontStackFor, resolveBrandIdentity, type BrandYield } from "../crawl/brand-identity";
 import {
   type DocumentBrand,
+  mergeBrandIdentity,
+  readDocumentBrand,
   validateBrandInput,
   writeDocumentBrand,
 } from "../brand/document-brand";
@@ -42,6 +44,7 @@ import { applyBrandToDocument } from "../brand/apply-brand";
 import { documentDir } from "../render/gen-store";
 import { isBlankComposition } from "./blank-document";
 import { readSiteBrand, siteHost } from "./site-brand";
+import { suggestKitName } from "../brand-kits";
 import { startBuild } from "../render/build-jobs";
 
 /** Which read to run. The names are the cost, not the capability. */
@@ -98,7 +101,60 @@ export interface BrandCrawlResult {
   brand?: DocumentBrand;
   /** Offer the paid read? Only when the free one came back thin. */
   canGoDeeper: boolean;
+  /** What the ceremony's confirmation beat shows. Present when the site was
+   *  reached at all — a thin read still has a host and a suggested name, which
+   *  is exactly what the honest thin-crawl path needs. */
+  ceremony?: CeremonyBrand;
 }
+
+/**
+ * The confirmation beat's working set — everything beat 3 renders, in one
+ * object, so the panel never has to re-derive brand facts client-side (the
+ * server's identity resolution is the only one there is).
+ */
+export interface CeremonyBrand {
+  host: string;
+  /** Default for the "Name this brand" field. The user can overwrite it. */
+  suggested_name: string;
+  /** Best available mark, largest first: logo_hd, apple touch icon, favicon. */
+  logo?: string;
+  /** The signature accent the document would wear. Absent = none observed. */
+  signature?: string;
+  /** Top palette entries for the accent-correction chips. */
+  palette: string[];
+  display_font?: string;
+  body_font?: string;
+  /**
+   * The read SUCCEEDED and still observed no chromatic colour → beat 3 asks
+   * the monochrome question outright. Evidence of black-&-white, not absence
+   * of evidence: a crawl that recovered nothing at all (no fonts, no logo)
+   * must NOT claim "we read your brand as black & white" — that is the
+   * confident-lie class the three-outcome describeCrawl work removed.
+   */
+  no_colour: boolean;
+}
+
+/** Build the confirmation beat's view of an extract. Pure; exported for tests. */
+export const ceremonyBrand = (extract: BrandExtract, y: BrandYield): CeremonyBrand => {
+  const identity = resolveBrandIdentity(extract);
+  const display = identity.fonts.display;
+  const body = identity.fonts.body;
+  // "We read your brand as black & white" is only sayable when we READ the
+  // brand: the crawl came back with substance (a face or a logo) and still no
+  // chromatic colour. A read that recovered nothing gets the honest thin-read
+  // path instead, never this question.
+  const substantive = y.font || !!extract.logo_hd || (extract.fonts?.length ?? 0) > 0;
+  return {
+    host: siteHost(extract.url),
+    suggested_name: suggestKitName(siteHost(extract.url), extract.title),
+    logo: extract.logo_hd ?? extract.apple_touch_icon ?? extract.favicon,
+    ...(identity.signature ? { signature: identity.signature } : {}),
+    palette: (extract.palette ?? []).slice(0, 6),
+    ...(display && !display.fallback ? { display_font: display.family } : {}),
+    ...(body && !body.fallback ? { body_font: body.family } : {}),
+    no_colour: extract.ok && !y.color && substantive,
+  };
+};
 
 /**
  * What to tell the user. Three outcomes, not two — "reached the site but found
@@ -213,8 +269,13 @@ const defaultDeps = (): BrandCrawlDeps => ({
   // protect. If we cannot tell whether there is work here, we do not touch it
   // — the brand is still saved and the Brand panel applies it in one click.
   isBlank: (genDir) => isBlankComposition(genDir, "not-blank"),
+  // MERGE, not overwrite. The ceremony's logo upload writes brand.json the
+  // moment it lands, and "look harder" (or any re-read) used to plain-write
+  // the crawl's identity with `assets: []` over it — the user watched their
+  // own upload vanish. Identity comes from the read; materials stay.
   writeBrand: async (genDir, brand) => {
-    await writeDocumentBrand(genDir, brand);
+    const existing = await readDocumentBrand(genDir);
+    await writeDocumentBrand(genDir, mergeBrandIdentity(existing, brand));
   },
   applyBrand: applyBrandToDocument,
   loadBrief: loadBriefByScriptId,
@@ -271,6 +332,7 @@ export const runBrandCrawl = async (
         message: describeCrawl(url, failed, y),
         applied: false,
         canGoDeeper: tier === "free",
+        ceremony: ceremonyBrand(failed, y),
       },
     };
   }
@@ -309,7 +371,16 @@ export const runBrandCrawl = async (
     try {
       const brief = await deps.loadBrief(scriptId, ownerId);
       if (brief) {
-        await deps.saveBrief({ ...brief, brand_kit_url: url, brand_extract: extract });
+        // palette_roles are locks the user made about a SPECIFIC brand. When
+        // this read is of a different site than the brief's current one, the
+        // old locks (a monochrome answer, a picked accent) would otherwise
+        // ride forward and style the new brand with the old brand's answers —
+        // pipeline.ts would even attribute them to the user ("THE USER
+        // CONFIRMED"). Same site → keep; different site → drop.
+        const prevHost = brief.brand_kit_url ? siteHost(brief.brand_kit_url) : null;
+        const next: StoredBrief = { ...brief, brand_kit_url: url, brand_extract: extract };
+        if (prevHost && prevHost !== siteHost(url)) delete next.palette_roles;
+        await deps.saveBrief(next);
       }
     } catch (err) {
       console.error(`[brand-crawl] ${scriptId}: could not persist the extract:`, err);
@@ -330,6 +401,7 @@ export const runBrandCrawl = async (
       // Only offer to spend when the free read actually came up short. Offering
       // it after a good read would be selling something nobody needs.
       canGoDeeper: tier === "free" && !(y.color && y.font),
+      ceremony: ceremonyBrand(extract, y),
     },
   };
 };

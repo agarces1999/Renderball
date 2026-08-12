@@ -90,10 +90,26 @@ const discard = async (page: Page, base: string, id: string): Promise<void> => {
 /** Is the start panel on screen — asked with a poll, never isVisible({timeout}). */
 const startPanelShows = async (page: Page, within = PANEL_WINDOW): Promise<boolean> =>
   page
-    .getByRole("heading", { name: /how do you want to start/i })
+    // Either face of the blank-document panel: the brand ceremony (its first
+    // beat since 2026-08-11) or the start choice. The negative assertion
+    // below ("must not reopen over work") would pass VACUOUSLY if it only
+    // knew the old heading while the ceremony sat over the user's deck.
+    .getByRole("heading", { name: /how do you want to start|whose document is this/i })
     .waitFor({ state: "visible", timeout: within })
     .then(() => true)
     .catch(() => false);
+
+/** Step past the brand ceremony when it is the panel's first beat. */
+const passCeremonyIfShown = async (page: Page): Promise<void> => {
+  const skip = page.getByRole("button", { name: /start without a brand/i });
+  if (await skip.isVisible().catch(() => false)) {
+    await skip.click();
+    await page
+      .getByRole("heading", { name: /how do you want to start/i })
+      .waitFor({ state: "visible", timeout: 10_000 })
+      .catch(() => {});
+  }
+};
 
 /** Everything the slide is currently saying, for text assertions and notes. */
 const canvasText = async (page: Page): Promise<string> =>
@@ -216,6 +232,7 @@ export const returningFlows: Flow[] = [
         );
         note("untouched document: the start panel is offered on reopen");
 
+        await passCeremonyIfShown(page);
         await page.getByRole("button", { name: /build it yourself/i }).click();
         await waitForCanvas(page);
 

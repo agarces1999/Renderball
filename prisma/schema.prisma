@@ -336,6 +336,7 @@ model BrandKit {
   ownerId      String
   owner        User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
   url          String   // normalized host, e.g. "acme.com" (the full crawl URL lives in extract.url)
+  name         String?  // what the USER called it ("Fuse") — set in the brand ceremony (2026-08-11); null = never named, hidden from the picker
   extract      Json     // BrandExtract (app/new/schema.ts) — shape identical to StoredBrief.brand_extract
   paletteRoles Json?    // user override: { primary?, accent?, light?, dark? } hex roles
   logoSource   String?  // user override: "upload" | "crawl_confirmed" — how the logo was locked

@@ -115,6 +115,9 @@ export interface StoredBrief {
     accent?: string;
     light?: string;
     dark?: string;
+    /** Brand ceremony (2026-08-11): user confirmed the brand has no accent.
+     *  The pipeline turns this into the high-craft monochrome directive. */
+    monochrome?: boolean;
   };
   /** Cached output of extractBrand() — kept on the brief so Agent 2 can use it at render time without re-crawling. */
   brand_extract?: BrandExtract;

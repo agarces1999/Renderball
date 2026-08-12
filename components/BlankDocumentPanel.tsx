@@ -3,12 +3,23 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 /**
- * The first thing a user sees in a brand-new document.
+ * The first thing a user sees in a brand-new document: the BRAND CEREMONY,
+ * then the choice.
  *
- * The founder's call: "New document" should open the editor, and the editor
- * should offer the choice — generate every page, or build it up one at a time.
- * That choice is the whole product thesis in one card, so it is stated plainly
- * rather than buried in a menu.
+ * Founder call 2026-08-11: every new document opens on a dedicated brand flow
+ * — whose document is this? A saved named brand (one click), a site to read
+ * (performed live, then confirmed: logo with the upload always offered,
+ * colours with the black-&-white question, a name), or nobody ("start without
+ * a brand", which is always one quiet click away). The ceremony exists so the
+ * user is RECOGNISED as a brand rather than handed a form — and its colour
+ * confirmation is the human answer to the one question the crawler measurably
+ * cannot answer from bytes (docs/BRAND_ACCURACY.md: achromatic detection 0/9,
+ * three detectors killed by data).
+ *
+ * After the ceremony (confirmed or skipped) comes the original call: "New
+ * document" opens the editor, and the editor offers the choice — generate
+ * every page, or build it up one at a time. That choice is the whole product
+ * thesis in one card, so it is stated plainly rather than buried in a menu.
  *
  * The two paths are deliberately asymmetric, because their costs are:
  *   - Building it yourself is FREE and instant. It is the default, and it is
@@ -117,6 +128,8 @@ const humanError = (status: number, raw: unknown, fallback: string): string => {
 /** What the brand read is doing, as far as this panel is concerned. */
 type BrandRead = {
   phase: "reading" | "done";
+  /** The read reached the site at all. Absent while reading. */
+  ok?: boolean;
   /** The honest sentence from the server. Never composed here. */
   message?: string;
   /** Set only when a signature colour was actually observed. */
@@ -125,6 +138,29 @@ type BrandRead = {
   canGoDeeper?: boolean;
   /** Which read produced this — so "look deeper" cannot be offered twice. */
   tier?: "free" | "vision";
+  /** The confirmation beat's working set, composed server-side. */
+  ceremony?: CeremonyInfo;
+};
+
+/** Mirror of CeremonyBrand (lib/documents/brand-crawl.ts) — what beat 3 shows. */
+type CeremonyInfo = {
+  host: string;
+  suggested_name: string;
+  logo?: string;
+  signature?: string;
+  palette: string[];
+  display_font?: string;
+  body_font?: string;
+  no_colour: boolean;
+};
+
+/** A saved, NAMED brand on the account — one click instead of a crawl. */
+type KitSummary = {
+  id: string;
+  name?: string;
+  host: string;
+  logo_hd?: string;
+  palette: string[];
 };
 
 /**
@@ -292,9 +328,13 @@ export function BlankDocumentPanel({
   scriptId,
   onDismiss,
   onBrandApplied,
+  apiBase = "/api/preview",
 }: {
   scriptId: string;
   onDismiss: () => void;
+  /** Base for the logo-upload route (`${apiBase}/brand/asset`) — the dev
+   *  harness runs against /api/dev, production against /api/preview. */
+  apiBase?: string;
   /**
    * The brand read re-skinned this (blank) document server-side and the canvas
    * on screen is now stale by one version.
@@ -346,6 +386,8 @@ export function BlankDocumentPanel({
   // Typing a URL fires the FREE read (no model call, ~1.4s median). The paid read is
   // a separate button that only appears when the free one came up short.
   const [brand, setBrand] = useState<BrandRead | null>(null);
+  /** Mirror of `stage` for effects declared above it. */
+  const stageRef = useRef<"brand" | "choice">("brand");
   const [deepBusy, setDeepBusy] = useState(false);
   // The URL the server has already been asked about, so re-blurring an
   // unchanged field does not re-crawl.
@@ -377,19 +419,26 @@ export function BlankDocumentPanel({
           }
           const result = await pollBrand(scriptId, vision ? 90_000 : 30_000);
           if (!result) {
-            setBrand(null); // nothing to say; the document is unaffected
+            // Nothing to say; the document is unaffected. Forget the URL too:
+            // it is what lets Enter / the debounce fire again — with it set,
+            // the ceremony snapped back to beat 1 with a dead Enter key.
+            readUrl.current = "";
+            setBrand(null);
             return;
           }
           const palette = (result.brand as { palette?: { accent?: string } } | undefined)?.palette;
           if (result.applied === true) onBrandApplied?.();
           setBrand({
             phase: "done",
+            ok: result.ok === true,
             message: typeof result.message === "string" ? result.message : undefined,
             accent: palette?.accent,
             canGoDeeper: result.canGoDeeper === true,
             tier: result.tier === "vision" ? "vision" : "free",
+            ceremony: (result.ceremony as CeremonyInfo | undefined) ?? undefined,
           });
         } catch {
+          readUrl.current = "";
           setBrand(null);
         }
       })();
@@ -409,6 +458,11 @@ export function BlankDocumentPanel({
   // and without the second check this timer would then fetch the same site a
   // second time.
   useEffect(() => {
+    // CHOICE-CARD ONLY. In the ceremony a fired read replaces the input with
+    // beat 2, so a thinking pause after "fuse.co" (a valid prefix of the host
+    // being typed) would yank the field away mid-word and confirm the wrong
+    // site. There, reading is explicit: Enter or the button.
+    if (stageRef.current !== "choice") return;
     const site = url.trim();
     if (!looksLikeSite(site) || site === readUrl.current) return;
     const t = window.setTimeout(() => {
@@ -424,6 +478,147 @@ export function BlankDocumentPanel({
     setDeepBusy(true);
     await startBrandRead(site, true);
     setDeepBusy(false);
+  };
+
+  /** Enter in the ceremony's site field — read NOW, not in 900ms. */
+  const readNow = useCallback(() => {
+    const site = url.trim();
+    if (looksLikeSite(site) && site !== readUrl.current) void startBrandRead(site, false);
+  }, [url, startBrandRead]);
+
+  // ── the brand ceremony (founder call 2026-08-11) ──────────────────────────
+  //
+  // Every new document opens on the ceremony: whose document is this — a
+  // saved named brand, a site to read, or nobody ("start without a brand").
+  // The crawl is PERFORMED (beat 2) and then CONFIRMED (beat 3: logo with the
+  // upload always offered, colours with the monochrome question, a name), so
+  // the user is recognised as a brand rather than handed a form. It is still
+  // never a gate — skip works from every beat, a thin read still opens a
+  // working editor, and the only paid action remains the labelled button.
+  // Once per document, per tab. The chrome's "Generate every page" button
+  // remounts this panel after a dismissal, and being asked to re-confirm a
+  // brand you confirmed forty seconds ago reads as the product forgetting
+  // you — the opposite of recognition. sessionStorage, not localStorage:
+  // a genuinely new visit to a still-blank document may fairly offer the
+  // ceremony again.
+  const ceremonyKey = `rb-ceremony-${scriptId}`;
+  const [stage, setStage] = useState<"brand" | "choice">(() => {
+    // Reading storage can THROW, not just fail (Safari/webviews with site
+    // data blocked raise SecurityError) — and a throw here is a throw inside
+    // render, which takes the whole editor overlay down. Blocked storage just
+    // means the ceremony shows again; never an error state.
+    try {
+      return typeof window !== "undefined" && window.sessionStorage.getItem(ceremonyKey)
+        ? "choice"
+        : "brand";
+    } catch {
+      return "brand";
+    }
+  });
+  useEffect(() => {
+    stageRef.current = stage;
+  }, [stage]);
+  const ceremonyDone = useCallback(() => {
+    try {
+      window.sessionStorage.setItem(ceremonyKey, "1");
+    } catch {
+      /* storage full/blocked — the worst case is seeing the ceremony again */
+    }
+  }, [ceremonyKey]);
+  const [wearing, setWearing] = useState<{ name: string; accent?: string; saved?: boolean } | null>(null);
+  const [kits, setKits] = useState<KitSummary[]>([]);
+  useEffect(() => {
+    // Saved brands are a bonus, not a dependency: a 401 (dev harness, lapsed
+    // session) or a failed fetch just means the row of chips never appears.
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("/api/brand-kits");
+        if (!res.ok) return;
+        const data = (await res.json().catch(() => null)) as { kits?: KitSummary[] } | null;
+        if (!cancelled && Array.isArray(data?.kits)) setKits(data.kits);
+      } catch {
+        /* the picker degrades to absent */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const [kitBusy, setKitBusy] = useState<string | null>(null);
+  // Ceremony failures render in the ceremony and die with it — they used to
+  // share `error` with generate(), so a failed kit click followed by a skip
+  // showed "Try again · nothing was charged" over a brief that never ran.
+  const [ceremonyError, setCeremonyError] = useState<string | null>(null);
+  const pickKit = async (kit: KitSummary) => {
+    if (kitBusy) return;
+    setKitBusy(kit.id);
+    setCeremonyError(null);
+    try {
+      const res = await fetch("/api/brand-kits", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scriptId, kitId: kit.id }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data?.ok) {
+        setCeremonyError(humanError(res.status, data?.error, "Could not apply that brand."));
+        return;
+      }
+      if (data.applied === true) onBrandApplied?.();
+      // Seed the read state so Generate does not re-crawl what the kit already
+      // carries — the extract is on the brief now, which is all the outline reads.
+      setUrl(kit.host);
+      readUrl.current = kit.host;
+      setBrand({ phase: "done", ok: true, accent: data.accent, tier: "free" });
+      setWearing({ name: data.name ?? kit.name ?? kit.host, accent: data.accent });
+      ceremonyDone();
+      setStage("choice");
+    } catch {
+      setCeremonyError("Network error — check your connection and click the brand again.");
+    } finally {
+      setKitBusy(null);
+    }
+  };
+
+  const [confirmBusy, setConfirmBusy] = useState(false);
+  const confirmCeremony = async (payload: {
+    name: string;
+    accent?: string;
+    monochrome?: boolean;
+    logoSource?: "upload";
+  }) => {
+    if (confirmBusy) return;
+    setConfirmBusy(true);
+    setCeremonyError(null);
+    try {
+      const res = await fetch("/api/brand-kits", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scriptId, ...payload }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data?.ok) {
+        setCeremonyError(humanError(res.status, data?.error, "Could not save your brand."));
+        return;
+      }
+      if (data.applied === true) onBrandApplied?.();
+      // `saved:false` = the document is dressed but the account-level kit
+      // write failed (best-effort by design). The name field promised "saved
+      // to your account", so the wearing line owns the correction.
+      setWearing({
+        name: data.name ?? payload.name,
+        accent: data.accent,
+        saved: data.saved !== false,
+      });
+      ceremonyDone();
+      setStage("choice");
+    } catch {
+      setCeremonyError("Network error — your brand was not saved. Try the button again.");
+    } finally {
+      setConfirmBusy(false);
+    }
   };
 
   // ── attaching a document ──────────────────────────────────────────────────
@@ -537,6 +732,39 @@ export function BlankDocumentPanel({
 
   if (!live) return null;
 
+  if (stage === "brand") {
+    return (
+      <div className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center p-6">
+        <div className="pointer-events-auto w-full max-w-[520px] rounded-xl border border-hairline bg-surface p-6 shadow-[0_30px_80px_-40px_rgba(18,26,43,0.45)]">
+          <BrandCeremony
+            scriptId={scriptId}
+            apiBase={apiBase}
+            url={url}
+            onUrl={setUrl}
+            brand={brand}
+            kits={kits}
+            kitBusy={kitBusy}
+            onReadNow={readNow}
+            onPickKit={(k) => void pickKit(k)}
+            deepBusy={deepBusy}
+            onLookDeeper={() => void lookDeeper()}
+            confirmBusy={confirmBusy}
+            onConfirm={(payload) => void confirmCeremony(payload)}
+            onRetry={() => {
+              readUrl.current = "";
+              setBrand(null);
+            }}
+            onSkip={() => {
+              ceremonyDone();
+              setStage("choice");
+            }}
+            error={ceremonyError}
+          />
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center p-6">
       <div className="pointer-events-auto w-full max-w-[520px] rounded-xl border border-hairline bg-surface p-6 shadow-[0_30px_80px_-40px_rgba(18,26,43,0.45)]">
@@ -596,13 +824,17 @@ export function BlankDocumentPanel({
                 DESIGN.md is explicit that config is refinement and never an
                 upfront wizard step: nothing here is required and neither
                 button waits for it. */}
-            <BrandAsk
-              url={url}
-              onUrl={setUrl}
-              brand={brand}
-              deepBusy={deepBusy}
-              onLookDeeper={() => void lookDeeper()}
-            />
+            {wearing ? (
+              <WearingLine wearing={wearing} />
+            ) : (
+              <BrandAsk
+                url={url}
+                onUrl={setUrl}
+                brand={brand}
+                deepBusy={deepBusy}
+                onLookDeeper={() => void lookDeeper()}
+              />
+            )}
 
             <p className="mt-4 font-mono text-[10.5px] text-faint">
               You can do both — generate a deck, then edit every element by hand.
@@ -688,13 +920,17 @@ export function BlankDocumentPanel({
             {/* The same field as the choice screen, same state, same job.
                 Kept here too so somebody who came straight to the brief does
                 not have to go back a screen to say where their brand lives. */}
-            <BrandAsk
-              url={url}
-              onUrl={setUrl}
-              brand={brand}
-              deepBusy={deepBusy}
-              onLookDeeper={() => void lookDeeper()}
-            />
+            {wearing ? (
+              <WearingLine wearing={wearing} />
+            ) : (
+              <BrandAsk
+                url={url}
+                onUrl={setUrl}
+                brand={brand}
+                deepBusy={deepBusy}
+                onLookDeeper={() => void lookDeeper()}
+              />
+            )}
 
             <label className="mt-2.5 flex items-center gap-2">
               <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-faint">
@@ -765,6 +1001,560 @@ export function BlankDocumentPanel({
         )}
       </div>
     </div>
+  );
+}
+
+/**
+ * "You are wearing Fuse." One quiet line on the choice card after the
+ * ceremony — evidence (the swatch) plus the name the user themselves chose.
+ */
+function WearingLine({ wearing }: { wearing: { name: string; accent?: string; saved?: boolean } }) {
+  return (
+    <p className="mt-4 flex items-center gap-2 text-[11.5px] text-muted">
+      {wearing.accent && (
+        <span
+          aria-hidden
+          className="inline-block h-2.5 w-2.5 shrink-0 rounded-full border border-hairline"
+          style={{ background: wearing.accent }}
+        />
+      )}
+      <span className="text-ink-soft">
+        Wearing <span className="font-semibold text-ink">{wearing.name}</span> — everything
+        you make here will look like you. Change it any time in the Brand panel.
+        {wearing.saved === false && (
+          <>
+            {" "}
+            <span className="text-muted">
+              (We could not save it to your account just now, so it will not be offered on
+              your next document — this one keeps it either way.)
+            </span>
+          </>
+        )}
+      </span>
+    </p>
+  );
+}
+
+/**
+ * The brand ceremony (founder call 2026-08-11) — the recognition moment.
+ *
+ * Beat 1  whose document is this: saved named brands, a site to read, or skip.
+ * Beat 2  the crawl, performed: a narrated line while the FREE read runs.
+ *         Honest by construction — the read is one deterministic pass
+ *         (median 1.4s), so nothing here is a fake progress bar; the beat is
+ *         short because the work is genuinely short.
+ * Beat 3  confirmation, not homework: the logo (upload ALWAYS offered —
+ *         founder call), the colours (with the black-&-white question when no
+ *         colour was observed — the one judgement bytes measurably cannot
+ *         make, docs/BRAND_ACCURACY.md), the type, and a NAME. Confirming
+ *         saves the kit to the account and dresses the document.
+ *
+ * Still never a gate: skip works from every beat, and a failed read offers a
+ * retry, an upload, and the same skip — never a dead end.
+ */
+function BrandCeremony({
+  scriptId,
+  apiBase,
+  url,
+  onUrl,
+  brand,
+  kits,
+  kitBusy,
+  onReadNow,
+  onPickKit,
+  deepBusy,
+  onLookDeeper,
+  confirmBusy,
+  onConfirm,
+  onRetry,
+  onSkip,
+  error,
+}: {
+  scriptId: string;
+  apiBase: string;
+  url: string;
+  onUrl: (v: string) => void;
+  brand: BrandRead | null;
+  kits: KitSummary[];
+  kitBusy: string | null;
+  onReadNow: () => void;
+  onPickKit: (kit: KitSummary) => void;
+  deepBusy: boolean;
+  onLookDeeper: () => void;
+  confirmBusy: boolean;
+  onConfirm: (p: { name: string; accent?: string; monochrome?: boolean; logoSource?: "upload" }) => void;
+  onRetry: () => void;
+  onSkip: () => void;
+  error: string | null;
+}) {
+  const ceremony = brand?.phase === "done" ? brand.ceremony : undefined;
+  const host = url.trim().replace(/^https?:\/\//, "").split(/[/?#]/)[0];
+
+  // ── beat-3 working state ────────────────────────────────────────────────
+  const [name, setName] = useState("");
+  const [accent, setAccent] = useState<string | undefined>(undefined);
+  const [monochrome, setMonochrome] = useState(false);
+  const [uploaded, setUploaded] = useState<string | null>(null);
+  const [uploadBusy, setUploadBusy] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  // Seed per CEREMONY OBJECT, not per host: "look harder" re-reads the same
+  // host and returns new evidence, and the colour answers must re-derive from
+  // it — a monochrome answer given before the vision read found the real
+  // signature would otherwise ride invisibly into the confirm. What survives
+  // a same-host re-read: the name the user typed and their uploaded logo
+  // (which lives on the document, not in this state).
+  const seeded = useRef<CeremonyInfo | null>(null);
+  useEffect(() => {
+    if (!ceremony || seeded.current === ceremony) return;
+    const sameHost = seeded.current?.host === ceremony.host;
+    seeded.current = ceremony;
+    if (!sameHost) {
+      setName(ceremony.suggested_name);
+      setUploaded(null);
+      setUploadError(null);
+    }
+    setAccent(ceremony.signature);
+    setMonochrome(false);
+  }, [ceremony]);
+
+  const fileInput = useRef<HTMLInputElement | null>(null);
+  const uploadLogo = async (file: File) => {
+    setUploadBusy(true);
+    setUploadError(null);
+    try {
+      const fd = new FormData();
+      fd.set("file", file);
+      fd.set("scriptId", scriptId);
+      // Without these the asset lands in the library as a plain image and
+      // brand.logo is never set — the user watches themselves "upload a logo"
+      // that no slide will ever carry. kindForMime calls a PNG "image".
+      fd.set("kind", "logo");
+      fd.set("setAsLogo", "true");
+      const res = await fetch(`${apiBase}/brand/asset`, { method: "POST", body: fd });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        setUploadError(humanError(res.status, data?.error, "That file could not be used."));
+        return;
+      }
+      setUploaded(data?.asset?.name ?? file.name);
+    } catch {
+      setUploadError("Could not upload — check your connection and try again.");
+    } finally {
+      setUploadBusy(false);
+    }
+  };
+
+  // ── beat 1: whose document is this ──────────────────────────────────────
+  if (!brand) {
+    return (
+      <>
+        <p className="font-mono text-[10.5px] uppercase tracking-[0.16em] text-muted">
+          New document
+        </p>
+        <h2 className="mt-1.5 font-display text-[22px] font-bold tracking-tight text-ink">
+          Whose document is this?
+        </h2>
+        <p className="mt-1 text-[12.5px] leading-relaxed text-ink-soft">
+          Renderball designs in your brand — your colours, your type, your logo.
+        </p>
+
+        {kits.length > 0 && (
+          <div className="mt-4">
+            <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-faint">
+              Your saved brands
+            </p>
+            <div className="mt-1.5 flex flex-wrap gap-2">
+              {kits.map((k) => (
+                <button
+                  key={k.id}
+                  type="button"
+                  disabled={kitBusy !== null}
+                  onClick={() => onPickKit(k)}
+                  className="inline-flex items-center gap-2 rounded-lg border border-hairline bg-surface px-3 py-2 text-[12.5px] font-medium text-ink transition-colors hover:border-accent-line hover:bg-surface-2 disabled:opacity-60"
+                >
+                  {k.logo_hd && (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={k.logo_hd} alt="" className="h-4 w-4 object-contain" />
+                  )}
+                  {k.name ?? k.host}
+                  <span className="flex gap-0.5" aria-hidden>
+                    {k.palette.slice(0, 3).map((hex) => (
+                      <span
+                        key={hex}
+                        className="inline-block h-2 w-2 rounded-full border border-hairline"
+                        style={{ background: hex }}
+                      />
+                    ))}
+                  </span>
+                  {kitBusy === k.id ? "…" : ""}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <label className="mt-4 block">
+          <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-faint">
+            {kits.length > 0 ? "Or read a site" : "Your site"}
+          </span>
+          <input
+            type="text"
+            value={url}
+            onChange={(e) => onUrl(e.target.value)}
+            placeholder="yoursite.com"
+            autoFocus
+            spellCheck={false}
+            autoCapitalize="off"
+            autoCorrect="off"
+            onKeyDown={(e) => {
+              if (e.key === "Enter") onReadNow();
+            }}
+            className="mt-1 w-full rounded-md border border-hairline bg-surface-2 px-3 py-2.5 font-mono text-[13px] text-ink outline-none focus:border-accent-line"
+          />
+        </label>
+        <button
+          type="button"
+          disabled={!looksLikeSite(url.trim())}
+          onClick={onReadNow}
+          className="mt-2.5 w-full rounded-md bg-accent px-4 py-2.5 text-[13.5px] font-semibold text-accent-ink transition-all hover:brightness-110 disabled:opacity-40"
+        >
+          Read my site — free, about two seconds
+        </button>
+
+        {error && <p className="mt-3 text-[12px] leading-relaxed text-ink">{error}</p>}
+
+        <button
+          type="button"
+          onClick={onSkip}
+          className="mt-4 font-mono text-[10.5px] uppercase tracking-[0.14em] text-faint transition-colors hover:text-ink"
+        >
+          Start without a brand →
+        </button>
+      </>
+    );
+  }
+
+  // ── beat 2: the crawl, performed ────────────────────────────────────────
+  if (brand.phase === "reading") {
+    return (
+      <>
+        <p className="font-mono text-[10.5px] uppercase tracking-[0.16em] text-muted">
+          New document
+        </p>
+        <h2 className="mt-1.5 font-display text-[22px] font-bold tracking-tight text-ink">
+          Reading {host || "your site"}
+        </h2>
+        <div className="mt-4 space-y-2">
+          {["Fetching the page", "Looking for your logo", "Reading your stylesheet", "Reading your type"].map(
+            (line, i) => (
+              <p
+                key={line}
+                className="flex items-center gap-2 text-[12.5px] text-muted"
+                style={{ animation: "rb-fade-up 0.4s ease both", animationDelay: `${i * 0.35}s` }}
+              >
+                <span
+                  aria-hidden
+                  className="inline-block h-1.5 w-1.5 rounded-full bg-accent"
+                  style={{ animation: "rb-step-pulse 1.4s ease-in-out infinite" }}
+                />
+                {line}
+              </p>
+            ),
+          )}
+        </div>
+        <button
+          type="button"
+          onClick={onSkip}
+          className="mt-5 font-mono text-[10.5px] uppercase tracking-[0.14em] text-faint transition-colors hover:text-ink"
+        >
+          Skip — start without a brand →
+        </button>
+      </>
+    );
+  }
+
+  // ── beat 3, failed read: honest, with every way forward ─────────────────
+  if (brand.ok !== true) {
+    return (
+      <>
+        <p className="font-mono text-[10.5px] uppercase tracking-[0.16em] text-muted">
+          New document
+        </p>
+        <h2 className="mt-1.5 font-display text-[20px] font-bold tracking-tight text-ink">
+          We could not read {ceremony?.host ?? host ?? "that address"}
+        </h2>
+        {brand.message && (
+          <p className="mt-2 text-[12.5px] leading-relaxed text-ink-soft">{brand.message}</p>
+        )}
+        <div className="mt-4 flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={onRetry}
+            className="rounded-md border border-hairline-strong bg-surface px-3 py-1.5 text-[12px] font-medium text-ink transition-colors hover:bg-surface-2"
+          >
+            Try a different address
+          </button>
+          {brand.canGoDeeper && (
+            <button
+              type="button"
+              onClick={onLookDeeper}
+              disabled={deepBusy}
+              className="rounded-md border border-hairline px-3 py-1.5 text-[12px] text-muted transition-colors hover:border-accent-line hover:text-ink disabled:opacity-60"
+            >
+              {deepBusy ? "Looking…" : "Look harder (uses a few tokens)"}
+            </button>
+          )}
+        </div>
+        <button
+          type="button"
+          onClick={onSkip}
+          className="mt-4 font-mono text-[10.5px] uppercase tracking-[0.14em] text-faint transition-colors hover:text-ink"
+        >
+          Start without a brand →
+        </button>
+      </>
+    );
+  }
+
+  // ── beat 3: confirmation, not homework ──────────────────────────────────
+  const c = ceremony;
+  const rowAnim = (i: number) => ({
+    animation: "rb-fade-up 0.45s ease both",
+    animationDelay: `${0.1 + i * 0.18}s`,
+  });
+  const canConfirm = name.trim().length > 0 && !confirmBusy && !uploadBusy;
+  return (
+    <>
+      <p className="font-mono text-[10.5px] uppercase tracking-[0.16em] text-muted">
+        {c?.host ?? host}
+      </p>
+      <h2 className="mt-1.5 font-display text-[22px] font-bold tracking-tight text-ink">
+        Here is what your site says about you
+      </h2>
+
+      {/* logo — the upload is ALWAYS offered (founder call 2026-08-11) */}
+      <div className="mt-4" style={rowAnim(0)}>
+        <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-faint">Logo</p>
+        <div className="mt-1.5 flex items-center gap-3">
+          {uploaded ? (
+            <span className="text-[12.5px] text-ink">
+              Using your upload — <span className="font-medium">{uploaded}</span>
+            </span>
+          ) : c?.logo ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={c.logo}
+              alt="Your logo, as found on your site"
+              className="h-9 max-w-[140px] rounded border border-hairline bg-surface-2 object-contain px-2 py-1"
+            />
+          ) : (
+            <span className="text-[12.5px] text-muted">We did not find one.</span>
+          )}
+          <button
+            type="button"
+            onClick={() => fileInput.current?.click()}
+            disabled={uploadBusy}
+            className="rounded-md border border-hairline px-2.5 py-1 text-[11.5px] text-muted transition-colors hover:border-accent-line hover:text-ink disabled:opacity-60"
+          >
+            {uploadBusy ? "Uploading…" : uploaded || !c?.logo ? "Upload a logo" : "Upload a different one"}
+          </button>
+          <input
+            ref={fileInput}
+            type="file"
+            accept=".svg,.png,.jpg,.jpeg,.webp,image/svg+xml,image/png,image/jpeg,image/webp"
+            className="hidden"
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              e.target.value = "";
+              if (f) void uploadLogo(f);
+            }}
+          />
+        </div>
+        {uploadError && <p className="mt-1 text-[11.5px] text-muted">{uploadError}</p>}
+      </div>
+
+      {/* colours — with the black-&-white question when nothing chromatic was seen */}
+      <div className="mt-4" style={rowAnim(1)}>
+        <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-faint">Colours</p>
+        {c?.no_colour ? (
+          <div className="mt-1.5">
+            <p className="text-[12.5px] leading-relaxed text-ink-soft">
+              We read your brand as black &amp; white. Is that right?
+            </p>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setMonochrome(true);
+                  setAccent(undefined);
+                }}
+                className={`rounded-md border px-3 py-1.5 text-[12px] font-medium transition-colors ${
+                  monochrome
+                    ? "border-accent-line bg-accent-soft text-ink"
+                    : "border-hairline bg-surface text-ink hover:bg-surface-2"
+                }`}
+              >
+                Yes — keep it black &amp; white
+              </button>
+              <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-hairline px-3 py-1.5 text-[12px] text-muted transition-colors hover:border-accent-line hover:text-ink">
+                No — pick our colour
+                <input
+                  type="color"
+                  value={accent ?? "#0f62fe"}
+                  onChange={(e) => {
+                    setMonochrome(false);
+                    setAccent(e.target.value);
+                  }}
+                  className="h-4 w-6 cursor-pointer border-0 bg-transparent p-0"
+                />
+              </label>
+              {!monochrome && accent && (
+                <span
+                  aria-hidden
+                  className="inline-block h-4 w-4 rounded-full border border-hairline"
+                  style={{ background: accent }}
+                />
+              )}
+            </div>
+          </div>
+        ) : (
+          <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+            {(c?.palette ?? []).map((hex) => (
+              <button
+                key={hex}
+                type="button"
+                title={hex}
+                onClick={() => {
+                  setMonochrome(false);
+                  setAccent(hex);
+                }}
+                className={`h-6 w-6 rounded-full border transition-transform hover:scale-110 ${
+                  !monochrome && accent === hex ? "border-ink ring-2 ring-accent-line" : "border-hairline"
+                }`}
+                style={{ background: hex }}
+                aria-label={`Use ${hex} as the accent`}
+              />
+            ))}
+            <span className="ml-1 text-[11.5px] text-muted">
+              {monochrome ? (
+                "Black & white"
+              ) : accent ? (
+                <>
+                  Lead colour <span className="font-mono text-ink">{accent}</span>
+                </>
+              ) : (
+                "Pick your lead colour"
+              )}
+            </span>
+            {/* The escape for the brands the crawler measurably gets wrong:
+                every truly black-&-white brand arrives on THIS branch wearing
+                an invented colour (docs/BRAND_ACCURACY.md, 0/9 with three
+                detectors killed by data). Only a human can say so — give them
+                the words. */}
+            <button
+              type="button"
+              onClick={() => {
+                if (monochrome) {
+                  setMonochrome(false);
+                  setAccent(c?.signature);
+                } else {
+                  setMonochrome(true);
+                  setAccent(undefined);
+                }
+              }}
+              className={`rounded-md border px-2.5 py-1 text-[11.5px] transition-colors ${
+                monochrome
+                  ? "border-accent-line bg-accent-soft text-ink"
+                  : "border-hairline text-muted hover:border-accent-line hover:text-ink"
+              }`}
+            >
+              {monochrome ? "No — we have a colour" : "We're actually black & white"}
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* type */}
+      {(c?.display_font || c?.body_font) && (
+        <div className="mt-4" style={rowAnim(2)}>
+          <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-faint">Type</p>
+          <p className="mt-1.5 text-[12.5px] text-ink-soft">
+            {c?.display_font && (
+              <>
+                Headlines in <span className="font-medium text-ink">{c.display_font}</span>
+              </>
+            )}
+            {c?.display_font && c?.body_font && " · "}
+            {c?.body_font && (
+              <>
+                body in <span className="font-medium text-ink">{c.body_font}</span>
+              </>
+            )}
+          </p>
+        </div>
+      )}
+
+      {/* name — what makes it a saved brand, not a crawl cache */}
+      <label className="mt-4 block" style={rowAnim(3)}>
+        <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-faint">
+          Name this brand
+        </span>
+        <input
+          type="text"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          maxLength={60}
+          className="mt-1 w-full rounded-md border border-hairline bg-surface-2 px-3 py-2 text-[13px] text-ink outline-none focus:border-accent-line"
+        />
+        <span className="mt-1 block text-[11px] text-faint">
+          Saved to your account — next document, one click.
+        </span>
+      </label>
+
+      {brand.canGoDeeper && (
+        <button
+          type="button"
+          onClick={onLookDeeper}
+          disabled={deepBusy}
+          className="mt-3 rounded-md border border-hairline px-2.5 py-1 text-[11.5px] text-muted transition-colors hover:border-accent-line hover:text-ink disabled:opacity-60"
+        >
+          {deepBusy ? "Looking…" : "Look harder (uses a few tokens)"}
+        </button>
+      )}
+
+      {error && <p className="mt-3 text-[12px] leading-relaxed text-ink">{error}</p>}
+
+      <button
+        type="button"
+        disabled={!canConfirm}
+        onClick={() =>
+          onConfirm({
+            name: name.trim(),
+            ...(monochrome ? { monochrome: true } : accent ? { accent } : {}),
+            ...(uploaded ? { logoSource: "upload" as const } : {}),
+          })
+        }
+        className="mt-4 w-full rounded-md bg-accent px-4 py-2.5 text-[13.5px] font-semibold text-accent-ink transition-all hover:brightness-110 disabled:opacity-50"
+      >
+        {confirmBusy ? "Saving…" : "This is my brand"}
+      </button>
+      <div className="mt-2 flex items-center justify-between">
+        <button
+          type="button"
+          onClick={onRetry}
+          className="font-mono text-[10.5px] uppercase tracking-[0.14em] text-faint transition-colors hover:text-ink"
+        >
+          ← different site
+        </button>
+        <button
+          type="button"
+          onClick={onSkip}
+          className="font-mono text-[10.5px] uppercase tracking-[0.14em] text-faint transition-colors hover:text-ink"
+        >
+          Skip for now →
+        </button>
+      </div>
+    </>
   );
 }
 

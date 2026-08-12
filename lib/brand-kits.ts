@@ -1,5 +1,5 @@
 import { Prisma } from "@prisma/client";
-import { prisma } from "./db";
+import { prisma, withDbRetry } from "./db";
 import { DEV_OWNER_ID } from "./store";
 import type { BrandExtract } from "../app/new/schema";
 
@@ -39,6 +39,13 @@ export interface PaletteRoles {
   accent?: string;
   light?: string;
   dark?: string;
+  /**
+   * Ceremony answer (2026-08-11): the user confirmed the brand IS black &
+   * white. Wins over `accent` when both are somehow present. This is the human
+   * answer to the question the crawler measurably cannot answer from bytes
+   * (docs/BRAND_ACCURACY.md — achromatic detection killed by data, 0/9).
+   */
+  monochrome?: boolean;
 }
 
 /** User-locked identity choices persisted alongside the extract. */
@@ -50,6 +57,8 @@ export interface BrandKitOverrides {
 /** Full saved kit — what selection in the picker hydrates the form with. */
 export interface SavedBrandKit {
   id: string;
+  /** What the user called it in the ceremony ("Fuse"). Absent = never named. */
+  name?: string;
   /** Normalized host, e.g. "acme.com". */
   host: string;
   brand_extract: BrandExtract;
@@ -65,6 +74,8 @@ export interface SavedBrandKit {
  */
 export interface BrandKitSummary {
   id: string;
+  /** The user's name for it. The ceremony picker only shows NAMED kits. */
+  name?: string;
   host: string;
   title?: string;
   logo_hd?: string;
@@ -96,7 +107,7 @@ export const normalizeBrandHost = (raw: string): string | null => {
 };
 
 const HEX_RE = /^#[0-9a-fA-F]{3,8}$/;
-const ROLE_KEYS: Array<keyof PaletteRoles> = ["primary", "accent", "light", "dark"];
+const ROLE_KEYS = ["primary", "accent", "light", "dark"] as const satisfies ReadonlyArray<keyof PaletteRoles>;
 
 /**
  * Keep only known role keys carrying hex values. Roles arrive from client
@@ -110,11 +121,42 @@ export const sanitizePaletteRoles = (roles: unknown): PaletteRoles | undefined =
     const v = (roles as Record<string, unknown>)[key];
     if (typeof v === "string" && HEX_RE.test(v)) out[key] = v;
   }
+  // Strict `=== true`, same discipline as requestedTier: this flag deletes a
+  // colour, and a truthy string must not be able to do that by accident.
+  if ((roles as Record<string, unknown>).monochrome === true) out.monochrome = true;
   return Object.keys(out).length > 0 ? out : undefined;
 };
 
 const asLogoSource = (v: unknown): LogoSource | undefined =>
   v === "upload" || v === "crawl_confirmed" ? v : undefined;
+
+/**
+ * A kit name is user prose shown back inside the picker — trimmed, capped,
+ * control characters out. Undefined (not "") when nothing usable remains, so
+ * the upsert's "only write a name that was actually given" rule stays simple.
+ */
+export const sanitizeKitName = (raw: unknown): string | undefined => {
+  if (typeof raw !== "string") return undefined;
+  // eslint-disable-next-line no-control-regex
+  const clean = raw.replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, 60);
+  return clean.length > 0 ? clean : undefined;
+};
+
+/**
+ * The default name offered in the ceremony's "Name this brand" field: the
+ * site's own title when it reads like a name, else the host without its TLD,
+ * capitalized ("fusefinance.com" → "Fusefinance"). Pure, so the panel and the
+ * server agree on the suggestion.
+ */
+export const suggestKitName = (host: string, title?: string): string => {
+  const t = (title ?? "").trim();
+  // A usable title is short and not a sentence — "Fuse", "Duolingo", not
+  // "Fuse | The AI-native loan origination system for credit unions".
+  const head = t.split(/[|\u2013\u2014·:-]/)[0]?.trim() ?? "";
+  if (head.length >= 2 && head.length <= 24 && !/[.!?]$/.test(head)) return head;
+  const stem = host.split(".")[0] ?? host;
+  return stem.length > 0 ? stem[0].toUpperCase() + stem.slice(1) : host;
+};
 
 /**
  * Pure builder for the prisma upsert — the override-preservation semantics
@@ -128,22 +170,29 @@ export const kitUpsertArgs = (
   host: string,
   extract: BrandExtract,
   overrides?: BrandKitOverrides,
+  /** The user's name for the kit. Same preservation rule as overrides: only a
+   *  ceremony that actually collected a name writes one — a crawl-path upsert
+   *  (name undefined) must never blank a name the user already gave. */
+  name?: string,
 ): Prisma.BrandKitUpsertArgs => {
   const extractJson = extract as unknown as Prisma.InputJsonValue;
   const roles = sanitizePaletteRoles(overrides?.palette_roles);
   const rolesJson = roles as Prisma.InputJsonValue | undefined;
   const logoSource = asLogoSource(overrides?.logo_source);
+  const cleanName = sanitizeKitName(name);
   return {
     where: { ownerId_url: { ownerId, url: host } },
     create: {
       ownerId,
       url: host,
+      name: cleanName,
       extract: extractJson,
       paletteRoles: rolesJson,
       logoSource,
     },
     update: {
       extract: extractJson,
+      ...(cleanName ? { name: cleanName } : {}),
       ...(overrides
         ? {
             paletteRoles: rolesJson ?? Prisma.DbNull,
@@ -158,6 +207,7 @@ export const kitUpsertArgs = (
 export interface BrandKitRow {
   id: string;
   url: string;
+  name?: string | null;
   extract: unknown;
   paletteRoles: unknown;
   logoSource: string | null;
@@ -176,6 +226,7 @@ export const toSavedBrandKit = (row: BrandKitRow): SavedBrandKit | null => {
   if (!extract) return null;
   return {
     id: row.id,
+    ...(row.name ? { name: row.name } : {}),
     host: row.url,
     brand_extract: extract,
     palette_roles: sanitizePaletteRoles(row.paletteRoles),
@@ -190,6 +241,7 @@ export const toBrandKitSummary = (row: BrandKitRow): BrandKitSummary | null => {
   if (!extract) return null;
   return {
     id: row.id,
+    ...(row.name ? { name: row.name } : {}),
     host: row.url,
     title: extract.title,
     logo_hd: extract.logo_hd,
@@ -228,28 +280,44 @@ export const upsertBrandKit = async (input: {
   ownerId: string;
   extract: BrandExtract;
   overrides?: BrandKitOverrides;
-}): Promise<void> => {
-  if (usingFileStore()) return;
-  if (!input.extract?.ok) return;
+  /** Ceremony path only — the name the user typed. */
+  name?: string;
+}): Promise<string | null> => {
+  if (usingFileStore()) return null;
+  if (!input.extract?.ok) return null;
   const host = normalizeBrandHost(input.extract.url);
-  if (!host) return;
+  if (!host) return null;
   try {
     if (input.ownerId === DEV_OWNER_ID) await ensureDevKitUser();
-    await prisma.brandKit.upsert(kitUpsertArgs(input.ownerId, host, input.extract, input.overrides));
+    const row = await withDbRetry(() =>
+      prisma.brandKit.upsert(
+        kitUpsertArgs(input.ownerId, host, input.extract, input.overrides, input.name),
+      ),
+    );
+    return row.id;
   } catch (err) {
     console.warn(`[brand-kits] upsert for ${host} failed — continuing without saving the kit:`, err);
+    return null;
   }
 };
 
-/** The account's saved kits for the picker, most recently refreshed first. */
-export const listBrandKitSummaries = async (ownerId: string): Promise<BrandKitSummary[]> => {
+/** The account's saved kits for the picker, most recently refreshed first.
+ *  `namedOnly` is the ceremony's view: a kit nobody named is a crawl cache,
+ *  not a brand the user recognises, and offering it back as one reads as the
+ *  product guessing. */
+export const listBrandKitSummaries = async (
+  ownerId: string,
+  opts: { namedOnly?: boolean } = {},
+): Promise<BrandKitSummary[]> => {
   if (usingFileStore()) return [];
   try {
-    const rows = await prisma.brandKit.findMany({
-      where: { ownerId }, // strict — kits are never listed across the dev partition
-      orderBy: { updatedAt: "desc" },
-      take: 12,
-    });
+    const rows = await withDbRetry(() =>
+      prisma.brandKit.findMany({
+        where: { ownerId, ...(opts.namedOnly ? { name: { not: null } } : {}) }, // strict — kits are never listed across the dev partition
+        orderBy: { updatedAt: "desc" },
+        take: 12,
+      }),
+    );
     return rows.map(toBrandKitSummary).filter((k): k is BrandKitSummary => k !== null);
   } catch (err) {
     console.warn(`[brand-kits] list for ${ownerId} failed — picker degrades to empty:`, err);
@@ -257,11 +325,45 @@ export const listBrandKitSummaries = async (ownerId: string): Promise<BrandKitSu
   }
 };
 
+/**
+ * Full kit by HOST, ownership-checked — what the ceremony's confirm reads to
+ * PRESERVE a previously locked answer. A user who confirmed "black & white"
+ * last month and just clicks through the ceremony today has not changed their
+ * mind; only an actual new answer may overwrite the stored one.
+ */
+export const getBrandKitByHost = async (
+  ownerId: string,
+  host: string,
+): Promise<SavedBrandKit | null> => {
+  if (usingFileStore()) return null;
+  try {
+    const row = await withDbRetry(() =>
+      prisma.brandKit.findUnique({ where: { ownerId_url: { ownerId, url: host } } }),
+    );
+    return row ? toSavedBrandKit(row) : null;
+  } catch (err) {
+    console.warn(`[brand-kits] byHost ${host} failed:`, err);
+    return null;
+  }
+};
+
+/** Delete a kit, ownership-checked. True = a row was actually removed. */
+export const deleteBrandKit = async (ownerId: string, id: string): Promise<boolean> => {
+  if (usingFileStore()) return false;
+  try {
+    const res = await withDbRetry(() => prisma.brandKit.deleteMany({ where: { id, ownerId } }));
+    return res.count > 0;
+  } catch (err) {
+    console.warn(`[brand-kits] delete ${id} failed:`, err);
+    return false;
+  }
+};
+
 /** Full kit by id, ownership-checked. Null = not found / not yours / unusable. */
 export const getBrandKit = async (ownerId: string, id: string): Promise<SavedBrandKit | null> => {
   if (usingFileStore()) return null;
   try {
-    const row = await prisma.brandKit.findFirst({ where: { id, ownerId } });
+    const row = await withDbRetry(() => prisma.brandKit.findFirst({ where: { id, ownerId } }));
     return row ? toSavedBrandKit(row) : null;
   } catch (err) {
     console.warn(`[brand-kits] get ${id} failed — selection degrades to a fresh crawl:`, err);

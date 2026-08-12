@@ -30,6 +30,12 @@ const run = async () => {
   await page.waitForTimeout(4000);
 
   const url = page.url();
+  const ceremony = await page.getByText("Whose document is this?").isVisible().catch(() => false);
+  console.log(`ceremony beat 1 ("Whose document is this?") visible: ${ceremony}`);
+  if (ceremony) {
+    await page.getByRole("button", { name: /start without a brand/i }).click();
+    await page.waitForTimeout(800);
+  }
   const panel = await page.getByText("How do you want to start?").isVisible().catch(() => false);
   const generateEvery = await page.getByText("Generate every page", { exact: false }).isVisible().catch(() => false);
   const bodyText = (await page.locator("body").innerText().catch(() => "")).slice(0, 400);

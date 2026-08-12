@@ -148,6 +148,14 @@ export const journeyFlows: Flow[] = [
         // onto the editor shell, so "New document" landed in a bare editor
         // with no route to full generation. A blank document must present the
         // choice, and dismissing it must not bury the expensive path.
+        // The ceremony is the first beat since 2026-08-11 — a brand-new
+        // document asks whose it is before it asks how to start. Skipping
+        // must be one quiet click, and must land on the original choice.
+        await page
+          .getByText("Whose document is this?")
+          .waitFor({ state: "visible", timeout: 20_000 });
+        await page.getByRole("button", { name: /start without a brand/i }).click();
+        used("Start without a brand");
         await page
           .getByText("How do you want to start?")
           .waitFor({ state: "visible", timeout: 20_000 });

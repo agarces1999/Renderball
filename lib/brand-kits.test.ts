@@ -8,6 +8,8 @@ import { Prisma } from "@prisma/client";
 import {
   normalizeBrandHost,
   sanitizePaletteRoles,
+  sanitizeKitName,
+  suggestKitName,
   kitUpsertArgs,
   toSavedBrandKit,
   toBrandKitSummary,
@@ -211,6 +213,43 @@ check("upsert no-ops on a failed extract and an unusable host", async () => {
 });
 
 // ── summary ──────────────────────────────────────────────────────────────────
+
+// ── the ceremony's naming rules (2026-08-11) ─────────────────────────────────
+
+check("kit names: trimmed, capped, control chars out, empty → undefined", () => {
+  assert(sanitizeKitName("  Fuse  ") === "Fuse", "trims");
+  assert(sanitizeKitName("a".repeat(80))!.length === 60, "caps at 60");
+  assert(sanitizeKitName("Fu\u0007se") === "Fuse", "strips control chars");
+  assert(sanitizeKitName("   ") === undefined, "whitespace-only is no name");
+  assert(sanitizeKitName(42 as unknown as string) === undefined, "non-string is no name");
+});
+
+check("suggested name prefers a short title, else the host stem", () => {
+  assert(suggestKitName("fusefinance.com", "Fuse") === "Fuse", "short title wins");
+  assert(
+    suggestKitName("fusefinance.com", "Fuse | AI-native loan origination for credit unions") === "Fuse",
+    "title head before the separator",
+  );
+  assert(suggestKitName("fusefinance.com") === "Fusefinance", "host stem, capitalized");
+  assert(
+    suggestKitName("acme.com", "We make everything better.") === "Acme",
+    "a sentence is not a name",
+  );
+});
+
+check("a crawl-path upsert never blanks a name the user gave", () => {
+  const args = kitUpsertArgs("owner", "acme.com", okExtract());
+  assert(!("name" in args.update), "no name given → update must not touch name");
+  const named = kitUpsertArgs("owner", "acme.com", okExtract(), undefined, "Acme");
+  assert(named.update.name === "Acme", "a given name is written");
+  assert(named.create.name === "Acme", "and created with the row");
+});
+
+check("monochrome survives sanitize only as the literal true", () => {
+  assert(sanitizePaletteRoles({ monochrome: true })?.monochrome === true, "true passes");
+  assert(sanitizePaletteRoles({ monochrome: "true" }) === undefined, "a string must not delete a colour");
+  assert(sanitizePaletteRoles({ monochrome: 1 }) === undefined, "nor a number");
+});
 
 Promise.all(pending).then(() => {
   console.log(`\nbrand-kits: ${passed} passed, ${failed} failed`);

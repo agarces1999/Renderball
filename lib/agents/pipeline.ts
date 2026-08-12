@@ -120,6 +120,8 @@ export interface BuildInput {
     accent?: string;
     light?: string;
     dark?: string;
+    /** Ceremony (2026-08-11): the user confirmed the brand has NO accent. */
+    monochrome?: boolean;
   };
 }
 
@@ -145,6 +147,7 @@ export type BriefForBuild = {
     accent?: string;
     light?: string;
     dark?: string;
+    monochrome?: boolean;
   };
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   brand_extract?: any;
@@ -3270,6 +3273,25 @@ const appendBrandContext = (
     if (b.title) lines.push(`- Site title: ${b.title}`);
     if (b.description) lines.push(`- Description: ${b.description}`);
     if (b.theme_color) lines.push(`- Theme color: ${b.theme_color}`);
+    // The ceremony's human answer outranks every signal the crawler has: when
+    // the user confirmed "my brand is black & white", the signature — which
+    // for achromatic brands is measurably an invention (docs/BRAND_ACCURACY.md,
+    // 0/9) — must not reach the prompt at all. OUTSIDE the palette guard,
+    // because the thin-read case (site reached, zero palette recovered) is
+    // exactly when the ceremony asks the question — the answer must not
+    // evaporate with the palette. An EXPLICIT colour pick outranks the flag:
+    // the legacy /new wizard can layer a fresh accent onto a kit that stored
+    // monochrome, and picking a hex while looking at swatches is the newer,
+    // stronger claim.
+    const userSaidMonochrome =
+      input.palette_roles?.monochrome === true &&
+      !(input.palette_roles?.primary || input.palette_roles?.accent);
+    if (userSaidMonochrome) {
+      const mono = b.palette && b.palette.length > 0 ? ` (palette: ${b.palette.join(", ")})` : "";
+      lines.push(
+        `- NO SIGNATURE BRAND COLOR EXISTS — THE USER CONFIRMED THIS BRAND IS DELIBERATELY BLACK & WHITE${mono}. Commit to a HIGH-CRAFT MONOCHROME treatment — carry hierarchy with type scale, weight, spacing, and luminance contrast (near-white on near-black), not hue. Do NOT invent an accent color the brand doesn't own. Make the restraint look intentional: strong tonal separation between surfaces, crisp hairlines, one bright neutral (near-white) doing the work an accent would.`,
+      );
+    }
     if (b.palette && b.palette.length > 0) {
       // Lead with the brand's SIGNATURE color so the brand hue is prominent
       // instead of buried under a dark neutral (the Fuse-maroon / Tony's-brown
@@ -3279,21 +3301,21 @@ const appendBrandContext = (
       const userPickedColor = !!(
         input.palette_roles?.primary || input.palette_roles?.accent
       );
-      if (sig && !userPickedColor) {
+      if (sig && !userPickedColor && !userSaidMonochrome) {
         lines.push(
           `- SIGNATURE BRAND COLOR: ${sig} — the hue a viewer associates with this brand. It MUST be visually prominent and RECUR across scenes: as a dominant color field, the primary accent (headline em-words, key surfaces, CTAs), or both. NEVER let a dark/neutral color (near-black, a deep shade) dominate the frame while the signature color is absent or shrunk to a tiny detail — that is the #1 brand-fidelity failure.`,
         );
         lines.push(
           `- Supporting palette (neutrals = structure for backgrounds / text / surfaces, NOT the brand's lead hue): ${b.palette.join(", ")}`,
         );
-      } else if (input.brand_identity?.signature_missing && !userPickedColor) {
+      } else if (input.brand_identity?.signature_missing && !userPickedColor && !userSaidMonochrome) {
         // The brand is genuinely achromatic (currentColor logo + no saturated
         // palette entry, post-rescue). Grey-by-accident reads broken; grey-by-
         // design reads premium — make the agent commit to the latter.
         lines.push(
           `- NO SIGNATURE BRAND COLOR EXISTS: this brand is deliberately monochrome (palette: ${b.palette.join(", ")}). Commit to a HIGH-CRAFT MONOCHROME treatment — carry hierarchy with type scale, weight, spacing, and luminance contrast (near-white on near-black), not hue. Do NOT invent an accent color the brand doesn't own. Make the restraint look intentional: strong tonal separation between surfaces, crisp hairlines, one bright neutral (near-white) doing the work an accent would.`,
         );
-      } else {
+      } else if (!userSaidMonochrome) {
         lines.push(
           `- Brand palette (use ALL, not just one): ${b.palette.join(", ")}`,
         );

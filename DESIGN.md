@@ -237,8 +237,37 @@ The old 5-step upfront wizard (site → format → colors → shape → prompt, 
 
 ### Flow principles
 - **Config is refinement, not a gate.** Format, colors, duration are crawl-defaulted side controls, never upfront steps.
-- **Brand always runs, and never blocks (Alfonso, 2026-08-09).** The current
-  rule, and it supersedes both earlier ones:
+- **The brand ceremony (Alfonso, 2026-08-11).** The current rule. Every new
+  document opens on a dedicated brand flow — the recognition moment:
+  - *Beat 1 — whose document is this.* The account's SAVED, NAMED brands as
+    one-click chips ("Fuse", not "fusefinance.com's colors" — people name
+    them), a site field, and a quiet "start without a brand" escape.
+  - *Beat 2 — the crawl, performed.* The free deterministic read runs while a
+    narrated line names its real stages. Honest by construction: the read is
+    one ~1.4s pass, so the beat is short because the work is short — no fake
+    progress.
+  - *Beat 3 — confirmation, not homework.* The logo with the upload ALWAYS
+    offered (founder call), the colours — including the outright question
+    "we read your brand as black & white, is that right?" when no colour was
+    observed, which is the human answer to the judgement bytes measurably
+    cannot make (docs/BRAND_ACCURACY.md) — the type, and a NAME. Confirming
+    saves the kit to the account (BrandKit.name) and dresses the document.
+  The three hard rules below survive unchanged inside the ceremony: never a
+  gate (skip works from every beat; a thin or failed read still opens a
+  working editor), never a lie (yield-derived copy only), never spends by
+  itself (the vision read stays a labelled button). Surfaces:
+  `components/BlankDocumentPanel.tsx` (the ceremony), `app/api/brand-kits`
+  (named kits: list / apply / confirm), `lib/brand/kit-apply.ts` (override
+  semantics — user monochrome beats any crawler colour).
+
+  - *superseded — 2026-08-09, "one optional field on the empty state":*
+    brand as a quiet optional field under the two start choices. Its
+    machinery (free tier, honest yield, off-request job) is what the ceremony
+    is built from; what changed is the PRESENTATION — the founder's read of
+    the field was "where is the brand flow?", and a brand users are meant to
+    feel recognised by cannot be fine print.
+- **Brand always runs, and never blocks (Alfonso, 2026-08-09).** Absorbed into
+  the ceremony above; kept for the two superseded rules it records:
   - *superseded — 2026-07-07, "the brand kit IS a gate":* a required logo
     (upload or one-click confirmation of the crawled mark) plus a
     user-confirmed palette, before any generation. Written after dead/blank
