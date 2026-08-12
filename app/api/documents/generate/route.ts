@@ -9,6 +9,11 @@ import { checkEntitlement } from "../../../../lib/entitlement";
 import { checkTokenAllowance } from "../../../../lib/metering";
 import { assertZaiAvailable, ZaiUnavailableError } from "../../../../lib/zai-breaker";
 import { buildStatus, startBuild } from "../../../../lib/render/build-jobs";
+import {
+  OUTLINE_GENERATE_BUDGET_MS,
+  OUTLINE_SAVE_BUDGET_MS,
+  withPhaseTimeout,
+} from "../../../../lib/render/phase-timeout";
 
 /**
  * Outline jobs share build-jobs' machinery — the sweep, the retention window
@@ -160,9 +165,22 @@ export async function POST(request: Request) {
   // the genDir is already on disk, and the brand panel may already hold the
   // user's colours. Re-keying here would strand all three.
   const script = { ...result.script, id: scriptId };
-  await withDbRetry(() => saveScript(script, user.id));
-  await withDbRetry(() =>
-    saveBrief({ ...updated, script_id: scriptId, status: "script_generated" } as typeof brief),
+  // Phase-bounded: a save on a dead pooled connection neither resolves nor
+  // throws (no socket timeout under Prisma), and an unsettled await here left
+  // this job "running" for the full 45-minute sweep on 2026-08-12 — after
+  // both upserts had already EXECUTED on Neon. withDbRetry's own per-attempt
+  // timeout gives up first (~35s); this is the phase backstop above it.
+  await withPhaseTimeout(
+    "Saving the outline",
+    OUTLINE_SAVE_BUDGET_MS,
+    withDbRetry(() => saveScript(script, user.id)),
+  );
+  await withPhaseTimeout(
+    "Saving the outline",
+    OUTLINE_SAVE_BUDGET_MS,
+    withDbRetry(() =>
+      saveBrief({ ...updated, script_id: scriptId, status: "script_generated" } as typeof brief),
+    ),
   );
 
   // Send the user to the OUTLINE REVIEW, not back to the editor. The panel
@@ -184,15 +202,27 @@ export async function POST(request: Request) {
   // builds, and it is fixed the identical way. Everything measured before now
   // missed it: the matrix calls generateScript directly and the journey probe
   // runs against localhost, so neither ever crossed a proxy.
+  // EVERY await inside this closure is phase-bounded. startBuild's only
+  // backstop is the build-scale 45-minute sweep, and the outline's client
+  // stops polling at 8 minutes — so an await that neither resolves nor
+  // throws (a model call in a degenerate retry ladder, a save on a dead
+  // DB connection) used to mean an eternal spinner and then an error played
+  // to an empty room. A phase that expires settles the job as an error the
+  // user is still there to read. The abandoned work cannot be cancelled and
+  // is left to the void; its spend still lands in the ledger.
   const started = await startBuild(outlineJob(scriptId), async () => {
     let result;
     try {
-      result = await generateScript(
-        {
-          ...updated,
-          moment_count: pages,
-        } as unknown as Parameters<typeof generateScript>[0],
-        brief.id,
+      result = await withPhaseTimeout(
+        "Writing the outline",
+        OUTLINE_GENERATE_BUDGET_MS,
+        generateScript(
+          {
+            ...updated,
+            moment_count: pages,
+          } as unknown as Parameters<typeof generateScript>[0],
+          brief.id,
+        ),
       );
     } catch (err) {
       return {
