@@ -1184,7 +1184,7 @@ await check("an untrusted scene's text-metric findings flag but cannot BLOCK", a
     onOpaqueSurface: true, coveredAtCenter: false, radius: 0, parentIx: 0,
     hasTextDesc: true, hasBgImage: false, vx: 1800, vy: 100, vw: 120, vh: 120,
   };
-  const scene = (extra) => ({ scene: 0, width: 1920, height: 1080, elements: [overflowing], ...extra });
+  const scene = (extra: Record<string, unknown>) => ({ scene: 0, width: 1920, height: 1080, elements: [overflowing], ...extra });
 
   const trusted = await findRenderTruthFailures([scene({ fitSettled: true })], {});
   assert(trusted.blocking.some((f) => f.kind === "overflow"), "trusted measurement blocks as ever");
