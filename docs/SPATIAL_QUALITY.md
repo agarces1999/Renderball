@@ -96,6 +96,37 @@ bullet card), the old messy s0s; zero fires on founder-approved scenes.
   Levers: vision-judge probe (needs z.ai balance) or sub-element planning
   (backlog, structural).
 
+## The delivery + trust doctrine (2026-08-14, founder-driven)
+
+Three rules that now govern the whole battery — added after a founder-watched
+Klarna build was refused twice over findings its stored bytes do not
+reproduce in ANY reachable environment (macOS + the exact playwright Linux
+image, fonts loading and broken — scripts/replay-font-sensitivity.mjs):
+
+- **A finished deck always ships.** Only measure-error (nothing renderable/
+  measurable) hard-fails. Residual findings ride as
+  `warnings.render_truth_unresolved` and flag pages in the editor's issues
+  panel. RB_SHIP_FLAGGED=off restores the hard bar for offline lanes.
+- **Repairs stop when they stop working.** The ladder is L1+L2 scoped rounds
+  only on the live path (RB_REPAIR_REBUILD=on re-enables the L3 rebuild for
+  dogfood), each paid round must STRICTLY reduce the blocking count or the
+  ladder ends ("no-progress"), and a 150s wall budget backs the $10 ceiling
+  (RB_REPAIR_BUDGET_MS).
+- **A measurement must vouch for its own text metrics.** measure-scene
+  records per scene `fontFailures` (declared families document.fonts reports
+  unloaded at walk time) and `fitSettled` (the text-fit pass finished before
+  the walk). Text-metric-dependent findings (overflow, cross-piece-overlap,
+  covered-text-cluster, intra-piece-overlap) on an untrusted scene FLAG but
+  cannot BLOCK — phantom findings may cost a skeptical flag, never a repair
+  bill, never the deck. The prod-side trigger for the original phantom
+  findings remains unidentified; the instrumentation makes the next
+  occurrence self-diagnosing.
+
+Related: render-time text fit is live (docs/TEXT_FIT.md — the PowerPoint
+algorithm in every rendered page, offline-gated at 48→41 blocking overflows
+across all stored builds, per-scene fit {candidates, fitted, floored} in
+every measurement).
+
 ## PENDING SPEC — RB_DENSITY_FLOOR (fix #2 step 3; designed, not built)
 
 The founder's "add another UI element" placed at PLAN time (one pass of work):
