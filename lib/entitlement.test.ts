@@ -17,35 +17,37 @@ console.log("entitlement");
 // The free build limit must not undercut what the landing sells — "your
 // first 1,000,000 tokens are free (about three decks)". At 1, users hit a
 // wall at a third of the advertised allowance.
-check("free plan defaults: 10 outlines, 3 builds per month", () => {
-  assert(planLimit("free", "generate") === 10, `generate ${planLimit("free", "generate")}`);
-  assert(planLimit("free", "build") === 3, `build ${planLimit("free", "build")}`);
+check("free plan backstop defaults: 100 generates, 25 builds", () => {
+  assert(planLimit("free", "generate") === 100, "generate " + planLimit("free", "generate"));
+  assert(planLimit("free", "build") === 25, "build " + planLimit("free", "build"));
 });
 
-check("subscription defaults: 60 generates, 30 builds", () => {
-  assert(planLimit("subscription", "generate") === 60, "generates");
-  assert(planLimit("subscription", "build") === 30, "builds");
+check("subscription backstop defaults: 200 generates, 100 builds", () => {
+  assert(planLimit("subscription", "generate") === 200, "generates");
+  assert(planLimit("subscription", "build") === 100, "builds");
 });
 
 check("under the limit → allowed with counts attached", () => {
-  const e = decideEntitlement("free", "build", 0);
-  assert(e.allowed && e.used === 0 && e.limit === 3 && !e.reason, JSON.stringify(e));
+  const r = decideEntitlement("free", "build", 24);
+  assert(r.allowed && r.used === 24 && r.limit === 25, JSON.stringify(r));
 });
 
-check("at the limit → denied in allowance language, never a dead-end upgrade", () => {
-  const e = decideEntitlement("free", "build", 3);
-  // With billing not live there is nothing to upgrade TO — the reason must
-  // offer a way out that exists (the monthly reset, or support). "Upgrade"
-  // marched people to a billing page with no pay button (hunt round two).
-  assert(!e.allowed, JSON.stringify(e));
-  assert(/free allowance/.test(e.reason ?? ""), JSON.stringify(e));
-  assert(/resets on the 1st|billing page/.test(e.reason ?? ""), JSON.stringify(e));
-  assert(!/[Uu]pgrade/.test(e.reason ?? "") || /billing page/.test(e.reason ?? ""), JSON.stringify(e));
+check("at the backstop → denied in SAFETY-CAP language, never as the offer", () => {
+  // The count caps stopped being the product on 2026-08-13 — the advertised
+  // free tier is tokens. A user this deep is an anomaly; the copy must say
+  // "safety limit" and route to a human, and must NOT present the number as
+  // the plan ("this month's free allowance" was the old subscription-era
+  // framing the founder caught contradicting the landing page).
+  const r = decideEntitlement("free", "build", 25);
+  assert(!r.allowed, "denied at the backstop");
+  assert(/safety/i.test(r.reason ?? ""), `must name itself a safety limit: ${r.reason}`);
+  assert(/support@renderball\.com/.test(r.reason ?? ""), "routes to a human");
+  assert(!/free allowance/i.test(r.reason ?? ""), "must not claim to be the offer");
 });
 
-check("subscription denial words the reset, not an upgrade", () => {
-  const e = decideEntitlement("subscription", "build", 30);
-  assert(!e.allowed && /resets/.test(e.reason ?? "") && !/Upgrade/.test(e.reason ?? ""), JSON.stringify(e));
+check("subscription backstop uses the same safety-cap language", () => {
+  const r = decideEntitlement("subscription", "build", 100);
+  assert(!r.allowed && /safety/i.test(r.reason ?? ""), JSON.stringify(r));
 });
 
 check("env override changes the limit", () => {

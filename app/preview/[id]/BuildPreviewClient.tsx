@@ -396,10 +396,13 @@ export function BuildPreviewClient({
       <main className="mx-auto flex min-h-[70vh] max-w-[560px] flex-col items-center justify-center px-6 py-16 text-center">
         <div className="orb mx-auto mb-6 h-14 w-14" aria-hidden />
         <div className="mb-2 font-mono text-[11px] uppercase tracking-[0.18em] text-accent-text">
-          Plan limit
+          Free tier
         </div>
+        {/* The sentence below (server-composed) says WHICH limit: since
+            2026-08-13 a 402 here is normally the advertised token allowance,
+            not the old builds count — the heading must not contradict it. */}
         <h1 className="font-display text-[24px] font-semibold tracking-tight text-ink">
-          You&apos;ve used this month&apos;s builds
+          You&apos;ve reached the free limit
         </h1>
         <p className="mt-3 max-w-[46ch] text-[14px] leading-relaxed text-muted">{phase.message}</p>
         <a

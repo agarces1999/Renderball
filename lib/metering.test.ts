@@ -82,11 +82,19 @@ check("free allowance defaults to 1M; env overrides; bad env falls back", () => 
 
 const FREE = 1_000_000;
 
-check("modes off/count always allow, even far past the allowance", () => {
-  for (const mode of ["off", "count"] as const) {
-    const g = decideTokenGate({ mode, usedTokens: 50 * FREE, freeTokens: FREE, billingActive: false });
-    assert(g.allowed && !g.reason, `${mode} must allow`);
-  }
+check("off stays inert; COUNT gates the free allowance — the advertised rule", () => {
+  // "off" is offline work: always allowed. "count" is the live product
+  // before billing: the 1M free tier the landing page sells must be real
+  // even though there is no processor yet — the interim copy routes to
+  // support instead of a pay button that does not exist.
+  assert(decideTokenGate({ mode: "off", usedTokens: 99e6, freeTokens: 1e6, billingActive: false }).allowed, "off never gates");
+  assert(decideTokenGate({ mode: "count", usedTokens: 999_999, freeTokens: 1e6, billingActive: false }).allowed, "count under allowance");
+  const g = decideTokenGate({ mode: "count", usedTokens: 1_000_000, freeTokens: 1e6, billingActive: false });
+  assert(!g.allowed, "count gates at the allowance");
+  assert(/support@renderball\.com/.test(g.reason ?? ""), "interim copy routes to a human, not a pay button");
+  assert(decideTokenGate({ mode: "count", usedTokens: 9e6, freeTokens: 1e6, billingActive: true }).allowed, "billing-active bypasses");
+  const on = decideTokenGate({ mode: "on", usedTokens: 1_000_000, freeTokens: 1e6, billingActive: false });
+  assert(!on.allowed && /Add billing/.test(on.reason ?? ""), "on-mode sells the pay path");
 });
 
 check("on: under the allowance → allowed with remaining attached", () => {

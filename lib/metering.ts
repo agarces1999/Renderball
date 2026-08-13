@@ -102,15 +102,26 @@ export const decideTokenGate = (args: {
   const { mode, usedTokens, freeTokens, billingActive } = args;
   const freeRemaining = Math.max(0, freeTokens - usedTokens);
   const base = { usedTokens, freeTokens, freeRemaining, billingActive };
-  if (mode !== "on") return { allowed: true, ...base };
+  // "off" is fully inert (offline work). In BOTH counting modes the free
+  // allowance is the live gate — it is the product rule the landing page
+  // advertises ("1M tokens free, then per token"), and it must not wait for
+  // the billing processor: before 2026-08-13 the only live wall was a
+  // 3-builds count left over from the June subscription design, so the
+  // product enforced a model nobody was sold. What differs by mode is only
+  // the way FORWARD once the allowance is spent: "on" sells the pay path;
+  // "count" (billing not yet live) says the honest interim.
+  if (mode === "off") return { allowed: true, ...base };
   if (billingActive || usedTokens < freeTokens) return { allowed: true, ...base };
   return {
     allowed: false,
     ...base,
     reason:
       `You've used your ${formatTokens(freeTokens)} free tokens. ` +
-      "Add billing to keep generating — you only pay for what you generate, " +
-      "and editing what you've already made stays free.",
+      (mode === "on"
+        ? "Add billing to keep generating — you only pay for what you generate, " +
+          "and editing what you've already made stays free."
+        : "Paid metering opens shortly — email support@renderball.com and we'll top you up. " +
+          "Editing what you've already made stays free."),
   };
 };
 
@@ -213,14 +224,14 @@ export const recordTokenUsage = async (entry: {
 
 /**
  * The allowance gate — call BEFORE any LLM-spending op (build, generate,
- * marquee-generate, element/scene regen). FAIL-CLOSED in "on" mode: a
- * metering outage must never mean free unlimited spend. Modes off/count
- * always allow without touching the DB.
+ * marquee-generate, element/scene regen). FAIL-CLOSED whenever counting: a
+ * metering outage must never mean free unlimited spend. Only "off" (offline
+ * work) skips the DB entirely.
  */
 export const checkTokenAllowance = async (ownerId: string): Promise<TokenGate> => {
   const mode = meteringMode();
   const freeTokens = freeTokenAllowance();
-  if (mode !== "on" || ownerId === DEV_OWNER_ID) {
+  if (mode === "off" || ownerId === DEV_OWNER_ID) {
     return decideTokenGate({ mode: "off", usedTokens: 0, freeTokens, billingActive: false });
   }
   try {

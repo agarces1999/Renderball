@@ -17,7 +17,6 @@
  * decideEntitlement is pure (unit-tested); the Prisma IO wraps it.
  */
 import { prisma } from "./db";
-import { isBillingLive } from "./billing-provider";
 import { DEV_OWNER_ID } from "./store";
 
 export type MeteredOp = "generate" | "build";
@@ -36,15 +35,27 @@ const envInt = (name: string, fallback: number): number => {
  * a refund generator. The default now matches the promise, and the token
  * allowance is intended to be the binding constraint once metering is on.
  */
+/**
+ * Count caps are ABUSE BACKSTOPS, not the offer (2026-08-13). The advertised
+ * free tier is TOKENS ("1M free, then per token" — docs/PIVOT.md), enforced
+ * by checkTokenAllowance whenever metering counts. These monthly op counts
+ * exist only to bound runaway scripted use if the token meter's write path
+ * ever fails (recordTokenUsage fails open into an undercount by design), so
+ * they sit far above anything the token allowance permits: 1M tokens buys
+ * roughly one or two builds, and the backstop allows twenty-five. The old
+ * defaults (3 builds) predate the pivot — they WERE the subscription-era
+ * offer, and until tonight they were also the only live wall, which is how
+ * the product came to enforce a model the landing page never sold.
+ */
 export const planLimit = (plan: PlanName, op: MeteredOp): number => {
   if (plan === "subscription") {
     return op === "generate"
-      ? envInt("SUB_GENERATES_PER_MONTH", 60)
-      : envInt("SUB_BUILDS_PER_MONTH", 30);
+      ? envInt("SUB_GENERATES_PER_MONTH", 200)
+      : envInt("SUB_BUILDS_PER_MONTH", 100);
   }
   return op === "generate"
-    ? envInt("FREE_GENERATES_PER_MONTH", 10)
-    : envInt("FREE_BUILDS_PER_MONTH", 3);
+    ? envInt("FREE_GENERATES_PER_MONTH", 100)
+    : envInt("FREE_BUILDS_PER_MONTH", 25);
 };
 
 export interface Entitlement {
@@ -72,16 +83,13 @@ export const decideEntitlement = (
       op,
       used,
       limit,
+      // Backstop language, not offer language: the free tier is TOKENS, and
+      // a user who hits THIS wall is far outside normal use (or the token
+      // meter failed) — either way the honest next step is a human.
       reason:
-        plan === "free"
-          ? // Usage language, and only sell a way out that exists: while
-            // metered billing is not live there is nothing to "upgrade" to,
-            // and the old copy marched people to a page with no pay button.
-            `You've used this month's free allowance (${limit} ${noun}). ` +
-            (isBillingLive()
-              ? "Add a payment method on the billing page to keep creating."
-              : "It resets on the 1st — or email support@renderball.com and we'll raise it.")
-          : `Monthly limit reached (${limit} ${noun}). It resets on the 1st — or contact us to raise it.`,
+        `That's an unusually high volume this month (${limit} ${noun}) — this cap is a safety ` +
+        `limit, not your token allowance. Email support@renderball.com and we'll look at your ` +
+        `account right away.`,
     };
   }
   return { allowed: true, plan, op, used, limit };
