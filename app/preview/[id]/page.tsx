@@ -20,8 +20,10 @@ import { BuildPreviewClient } from "./BuildPreviewClient";
  */
 export default async function PreviewPage({
   params,
+  searchParams,
 }: {
   params: { id: string };
+  searchParams?: { build?: string };
 }) {
   const user = await getCurrentUser();
   if (!user) redirect("/");
@@ -87,6 +89,21 @@ export default async function PreviewPage({
     compositionExists &&
     !isBlankScript(script) &&
     (await isBlankComposition(path.dirname(compPath), "not-blank"));
+
+  // STORY BEFORE RENDER (DESIGN.md): an outline that has never been built
+  // opens on its REVIEW, because the build branch below AUTO-STARTS a paid
+  // build on mount — correct after "Build the deck →" (which carries ?build=1
+  // for exactly this reason), a spend surprise when the user merely clicked
+  // the document in their list mid-flow (founder hit this after reloading
+  // during outline generation, 2026-08-13). NOTE the state is
+  // outlineAwaitingBuild, NOT !compositionExists: the generate route
+  // deliberately keeps the blank Composition.tsx (see the comment above), so
+  // an unbuilt outline HAS a composition file — the first cut of this
+  // redirect keyed on the file's absence and never fired, caught by its
+  // probe auto-starting the very build it exists to prevent.
+  if (outlineAwaitingBuild && brief && searchParams?.build !== "1") {
+    redirect(`/review/${brief.id}`);
+  }
 
   // A built deck is a full-bleed editor app (EditorShell owns its own chrome —
   // rail, toolbar, canvas — matching the landing). No AppHeader or centered doc

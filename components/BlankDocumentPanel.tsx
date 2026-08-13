@@ -358,6 +358,68 @@ export function BlankDocumentPanel({
   // moment of absence beats a moment of deadness; visible must mean alive.
   const [live, setLive] = useState(false);
   useEffect(() => setLive(true), []);
+
+  // ── reattach to an outline already generating (founder, 2026-08-13:
+  // reloaded mid-generation and landed back on the start card with no sign
+  // his outline was still cooking — it was, server-side, and finished fine).
+  // One status check on mount: a running job resumes the progress view and
+  // the poll; a finished one goes straight to its review. "checking" renders
+  // nothing for its ~200ms — the same absence-beats-deadness rule as `live`.
+  const [resume, setResume] = useState<"checking" | "none" | "running">("checking");
+  const [resumeElapsed, setResumeElapsed] = useState(0);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/documents/generate?scriptId=${encodeURIComponent(scriptId)}`);
+        if (res.ok) {
+          const d = (await res.json().catch(() => null)) as
+            | { status?: string; result?: { reviewUrl?: string }; resultStatus?: number }
+            | null;
+          if (d?.status === "running") {
+            if (cancelled) return;
+            setResume("running");
+            const settled = await pollOutline(scriptId);
+            if (cancelled) return;
+            if (settled?.ok) {
+              const done = settled.body as { reviewUrl?: string } | null;
+              if (done?.reviewUrl) {
+                window.location.assign(done.reviewUrl);
+                return;
+              }
+            }
+            // The resumed run failed (or ran out of patience): fall back to
+            // the normal panel with the honest sentence — same as if the
+            // user had watched it fail without reloading.
+            setResume("none");
+            if (settled && !settled.ok) {
+              setError(humanError(settled.status, settled.error, "The outline didn't come together this time."));
+            }
+            return;
+          }
+          if (d?.status === "done" && (d.resultStatus ?? 200) < 300) {
+            const body = d.result as { reviewUrl?: string } | null;
+            if (body?.reviewUrl) {
+              window.location.assign(body.reviewUrl);
+              return;
+            }
+          }
+        }
+      } catch {
+        /* no job to resume — the ordinary blank-document path */
+      }
+      if (!cancelled) setResume("none");
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [scriptId]);
+  useEffect(() => {
+    if (resume !== "running") return;
+    const started = Date.now();
+    const t = window.setInterval(() => setResumeElapsed(Math.round((Date.now() - started) / 1000)), 1000);
+    return () => window.clearInterval(t);
+  }, [resume]);
   const [open, setOpen] = useState(false);
   const [prompt, setPrompt] = useState("");
   const [url, setUrl] = useState("");
@@ -730,7 +792,31 @@ export function BlankDocumentPanel({
     }
   };
 
-  if (!live) return null;
+  if (!live || resume === "checking") return null;
+
+  if (resume === "running") {
+    return (
+      <div className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center p-6">
+        <div className="pointer-events-auto w-full max-w-[520px] rounded-xl border border-hairline bg-surface p-6 shadow-[0_30px_80px_-40px_rgba(18,26,43,0.45)]">
+          <p className="font-mono text-[10.5px] uppercase tracking-[0.16em] text-muted">
+            Still working
+          </p>
+          <h2 className="mt-1.5 font-display text-[20px] font-bold tracking-tight text-ink">
+            Your outline kept generating
+          </h2>
+          <p className="mt-1 text-[12.5px] leading-relaxed text-ink-soft">
+            The reload didn&apos;t interrupt it — it runs on our side. You&apos;ll land on
+            the review the moment it&apos;s ready.
+          </p>
+          <GeneratingSteps
+            steps={["Reading your brief", "Finding the story", "Naming your pages", "Putting them in order"]}
+            elapsed={resumeElapsed}
+            pages={6}
+          />
+        </div>
+      </div>
+    );
+  }
 
   if (stage === "brand") {
     return (

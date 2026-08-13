@@ -285,7 +285,10 @@ export function EditableReview({
           )}
         </div>
         <a
-          href={`/preview/${script.id}`}
+          // ?build=1 is the explicit-intent marker: /preview auto-starts the
+          // paid build ONLY when it arrives with this param (its page
+          // redirects unbuilt outlines back here otherwise).
+          href={`/preview/${script.id}?build=1`}
           className="rounded-md bg-accent px-5 py-2.5 text-[14px] font-semibold text-accent-ink transition-all hover:brightness-110"
         >
           Build the {script.config.kind === "deck" ? "deck" : "video"} →
