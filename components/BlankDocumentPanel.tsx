@@ -367,6 +367,9 @@ export function BlankDocumentPanel({
   // nothing for its ~200ms — the same absence-beats-deadness rule as `live`.
   const [resume, setResume] = useState<"checking" | "none" | "running">("checking");
   const [resumeElapsed, setResumeElapsed] = useState(0);
+  /** The job's real start (server clock, ms epoch). The resumed view's clock
+   *  and step position derive from THIS, not from when this tab mounted. */
+  const resumeStartedAt = useRef<number | null>(null);
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -374,10 +377,11 @@ export function BlankDocumentPanel({
         const res = await fetch(`/api/documents/generate?scriptId=${encodeURIComponent(scriptId)}`);
         if (res.ok) {
           const d = (await res.json().catch(() => null)) as
-            | { status?: string; result?: { reviewUrl?: string }; resultStatus?: number }
+            | { status?: string; startedAt?: number; result?: { reviewUrl?: string }; resultStatus?: number }
             | null;
           if (d?.status === "running") {
             if (cancelled) return;
+            if (typeof d.startedAt === "number") resumeStartedAt.current = d.startedAt;
             setResume("running");
             const settled = await pollOutline(scriptId);
             if (cancelled) return;
@@ -416,8 +420,10 @@ export function BlankDocumentPanel({
   }, [scriptId]);
   useEffect(() => {
     if (resume !== "running") return;
-    const started = Date.now();
-    const t = window.setInterval(() => setResumeElapsed(Math.round((Date.now() - started) / 1000)), 1000);
+    const started = resumeStartedAt.current ?? Date.now();
+    const tick = () => setResumeElapsed(Math.max(0, Math.round((Date.now() - started) / 1000)));
+    tick(); // the first paint already shows the true age, not 0:00
+    const t = window.setInterval(tick, 1000);
     return () => window.clearInterval(t);
   }, [resume]);
   const [open, setOpen] = useState(false);

@@ -265,5 +265,10 @@ export async function GET(request: Request) {
   if (job.state === "error") {
     return NextResponse.json({ status: "error", error: job.message });
   }
-  return NextResponse.json({ status: job.state });
+  // startedAt rides along so a reattaching client anchors its clock and step
+  // position to the truth — a reload mid-generation showed "Reading your
+  // brief" at 0:22 on a job that was 90 seconds old (founder, 2026-08-13).
+  return NextResponse.json(
+    job.state === "running" ? { status: "running", startedAt: job.startedAt } : { status: job.state },
+  );
 }

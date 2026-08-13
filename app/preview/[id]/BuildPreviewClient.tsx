@@ -508,11 +508,18 @@ export function BuildPreviewClient({
     );
   }
 
-  const completed = current + (isLast && !agentDone ? 0 : 0);
-  const pct = Math.min(
-    100,
-    ((completed + (isLast && !agentDone ? 0.5 : 0)) / steps.length) * 100,
+  // The bar summarizes the SAME statuses the rows show — done steps over
+  // total, with in-flight rows worth a quarter step. The old bar ran on the
+  // paced counter the rows no longer use, so it sat at ~90% while six pages
+  // were still designing ("seems like we are almost done and we are not even
+  // half way" — founder, reading it exactly right). It may now sit at 20%
+  // for a while, because that is where the build is.
+  const statuses = steps.map(
+    (_, i) => realStatus(i) ?? (i < current ? "done" : i === current ? "active" : "pending"),
   );
+  const doneCount = statuses.filter((st) => st === "done").length;
+  const activeCount = statuses.filter((st) => st === "active").length;
+  const pct = Math.min(100, ((doneCount + activeCount * 0.25) / steps.length) * 100);
 
   return (
     <main className="mx-auto flex min-h-[72vh] max-w-[600px] flex-col items-center justify-center px-6 py-16">
