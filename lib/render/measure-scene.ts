@@ -32,6 +32,7 @@
  */
 import { promises as fs } from "fs";
 import path from "path";
+import { FIT_TEXT_SCRIPT, textFitEnabled } from "./fit-text";
 import { createRequire } from "module";
 import React from "react";
 import * as esbuild from "esbuild";
@@ -229,6 +230,11 @@ export interface SceneMeasurement {
   screenshotPath?: string;
   /** Absolute path to the persisted `rects-scene-{N}.json`, when written. */
   rectsPath?: string;
+  /** What the render-time text-fit pass did on this scene (fit-text.ts) —
+   *  candidates found overfull, boxes fitted, boxes that hit the readability
+   *  floor and stayed marked. The floor count is the live signal for the
+   *  semantic shorten path (docs/TEXT_FIT.md layer 3). */
+  fit?: { candidates: number; fitted: number; floored: number };
   /** Set when the scene could not be measured at all (treat as a gate failure). */
   error?: string;
 }
@@ -489,6 +495,7 @@ const buildSceneHtml = (
     #rb-stage{position:relative;width:${dims.w}px;height:${dims.h}px;overflow:hidden;}
   </style></head><body>
     <div id="rb-stage">${bodyHtml}</div>
+    ${textFitEnabled() ? `<script>${FIT_TEXT_SCRIPT}</script>` : ""}
   </body></html>`;
 };
 
@@ -637,6 +644,13 @@ export const measureScenes = async (
         }
         // fonts loaded + a beat for layout to settle
         await page.evaluate("document.fonts && document.fonts.ready").catch(() => {});
+        // The fit pass (fit-text.ts) runs after fonts settle and rewrites text
+        // geometry; measuring before it finishes would gate a page nobody will
+        // ever see. Bounded so a broken page cannot hang the gate.
+        await page
+          .waitForFunction("!window.__rbFitDone || window.__rbFitSummary", { timeout: 5000 })
+          .catch(() => {});
+        await page.evaluate("window.__rbFitDone").catch(() => {});
         // SETTLE entry animations to their FINAL state before measuring AND
         // screenshotting. setContent renders at t=0, so without this we captured
         // an EARLY frame — diegetic elements (cards, terminals, mock UIs, charts)
@@ -652,6 +666,9 @@ export const measureScenes = async (
           )
           .catch(() => {});
         await page.waitForTimeout(250).catch(() => {});
+        const fitSummary = (await page
+          .evaluate("window.__rbFitSummary || null")
+          .catch(() => null)) as { candidates: number; fitted: number; floored: number } | null;
         const elements = (await page.evaluate(PAGE_WALK)) as MeasuredElement[];
         // Per-piece authored-vs-painted rects. Best-effort: a failure here must
         // never fail a measurement the BLOCKING gates depend on.
@@ -684,7 +701,16 @@ export const measureScenes = async (
         } catch {
           rectsPath = undefined; // disk trouble must not fail the gate
         }
-        results.push({ scene: i, width: dims.w, height: dims.h, elements, pieces, screenshotPath, rectsPath });
+        results.push({
+          scene: i,
+          width: dims.w,
+          height: dims.h,
+          elements,
+          pieces,
+          screenshotPath,
+          rectsPath,
+          ...(fitSummary ? { fit: fitSummary } : {}),
+        });
       } catch (err) {
         results.push({
           scene: i, width: dims.w, height: dims.h, elements: [],

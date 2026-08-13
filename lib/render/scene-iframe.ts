@@ -7,6 +7,7 @@ import { hydrateGenDir } from "./gen-store";
 import type { Script } from "../../src/schema";
 import { dimensionsForScript, WIDE_LOCKUP_RATIO } from "./build-wrapper";
 import { inlineAssetSrcs } from "../edit/image-assets";
+import { FIT_TEXT_SCRIPT, textFitEnabled } from "./fit-text";
 
 // react-dom/server via runtime require to bypass Next's app-router static check.
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -199,6 +200,7 @@ export async function renderSceneDoc(
 </head>
 <body>
 <div class="renderball-canvas">${sectionHtml}</div>
+${textFitEnabled() ? `<script>${FIT_TEXT_SCRIPT}</script>` : ""}
 ${lottieMount}
 ${lockupMount}
 </body>

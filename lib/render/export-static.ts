@@ -79,6 +79,9 @@ const screenshotScenes = async (
         await page.setContent(html, { waitUntil: "load", timeout: 30000 });
       }
       await page.evaluate("document.fonts && document.fonts.ready").catch(() => {});
+      // Text fit runs post-fonts (fit-text.ts); exporting before it finishes
+      // would ship the unfitted frame the editor never shows.
+      await page.evaluate("window.__rbFitDone").catch(() => {});
       // Belt + braces over settle-mode CSS: jump any finite animation to its
       // end state (infinite ambient loops throw on finish() → skipped).
       await page

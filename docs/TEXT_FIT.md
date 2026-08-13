@@ -101,6 +101,19 @@ score, per the SPATIAL_QUALITY playbook. No model calls. Prompt-side changes
 (role emission, budgets) go through the same offline replay, then one
 founder-approved live A/B.
 
+**Layer-1 gate result (2026-08-13, scripts/replay-text-fit.mjs, all 155
+stored builds, both arms):** blocking overflow findings 48 → 41 (15% cut),
+zero NEW finding kinds in the on-arm (nothing manufactured), zero replay
+errors; 33 measure-errors are pre-pivot video compositions failing
+identically in both arms. Caveat stated plainly: the stored corpus is
+POST-REPAIR survivors, so it structurally under-represents the born-overfull
+class the pass targets — the synthetic in-engine proof (fullness 2.47 fitted
+to exactly 1.0, `s=0.73;l=0.20`, PowerPoint order of operations) plus the
+sweep's no-regression result is the ship gate; the true reduction instrument
+is live gate telemetry, which now records per-scene `fit`
+{candidates, fitted, floored} on every build. Shipped default ON
+(RB_TEXT_FIT=off opts out).
+
 ## What we explicitly do NOT adopt
 
 - A Cassowary/ILP constraint solver — new dialect for the model, still
