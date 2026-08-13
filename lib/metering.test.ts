@@ -27,11 +27,20 @@ console.log("metering");
 
 // ── mode parsing ──────────────────────────────────────────────────────────
 
-check("RB_METERING defaults off; unset/garbage never enable", () => {
-  assert(meteringModeOf(undefined) === "off", "undefined");
-  assert(meteringModeOf("") === "off", "empty");
-  assert(meteringModeOf("yes-please") === "off", "garbage");
-  assert(meteringModeOf("OFF") === "off", "OFF");
+check("RB_METERING defaults to COUNT; only the explicit words disable or enforce", () => {
+  // The shadow period is the default (2026-08-13): unset means the meter
+  // counts. "off" must stay a deliberate word, and nothing accidental may
+  // reach "on" — enforcement still contacts the billing layer.
+  assert(meteringModeOf(undefined) === "count", "undefined → count");
+  assert(meteringModeOf("") === "count", "empty → count");
+  assert(meteringModeOf("garbage") === "count", "junk → count, never on");
+  assert(meteringModeOf("off") === "off", "off");
+  assert(meteringModeOf("0") === "off", "0");
+  assert(meteringModeOf("false") === "off", "false");
+  assert(meteringModeOf("count") === "count", "count");
+  assert(meteringModeOf("shadow") === "count", "shadow");
+  assert(meteringModeOf("on") === "on", "on");
+  assert(meteringModeOf("enforce") === "on", "enforce");
 });
 
 check("on/enforce/1/true → on; count/shadow → count (case-insensitive)", () => {

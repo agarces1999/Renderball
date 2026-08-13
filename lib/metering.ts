@@ -35,12 +35,21 @@ import type { Usage } from "./usage";
 
 export type MeteringMode = "off" | "count" | "on";
 
-/** PURE: parse the RB_METERING env value (case/synonym tolerant). */
+/** PURE: parse the RB_METERING env value (case/synonym tolerant).
+ *
+ * DEFAULT IS "count" (the shadow period) since 2026-08-13 — the founder,
+ * launch-testing, opened /billing and watched a token meter read 0/1M while
+ * the ops ledger held every one of his builds' tokens: "off" was shipped as
+ * a safe rollout default and then nobody flipped it, which made the
+ * user-facing meter a lie by omission. Counting writes one row per op and
+ * contacts no processor; enforcement (the 402 gate + usage reporting) still
+ * requires the explicit "on". "off" remains available for offline work.
+ */
 export const meteringModeOf = (raw: string | undefined | null): MeteringMode => {
   const v = (raw ?? "").trim().toLowerCase();
   if (v === "on" || v === "enforce" || v === "1" || v === "true") return "on";
-  if (v === "count" || v === "shadow") return "count";
-  return "off";
+  if (v === "off" || v === "0" || v === "false" || v === "none") return "off";
+  return "count";
 };
 
 export const meteringMode = (): MeteringMode => meteringModeOf(process.env.RB_METERING);
