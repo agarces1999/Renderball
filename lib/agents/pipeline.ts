@@ -1144,7 +1144,19 @@ export const regenerateScene = async (
 
 export const buildAnimatedSections = async (
   rawInput: BuildInput,
-  options?: { skipRetries?: boolean; timeline?: BuildTimeline },
+  options?: {
+    skipRetries?: boolean;
+    timeline?: BuildTimeline;
+    /**
+     * Fired as each scene's fill splices into the running composition, with
+     * the FULL code as assembled so far (2026-08-14 — the build ceremony
+     * shows the real pages materializing, so each page must reach disk the
+     * moment it exists rather than when the whole pipeline returns). Calls
+     * are serialized in splice order; a throwing hook is swallowed — showing
+     * progress must never break the build it is showing.
+     */
+    onSectionAssembled?: (sceneIndex: number, code: string) => Promise<void> | void;
+  },
 ): Promise<BuildResult> => {
   const skipRetries = options?.skipRetries === true;
   // Phase-boundary clock (see lib/agents/build-timeline.ts). Callers that
@@ -1513,6 +1525,10 @@ export const buildAnimatedSections = async (
     } else {
       designResponse = scaffoldResponse; // usage anchor = the scaffold call
       const narr = input.script.narrative;
+      // Progressive assembly state for onSectionAssembled (display path only
+      // — the authoritative assembly below rebuilds from scratch).
+      let progressiveCode = scaffoldCode;
+      let progressiveChain: Promise<void> = Promise.resolve();
       const fillCtx = {
         throughlineSlug: slugify(narr?.throughline ?? ""),
         throughline: narr?.throughline ?? "",
@@ -1550,10 +1566,28 @@ export const buildAnimatedSections = async (
             // so let it reject: the assembling code treats it as a missing
             // block and the NEXT top-level mark stops the build for real.
             timeline.mark(`design:fill:scene:${i}:done`);
+            if (r.block && options?.onSectionAssembled) {
+              // Serialized progressive splice — each landed section goes to
+              // the caller (who persists it) so the ceremony can render the
+              // page NOW. Chained, not raced: two out-of-order fills must
+              // not interleave their read-splice-write.
+              progressiveChain = progressiveChain.then(async () => {
+                const next = replaceSection(progressiveCode, i, r.block!);
+                if (next) {
+                  progressiveCode = next;
+                  try {
+                    await options.onSectionAssembled!(i, next);
+                  } catch (err) {
+                    console.warn(`[pipeline] onSectionAssembled(${i}) failed (progress only):`, err);
+                  }
+                }
+              });
+            }
             return r;
           }),
         ),
       );
+      await progressiveChain; // progressive writes settle before the gates read the dir
       timeline.mark(
         `design:fills:done (${sceneIndices.length} scenes, gate ${gate.width}/${gate.max}, ${gate.overloads} overload shrink(s))`,
       );

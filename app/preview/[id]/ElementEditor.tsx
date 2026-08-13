@@ -71,6 +71,14 @@ export interface ElementEditorHandle {
   toggleGenerate: () => void;
   toggleOutlines: () => void;
   undo: () => void;
+  /**
+   * Regenerate the CURRENTLY selected element with this instruction — the
+   * Element panel's path (2026-08-14). Runs the editor's own regen so the
+   * selection survives the reload (reselectIdRef); a panel that fetched the
+   * route directly watched its own tab vanish mid-success, because the
+   * reload cleared the selection it depended on.
+   */
+  regenerateSelected: (instruction: string) => void;
 }
 
 /** A snapshot of the editor's chrome-relevant state, for a shell toolbar. */
@@ -79,6 +87,9 @@ export interface EditorState {
   showAll: boolean;
   canUndo: boolean;
   busy: string | null;
+  /** The selected element, for the shell's Element panel (2026-08-14 —
+   *  click an element, see and edit the prompt behind it). Null = none. */
+  selected: { pieceId: string; kind: string } | null;
 }
 
 const BLOCK_TEXT = /^(H[1-6]|P|LI|DIV|FIGCAPTION|LABEL|BLOCKQUOTE|DD|DT|TD|TH)$/;
@@ -2043,8 +2054,27 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
       toggleGenerate,
       toggleOutlines,
       undo: () => void undo(),
+      regenerateSelected: (instruction: string) => {
+        void (async () => {
+          const text = instruction.trim();
+          if (!selected || !text || busy) return;
+          setBusy("regenerate");
+          const ok = await post(`${apiBase}/regenerate-element`, {
+            scriptId,
+            sceneIndex,
+            pieceId: selected.pieceId,
+            instruction: text,
+          });
+          setBusy(null);
+          if (ok) {
+            reselectIdRef.current = selected.pieceId; // selection survives the reload
+            setSelected(null);
+            onChanged();
+          }
+        })();
+      },
     }),
-    [toggleGenerate, toggleOutlines],
+    [toggleGenerate, toggleOutlines, selected, busy, scriptId, sceneIndex, apiBase],
   );
   const onStateRef = useRef(onState);
   onStateRef.current = onState;
@@ -2054,8 +2084,9 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
       showAll,
       canUndo: undoDepth > 0,
       busy,
+      selected: selected ? { pieceId: selected.pieceId, kind: selected.kind } : null,
     });
-  }, [tool, showAll, undoDepth, busy]);
+  }, [tool, showAll, undoDepth, busy, selected]);
 
   return (
     <div

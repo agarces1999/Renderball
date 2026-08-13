@@ -5,6 +5,7 @@ import { getCurrentUser } from "../../../../lib/auth";
 import { assertZaiAvailable, ZaiUnavailableError } from "../../../../lib/zai-breaker";
 import { takeRegenSlot } from "../../../../lib/edit/op-cap";
 import { loadScript } from "../../../../lib/store";
+import { recordProvenance } from "../../../../lib/edit/provenance";
 import { regenerateElement } from "../../../../lib/edit/regenerate-element";
 import { checkTokenAllowance, recordTokenUsage } from "../../../../lib/metering";
 
@@ -103,6 +104,8 @@ export async function POST(request: Request) {
   const result = await regenerateElement({ genDir, sceneIndex, pieceId, instruction });
   // Pivot token counter: regens spend tokens whether or not they succeed.
   if (result.usage) await recordTokenUsage({ ownerId: user.id, usage: result.usage, op: "regen-element" });
+  // The element panel shows "what made this" — keep the user's words.
+  if (result.ok) await recordProvenance(genDir, pieceId, { origin: "regen", prompt: instruction });
   const status = result.ok ? 200 : /not found/.test(result.error ?? "") ? 404 : 400;
   return NextResponse.json(
     result.ok

@@ -558,6 +558,45 @@ export function BuildPreviewClient({
         </span>
       </div>
 
+      {/* THE PAGES THEMSELVES, materializing (founder, 2026-08-14, from the
+          Gamma comparison — and one better than Gamma's animation: these are
+          the REAL pages, rendered from the section code the moment each fill
+          lands on disk. Honest by construction: a thumbnail exists only
+          because the page does. Each iframe loads ONCE (stable src, no
+          reload churn) and is inert to input. */}
+      {sceneLabels.length > 0 &&
+        sceneLabels.some((_, i) => seen(`design:fill:scene:${i}:done`)) && (
+          <div className="mb-6 grid w-full grid-cols-3 gap-3">
+            {sceneLabels.map((lab, i) =>
+              seen(`design:fill:scene:${i}:done`) ? (
+                <div
+                  key={i}
+                  className="relative overflow-hidden rounded-md border border-hairline bg-surface-2"
+                  style={{ aspectRatio: "16/9", animation: "rb-fade-up 0.5s ease both" }}
+                  title={lab}
+                >
+                  <iframe
+                    src={`/api/preview/${scriptId}/iframe?scene=${i}&settle=1&v=live`}
+                    title={`Page ${i + 1} — ${lab}`}
+                    className="pointer-events-none absolute inset-0 h-full w-full"
+                    style={{ border: 0 }}
+                  />
+                  <span className="absolute bottom-1 left-1.5 rounded bg-[#11141b]/70 px-1.5 py-0.5 font-mono text-[9px] text-white/80">
+                    {i + 1}
+                  </span>
+                </div>
+              ) : (
+                <div
+                  key={i}
+                  className="rounded-md border border-dashed border-hairline bg-surface-2/50"
+                  style={{ aspectRatio: "16/9" }}
+                  title={lab}
+                />
+              ),
+            )}
+          </div>
+        )}
+
       <ul className="w-full space-y-2">
         {steps.map((label, i) => {
           // Real signals first; the paced counter only drives rows the server

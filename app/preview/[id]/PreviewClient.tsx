@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { BrandPanel } from "../../../components/BrandPanel";
+import { ElementPanel } from "../../../components/ElementPanel";
 import { ShareButton } from "../../../components/ShareButton";
 import { BlankDocumentPanel } from "../../../components/BlankDocumentPanel";
 import Link from "next/link";
@@ -105,7 +106,7 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
   // `doc` is the live document; the server-loaded `script` prop is its seed.
   const [doc, setDoc] = useState(script);
   const [sceneIndex, setSceneIndex] = useState(0);
-  const [panelTab, setPanelTab] = useState<"page" | "brand">("page");
+  const [panelTab, setPanelTab] = useState<"page" | "brand" | "element">("page");
   // Only while the document is untouched — an empty state, not a mode.
   const [showBlankPanel, setShowBlankPanel] = useState(isBlank);
   const [playing, setPlaying] = useState(!isDeck);
@@ -337,7 +338,24 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
     showAll: false,
     canUndo: false,
     busy: null,
+    selected: null,
   });
+  // The piece the Element panel is ABOUT. Not simply ed.selected: the editor
+  // clears the selection for the length of a regen reload (setSelected(null)
+  // → iframe reload → reselect), and a panel keyed on the raw selection
+  // vanished mid-success. Held through busy; released on a real deselect.
+  const [panelPiece, setPanelPiece] = useState<{ pieceId: string; kind: string } | null>(null);
+  useEffect(() => {
+    if (ed.selected) setPanelPiece(ed.selected);
+    else if (!ed.busy) setPanelPiece(null);
+  }, [ed.selected, ed.busy]);
+  // The Element tab exists only while something is selected — it appears on
+  // select, and a deselect returns to the page tab rather than stranding an
+  // empty panel.
+  useEffect(() => {
+    if (panelPiece) setPanelTab("element");
+    else setPanelTab((t) => (t === "element" ? "page" : t));
+  }, [panelPiece]);
   // One busy flag for the whole shell: element edits, regen, and page ops all
   // rewrite state under the canvas, so every structural control gates on it —
   // a page op mid-regen would land the regen on whatever page took its index.
@@ -465,7 +483,7 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
             // than buried in a per-element menu.
             <div className="flex h-full flex-col">
               <div className="flex shrink-0 gap-1 border-b border-hairline px-3 pt-2.5">
-                {(["page", "brand"] as const).map((t) => (
+                {([...(panelPiece ? (["element"] as const) : []), "page", "brand"] as const).map((t) => (
                   <button
                     key={t}
                     type="button"
@@ -482,7 +500,16 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
                 ))}
               </div>
               <div className="min-h-0 flex-1 overflow-y-auto">
-                {panelTab === "brand" ? (
+                {panelTab === "element" && panelPiece ? (
+                  <ElementPanel
+                    scriptId={scriptId}
+                    pieceId={panelPiece.pieceId}
+                    kind={panelPiece.kind}
+                    pageBrief={currentScene?.visual_concept ?? null}
+                    busy={ed.busy}
+                    onRegenerate={(instruction) => editorRef.current?.regenerateSelected(instruction)}
+                  />
+                ) : panelTab === "brand" ? (
                   <BrandPanel
                     scriptId={scriptId}
                     onApplied={() => setReloadKey((k) => k + 1)}

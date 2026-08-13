@@ -101,6 +101,7 @@ export function DevEditClient({
     showAll: false,
     canUndo: false,
     busy: null,
+    selected: null,
   });
 
   const iframeSrc = `/api/dev/${scriptId}/iframe?scene=${sceneIndex}&v=${reloadKey}${playMotion ? "" : "&settle=1"}`;

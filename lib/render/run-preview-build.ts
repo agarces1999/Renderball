@@ -218,9 +218,26 @@ async function runPreviewBuildInner(
     });
   }
 
+  // Hoisted above the build: the onSectionAssembled hook below fires DURING
+  // buildAnimatedSections, and a const declared after the call is TDZ when
+  // the first fill lands.
+  const genDir = path.join(process.cwd(), "src", "generated", scriptId);
+
   const result = await buildAnimatedSections(
     buildAgentInputFromBrief(brief, script),
-    { timeline },
+    {
+      timeline,
+      // Each landed page reaches disk immediately so the ceremony can show
+      // the REAL page materializing (the blank family already on disk makes
+      // the scene renderable the moment its section is real). Display path
+      // only — the authoritative write of the full family still happens
+      // below when the pipeline returns.
+      onSectionAssembled: async (_scene, code) => {
+        const { promises: fsp } = await import("fs");
+        await fsp.mkdir(genDir, { recursive: true });
+        await fsp.writeFile(path.join(genDir, "Composition.tsx"), code, "utf8");
+      },
+    },
   );
 
   if (!result.ok) {
@@ -255,7 +272,6 @@ async function runPreviewBuildInner(
   // Write the generated artifacts under src/generated/<scriptId>/ via the shared
   // writer — IDENTICAL layout to the MP4 path, so "Render to MP4" reuses this
   // exact composition rather than rebuilding a different one.
-  const genDir = path.join(process.cwd(), "src", "generated", scriptId);
   // Persist the phase timeline (best-effort, on success AND failure paths) so
   // wall-clock attribution survives lost consoles and dead HTTP clients.
   const persistTimeline = async () => {
