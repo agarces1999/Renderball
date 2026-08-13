@@ -1098,7 +1098,8 @@ export const beatFloorLines = (durationSeconds: number, momentCount: number): st
 /** Inert per-slide timing stub for decks (canvas pivot): timings must exist
  *  for schema compatibility but are never shown or animated. 5s/slide keeps
  *  any deck of ≤12 slides under the validator's 60s duration cap. */
-export const DECK_SECONDS_PER_SLIDE = 5;
+import { DECK_SECONDS_PER_SLIDE } from "./outline-scene-ops";
+export { DECK_SECONDS_PER_SLIDE };
 
 /** Deterministically stamp config.kind from the BRIEF (canvas pivot) — the
  *  document kind is the caller's choice, never trusted from model output. */

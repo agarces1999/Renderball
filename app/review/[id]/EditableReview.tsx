@@ -3,6 +3,11 @@
 import { useState, useTransition } from "react";
 import type { Scene, Script, ScriptDecision } from "../../../src/schema";
 import { saveScriptEdits } from "./actions";
+import {
+  deleteScene,
+  insertBlankScene,
+  moveScene,
+} from "../../../lib/agents/outline-scene-ops";
 import { cn } from "../../../lib/cn";
 
 /**
@@ -163,6 +168,103 @@ export function EditableReview({
     persist(nextScript);
   };
 
+  // ── outline page ops (founder, 2026-08-13: "edit the outline itself") ────
+  // Deterministic and free: build the next script, show it, persist it — the
+  // same optimistic path every headline edit takes.
+  const applyOp = (next: Script) => {
+    if (next === script) return; // guarded no-ops (last page, out of range)
+    setScript(next);
+    persist(next);
+  };
+  const handleMove = (i: number, dir: -1 | 1) => applyOp(moveScene(script, i, i + dir));
+  const handleDelete = (i: number) => applyOp(deleteScene(script, i));
+  const handleAdd = (after: number) => applyOp(insertBlankScene(script, after));
+  const handleLedeBlur = (sceneIdx: number, next: string) => {
+    const original = script.scenes[sceneIdx]?.content?.lede ?? "";
+    if (next === original) return;
+    const nextScenes = script.scenes.map((sc, i) =>
+      i === sceneIdx ? { ...sc, content: { ...sc.content, lede: next || undefined } } : sc,
+    );
+    applyOp({ ...script, scenes: nextScenes });
+  };
+
+  // ── per-page AI rewrite ───────────────────────────────────────────────────
+  // POST → 202 → poll, the house pattern. The server splices + validates +
+  // saves; the client only ever adopts the SAVED result.
+  const [rewriteBusyIdx, setRewriteBusyIdx] = useState<number | null>(null);
+  const [rewriteErrors, setRewriteErrors] = useState<Record<number, string>>({});
+  const handleRewrite = async (sceneIdx: number, instruction: string) => {
+    if (rewriteBusyIdx !== null) return;
+    setRewriteBusyIdx(sceneIdx);
+    setRewriteErrors((e) => ({ ...e, [sceneIdx]: "" }));
+    const fail = (msg: string) => {
+      setRewriteErrors((e) => ({ ...e, [sceneIdx]: msg }));
+      setRewriteBusyIdx(null);
+    };
+    try {
+      const res = await fetch("/api/documents/outline-page", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scriptId: script.id, scene: sceneIdx, instruction }),
+      });
+      let data = (await res.json().catch(() => null)) as
+        | { ok?: boolean; scenes?: Script["scenes"]; error?: string; status?: string }
+        | null;
+      if (res.status !== 202 && !res.ok) {
+        fail(
+          typeof data?.error === "string" && /\s/.test(data.error)
+            ? data.error
+            : "Could not start the rewrite. The page is unchanged.",
+        );
+        return;
+      }
+      if (res.status === 202) {
+        const until = Date.now() + 6 * 60_000;
+        data = null;
+        while (Date.now() < until) {
+          await new Promise((r) => setTimeout(r, 2_000));
+          let poll: Response;
+          try {
+            poll = await fetch(
+              `/api/documents/outline-page?scriptId=${encodeURIComponent(script.id)}`,
+            );
+          } catch {
+            continue;
+          }
+          if (!poll.ok) continue;
+          const p = (await poll.json().catch(() => null)) as
+            | { status?: string; result?: unknown; resultStatus?: number; error?: string }
+            | null;
+          if (!p) continue;
+          if (p.status === "done") {
+            const status = p.resultStatus ?? 200;
+            const body = p.result as { scenes?: Script["scenes"]; error?: string } | null;
+            if (status >= 200 && status < 300) data = { ok: true, scenes: body?.scenes };
+            else data = { error: body?.error };
+            break;
+          }
+          if (p.status === "error") {
+            data = { error: p.error };
+            break;
+          }
+        }
+      }
+      if (!data?.ok || !Array.isArray(data.scenes)) {
+        fail(
+          typeof data?.error === "string" && /\s/.test(data.error)
+            ? data.error
+            : "The rewrite didn't come together. The page is unchanged.",
+        );
+        return;
+      }
+      // Server-saved truth; adopt it wholesale (indexes/timing renumbered there).
+      setScript((prev) => ({ ...prev, scenes: data!.scenes! }));
+      setRewriteBusyIdx(null);
+    } catch {
+      fail("Network error. The page is unchanged.");
+    }
+  };
+
   const decisions = script.decisions ?? [];
 
   return (
@@ -309,27 +411,48 @@ export function EditableReview({
         </section>
       )}
 
-      {/* Page/scene sequence */}
-      <div className="space-y-3">
+      {/* Page/scene sequence — every page fully editable: its lines, its
+          place in the order, its existence, and (paid, labelled) an AI
+          rewrite of just that page. */}
+      <div className="space-y-1.5">
         {script.scenes.map((scene, i) => (
-          <StoryScene
-            key={scene.id || i}
-            index={i}
-            scene={scene}
-            isDeck={isDeck}
-            fps={RENDER_FPS}
-            assetUrlForId={(id: string) =>
-              script.assets.images.find((a) => a.id === id)?.src
-            }
-            onHeadlineBlur={(v) => handleHeadlineBlur(i, v)}
-            onConceptBlur={(v) => handleConceptBlur(i, v)}
-          />
+          <div key={scene.id || i}>
+            <StoryScene
+              index={i}
+              scene={scene}
+              isDeck={isDeck}
+              fps={RENDER_FPS}
+              assetUrlForId={(id: string) =>
+                script.assets.images.find((a) => a.id === id)?.src
+              }
+              onHeadlineBlur={(v) => handleHeadlineBlur(i, v)}
+              onConceptBlur={(v) => handleConceptBlur(i, v)}
+              onLedeBlur={(v) => handleLedeBlur(i, v)}
+              onMoveUp={i > 0 ? () => handleMove(i, -1) : undefined}
+              onMoveDown={i < script.scenes.length - 1 ? () => handleMove(i, 1) : undefined}
+              onDelete={script.scenes.length > 1 ? () => handleDelete(i) : undefined}
+              onRewrite={(instruction) => void handleRewrite(i, instruction)}
+              rewriteBusy={rewriteBusyIdx === i}
+              rewriteDisabled={rewriteBusyIdx !== null}
+              rewriteError={rewriteErrors[i] || null}
+            />
+            <div className="flex justify-center py-0.5">
+              <button
+                type="button"
+                onClick={() => handleAdd(i)}
+                className="rounded-full border border-transparent px-3 py-0.5 font-mono text-[10.5px] uppercase tracking-[0.14em] text-transparent transition-colors hover:border-hairline hover:text-muted"
+                aria-label={`Add a ${isDeck ? "page" : "scene"} after ${i + 1}`}
+              >
+                + add a {isDeck ? "page" : "scene"} here
+              </button>
+            </div>
+          </div>
         ))}
       </div>
 
-      <p className="mt-8 text-center font-mono text-[12px] text-faint">
-        Edit any line or visual brief, then build. Nothing builds until you
-        say so.
+      <p className="mt-6 text-center font-mono text-[12px] text-faint">
+        Every line is editable — click it. Reorder, remove or add pages;
+        nothing builds until you say so.
       </p>
     </div>
   );
@@ -443,6 +566,14 @@ function StoryScene({
   assetUrlForId,
   onHeadlineBlur,
   onConceptBlur,
+  onLedeBlur,
+  onMoveUp,
+  onMoveDown,
+  onDelete,
+  onRewrite,
+  rewriteBusy,
+  rewriteDisabled,
+  rewriteError,
 }: {
   index: number;
   scene: Scene;
@@ -451,7 +582,17 @@ function StoryScene({
   assetUrlForId: (id: string) => string | undefined;
   onHeadlineBlur: (v: string) => void;
   onConceptBlur: (v: string) => void;
+  onLedeBlur: (v: string) => void;
+  onMoveUp?: () => void;
+  onMoveDown?: () => void;
+  onDelete?: () => void;
+  onRewrite: (instruction: string) => void;
+  rewriteBusy: boolean;
+  rewriteDisabled: boolean;
+  rewriteError: string | null;
 }) {
+  const [rewriteOpen, setRewriteOpen] = useState(false);
+  const [instruction, setInstruction] = useState("");
   const start =
     typeof scene.start_seconds === "number"
       ? scene.start_seconds
@@ -486,7 +627,7 @@ function StoryScene({
         isTurn ? "border-accent-line bg-accent-soft" : "border-hairline",
       )}
     >
-      <div className="flex items-start gap-5">
+      <div className="group flex items-start gap-5">
         <div className="w-[72px] shrink-0 pt-1 font-mono text-[12px] text-faint">
           {String(index + 1).padStart(2, "0")}
           {isDeck ? null : (
@@ -496,14 +637,100 @@ function StoryScene({
           )}
         </div>
         <div className="min-w-0 flex-1">
-          <EditableHeadline
-            value={primary}
-            placeholder={`Untitled ${noun.toLowerCase()}`}
-            onBlur={onHeadlineBlur}
-          />
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0 flex-1">
+              <EditableHeadline
+                value={primary}
+                placeholder={`Untitled ${noun.toLowerCase()}`}
+                onBlur={onHeadlineBlur}
+              />
+            </div>
+            {/* The page's controls — visible on hover, always reachable.
+                Order mirrors the editor's page rail: move, rewrite, remove. */}
+            <div className="flex shrink-0 items-center gap-1 opacity-40 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
+              {onMoveUp && (
+                <button type="button" onClick={onMoveUp} title={`Move ${noun.toLowerCase()} up`} className="rounded border border-hairline px-1.5 py-0.5 text-[11px] text-muted transition-colors hover:border-accent-line hover:text-ink">
+                  ↑
+                </button>
+              )}
+              {onMoveDown && (
+                <button type="button" onClick={onMoveDown} title={`Move ${noun.toLowerCase()} down`} className="rounded border border-hairline px-1.5 py-0.5 text-[11px] text-muted transition-colors hover:border-accent-line hover:text-ink">
+                  ↓
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => setRewriteOpen((o) => !o)}
+                disabled={rewriteDisabled && !rewriteBusy}
+                title="Rewrite this page with AI"
+                className="rounded border border-hairline px-2 py-0.5 text-[11px] text-muted transition-colors hover:border-accent-line hover:text-ink disabled:opacity-50"
+              >
+                Rewrite…
+              </button>
+              {onDelete && (
+                <button
+                  type="button"
+                  onClick={onDelete}
+                  title={`Remove this ${noun.toLowerCase()}`}
+                  className="rounded border border-hairline px-1.5 py-0.5 text-[11px] text-muted transition-colors hover:border-red-500/40 hover:text-ink"
+                >
+                  ✕
+                </button>
+              )}
+            </div>
+          </div>
           {showRole && (
             <div className="mt-1.5 text-[12.5px] font-medium text-accent-text">
               {desc}
+            </div>
+          )}
+          {/* The supporting line, as editable as the headline. */}
+          <div className="mt-1.5">
+            <EditableSupport
+              value={scene.content?.lede ?? ""}
+              placeholder="Add a supporting line…"
+              onBlur={onLedeBlur}
+            />
+          </div>
+
+          {rewriteOpen && (
+            <div className="mt-3 rounded-md border border-hairline bg-surface p-3">
+              <textarea
+                value={instruction}
+                onChange={(e) => setInstruction(e.target.value)}
+                rows={2}
+                autoFocus
+                disabled={rewriteBusy}
+                placeholder={`What should change on this ${noun.toLowerCase()}? e.g. "make it about the retention numbers, drop the quote"`}
+                className="w-full resize-y rounded-md border border-hairline bg-surface-2 px-2.5 py-2 text-[12.5px] leading-relaxed text-ink outline-none focus:border-accent-line disabled:opacity-60"
+              />
+              <div className="mt-2 flex flex-wrap items-center gap-3">
+                <button
+                  type="button"
+                  disabled={rewriteBusy || !instruction.trim()}
+                  onClick={() => onRewrite(instruction.trim())}
+                  className="rounded-md bg-accent px-3 py-1.5 text-[12.5px] font-semibold text-accent-ink transition-all hover:brightness-110 disabled:opacity-50"
+                >
+                  {rewriteBusy ? "Rewriting this page…" : "Rewrite this page"}
+                </button>
+                {!rewriteBusy && (
+                  <button
+                    type="button"
+                    onClick={() => setRewriteOpen(false)}
+                    className="font-mono text-[10.5px] uppercase tracking-[0.14em] text-faint transition-colors hover:text-ink"
+                  >
+                    cancel
+                  </button>
+                )}
+                <span className="font-mono text-[10.5px] text-faint">
+                  {rewriteBusy
+                    ? "the rest of the outline is untouched"
+                    : "uses tokens · only this page changes"}
+                </span>
+              </div>
+              {rewriteError && (
+                <p className="mt-2 text-[12px] leading-relaxed text-ink">{rewriteError}</p>
+              )}
             </div>
           )}
 
@@ -629,6 +856,61 @@ function EditableHeadline({
         }
       }}
       className="w-full rounded border border-accent-line bg-surface px-2 py-1 font-display text-[22px] font-semibold leading-[1.15] tracking-tight text-ink focus:outline-none"
+    />
+  );
+}
+
+function EditableSupport({
+  value,
+  placeholder,
+  onBlur,
+}: {
+  value: string;
+  placeholder: string;
+  onBlur: (v: string) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(value);
+  if (!editing) {
+    return (
+      <button
+        type="button"
+        data-rb-lede
+        onClick={() => {
+          setDraft(value);
+          setEditing(true);
+        }}
+        className={cn(
+          "-mx-1 block w-full rounded px-1 text-left text-[13px] leading-relaxed transition-colors hover:bg-surface-3",
+          value ? "text-ink-soft" : "text-faint",
+        )}
+      >
+        {value || placeholder}
+      </button>
+    );
+  }
+  return (
+    <input
+      type="text"
+      value={draft}
+      autoFocus
+      maxLength={240}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={() => {
+        setEditing(false);
+        if (draft.trim() !== value) onBlur(draft.trim());
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          (e.target as HTMLInputElement).blur();
+        }
+        if (e.key === "Escape") {
+          setDraft(value);
+          setEditing(false);
+        }
+      }}
+      className="w-full rounded border border-accent-line bg-surface px-2 py-1 text-[13px] leading-relaxed text-ink focus:outline-none"
     />
   );
 }
