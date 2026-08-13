@@ -324,6 +324,11 @@ export interface BuildWarnings {
    * empty warnings.json because nothing recorded the unresolved failure.
    */
   structural_unresolved?: string[];
+  /** Render-truth findings the bounded ladder could not clear, shipped
+   *  FLAGGED instead of refusing delivery (founder policy, 2026-08-13).
+   *  Human sentences naming the page and the defect; the editor panel that
+   *  renders structural_unresolved shows these the same way. */
+  render_truth_unresolved?: string[];
 }
 
 export type BuildResult =

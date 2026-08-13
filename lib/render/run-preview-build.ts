@@ -456,10 +456,13 @@ async function runPreviewBuildInner(
     `gate:render-truth:${repair.ok ? "passed" : repair.reason} (${repair.steps.length} step(s))`,
   );
 
-  if (!repair.ok) {
+  if (!repair.ok && repair.reason === "measure-error") {
+    // The one still-fatal class: the deck could not even be rendered and
+    // measured, so there is nothing verifiable to hand over. Everything else
+    // ships flagged below.
     await persistTimeline();
     console.error(
-      `[preview/build] render-truth gate FAILED (${repair.reason}) after $${repair.spentUsd.toFixed(2)}:`,
+      `[preview/build] render-truth gate could not MEASURE after $${repair.spentUsd.toFixed(2)}:`,
       JSON.stringify(repair.blocking),
     );
     await recordUsage({ op: "build", model, scriptId, url: brief?.brand_kit_url, usage: currentUsage, failed: true });
@@ -494,6 +497,51 @@ async function runPreviewBuildInner(
         },
       },
     };
+  }
+
+  if (!repair.ok) {
+    // SHIP FLAGGED (founder, 2026-08-13, after paying twice for the same deck
+    // and owning nothing: "this is unacceptable"). The ladder is bounded and
+    // measured non-convergent past two rounds — at this point six finished
+    // pages exist and one or two carry a layout finding the EDITOR fixes in
+    // a click, which is the product's entire thesis. Refusing delivery
+    // protected a quality bar at the price of everything the user paid for.
+    // The deck ships; the failing pages arrive FLAGGED (same warnings
+    // channel structural_unresolved ships through), the telemetry still
+    // records the residual honestly, and the usage records as delivered.
+    // RB_SHIP_FLAGGED=off restores the old refusal.
+    const shipFlagged = !["off", "0", "false"].includes(
+      String(process.env.RB_SHIP_FLAGGED ?? "").trim().toLowerCase(),
+    );
+    if (!shipFlagged) {
+      await persistTimeline();
+      return {
+        status: 422,
+        body: {
+          error: `render-truth gate: ${repair.reason}`,
+          stage: "render-truth",
+          render_truth: {
+            reason: repair.reason,
+            blocking: repair.blocking,
+            steps: repair.steps,
+            spentUsd: repair.spentUsd,
+          },
+        },
+      };
+    }
+    const noun = (currentScript?.config?.kind ?? "deck") === "deck" ? "Page" : "Scene";
+    const issues = repair.blocking.map(
+      (f) => `${noun} ${f.scene + 1}: ${f.detail || f.kind} — flagged for a hand fix; the rest of the ${noun === "Page" ? "deck" : "video"} is clean.`,
+    );
+    currentWarnings = {
+      ...(currentWarnings ?? {}),
+      render_truth_unresolved: issues,
+    };
+    timeline.mark(`gate:render-truth:shipped-flagged (${repair.blocking.length} finding(s))`);
+    console.warn(
+      `[preview/build] shipping FLAGGED (${repair.reason}) — ${repair.blocking.length} finding(s) carried as warnings:`,
+      JSON.stringify(repair.blocking.map((f) => ({ scene: f.scene, kind: f.kind }))),
+    );
   }
 
   // VISION GATE (ADVISORY). Findings surface as warnings, never block — runs

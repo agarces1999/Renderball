@@ -94,6 +94,7 @@ interface PreviewWarnings {
    * severe contrast), rendered as its own alarm panel, not a quiet note.
    */
   structural_unresolved?: string[];
+  render_truth_unresolved?: string[];
 }
 
 export function PreviewClient({ scriptId, script, initialWarnings, isBlank = false }: Props) {
@@ -447,7 +448,14 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
               onLimitDismiss={() => setRegenLimit(null)}
               exportError={exportError}
               onExportDismiss={() => setExportError(null)}
-              structural={warnings?.structural_unresolved ?? null}
+              structural={
+                warnings?.structural_unresolved?.length || warnings?.render_truth_unresolved?.length
+                  ? [
+                      ...(warnings?.structural_unresolved ?? []),
+                      ...(warnings?.render_truth_unresolved ?? []),
+                    ]
+                  : null
+              }
               warnings={hasWarnings ? warnings : null}
             />
           }
@@ -794,9 +802,16 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
         />
       )}
 
-      {warnings?.structural_unresolved &&
-      warnings.structural_unresolved.length > 0 ? (
-        <StructuralPanel issues={warnings.structural_unresolved} />
+      {(warnings?.structural_unresolved?.length || warnings?.render_truth_unresolved?.length) ? (
+        <StructuralPanel
+          issues={[
+            ...(warnings?.structural_unresolved ?? []),
+            // Layout findings the bounded repair ladder could not clear — the
+            // deck shipped anyway (founder policy 2026-08-13) and these name
+            // the pages to touch up by hand.
+            ...(warnings?.render_truth_unresolved ?? []),
+          ]}
+        />
       ) : null}
 
       {hasWarnings ? <WarningsPanel warnings={warnings!} /> : null}
