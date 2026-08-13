@@ -64,6 +64,7 @@ export async function GET(request: Request) {
       platform: process.platform,
       arch: process.arch,
       node: process.version,
+      chromium: measurements.find((m) => m.browserVersion)?.browserVersion ?? "unknown",
       measureMs: Date.now() - t0,
     },
     scenes: measurements.map((m) => ({

@@ -235,6 +235,12 @@ export interface SceneMeasurement {
    *  floor and stayed marked. The floor count is the live signal for the
    *  semantic shorten path (docs/TEXT_FIT.md layer 3). */
   fit?: { candidates: number; fitted: number; floored: number };
+  /** The exact browser that produced these rects (e.g. "HeadlessChrome/140…").
+   *  Recorded because chromium binary DRIFT is the leading suspect for the
+   *  prod-only phantom findings — the deploy's `playwright install chromium
+   *  || true` can silently leave an older browser in place, and text metrics
+   *  differ across major versions. Same string on every scene of a run. */
+  browserVersion?: string;
   /**
    * MEASUREMENT TRUST (2026-08-14). A production ladder exhausted on a deck
    * whose stored bytes measure clean on macOS AND in the exact playwright
@@ -736,6 +742,7 @@ export const measureScenes = async (
           pieces,
           screenshotPath,
           rectsPath,
+          browserVersion: browser.version(),
           ...(fitSummary ? { fit: fitSummary } : {}),
           ...(fontFailures.length > 0 ? { fontFailures } : {}),
           fitSettled,
