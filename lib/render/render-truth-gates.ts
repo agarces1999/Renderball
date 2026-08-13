@@ -2493,7 +2493,30 @@ export const findRenderTruthFailures = async (
   findings.push(...(await findCanvasBrightness(measurements, opts.brandBackground)));
   // Cross-scene: a scene shipped on an off-brand canvas (breaks video coherence).
   findings.push(...(await findCanvasCoherence(measurements, opts.brandBackground)));
-  const blocking = findings.filter((f) => blockingKinds.has(f.kind));
+  // MEASUREMENT TRUST (2026-08-14): a finding that depends on TEXT METRICS
+  // may only BLOCK when the scene it fired on was measured under trustworthy
+  // conditions — brand fonts actually loaded, fit pass actually settled. A
+  // production ladder spent four repair calls and then refused a deck over
+  // findings no reachable environment reproduces; whatever the prod-side
+  // trigger turns out to be, a measurement that cannot vouch for its own text
+  // metrics must not buy repairs or block delivery. Untrusted findings stay
+  // in `findings` (they flag, they inform), they just cannot block.
+  const untrustedScenes = new Set(
+    measurements
+      .filter((m) => (m.fontFailures?.length ?? 0) > 0 || m.fitSettled === false)
+      .map((m) => m.scene),
+  );
+  const TEXT_METRIC_KINDS = new Set<RenderTruthKind>([
+    "overflow",
+    "cross-piece-overlap",
+    "covered-text-cluster",
+    "intra-piece-overlap",
+  ]);
+  const blocking = findings.filter(
+    (f) =>
+      blockingKinds.has(f.kind) &&
+      !(untrustedScenes.has(f.scene) && TEXT_METRIC_KINDS.has(f.kind)),
+  );
   return { findings, blocking };
 };
 

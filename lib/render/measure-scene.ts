@@ -235,6 +235,22 @@ export interface SceneMeasurement {
    *  floor and stayed marked. The floor count is the live signal for the
    *  semantic shorten path (docs/TEXT_FIT.md layer 3). */
   fit?: { candidates: number; fitted: number; floored: number };
+  /**
+   * MEASUREMENT TRUST (2026-08-14). A production ladder exhausted on a deck
+   * whose stored bytes measure clean on macOS AND in the exact playwright
+   * Linux image, fonts loading or deliberately broken — so a prod-side
+   * measurement produced findings no reachable environment reproduces, and
+   * repairs were bought against them. The measurement now DECLARES the
+   * conditions under which its text metrics can be trusted:
+   *   fontFailures — declared brand families document.fonts reports unloaded
+   *                  at walk time (fallback metrics were in effect);
+   *   fitSettled   — false when the walk proceeded past the bounded wait
+   *                  with the fit pass unfinished (mid-fit geometry).
+   * Text-metric-dependent findings on an untrusted scene are advisory, never
+   * blocking — a claim the gates enforce, not the callers.
+   */
+  fontFailures?: string[];
+  fitSettled?: boolean;
   /** Set when the scene could not be measured at all (treat as a gate failure). */
   error?: string;
 }
@@ -669,6 +685,17 @@ export const measureScenes = async (
         const fitSummary = (await page
           .evaluate("window.__rbFitSummary || null")
           .catch(() => null)) as { candidates: number; fitted: number; floored: number } | null;
+        // Trust markers: which declared families never loaded, and whether
+        // the fit pass had actually finished before this walk.
+        const declaredFamilies = fonts.map((f) => f.family).filter((f): f is string => !!f);
+        const fontFailures = (await page
+          .evaluate(
+            `(function(fams){try{if(!document.fonts||!document.fonts.check)return [];var out=[];for(var i=0;i<fams.length;i++){try{if(!document.fonts.check('16px "'+fams[i]+'"'))out.push(fams[i]);}catch(e){}}return out;}catch(e){return []}})(${JSON.stringify(declaredFamilies)})`,
+          )
+          .catch(() => [])) as string[];
+        const fitSettled = fitSummary !== null || !(await page
+          .evaluate("typeof window.__rbFitDone !== 'undefined'")
+          .catch(() => false));
         const elements = (await page.evaluate(PAGE_WALK)) as MeasuredElement[];
         // Per-piece authored-vs-painted rects. Best-effort: a failure here must
         // never fail a measurement the BLOCKING gates depend on.
@@ -710,6 +737,8 @@ export const measureScenes = async (
           screenshotPath,
           rectsPath,
           ...(fitSummary ? { fit: fitSummary } : {}),
+          ...(fontFailures.length > 0 ? { fontFailures } : {}),
+          fitSettled,
         });
       } catch (err) {
         results.push({

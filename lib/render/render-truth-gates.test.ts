@@ -1174,5 +1174,36 @@ await check("intra-piece overlap: opts widen the gate without changing wired def
   assert(findIntraPieceOverlap(m, { minFrac: 0.25 }).length === 1, "opts.minFrac widens");
 });
 
+
+// ── measurement trust (2026-08-14) ───────────────────────────────────────────
+await check("an untrusted scene's text-metric findings flag but cannot BLOCK", async () => {
+  // A wide element far past the canvas edge — the zero-FP overflow class.
+  const overflowing = {
+    tag: "div", x: 1800, y: 100, w: 600, h: 120, color: "rgb(0,0,0)", bg: "rgba(0,0,0,0)",
+    text: "spills", isImg: false, fontSize: 24, opacity: 1, piece: "p1", pieceKind: "copy",
+    onOpaqueSurface: true, coveredAtCenter: false, radius: 0, parentIx: 0,
+    hasTextDesc: true, hasBgImage: false, vx: 1800, vy: 100, vw: 120, vh: 120,
+  };
+  const scene = (extra) => ({ scene: 0, width: 1920, height: 1080, elements: [overflowing], ...extra });
+
+  const trusted = await findRenderTruthFailures([scene({ fitSettled: true })], {});
+  assert(trusted.blocking.some((f) => f.kind === "overflow"), "trusted measurement blocks as ever");
+
+  const fontsFailed = await findRenderTruthFailures(
+    [scene({ fontFailures: ["Klarna Title"], fitSettled: true })], {});
+  assert(fontsFailed.findings.some((f) => f.kind === "overflow"), "the finding still FLAGS");
+  assert(!fontsFailed.blocking.some((f) => f.kind === "overflow"),
+    "fallback-metric text must not buy repairs or refuse decks");
+
+  const midFit = await findRenderTruthFailures([scene({ fitSettled: false })], {});
+  assert(!midFit.blocking.some((f) => f.kind === "overflow"), "mid-fit geometry cannot block either");
+
+  // measure-error is NOT a text-metric kind — an untrusted scene that cannot
+  // be measured at all still fails closed.
+  const me = await findRenderTruthFailures(
+    [{ scene: 0, width: 1920, height: 1080, elements: [], error: "boom", fontFailures: ["X"] }], {});
+  assert(me.blocking.some((f) => f.kind === "measure-error"), "measure-error stays fail-closed");
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exitCode = 1;
