@@ -52,7 +52,7 @@ export function ElementPanel({
   const [map, setMap] = useState<Record<string, Provenance>>({});
   const [draft, setDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const seededFor = useRef<string | null>(null);
+  const seededFor = useRef<{ pieceId: string; value: string } | null>(null);
   const working = busy === "regenerate";
 
   useEffect(() => {
@@ -76,9 +76,27 @@ export function ElementPanel({
 
   const prov = map[pieceId];
   useEffect(() => {
-    if (seededFor.current === pieceId) return;
-    seededFor.current = pieceId;
-    setDraft(prov?.prompt ?? "");
+    const incoming = prov?.prompt ?? "";
+    if (seededFor.current?.pieceId === pieceId) {
+      // Same element, but the provenance fetch landed AFTER the first seed —
+      // adopt the remembered prompt only if the user hasn't typed over the
+      // seed. Without this, the panel mounted before the fetch, seeded "",
+      // and "Last regenerated with:" sat above an empty box (seen live,
+      // 2026-08-14).
+      if (incoming && incoming !== seededFor.current.value) {
+        const lastSeed = seededFor.current.value;
+        setDraft((d) => {
+          if (d === lastSeed) {
+            seededFor.current = { pieceId, value: incoming };
+            return incoming;
+          }
+          return d;
+        });
+      }
+      return;
+    }
+    seededFor.current = { pieceId, value: incoming };
+    setDraft(incoming);
     setError(null);
   }, [pieceId, prov?.prompt]);
 

@@ -1191,6 +1191,11 @@ export const buildUserMessage = (brief: AgentBrief): string => {
       : "Generate a Script JSON from this PRE-STRUCTURED brief.",
     "",
     "Hard constraints you MUST honor:",
+    // Measured 2026-08-14: an English brief + a Spanish brand site produced a
+    // Spanish deck ("El trimestre en cifras") — the crawl's site copy steered
+    // the writing language. The brief is the user's voice; the brand context
+    // is reference material.
+    "- LANGUAGE: write ALL reader-facing copy (scene labels, headlines, ledes, captions, list items, eyebrows, the CTA) in the LANGUAGE OF THE BRIEF below. Brand/site material in another language informs look, tone, colors and facts — NEVER the writing language. If the brief mixes languages, follow the language of its main ask.",
     ...(isDeck
       ? [
           "- This is a STATIC PRESENTATION DECK: each scene is one still SLIDE (a designed page), not an animated video. Nothing on a slide moves.",
@@ -1321,7 +1326,13 @@ export const buildUserMessage = (brief: AgentBrief): string => {
     }
     if (hasExtract) {
       const b = brief.brand_extract!;
-      lines.push("  Crawled brand signals (USE these to ground type, color, voice):");
+      lines.push("  Crawled brand signals (USE these to ground type, color, and visual identity):");
+      // Measured 2026-08-14: this block, in the site's own language, out-pulled
+      // a distant LANGUAGE constraint — an English brief + a Spanish site made
+      // a Spanish deck. The carve-out lives HERE, next to the material itself.
+      lines.push(
+        "  ⚠ LANGUAGE CARVE-OUT: these materials are in the SITE'S language, which does not set the deck's. Every word you write — labels, headlines, ledes, captions, CTA — is in the language of the user's brief. If the brief is English and the site is Spanish, the deck is English.",
+      );
       if (b.title) lines.push(`    Site title: ${b.title}`);
       if (b.description) lines.push(`    Description: ${b.description}`);
       // Signature color (QA S3): the hue a viewer associates with the brand —
@@ -1425,14 +1436,14 @@ export const buildUserMessage = (brief: AgentBrief): string => {
         lines.push(`    Apple touch icon: ${assetRef(b.apple_touch_icon)}`);
       if (b.og_image) lines.push(`    OG image (hero image of the site): ${assetRef(b.og_image)}`);
       if (b.headlines && b.headlines.length > 0) {
-        lines.push("    Headlines from the site (echo voice/tone — the brand's actual phrasing):");
+        lines.push("    Headlines from the site (match their ENERGY and tone — punchy vs formal, playful vs technical — but write YOUR copy in the brief's language, never theirs):");
         for (const h of b.headlines) lines.push(`      "${h}"`);
       }
       if (b.body_excerpts && b.body_excerpts.length > 0) {
         lines.push("    Body copy from the site (the brand's actual claims, features, value props):");
         for (const e of b.body_excerpts.slice(0, 8)) lines.push(`      "${e}"`);
         lines.push(
-          `      → STICK TO THESE CLAIMS. Don't invent stats, prices, features, or product capabilities the brand doesn't actually advertise. When the video mentions a specific capability, draw from this list.`,
+          `      → STICK TO THESE CLAIMS. Don't invent stats, prices, features, or product capabilities the brand doesn't actually advertise. When the video mentions a specific capability, draw from this list — TRANSLATED into the brief's language, never quoted in the site's.`,
         );
       }
       if (b.page_images && b.page_images.length > 0) {
