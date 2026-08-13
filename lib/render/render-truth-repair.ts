@@ -25,6 +25,32 @@ import type { SceneMeasurement } from "./measure-scene";
 export const COST_CEILING_USD = 10;
 export const MAX_DESIGN_RETRIES = 2; // L1 + L2
 
+/**
+ * The ladder's WALL-CLOCK budget (default 150s). The cost ceiling bounds
+ * dollars; nothing bounded MINUTES, and the measured worst case was a
+ * founder-watched Klarna build spending 12 of its 15 minutes in here. The
+ * budget is checked before each PAID step, same posture as the cost guard.
+ */
+export const REPAIR_BUDGET_MS = (() => {
+  const v = Number(process.env.RB_REPAIR_BUDGET_MS);
+  return Number.isFinite(v) && v > 0 ? v : 150_000;
+})();
+
+/**
+ * L3 (script rewrite + FULL REBUILD) is OFF the live path by default —
+ * `RB_REPAIR_REBUILD=on` re-enables it (dogfood/offline lanes). Measured
+ * (2026-08-13, gate telemetry): the 15-23-minute builds are exactly the
+ * L3 runs, and on the document that hit it three times the rebuild never
+ * produced a clean deck — each rewrite re-rolled the layout dice and
+ * surfaced NEW findings (overflow → overlap → barbell). The research
+ * corroborates: repair value collapses after two passes, and loops converge
+ * only when a step must STRICTLY improve the measured defect count to keep
+ * going — which is also enforced below.
+ */
+export const rebuildRungEnabled = (
+  env: Record<string, string | undefined> = process.env,
+): boolean => String(env.RB_REPAIR_REBUILD ?? "").trim().toLowerCase() === "on";
+
 export interface GateResult {
   findings: RenderTruthFinding[];
   blocking: RenderTruthFinding[];
@@ -60,6 +86,8 @@ export interface RepairResult {
     | "passed"
     | "repaired"
     | "cost-ceiling"
+    | "time-budget"
+    | "no-progress"
     | "ladder-exhausted"
     | "measure-error"
     | "error";
@@ -108,9 +136,19 @@ const repairInstruction = (sceneFindings: RenderTruthFinding[]): string => {
  */
 export const repairRenderTruth = async (
   cb: RepairCallbacks,
-  opts: { spentSoFarUsd?: number; ceilingUsd?: number; model?: string } = {},
+  opts: {
+    spentSoFarUsd?: number;
+    ceilingUsd?: number;
+    model?: string;
+    /** Wall-clock budget override (tests); default REPAIR_BUDGET_MS. */
+    budgetMs?: number;
+    /** L3 rebuild-rung override (tests); default rebuildRungEnabled(). */
+    allowRebuild?: boolean;
+  } = {},
 ): Promise<RepairResult> => {
   const ceiling = opts.ceilingUsd ?? COST_CEILING_USD;
+  const budgetMs = opts.budgetMs ?? REPAIR_BUDGET_MS;
+  const allowRebuild = opts.allowRebuild ?? rebuildRungEnabled();
   const model = opts.model ?? MODELS.codingAgentBuild;
   const costOf = cb.costOf ?? ((u: Usage) => costUsd(model, u));
   const steps: string[] = [];
@@ -152,10 +190,12 @@ export const repairRenderTruth = async (
   }
   log(`measured ${gate.blocking.length} blocking finding(s) on scene(s) ${scenesOf(gate.blocking).join(", ")}`);
 
-  // Budget guard run before each PAID step: stop if we're already at/over the
-  // ceiling (a paid step would breach it). Conservative — stops at the ceiling,
-  // never past it.
+  // Budget guards run before each PAID step: stop if we're already at/over
+  // the cost ceiling or the wall-clock budget (a paid step would breach it).
+  // Conservative — stops at the line, never past it.
   const overBudget = () => spent >= ceiling;
+  const t0 = Date.now();
+  const outOfTime = () => Date.now() - t0 >= budgetMs;
 
   // ── L1 + L2: design retries on the failing scenes ────────────────────────
   for (let attempt = 1; attempt <= MAX_DESIGN_RETRIES; attempt++) {
@@ -163,6 +203,11 @@ export const repairRenderTruth = async (
       log(`cost ceiling $${ceiling} reached ($${spent.toFixed(2)} spent) — stopping before L${attempt} design retry`);
       return { ok: false, reason: "cost-ceiling", steps, spentUsd: spent, findings: gate.findings, blocking: gate.blocking, initialFindings, measurements: gate.measurements };
     }
+    if (outOfTime()) {
+      log(`repair time budget ${Math.round(budgetMs / 1000)}s reached — stopping before L${attempt} design retry`);
+      return { ok: false, reason: "time-budget", steps, spentUsd: spent, findings: gate.findings, blocking: gate.blocking, initialFindings, measurements: gate.measurements };
+    }
+    const before = gate.blocking.length;
     const failing = scenesOf(gate.blocking);
     log(`L${attempt}: regenerating design for scene(s) ${failing.join(", ")}`);
     for (const s of failing) {
@@ -175,12 +220,34 @@ export const repairRenderTruth = async (
     if (gate.blocking.length === 0) {
       return { ok: true, reason: "repaired", steps: [...steps, `passed after L${attempt}`], spentUsd: spent, findings: gate.findings, blocking: [], initialFindings, measurements: gate.measurements };
     }
+    // STRICT IMPROVEMENT, or stop. A round that did not reduce the blocking
+    // count is measured non-convergence — on the document that ran the old
+    // ladder three times, every later round surfaced NEW findings while
+    // burning a build's worth of tokens. Spending again on a treatment that
+    // just measurably failed is not persistence, it is the meter running.
+    if (gate.blocking.length >= before) {
+      log(
+        `L${attempt} did not improve (${before} → ${gate.blocking.length} blocking) — stopping: repairs are not converging`,
+      );
+      return { ok: false, reason: "no-progress", steps, spentUsd: spent, findings: gate.findings, blocking: gate.blocking, initialFindings, measurements: gate.measurements };
+    }
   }
 
   // ── L3: rewrite the failing scenes' script (lighter concept) + rebuild ────
+  // OFF the live path by default (see rebuildRungEnabled) — the full rebuild
+  // re-rolls every page's layout and was measured to surface new findings
+  // rather than converge. Dogfood/offline lanes opt back in.
+  if (!allowRebuild) {
+    log(`L3 rebuild rung disabled on this path — stopping after ${MAX_DESIGN_RETRIES} scoped rounds`);
+    return { ok: false, reason: "ladder-exhausted", steps, spentUsd: spent, findings: gate.findings, blocking: gate.blocking, initialFindings, measurements: gate.measurements };
+  }
   if (overBudget()) {
     log(`cost ceiling $${ceiling} reached ($${spent.toFixed(2)} spent) — stopping before L3 script rewrite`);
     return { ok: false, reason: "cost-ceiling", steps, spentUsd: spent, findings: gate.findings, blocking: gate.blocking, initialFindings, measurements: gate.measurements };
+  }
+  if (outOfTime()) {
+    log(`repair time budget ${Math.round(budgetMs / 1000)}s reached — stopping before L3 script rewrite`);
+    return { ok: false, reason: "time-budget", steps, spentUsd: spent, findings: gate.findings, blocking: gate.blocking, initialFindings, measurements: gate.measurements };
   }
   const failing = scenesOf(gate.blocking);
   // The L3 reason must match the DEFECT. "Simplify to fewer, smaller elements"

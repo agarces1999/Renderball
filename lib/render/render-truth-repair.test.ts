@@ -66,19 +66,45 @@ await check("L1 design retry fixes it → repaired", async () => {
   assert(calls.rewrite.length === 0, "should not reach L3");
 });
 
-await check("L1+L2 fail, L3 script rewrite fixes it → repaired", async () => {
-  const { cb, calls } = mk([gate([1]), gate([1]), gate([1]), gate([])], { ok: true, usage: U(1) });
-  const r = await repairRenderTruth(cb);
+await check("L3 is OPT-IN: allowRebuild + improving rounds → repaired via rewrite", async () => {
+  // Rounds IMPROVE (2 scenes → 1 → 1-but-different… keep it strictly falling:
+  // 2 blocking → 1 blocking → L2 can't run strict-improve? it improved 2→1,
+  // L2 runs → still 1 (no improvement) would stop… so give L2 a fresh drop:
+  // 3 → 2 → 1 → rewrite → clean.
+  const { cb, calls } = mk(
+    [gate([1, 2, 3]), gate([1, 2]), gate([1]), gate([])],
+    { ok: true, usage: U(1) },
+  );
+  const r = await repairRenderTruth(cb, { allowRebuild: true });
   assert(r.ok && r.reason === "repaired", `got ${r.reason}`);
-  assert(calls.regen.length === 2, `expected 2 design retries, got ${calls.regen.length}`);
-  assert(calls.rewrite.length === 1 && calls.rewrite[0][0] === 1, `rewrite=${JSON.stringify(calls.rewrite)}`);
+  assert(calls.rewrite.length === 1, `rewrite=${JSON.stringify(calls.rewrite)}`);
 });
 
-await check("nothing fixes it → ladder-exhausted, ok:false", async () => {
-  const { cb } = mk([gate([3]), gate([3]), gate([3]), gate([3])], { ok: true, usage: U(1) });
-  const r = await repairRenderTruth(cb);
+await check("L3 stays OFF by default: improving-but-dirty rounds end ladder-exhausted with NO rebuild", async () => {
+  const { cb, calls } = mk([gate([1, 2, 3]), gate([1, 2]), gate([1]), gate([])], { ok: true, usage: U(1) });
+  const r = await repairRenderTruth(cb, { allowRebuild: false });
   assert(!r.ok && r.reason === "ladder-exhausted", `got ${r.reason}`);
+  assert(calls.rewrite.length === 0, "the full rebuild must not run on the live path");
+  assert(calls.regen.length > 0, "the scoped rounds did run");
+});
+
+await check("a round that does not improve STOPS the ladder — no-progress, no more spend", async () => {
+  // The measured non-convergence case: the same count (or worse) after a paid
+  // round. The old ladder kept going — three rounds and a rebuild on the same
+  // document, $4.50, nothing shipped.
+  const { cb, calls } = mk([gate([3]), gate([3]), gate([3]), gate([3])], { ok: true, usage: U(1) });
+  const r = await repairRenderTruth(cb, { allowRebuild: true });
+  assert(!r.ok && r.reason === "no-progress", `got ${r.reason}`);
+  assert(calls.regen.length === 1, `exactly one paid round, got ${calls.regen.length}`);
+  assert(calls.rewrite.length === 0, "no rebuild after measured non-convergence");
   assert(r.blocking.length === 1 && r.blocking[0].scene === 3, "final blocking carried");
+});
+
+await check("the wall-clock budget stops the ladder before a paid step", async () => {
+  const { cb, calls } = mk([gate([1, 2]), gate([1])], { ok: true, usage: U(1) });
+  const r = await repairRenderTruth(cb, { budgetMs: 0 });
+  assert(!r.ok && r.reason === "time-budget", `got ${r.reason}`);
+  assert(calls.regen.length === 0, "no paid step past the time budget");
 });
 
 await check("a pure measure-error short-circuits — no paid repair, reason measure-error", async () => {
@@ -107,10 +133,11 @@ await check("cost ceiling stops before the first paid retry", async () => {
 });
 
 await check("cost ceiling stops mid-ladder once spend accrues", async () => {
-  // ceiling 5; each design retry on one scene spends $3. L1 → $3, still blocking;
-  // before L2, $3 < $5 so L2 runs → $6; before L3, $6 >= $5 → stop.
-  const { cb, calls } = mk([gate([1]), gate([1]), gate([1])], { ok: true, usage: U(3) });
-  const r = await repairRenderTruth(cb, { ceilingUsd: 5 });
+  // ceiling 5; L1 regenerates TWO scenes at $3 each → $6 spent, improved
+  // 2 → 1 so strict-improvement lets it continue — but before L2, $6 >= $5 →
+  // cost-ceiling. Rounds improve so the ceiling (not no-progress) is what fires.
+  const { cb, calls } = mk([gate([1, 2]), gate([1]), gate([])], { ok: true, usage: U(3) });
+  const r = await repairRenderTruth(cb, { ceilingUsd: 5, allowRebuild: true });
   assert(!r.ok && r.reason === "cost-ceiling", `got ${r.reason}`);
   assert(calls.regen.length === 2 && calls.rewrite.length === 0, `regen=${calls.regen.length} rewrite=${calls.rewrite.length}`);
   assert(r.spentUsd === 6, `spent=${r.spentUsd}`);
