@@ -4,7 +4,8 @@ import { loadBriefByScriptId, loadScript, saveBrief, saveScript } from "../../..
 import { isBlankDocument } from "../../../../lib/documents/blank-document";
 import { documentDir } from "../../../../lib/render/gen-store";
 import { withDbRetry } from "../../../../lib/db";
-import { generateScript, DECK_SECONDS_PER_SLIDE } from "../../../../lib/agents/script-generator";
+import { generateScript, fireworksScriptStreamTransport, DECK_SECONDS_PER_SLIDE } from "../../../../lib/agents/script-generator";
+import { openOutlineStream } from "../../../../lib/render/outline-stream";
 import { checkEntitlement } from "../../../../lib/entitlement";
 import { checkTokenAllowance } from "../../../../lib/metering";
 import { assertZaiAvailable, ZaiUnavailableError } from "../../../../lib/zai-breaker";
@@ -211,8 +212,13 @@ export async function POST(request: Request) {
   // user is still there to read. The abandoned work cannot be cancelled and
   // is left to the void; its spend still lands in the ledger.
   const started = await startBuild(outlineJob(scriptId), async () => {
+    // The ceremony stream: model deltas relayed live to the panel (GET
+    // /api/documents/generate/stream). Pure theater — the poll below stays
+    // the completion authority — so every failure here degrades silently.
+    const sink = openOutlineStream(scriptId);
     let result;
     try {
+      sink.note("thinking");
       result = await withPhaseTimeout(
         "Writing the outline",
         OUTLINE_GENERATE_BUDGET_MS,
@@ -222,6 +228,12 @@ export async function POST(request: Request) {
             moment_count: pages,
           } as unknown as Parameters<typeof generateScript>[0],
           brief.id,
+          {
+            transport: fireworksScriptStreamTransport(
+              (delta) => sink.push(delta),
+              () => sink.note("polish"),
+            ),
+          },
         ),
       );
     } catch (err) {
@@ -229,6 +241,8 @@ export async function POST(request: Request) {
         status: 500,
         body: { error: err instanceof Error ? err.message : "could not generate the outline" },
       };
+    } finally {
+      sink.close();
     }
     return await finish(result);
   });

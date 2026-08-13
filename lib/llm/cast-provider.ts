@@ -343,3 +343,160 @@ export const castCall = async (call: CastCall): Promise<CastResult> => {
 
   throw lastErr ?? new CastProviderError("cast call failed after retries", null, true);
 };
+
+/**
+ * One cast call, STREAMED (2026-08-14 — the outline types itself). Same wire,
+ * same body plus `stream: true` with usage on the final chunk; `onDelta`
+ * fires per content fragment as the provider emits it.
+ *
+ * Retry contract, deliberately narrower than castCall's: a retry is allowed
+ * ONLY while nothing has streamed yet. Once the first delta reaches the
+ * caller, a mid-stream death surfaces as an error instead — the caller has
+ * shown real text to a real user, and silently restarting would make the
+ * words they just read un-happen. (Callers fall back to the non-streaming
+ * castCall on failure; the outline job does exactly that.)
+ *
+ * THE LEDGER WRITE lives here for the same reason it lives in castCall: the
+ * transport is the one place every caller passes through. A stream that dies
+ * mid-generation records the tokens as unverified — the provider billed a
+ * generation whose end we never saw (same doctrine as castCall's
+ * transport-error marker).
+ */
+export const castStream = async (
+  call: CastCall,
+  onDelta: (text: string) => void,
+): Promise<CastResult> => {
+  const model = call.model ?? MODEL();
+  const wire = wireFor(model);
+  if (!wire.key) {
+    throw new CastProviderError("cast provider not configured", null, false);
+  }
+  const t0 = Date.now();
+  let lastErr: CastProviderError | null = null;
+
+  for (let attempt = 0; attempt <= RETRIES; attempt++) {
+    const tAttempt = Date.now();
+    let streamedAnything = false;
+    try {
+      const res = await fetch(wire.url, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${wire.key}`,
+        },
+        body: JSON.stringify({
+          ...wire.body(call, model),
+          stream: true,
+          stream_options: { include_usage: true },
+          messages: [
+            ...(call.system ? [{ role: "system", content: call.system }] : []),
+            ...(call.messages ?? [{ role: "user", content: call.user ?? "" }]),
+          ],
+        }),
+        signal: call.signal ?? AbortSignal.timeout(call.timeoutMs ?? 300_000),
+      });
+      if (!res.ok || !res.body) {
+        const bodyText = await res.text().catch(() => "");
+        const retryable = res.status === 429 || res.status >= 500;
+        lastErr = new CastProviderError(
+          `cast stream HTTP ${res.status}: ${bodyText.slice(0, 200)}`,
+          res.status,
+          retryable,
+        );
+        void recordSpend({
+          model, stage: call.stage, inputTokens: 0, outputTokens: 0, cachedTokens: 0,
+          latencyMs: Date.now() - tAttempt, ok: false, tokensUnknown: true,
+        });
+        if (!retryable) throw lastErr;
+        continue;
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let text = "";
+      interface UsageFrame {
+        prompt_tokens?: number;
+        completion_tokens?: number;
+        prompt_tokens_details?: { cached_tokens?: number };
+      }
+      let usage: UsageFrame | null = null;
+      let finish: string | null = null;
+
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        // SSE frames: lines, events split on blank line; we only need `data:`.
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        for (const line of lines) {
+          const m = /^data:\s*(.*)$/.exec(line.trim());
+          if (!m) continue;
+          if (m[1] === "[DONE]") continue;
+          let j: {
+            choices?: { delta?: { content?: string }; finish_reason?: string | null }[];
+            usage?: UsageFrame;
+          };
+          try {
+            j = JSON.parse(m[1]);
+          } catch {
+            continue; // a torn frame; the next chunk completes it via buffer
+          }
+          const delta = j.choices?.[0]?.delta?.content;
+          if (delta) {
+            text += delta;
+            streamedAnything = true;
+            try {
+              onDelta(delta);
+            } catch {
+              /* a sink error must not kill the paid stream */
+            }
+          }
+          if (j.choices?.[0]?.finish_reason) finish = j.choices[0].finish_reason;
+          if (j.usage) usage = j.usage;
+        }
+      }
+
+      noteZaiSuccess();
+      void recordSpend({
+        model, stage: call.stage,
+        inputTokens: usage?.prompt_tokens ?? 0,
+        outputTokens: usage?.completion_tokens ?? 0,
+        cachedTokens: usage?.prompt_tokens_details?.cached_tokens ?? 0,
+        latencyMs: Date.now() - tAttempt,
+        ok: true,
+        // No usage frame = the provider ended the stream without accounting;
+        // the tokens are real but unverifiable from our side.
+        ...(usage ? {} : { tokensUnknown: true }),
+      });
+      return {
+        text,
+        thinking: "",
+        inputTokens: usage?.prompt_tokens ?? 0,
+        outputTokens: usage?.completion_tokens ?? 0,
+        seconds: (Date.now() - t0) / 1000,
+        stopReason: finish,
+      };
+    } catch (err) {
+      if (err instanceof CastProviderError && !err.retryable) throw err;
+      lastErr =
+        err instanceof CastProviderError
+          ? err
+          : new CastProviderError(
+              `cast stream transport error: ${err instanceof Error ? err.message : String(err)}`,
+              null,
+              true,
+            );
+      void recordSpend({
+        model, stage: call.stage, inputTokens: 0, outputTokens: 0, cachedTokens: 0,
+        latencyMs: Date.now() - tAttempt, ok: false, tokensUnknown: true,
+      });
+      if (streamedAnything) {
+        // Words already reached a user; do not silently restart their outline.
+        throw lastErr;
+      }
+    }
+  }
+  throw lastErr ?? new CastProviderError("cast stream failed after retries", null, true);
+};

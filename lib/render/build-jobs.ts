@@ -41,7 +41,19 @@ export type BuildJob =
   | { state: "cancelled"; finishedAt: number };
 
 /** scriptId → latest known job. */
-const jobs = new Map<string, BuildJob>();
+/**
+ * On globalThis, not module scope — the same move lib/db.ts makes for Prisma
+ * and lib/render/outline-stream.ts makes for the ceremony sink, and it is
+ * MEASURED here, not theoretical: a nonce trace (2026-08-14, .data/
+ * outline-trace.log) caught one dev process answering adjacent requests
+ * 267ms apart from THREE different instances of this module — the outline
+ * job registered in one instance's Map while every poll read another's,
+ * so the panel saw "unknown" for a job that was running the whole time.
+ * Production's single compiled bundle never splits, but the stash costs
+ * nothing there and makes dev tell the truth.
+ */
+const globalForJobs = globalThis as unknown as { __rbBuildJobs?: Map<string, BuildJob> };
+const jobs: Map<string, BuildJob> = (globalForJobs.__rbBuildJobs ??= new Map());
 
 /** Documents whose running build the user asked to stop. Checked by the
  *  build at every timeline boundary — cooperative, so an in-flight model

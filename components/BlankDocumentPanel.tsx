@@ -374,8 +374,22 @@ export function BlankDocumentPanel({
     let cancelled = false;
     (async () => {
       try {
-        const res = await fetch(`/api/documents/generate?scriptId=${encodeURIComponent(scriptId)}`);
-        if (res.ok) {
+        // Retried: this one answer decides between "your outline is still
+        // cooking" and a fresh start card. A transient failure (dev under
+        // load, a Neon blip, a tab waking from sleep) must not be read as
+        // "nothing is running" — that is the exact founder complaint this
+        // check exists to prevent.
+        let res: Response | null = null;
+        for (let tryN = 0; tryN < 3 && !cancelled; tryN++) {
+          try {
+            res = await fetch(`/api/documents/generate?scriptId=${encodeURIComponent(scriptId)}`);
+            if (res.ok) break;
+          } catch {
+            res = null;
+          }
+          await new Promise((r) => setTimeout(r, 1200 * (tryN + 1)));
+        }
+        if (res?.ok) {
           const d = (await res.json().catch(() => null)) as
             | { status?: string; startedAt?: number; result?: { reviewUrl?: string }; resultStatus?: number }
             | null;
@@ -814,7 +828,8 @@ export function BlankDocumentPanel({
             The reload didn&apos;t interrupt it — it runs on our side. You&apos;ll land on
             the review the moment it&apos;s ready.
           </p>
-          <GeneratingSteps
+          <OutlineLive
+            scriptId={scriptId}
             steps={["Reading your brief", "Finding the story", "Naming your pages", "Putting them in order"]}
             elapsed={resumeElapsed}
             pages={6}
@@ -1053,7 +1068,7 @@ export function BlankDocumentPanel({
             )}
 
             {busy ? (
-              <GeneratingSteps steps={generatingSteps(pages, url)} elapsed={elapsed} pages={pages} />
+              <OutlineLive scriptId={scriptId} steps={generatingSteps(pages, url)} elapsed={elapsed} pages={pages} />
             ) : (
               <button
                 type="button"
@@ -1647,6 +1662,264 @@ function BrandCeremony({
         </button>
       </div>
     </>
+  );
+}
+
+/**
+ * Pull every complete-or-growing JSON string value for `key` out of a raw,
+ * possibly TRUNCATED JSON stream. Escapes are decoded; a string cut off
+ * mid-token returns what has arrived so far — that partial tail is exactly
+ * what the caret types. The [{,] prefix (and the fact that escaped quotes
+ * arrive as \" on the wire) keeps prose that merely mentions "label" from
+ * matching.
+ */
+export const extractStreamStrings = (buf: string, key: string): string[] => {
+  const res: string[] = [];
+  const re = new RegExp(`[{,]\\s*"${key}"\\s*:\\s*"`, "g");
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(buf))) {
+    let i = m.index + m[0].length;
+    let out = "";
+    while (i < buf.length) {
+      const c = buf[i];
+      if (c === "\\") {
+        const nx = buf[i + 1];
+        if (nx === undefined) break; // escape cut at the stream edge
+        if (nx === "n" || nx === "t") out += " ";
+        else if (nx === "u") {
+          const hex = buf.slice(i + 2, i + 6);
+          if (hex.length === 4) {
+            out += String.fromCharCode(Number.parseInt(hex, 16) || 63);
+            i += 4;
+          }
+        } else out += nx;
+        i += 2;
+        continue;
+      }
+      if (c === '"') break;
+      out += c;
+      i++;
+    }
+    res.push(out);
+  }
+  return res;
+};
+
+/**
+ * Page cards from the raw stream: ONE label + ONE lede per scene segment.
+ * Segmented on the scene id markers rather than matching every "label" in
+ * the buffer — content objects carry their own nested "label" keys (KPI
+ * tiles, chart annotations), and a flat scan typed those as phantom pages:
+ * a five-card manuscript for a four-page ask, watched live on 2026-08-14
+ * ("02 Pilot / 03 Quarter / 04 Stage" — tile labels, not pages).
+ */
+export const parseOutlineCards = (buf: string): { label: string; lede: string }[] => {
+  const segments = buf.split(/"id"\s*:\s*"scene_\d+"/).slice(1);
+  const out: { label: string; lede: string }[] = [];
+  for (const seg of segments) {
+    const label = extractStreamStrings(seg, "label")[0] ?? "";
+    const lede = extractStreamStrings(seg, "lede")[0] ?? "";
+    if (label || lede) out.push({ label, lede });
+  }
+  return out;
+};
+
+/** The blinking caret that marks where the model is, right now. */
+function Caret() {
+  return (
+    <span
+      aria-hidden
+      className="ml-0.5 inline-block h-[1em] w-[2px] translate-y-[2px] bg-accent"
+      style={{ animation: "rb-step-pulse 1s ease-in-out infinite" }}
+    />
+  );
+}
+
+/**
+ * The outline, typed live (founder, 2026-08-14, from the Gamma comparison:
+ * "lets show how we write the steps in the outline — actually typing").
+ *
+ * This is the model's REAL text arriving over SSE — page titles and ledes
+ * pulled from the stream as they are written, not a paced imitation. The
+ * thinking silence before the first word is shown as its own phase, and the
+ * repair loop is shown as "polishing" rather than re-typing an outline the
+ * user already read (re-typing would look like the product un-writing their
+ * document).
+ *
+ * Everything here is ceremony: completion and navigation stay with the poll
+ * (pollOutline). If the stream is unavailable — process restart, older job,
+ * proxy that buffers SSE — this renders the paced GeneratingSteps instead,
+ * which remains the honest floor.
+ */
+export function OutlineLive({
+  scriptId,
+  steps,
+  elapsed,
+  pages,
+}: {
+  scriptId: string;
+  steps: string[];
+  elapsed: number;
+  pages: number;
+}) {
+  const [cards, setCards] = useState<{ label: string; lede: string }[]>([]);
+  const [phase, setPhase] = useState<
+    "connecting" | "thinking" | "writing" | "polish" | "done" | "unavailable"
+  >("connecting");
+  const bufRef = useRef("");
+  const lastIRef = useRef(-1);
+  const errsRef = useRef(0);
+  const listRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    let es: EventSource | null = null;
+    let cancelled = false;
+    try {
+      es = new EventSource(`/api/documents/generate/stream?scriptId=${encodeURIComponent(scriptId)}`);
+    } catch {
+      setPhase("unavailable");
+      return;
+    }
+    es.onmessage = (m) => {
+      if (cancelled) return;
+      errsRef.current = 0;
+      let ev: { i?: number; kind?: string; data?: string } | null = null;
+      try {
+        ev = JSON.parse(m.data as string) as { i?: number; kind?: string; data?: string };
+      } catch {
+        return;
+      }
+      if (!ev || typeof ev.i !== "number") return;
+      if (ev.kind === "note" && ev.data === "unavailable") {
+        // Before anything arrived: no stream exists, fall back to paced steps.
+        // After text arrived (a reconnect that found the process restarted):
+        // keep what was typed and let "polishing" carry the rest of the wait.
+        setPhase((p) => (lastIRef.current < 0 ? "unavailable" : p === "done" ? p : "polish"));
+        es?.close();
+        return;
+      }
+      // The browser replays from 0 on auto-reconnect (the URL carries no
+      // cursor); everything already applied is skipped by index.
+      if (ev.i <= lastIRef.current) return;
+      lastIRef.current = ev.i;
+      if (ev.kind === "delta" && typeof ev.data === "string") {
+        bufRef.current += ev.data;
+        setCards(parseOutlineCards(bufRef.current));
+        setPhase((p) => (p === "polish" || p === "done" ? p : "writing"));
+      } else if (ev.kind === "note") {
+        if (ev.data === "thinking") setPhase((p) => (p === "connecting" ? "thinking" : p));
+        else if (ev.data === "polish" || ev.data === "restart") setPhase("polish");
+        else if (ev.data === "done") {
+          setPhase("done");
+          es?.close();
+        }
+      }
+    };
+    es.onerror = () => {
+      if (cancelled) return;
+      errsRef.current += 1;
+      // Three consecutive failures with nothing ever received = the relay is
+      // not reachable (buffering proxy, dead route). With text already shown,
+      // stay: the poll still finishes the job.
+      if (errsRef.current >= 3 && lastIRef.current < 0) {
+        setPhase("unavailable");
+        es?.close();
+      }
+    };
+    return () => {
+      cancelled = true;
+      es?.close();
+    };
+  }, [scriptId]);
+
+  // Keep the newest typing on screen.
+  useEffect(() => {
+    const el = listRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [cards, phase]);
+
+  if (phase === "unavailable") {
+    return <GeneratingSteps steps={steps} elapsed={elapsed} pages={pages} />;
+  }
+
+  const mmss = `${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, "0")}`;
+  const headline =
+    phase === "connecting" || phase === "thinking"
+      ? "Reading your brief — deciding what each page must earn"
+      : phase === "writing"
+        ? "Writing your pages"
+        : phase === "polish"
+          ? "Polishing — checking every page against your brief"
+          : "Outline ready";
+  const lastCard = cards[cards.length - 1];
+
+  return (
+    <div className="mt-4 rounded-lg border border-hairline bg-surface-2 p-4">
+      <div className="flex items-center gap-2.5">
+        {phase === "done" ? (
+          <span aria-hidden className="text-accent">
+            <svg viewBox="0 0 12 12" className="h-3 w-3" fill="none">
+              <path d="M2.5 6.2l2.3 2.3 4.7-4.7" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </span>
+        ) : (
+          <span
+            aria-hidden
+            className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-accent"
+            style={{ animation: "rb-step-pulse 1.4s ease-in-out infinite" }}
+          />
+        )}
+        <span className="text-[12.5px] leading-relaxed text-ink">{headline}</span>
+      </div>
+
+      {cards.length > 0 && (
+        <div ref={listRef} className="mt-3 flex max-h-[300px] flex-col gap-2 overflow-y-auto pr-1">
+          {cards.map((c, i) => {
+            const isLast = i === cards.length - 1;
+            const typingLede = isLast && phase === "writing" && c.lede.length > 0;
+            const typingLabel = isLast && phase === "writing" && c.lede.length === 0;
+            return (
+              <div
+                key={i}
+                data-rb-outline-card={i}
+                className="rounded-md border border-hairline bg-surface px-3 py-2"
+                style={{ animation: "rb-fade-up 280ms ease-out backwards" }}
+              >
+                <div className="flex items-baseline gap-2">
+                  <span className="font-mono text-[10px] tabular-nums text-faint">
+                    {String(i + 1).padStart(2, "0")}
+                  </span>
+                  <span className="font-display text-[13.5px] font-bold tracking-tight text-ink">
+                    {c.label}
+                    {typingLabel && <Caret />}
+                  </span>
+                </div>
+                {c.lede.length > 0 && (
+                  <p className="mt-0.5 pl-6 text-[11.5px] leading-relaxed text-muted">
+                    {c.lede}
+                    {typingLede && <Caret />}
+                  </p>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {cards.length === 0 && phase !== "connecting" && (
+        <p className="mt-2 pl-6 text-[11.5px] leading-relaxed text-faint">
+          The first page appears here as soon as it is written.
+        </p>
+      )}
+
+      <div className="mt-3 flex items-baseline justify-between gap-3 border-t border-hairline pt-2.5">
+        <span className="font-mono text-[11px] tabular-nums text-muted">{mmss}</span>
+        <span className="text-[11px] leading-relaxed text-faint">
+          {lastCard && pages > 0 && cards.length >= pages && phase === "polish"
+            ? "All pages drafted — tightening them now."
+            : "You can close this tab; it finishes on its own."}
+        </span>
+      </div>
+    </div>
   );
 }
 

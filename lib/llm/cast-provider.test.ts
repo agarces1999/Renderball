@@ -7,7 +7,7 @@
  * default vs the Cerebras bake-off wire — with the matching key contract
  * (RB_FIREWORKS_KEY vs RB_CAST_KEY, per 3839765).
  */
-import { castCall, castConfigured, CastProviderError } from "./cast-provider";
+import { castCall, castStream, castConfigured, CastProviderError } from "./cast-provider";
 import { __setSpendWriterForTests, flushSpend, type SpendRow } from "../spend/record";
 import { withSpend } from "../spend/context";
 import { costUsd, EMPTY_USAGE } from "../usage";
@@ -406,6 +406,120 @@ await check("Fireworks model without RB_FIREWORKS_KEY fails fast, names the miss
   } finally {
     if (saved) process.env.RB_FIREWORKS_KEY = saved;
   }
+});
+
+// ── castStream: the outline ceremony's transport (2026-08-14) ─────────────
+
+/** An SSE Response whose payload arrives in the given raw chunks. */
+const sseResponse = (chunks: string[]) => {
+  const enc = new TextEncoder();
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const c of chunks) controller.enqueue(enc.encode(c));
+      controller.close();
+    },
+  });
+  return new Response(stream, { status: 200 });
+};
+const sseFrame = (obj: unknown) => `data: ${JSON.stringify(obj)}\n\n`;
+
+await check("castStream assembles deltas in order, fires onDelta per fragment, maps usage", async () => {
+  mockFetch((_url, init) => {
+    const sent = JSON.parse(String(init.body)) as Record<string, unknown>;
+    assert(sent.stream === true, "stream:true must reach the wire");
+    assert(
+      typeof sent.stream_options === "object" && (sent.stream_options as { include_usage?: boolean }).include_usage === true,
+      "stream_options.include_usage must be requested — without it Fireworks omits the final usage frame",
+    );
+    return sseResponse([
+      sseFrame({ choices: [{ delta: { content: "Hel" } }] }),
+      sseFrame({ choices: [{ delta: { content: "lo " } }] }) + sseFrame({ choices: [{ delta: { content: "world" }, finish_reason: "stop" }] }),
+      sseFrame({ choices: [], usage: { prompt_tokens: 11, completion_tokens: 7 } }),
+      "data: [DONE]\n\n",
+    ]);
+  });
+  const seen: string[] = [];
+  const r = await castStream({ system: "s", user: "u", maxTokens: 100 }, (d) => seen.push(d));
+  assert(r.text === "Hello world", `assembled text, got ${JSON.stringify(r.text)}`);
+  assert(seen.join("|") === "Hel|lo |world", `onDelta per fragment, got ${seen.join("|")}`);
+  assert(r.inputTokens === 11 && r.outputTokens === 7, "usage mapped from the final frame");
+  assert(r.stopReason === "stop", "finish_reason mapped");
+});
+
+await check("castStream reassembles a frame torn across transport chunks", async () => {
+  const frame = sseFrame({ choices: [{ delta: { content: "unbroken" } }] });
+  const cut = Math.floor(frame.length / 2);
+  mockFetch(() =>
+    sseResponse([
+      frame.slice(0, cut),
+      frame.slice(cut),
+      sseFrame({ choices: [], usage: { prompt_tokens: 1, completion_tokens: 2 } }),
+      "data: [DONE]\n\n",
+    ]),
+  );
+  const r = await castStream({ system: "", user: "u", maxTokens: 100 }, () => {});
+  assert(r.text === "unbroken", `torn frame must reassemble, got ${JSON.stringify(r.text)}`);
+});
+
+await check("castStream retries a 5xx BEFORE any delta, succeeds on the next attempt", async () => {
+  let calls = 0;
+  mockFetch(() => {
+    calls++;
+    if (calls === 1) return new Response("upstream sad", { status: 502 });
+    return sseResponse([
+      sseFrame({ choices: [{ delta: { content: "ok" } }] }),
+      sseFrame({ choices: [], usage: { prompt_tokens: 1, completion_tokens: 1 } }),
+      "data: [DONE]\n\n",
+    ]);
+  });
+  const r = await castStream({ system: "", user: "u", maxTokens: 100 }, () => {});
+  assert(calls === 2, `expected retry after pre-stream 502, got ${calls} calls`);
+  assert(r.text === "ok", "second attempt's text returned");
+});
+
+await check("castStream does NOT retry after text has streamed — a mid-stream death surfaces", async () => {
+  let calls = 0;
+  mockFetch(() => {
+    calls++;
+    const enc = new TextEncoder();
+    return new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(enc.encode(sseFrame({ choices: [{ delta: { content: "half an out" } }] })));
+          // Deferred: an error in the same turn as the enqueue makes undici
+          // drop the buffered chunk, which would simulate a PRE-stream death
+          // instead of a mid-stream one.
+          setTimeout(() => controller.error(new Error("connection reset mid-stream")), 20);
+        },
+      }),
+      { status: 200 },
+    );
+  });
+  const seen: string[] = [];
+  let threw: unknown = null;
+  try {
+    await castStream({ system: "", user: "u", maxTokens: 100 }, (d) => seen.push(d));
+  } catch (e) {
+    threw = e;
+  }
+  assert(threw instanceof CastProviderError, "must throw — the caller decides how to fall back");
+  assert(calls === 1, `no silent restart after words reached the user, got ${calls} calls`);
+  assert(seen.join("") === "half an out", "the delivered prefix reached onDelta before the death");
+});
+
+await check("castStream survives an onDelta that throws — the paid stream finishes", async () => {
+  mockFetch(() =>
+    sseResponse([
+      sseFrame({ choices: [{ delta: { content: "a" } }] }),
+      sseFrame({ choices: [{ delta: { content: "b" } }] }),
+      sseFrame({ choices: [], usage: { prompt_tokens: 1, completion_tokens: 2 } }),
+      "data: [DONE]\n\n",
+    ]),
+  );
+  const r = await castStream({ system: "", user: "u", maxTokens: 100 }, () => {
+    throw new Error("sink exploded");
+  });
+  assert(r.text === "ab", "text still assembled despite the sink throwing");
 });
 
 globalThis.fetch = realFetch;

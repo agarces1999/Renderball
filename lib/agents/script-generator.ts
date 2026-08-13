@@ -1,4 +1,4 @@
-import { castCall } from "../llm/cast-provider";
+import { castCall, castStream } from "../llm/cast-provider";
 import { SCRIPT_GENERATOR_SYSTEM_PROMPT } from "./prompts/script-generator";
 import {
   validateScript,
@@ -398,6 +398,64 @@ export const fireworksScriptTransport: ScriptTransport = async (history) => {
       cache_creation_input_tokens: 0,
       cache_read_input_tokens: 0,
     },
+  };
+};
+
+/**
+ * The streaming variant of the transport above, for the outline ceremony
+ * (2026-08-14): the FIRST generation call streams its text through `onDelta`
+ * so the panel can type the outline live. Everything after the first call —
+ * validation retries, scene repairs — is the polish loop; it runs through the
+ * plain transport and announces itself via `onPolish` instead, because
+ * re-typing a whole outline the user already watched reads as the product
+ * un-writing their document.
+ *
+ * A stream that dies mid-generation falls back to the plain transport for
+ * that same call: the ceremony degrades, the outline still lands. One wire
+ * definition lives here for both paths — same prompt, same budget, same
+ * spend label.
+ */
+export const fireworksScriptStreamTransport = (
+  onDelta: (text: string) => void,
+  onPolish?: () => void,
+): ScriptTransport => {
+  let first = true;
+  return async (history) => {
+    if (!first) {
+      onPolish?.();
+      return fireworksScriptTransport(history);
+    }
+    first = false;
+    try {
+      const r = await castStream(
+        {
+          stage: "outline",
+          timeoutMs: 300_000,
+          system: SCRIPT_GENERATOR_SYSTEM_PROMPT,
+          user: flattenHistoryToUser(history),
+          maxTokens: 16000,
+          effort: "high",
+          json: true,
+          model: fireworksScriptModel(),
+        },
+        onDelta,
+      );
+      return {
+        text: r.text ?? "",
+        usage: {
+          input_tokens: r.inputTokens,
+          output_tokens: r.outputTokens,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 0,
+        },
+      };
+    } catch (err) {
+      console.warn(
+        `[script] stream transport failed, regenerating non-streaming: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      onPolish?.();
+      return fireworksScriptTransport(history);
+    }
   };
 };
 
