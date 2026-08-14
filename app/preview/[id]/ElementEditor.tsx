@@ -385,7 +385,7 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
   const [genPrompt, setGenPrompt] = useState("");
   // What the marquee generates: a JSX element (LLM) or an image (diffusion).
   // An explicit switch on the prompt bar — never guessed from the prompt text.
-  const [genKind, setGenKind] = useState<"element" | "image">("element");
+  const [genKind, setGenKind] = useState<"element" | "image" | "icon">("element");
   // ── suggest a layout ──────────────────────────────────────────────────────
   // The question before the marquee: the marquee assumes you know where a thing
   // goes; this proposes the whole composition. Suggestions are REGIONS ONLY —
@@ -1315,7 +1315,11 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
         scriptId,
         sceneIndex,
         bounds,
-        ...(genKind === "image" ? { mode: "generate-image", prompt } : { mode: "generate", prompt }),
+        ...(genKind === "image"
+          ? { mode: "generate-image", prompt }
+          : genKind === "icon"
+            ? { mode: "generate-icon", prompt }
+            : { mode: "generate", prompt }),
       },
       controller.signal,
     );
@@ -2426,9 +2430,10 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
             className={`flex items-center gap-1 ${R_MD} border border-white/10 bg-[#11141b] px-1.5 py-1 shadow-xl`}
           >
             {/* What to put in the box — an explicit switch, never inferred from
-                the prompt. Element = LLM JSX; Image = diffusion photo/art. */}
+                the prompt. Element = LLM JSX; Image = diffusion photo/art;
+                Icon = diffusion mark with its background removed (transparent). */}
             <div role="group" aria-label="What to generate" className={`flex items-center gap-0.5 ${R_SM} bg-white/10 p-0.5`}>
-              {(["element", "image"] as const).map((k) => (
+              {(["element", "image", "icon"] as const).map((k) => (
                 <button
                   key={k}
                   type="button"
@@ -2456,11 +2461,19 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
                 }
               }}
               disabled={!!busy}
-              aria-label={genKind === "image" ? "Describe the image to generate" : "Describe the element to generate"}
+              aria-label={
+                genKind === "image"
+                  ? "Describe the image to generate"
+                  : genKind === "icon"
+                    ? "Describe the icon to generate"
+                    : "Describe the element to generate"
+              }
               placeholder={
                 genKind === "image"
                   ? "Describe the image, e.g. aerial photo of a harbor at dusk"
-                  : "What goes here? e.g. a KPI tile showing 3.2x"
+                  : genKind === "icon"
+                    ? "Name the icon, e.g. a shield with a checkmark"
+                    : "What goes here? e.g. a KPI tile showing 3.2x"
               }
               className={`h-[28px] w-72 ${R_SM} bg-white/10 px-2 text-[11px] text-white placeholder-white/45 outline-none focus:bg-white/15 disabled:opacity-50`}
             />

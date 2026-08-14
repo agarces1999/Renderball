@@ -31,6 +31,10 @@ export interface ImageCall {
    *  enough; the generator NEVER controls placement or final size. */
   width: number;
   height: number;
+  /** Classic wire only: what the image must NOT contain (icons lean on this). */
+  negativePrompt?: string;
+  /** Classic wire only: prompt-adherence dial (icons want it higher). */
+  cfgScale?: number;
   seed?: number;
   /** Per-call model override. Precedence: call.model → RB_IMAGE_MODEL → SDXL default. */
   model?: string;
@@ -61,8 +65,25 @@ export class ImageProviderError extends Error {
   }
 }
 
-const DEFAULT_MODEL = "accounts/fireworks/models/stable-diffusion-xl-1024-v1-0";
+/**
+ * Re-probed 2026-08-14 (qa scratch, all four classic models called live):
+ * playground-v2-5 beat SDXL clearly on aesthetics at the same latency
+ * (~1.2s) and accepts the same resolution buckets (1152×896 / 896×1152 /
+ * 1344×768 verified 200). Flux + SD3.5 wires remain blocked for this
+ * account (404 "not deployed" — July's 401 became a 404). SDXL stays one
+ * env flip away.
+ */
+const DEFAULT_MODEL = "accounts/fireworks/models/playground-v2-5-1024px-aesthetic";
 const MODEL = () => process.env.RB_IMAGE_MODEL || DEFAULT_MODEL;
+/**
+ * Icon generation routes to SSD-1B: the fastest of the four (~1s) and, on
+ * the 2026-08-14 side-by-side, the cleanest isolated flat marks — playground
+ * paints gorgeous scenes but ignores "plain background" (it framed the icon
+ * in an invented navy circle), which is hostile to the background-removal
+ * step that makes an icon an icon.
+ */
+const DEFAULT_ICON_MODEL = "accounts/fireworks/models/SSD-1B";
+export const ICON_MODEL = () => process.env.RB_ICON_MODEL || DEFAULT_ICON_MODEL;
 const KEY = () => process.env.RB_FIREWORKS_KEY || "";
 
 export const imageConfigured = (): boolean => KEY().length > 0;
@@ -156,6 +177,8 @@ const wireFor = (call: ImageCall, model: string): Wire => {
       width: w,
       height: h,
       steps: 30,
+      ...(call.negativePrompt ? { negative_prompt: call.negativePrompt } : {}),
+      ...(call.cfgScale !== undefined ? { cfg_scale: call.cfgScale } : {}),
       ...(call.seed !== undefined ? { seed: call.seed } : {}),
     },
     size: [w, h],

@@ -69,7 +69,9 @@ await check("classic wire: image_generation URL, bucketed width/height, PNG acce
     return pngResponse();
   });
   const res = await imageCall({ prompt: "a chart", width: 800, height: 450, seed: 7 });
-  assert(url.includes("/image_generation/accounts/fireworks/models/stable-diffusion-xl-1024-v1-0"), `classic endpoint, got ${url}`);
+  // Default flipped to playground-v2-5 on 2026-08-14 (probe: better aesthetics
+  // than SDXL at equal latency, same resolution buckets).
+  assert(url.includes("/image_generation/accounts/fireworks/models/playground-v2-5-1024px-aesthetic"), `classic endpoint, got ${url}`);
   assert(sent.width === 1344 && sent.height === 768, `16:9 bounds must bucket to 1344×768, got ${sent.width}×${sent.height}`);
   assert(sent.seed === 7, "seed must reach the wire");
   assert(accept === "image/png", "must request PNG");
@@ -145,6 +147,26 @@ await check("a 200 that is not a PNG fails instead of landing on disk", async ()
     assert(e instanceof ImageProviderError && !e.retryable, "non-PNG 200 is a hard error");
     assert(/not a PNG/.test((e as Error).message), "error names the failure");
   }
+});
+
+await check("icon knobs reach the classic wire (negative_prompt + cfg_scale)", async () => {
+  let sent: Record<string, unknown> = {};
+  mockFetch((_u, init) => {
+    sent = JSON.parse(String(init?.body));
+    return pngResponse();
+  });
+  await imageCall({
+    prompt: "a single flat icon of a rocket",
+    negativePrompt: "photo, text, watermark",
+    cfgScale: 8,
+    width: 1024,
+    height: 1024,
+  });
+  assert(sent.negative_prompt === "photo, text, watermark", "negative_prompt on the wire");
+  assert(sent.cfg_scale === 8, "cfg_scale on the wire");
+  // Omitted → omitted: the params must not appear as undefined keys.
+  await imageCall({ prompt: "p", width: 1024, height: 1024 });
+  assert(!("negative_prompt" in sent) && !("cfg_scale" in sent), "knobs absent when unset");
 });
 
 globalThis.fetch = realFetch;

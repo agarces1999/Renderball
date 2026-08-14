@@ -34,6 +34,7 @@ import { commitGenDir } from "./commit";
 import { withGenDirLock } from "./gendir-lock";
 import { emitFreetextSpan, DEFAULT_FORMAT } from "./freetext";
 import { saveImageAsset } from "./image-assets";
+import { generateIconPng } from "./generate-icon";
 import { imageCall, ImageProviderError } from "../llm/image-provider";
 import { recordUsage, EMPTY_USAGE, type Usage } from "../usage";
 import { withSpend } from "../spend/context";
@@ -62,7 +63,8 @@ export type InsertMode =
   | { mode: "primitive"; primitive: "image"; src?: string }
   | { mode: "primitive"; primitive: "icon"; icon?: string }
   | { mode: "generate"; prompt: string; kind?: string }
-  | { mode: "generate-image"; prompt: string };
+  | { mode: "generate-image"; prompt: string }
+  | { mode: "generate-icon"; prompt: string };
 
 export interface InsertElementInput {
   genDir: string;
@@ -99,6 +101,11 @@ export const parseInsertBody = (raw: unknown): ParsedInsertBody => {
       return { ok: false, error: "Say what to create — generation needs a prompt." };
     }
     spec = { mode: "generate", prompt: b.prompt, ...(typeof b.kind === "string" ? { kind: b.kind } : {}) };
+  } else if (b.mode === "generate-icon") {
+    if (typeof b.prompt !== "string" || !b.prompt.trim()) {
+      return { ok: false, error: "Describe the icon — generation needs a prompt." };
+    }
+    spec = { mode: "generate-icon", prompt: b.prompt };
   } else if (b.mode === "generate-image") {
     if (typeof b.prompt !== "string" || !b.prompt.trim()) {
       return { ok: false, error: "Describe the image — generation needs a prompt." };
@@ -110,7 +117,7 @@ export const parseInsertBody = (raw: unknown): ParsedInsertBody => {
     else if (b.primitive === "icon") spec = { mode: "primitive", primitive: "icon", ...(typeof b.icon === "string" ? { icon: b.icon } : {}) };
     else return { ok: false, error: 'primitive must be "text", "image", or "icon"' };
   } else {
-    return { ok: false, error: 'mode must be "primitive", "generate", or "generate-image"' };
+    return { ok: false, error: 'mode must be "primitive", "generate", "generate-image", or "generate-icon"' };
   }
 
   return { ok: true, scriptId: b.scriptId, sceneIndex: b.sceneIndex, bounds, spec };
@@ -226,6 +233,25 @@ export const insertElement = async (input: InsertElementInput): Promise<InsertEl
           e instanceof ImageProviderError && e.status === 401
             ? "Image generation isn't enabled for this account yet — ask us to switch it on."
             : `image generation failed: ${msg(e)}`;
+        return { ok: false, error: friendly };
+      }
+    } else if (spec.mode === "generate-icon") {
+      try {
+        const icon = await generateIconPng(spec.prompt);
+        const ref = await saveImageAsset(genDir, icon.png, "png");
+        imageModel = icon.model;
+        console.log(
+          `[insert] icon generated (${Math.round(icon.removedRatio * 100)}% background removed)`,
+        );
+        // contain, never cover: a trimmed transparent mark must scale into the
+        // drawn box whole — cropping an icon amputates it.
+        inner = `<Img src=${JSON.stringify(ref)} style={{ width: "100%", height: "100%", objectFit: "contain" }} />`;
+        kind = "icon";
+      } catch (e) {
+        const friendly =
+          e instanceof ImageProviderError && e.status === 401
+            ? "Icon generation isn't enabled for this account yet — ask us to switch it on."
+            : `icon generation failed: ${msg(e)}`;
         return { ok: false, error: friendly };
       }
     } else if (spec.mode === "generate") {

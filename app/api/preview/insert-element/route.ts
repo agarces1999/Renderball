@@ -17,6 +17,7 @@ import { checkTokenAllowance, recordTokenUsage } from "../../../../lib/metering"
  *     mode:"primitive", primitive:"text"|"image"|"icon", text?|src?|icon? }
  *   { scriptId, sceneIndex, bounds:{x,y,w,h}, mode:"generate", prompt, kind? }
  *   { scriptId, sceneIndex, bounds:{x,y,w,h}, mode:"generate-image", prompt }
+ *   { scriptId, sceneIndex, bounds:{x,y,w,h}, mode:"generate-icon", prompt }
  * Returns: { ok, sceneIndex, pieceId, usage? } | { ok:false, error }
  *
  * Primitive mode is deterministic (no LLM, no spend). Generate mode is the marquee
@@ -47,7 +48,7 @@ export async function POST(request: Request) {
   // Both generate modes are spend — per-owner cap + token allowance. The LLM
   // breaker guards only the LLM path; image generation runs on a separate
   // Fireworks service. Primitive mode stays free/ungated ("editing is free").
-  if (spec.mode === "generate" || spec.mode === "generate-image") {
+  if (spec.mode === "generate" || spec.mode === "generate-image" || spec.mode === "generate-icon") {
     if (spec.mode === "generate") {
       try {
         assertZaiAvailable();
@@ -88,7 +89,7 @@ export async function POST(request: Request) {
     if (result.ok && result.pieceId) {
       const p = spec as { mode?: string; prompt?: string };
       await recordProvenance(genDir, result.pieceId, {
-        origin: p.mode === "generate" || p.mode === "generate-image" ? "marquee" : "added",
+        origin: p.mode === "generate" || p.mode === "generate-image" || p.mode === "generate-icon" ? "marquee" : "added",
         ...(p.prompt ? { prompt: p.prompt } : {}),
       });
     }
