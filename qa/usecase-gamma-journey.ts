@@ -35,14 +35,18 @@ const run = async () => {
   await page.getByRole("button", { name: /start without a brand/i }).click();
   await page.getByText("Generate every page for me").click();
 
-  // The brand touch a real user makes: their site on the form.
-  await page.getByPlaceholder("yoursite.com").fill("flarebit.ai").catch(() => {
+  // The brand touch a real user makes: their site on the form. Renderball's
+  // own site — genuinely ours to crawl. (2026-08-14: an earlier version used
+  // flarebit.ai off the founder's email domain; the site is an unrelated
+  // Spanish-language business, not his — that run DID expose the
+  // brief-language-vs-site-language bug, now pinned in the outline prompt.)
+  await page.getByPlaceholder("yoursite.com").fill("renderball.com").catch(() => {
     console.log("  (no yoursite.com field — skipping brand URL)");
   });
   await page
     .locator("textarea")
     .fill(
-      "A 4-page investor update for Flarebit: the quarter in numbers (12 pilot customers, $48k MRR), the enterprise pilot that converted, the hard lesson from our August outage, and the ask — intros to infra-focused seed funds.",
+      "A 4-page investor update for Meridian Robotics (fictional): the quarter in numbers (12 pilot customers, $48k MRR), the enterprise pilot that converted, the hard lesson from our August outage, and the ask — intros to infra-focused seed funds.",
     );
   await page.locator('input[type="number"]').fill("4");
   await page.getByRole("button", { name: "Generate the document" }).click();
@@ -178,7 +182,7 @@ const run = async () => {
     await page
       .locator("textarea")
       .last()
-      .fill("Make the headline warmer — mention the team by name: 'the Flarebit crew'.");
+      .fill("Make the headline warmer — mention the team by name: 'the Meridian crew'.");
     await page.getByRole("button", { name: "Regenerate this element" }).click();
     let tabHeld = true;
     let regenLanded = false;
