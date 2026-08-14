@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import path from "path";
 import { insertElement, parseInsertBody, type InsertMode } from "../../../../lib/edit/insert-element";
+import { mergeProvenance } from "../../../../lib/edit/provenance";
 
 /**
  * Dev-only insert-element route — headless counterpart to /api/preview/insert-element
@@ -28,6 +29,16 @@ export async function POST(request: Request) {
 
   const genDir = path.join(process.cwd(), "src", "generated", scriptId);
   const result = await insertElement({ genDir, scriptId, sceneIndex, bounds, spec: spec as InsertMode });
+  // Same genMeta record as the prod route — without it, dev-lane generations
+  // are invisible to "match" and the harness can't exercise the family flow.
+  if (result.ok && result.pieceId && result.imageMeta) {
+    const p = spec as { prompt?: string };
+    await mergeProvenance(genDir, result.pieceId, {
+      origin: "marquee",
+      ...(p.prompt ? { prompt: p.prompt } : {}),
+      genMeta: result.imageMeta,
+    });
+  }
   const status = result.ok ? 200 : /not found/.test(result.error ?? "") ? 404 : 400;
   return NextResponse.json(
     result.ok

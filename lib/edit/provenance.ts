@@ -31,6 +31,21 @@ export interface ElementProvenance {
   /** The user's words, verbatim. Absent for deterministic hand-adds. */
   prompt?: string;
   at: string;
+  /**
+   * Generation facts for diffusion-made pieces (image/icon), kept so a later
+   * generation can RESEMBLE this one (founder, 2026-08-14: "keep using the
+   * same icon family"): same model + same seed + a cached style description
+   * of the actual pixels. styleDescriptor is written lazily by the first
+   * match that needs it (one vision read, then cached forever).
+   */
+  genMeta?: {
+    kind: "image" | "icon";
+    model: string;
+    seed: number;
+    /** The `assets/…` ref of the delivered PNG — what the vision read opens. */
+    assetRef: string;
+    styleDescriptor?: string;
+  };
 }
 
 export type ProvenanceMap = Record<string, ElementProvenance>;
@@ -48,6 +63,45 @@ export const readProvenance = async (genDir: string): Promise<ProvenanceMap> => 
 };
 
 /** Merge one entry in (read-modify-write; last writer wins per pieceId). */
+/**
+ * Patch one entry, PRESERVING what is already there — recordProvenance
+ * replaces the whole entry, which would wipe a cached styleDescriptor every
+ * time a route re-records origin+prompt.
+ */
+export const mergeProvenance = async (
+  genDir: string,
+  pieceId: string,
+  patch: Partial<Omit<ElementProvenance, "at">>,
+): Promise<void> => {
+  try {
+    if (!pieceId) return;
+    const map = await readProvenance(genDir);
+    const prev = map[pieceId];
+    const merged: ElementProvenance = {
+      ...(prev ?? { origin: "added" as const, at: new Date().toISOString() }),
+      ...patch,
+      origin: patch.origin ?? prev?.origin ?? "added",
+      at: prev?.at ?? new Date().toISOString(),
+    };
+    if (patch.genMeta || prev?.genMeta) {
+      // A styleDescriptor describes SPECIFIC pixels: when the patch points at
+      // a different asset, the old description must not ride along onto
+      // pixels it has never seen.
+      const sameAsset =
+        !patch.genMeta?.assetRef ||
+        !prev?.genMeta?.assetRef ||
+        patch.genMeta.assetRef === prev.genMeta.assetRef;
+      const carried = sameAsset ? prev?.genMeta : { ...prev?.genMeta, styleDescriptor: undefined };
+      merged.genMeta = { ...(carried ?? {}), ...(patch.genMeta ?? {}) } as ElementProvenance["genMeta"];
+      if (merged.genMeta && merged.genMeta.styleDescriptor === undefined) delete merged.genMeta.styleDescriptor;
+    }
+    map[pieceId] = merged;
+    await fs.writeFile(fileOf(genDir), JSON.stringify(map, null, 2), "utf8");
+  } catch (err) {
+    console.warn(`[provenance] merge for ${pieceId} failed — the edit itself is unaffected:`, err);
+  }
+};
+
 export const recordProvenance = async (
   genDir: string,
   pieceId: string,

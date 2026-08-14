@@ -33,15 +33,24 @@ export interface GeneratedIcon {
 
 export const generateIconPng = async (
   subject: string,
-  opts?: { signal?: AbortSignal },
+  opts?: {
+    signal?: AbortSignal;
+    /** Family levers (style-match): reuse a reference's seed/model, and
+     *  append its cached style descriptor to the scaffold. */
+    seed?: number;
+    model?: string;
+    styleHint?: string;
+  },
 ): Promise<GeneratedIcon> => {
+  const base = iconPrompt(subject);
   const img = await imageCall({
-    prompt: iconPrompt(subject),
+    prompt: opts?.styleHint ? `${base}, in this exact visual family: ${opts.styleHint}` : base,
     negativePrompt: ICON_NEGATIVE_PROMPT,
     cfgScale: 8,
     width: 1024,
     height: 1024,
-    model: ICON_MODEL(),
+    model: opts?.model ?? ICON_MODEL(),
+    seed: opts?.seed,
     stage: "generate-icon",
     signal: opts?.signal,
   });

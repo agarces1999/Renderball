@@ -5,7 +5,7 @@ import { getCurrentUser } from "../../../../lib/auth";
 import { assertZaiAvailable, ZaiUnavailableError } from "../../../../lib/zai-breaker";
 import { takeRegenSlot } from "../../../../lib/edit/op-cap";
 import { loadScript } from "../../../../lib/store";
-import { recordProvenance } from "../../../../lib/edit/provenance";
+import { recordProvenance, mergeProvenance } from "../../../../lib/edit/provenance";
 import { insertElement, parseInsertBody, type InsertMode } from "../../../../lib/edit/insert-element";
 import { checkTokenAllowance, recordTokenUsage } from "../../../../lib/metering";
 
@@ -92,6 +92,11 @@ export async function POST(request: Request) {
         origin: p.mode === "generate" || p.mode === "generate-image" || p.mode === "generate-icon" ? "marquee" : "added",
         ...(p.prompt ? { prompt: p.prompt } : {}),
       });
+      // Generation facts AFTER the record (record replaces the entry): what a
+      // later "match my icons" reuses — model, seed, and where the pixels live.
+      if (result.imageMeta) {
+        await mergeProvenance(genDir, result.pieceId, { genMeta: result.imageMeta });
+      }
     }
     const status = result.ok ? 200 : /not found/.test(result.error ?? "") ? 404 : 400;
     return NextResponse.json(

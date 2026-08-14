@@ -386,6 +386,10 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
   // What the marquee generates: a JSX element (LLM) or an image (diffusion).
   // An explicit switch on the prompt bar — never guessed from the prompt text.
   const [genKind, setGenKind] = useState<"element" | "image" | "icon">("element");
+  /** "Match style": resemble the newest generated piece of the same kind —
+   *  the server resolves the reference (model + seed + a cached style read
+   *  of its pixels), so a family spans every page of the document. */
+  const [matchStyle, setMatchStyle] = useState(true);
   // ── suggest a layout ──────────────────────────────────────────────────────
   // The question before the marquee: the marquee assumes you know where a thing
   // goes; this proposes the whole composition. Suggestions are REGIONS ONLY —
@@ -1316,9 +1320,9 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
         sceneIndex,
         bounds,
         ...(genKind === "image"
-          ? { mode: "generate-image", prompt }
+          ? { mode: "generate-image", prompt, match: matchStyle }
           : genKind === "icon"
-            ? { mode: "generate-icon", prompt }
+            ? { mode: "generate-icon", prompt, match: matchStyle }
             : { mode: "generate", prompt }),
       },
       controller.signal,
@@ -2477,6 +2481,23 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
               }
               className={`h-[28px] w-72 ${R_SM} bg-white/10 px-2 text-[11px] text-white placeholder-white/45 outline-none focus:bg-white/15 disabled:opacity-50`}
             />
+            {genKind !== "element" && (
+              <button
+                type="button"
+                role="switch"
+                aria-checked={matchStyle}
+                aria-label={genKind === "icon" ? "Match my existing icons" : "Match my existing images"}
+                onClick={() => setMatchStyle((v) => !v)}
+                disabled={!!busy}
+                title="New generations resemble the last one of this kind — same model, same seed, same look"
+                className={
+                  `${HIT} rounded-[6px] px-2 text-[11px] font-medium whitespace-nowrap disabled:opacity-50 ` +
+                  (matchStyle ? ACTIVE : "text-white/70 hover:bg-white/10")
+                }
+              >
+                Match style
+              </button>
+            )}
             <button
               type="submit"
               disabled={!!busy || !genPrompt.trim()}

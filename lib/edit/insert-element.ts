@@ -35,6 +35,16 @@ import { withGenDirLock } from "./gendir-lock";
 import { emitFreetextSpan, DEFAULT_FORMAT } from "./freetext";
 import { saveImageAsset } from "./image-assets";
 import { generateIconPng } from "./generate-icon";
+import { resolveStyleMatch, withStyleHint } from "./style-match";
+
+/** Generation facts handed back so the caller can record them as provenance
+ *  genMeta — the raw material of a later "match my icons". */
+export interface InsertImageMeta {
+  kind: "image" | "icon";
+  model: string;
+  seed: number;
+  assetRef: string;
+}
 import { imageCall, ImageProviderError } from "../llm/image-provider";
 import { recordUsage, EMPTY_USAGE, type Usage } from "../usage";
 import { withSpend } from "../spend/context";
@@ -63,8 +73,8 @@ export type InsertMode =
   | { mode: "primitive"; primitive: "image"; src?: string }
   | { mode: "primitive"; primitive: "icon"; icon?: string }
   | { mode: "generate"; prompt: string; kind?: string }
-  | { mode: "generate-image"; prompt: string }
-  | { mode: "generate-icon"; prompt: string };
+  | { mode: "generate-image"; prompt: string; match?: boolean }
+  | { mode: "generate-icon"; prompt: string; match?: boolean };
 
 export interface InsertElementInput {
   genDir: string;
@@ -105,12 +115,12 @@ export const parseInsertBody = (raw: unknown): ParsedInsertBody => {
     if (typeof b.prompt !== "string" || !b.prompt.trim()) {
       return { ok: false, error: "Describe the icon — generation needs a prompt." };
     }
-    spec = { mode: "generate-icon", prompt: b.prompt };
+    spec = { mode: "generate-icon", prompt: b.prompt, ...(b.match === true ? { match: true } : {}) };
   } else if (b.mode === "generate-image") {
     if (typeof b.prompt !== "string" || !b.prompt.trim()) {
       return { ok: false, error: "Describe the image — generation needs a prompt." };
     }
-    spec = { mode: "generate-image", prompt: b.prompt };
+    spec = { mode: "generate-image", prompt: b.prompt, ...(b.match === true ? { match: true } : {}) };
   } else if (b.mode === "primitive") {
     if (b.primitive === "text") spec = { mode: "primitive", primitive: "text", ...(typeof b.text === "string" ? { text: b.text } : {}) };
     else if (b.primitive === "image") spec = { mode: "primitive", primitive: "image", ...(typeof b.src === "string" ? { src: b.src } : {}) };
@@ -128,6 +138,8 @@ export interface InsertElementResult {
   code?: string;
   usage?: Usage;
   error?: string;
+  /** Present for generate-image/generate-icon: the facts style-match reuses. */
+  imageMeta?: InsertImageMeta;
 }
 
 /** The shared reassemble → finalize → compile-check → write barrier (lib/edit/commit.ts). */
@@ -219,10 +231,22 @@ export const insertElement = async (input: InsertElementInput): Promise<InsertEl
     let kind: string;
     let usage: Usage | undefined;
     let imageModel: string | undefined;
+    let imageMeta: InsertImageMeta | undefined;
     if (spec.mode === "generate-image") {
       try {
-        const img = await imageCall({ prompt: spec.prompt, width: bounds.w, height: bounds.h });
+        // A concrete seed even when unmatched: it is what a LATER "match"
+        // reuses to rhyme with this one.
+        const seed = Math.floor(Math.random() * 1_000_000_000);
+        const style = spec.match ? await resolveStyleMatch(genDir, "image") : null;
+        const img = await imageCall({
+          prompt: withStyleHint(spec.prompt, style?.descriptor),
+          width: bounds.w,
+          height: bounds.h,
+          seed: style?.seed ?? seed,
+          ...(style?.model ? { model: style.model } : {}),
+        });
         const ref = await saveImageAsset(genDir, img.png, "png");
+        imageMeta = { kind: "image", model: img.model, seed: style?.seed ?? seed, assetRef: ref };
         imageModel = img.model;
         // Same shape as the primitive-image inner: the box owns the crop.
         inner = `<Img src=${JSON.stringify(ref)} style={{ width: "100%", height: "100%", objectFit: "cover", borderRadius: 8 }} />`;
@@ -237,8 +261,15 @@ export const insertElement = async (input: InsertElementInput): Promise<InsertEl
       }
     } else if (spec.mode === "generate-icon") {
       try {
-        const icon = await generateIconPng(spec.prompt);
+        const seed = Math.floor(Math.random() * 1_000_000_000);
+        const style = spec.match ? await resolveStyleMatch(genDir, "icon") : null;
+        const icon = await generateIconPng(spec.prompt, {
+          seed: style?.seed ?? seed,
+          ...(style?.model ? { model: style.model } : {}),
+          styleHint: style?.descriptor,
+        });
         const ref = await saveImageAsset(genDir, icon.png, "png");
+        imageMeta = { kind: "icon", model: icon.model, seed: style?.seed ?? seed, assetRef: ref };
         imageModel = icon.model;
         console.log(
           `[insert] icon generated (${Math.round(icon.removedRatio * 100)}% background removed)`,
@@ -307,7 +338,7 @@ export const insertElement = async (input: InsertElementInput): Promise<InsertEl
       if (usage) void recordUsage({ op: "insert-element", model: MODELS.codingAgentBuild, scriptId, usage });
       if (imageModel) void recordUsage({ op: "generate-image", model: imageModel, scriptId, usage: EMPTY_USAGE, images: 1 });
       await commitUndo(genDir, undo, spec.mode === "primitive" ? "add" : spec.mode);
-      return { ok: true, pieceId: id, code: res.code, usage };
+      return { ok: true, pieceId: id, code: res.code, usage, ...(imageMeta ? { imageMeta } : {}) };
     } catch (e) {
       await writeManifest(genDir, snapshot).catch(() => {});
       await fs.rm(path.join(genDir, "lego", "pieces", `${id}.tsx`), { force: true }).catch(() => {});
