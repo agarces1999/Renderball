@@ -62,7 +62,22 @@ const run = async () => {
         return page.getByRole("button", { name: /stop this build/i }).isVisible().catch(() => false);
       })
       .catch(() => false);
-    expect(thumbMidBuild, "a real page thumbnail rendered while the build was still running");
+    expect(thumbMidBuild, "a real page rendered on the stage while the build was still running");
+    // The landed page must render CLEAN mid-build: the founder's live Duolingo
+    // build showed "Render error: LOGO_SRC is not defined" on landed tiles —
+    // the progressive writes bypassed injectLogoSrc (fixed 2026-08-14; final
+    // assembly always self-healed, so only the ceremony ever showed it).
+    await page.waitForTimeout(4000);
+    const stageError = await page
+      .locator('iframe[title^="Page "]')
+      .first()
+      .evaluate((f) => {
+        const d = (f as HTMLIFrameElement).contentDocument;
+        const text = d?.body?.innerText ?? "";
+        return /is not defined|Render error/i.test(text) ? text.slice(0, 120) : null;
+      })
+      .catch(() => null);
+    expect(stageError === null, `mid-build page renders clean (${stageError ?? "no error text"})`);
     await page.screenshot({ path: `${SHOTS}/build-thumbs.png` });
 
     // ── the build settles into the editor ──────────────────────────────────

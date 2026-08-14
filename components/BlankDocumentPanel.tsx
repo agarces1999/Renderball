@@ -816,26 +816,26 @@ export function BlankDocumentPanel({
 
   if (resume === "running") {
     return (
-      <div className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center p-6">
-        <div className="pointer-events-auto w-full max-w-[520px] rounded-xl border border-hairline bg-surface p-6 shadow-[0_30px_80px_-40px_rgba(18,26,43,0.45)]">
-          <p className="font-mono text-[10.5px] uppercase tracking-[0.16em] text-muted">
-            Still working
-          </p>
-          <h2 className="mt-1.5 font-display text-[20px] font-bold tracking-tight text-ink">
-            Your outline kept generating
-          </h2>
-          <p className="mt-1 text-[12.5px] leading-relaxed text-ink-soft">
-            The reload didn&apos;t interrupt it — it runs on our side. You&apos;ll land on
-            the review the moment it&apos;s ready.
-          </p>
-          <OutlineLive
-            scriptId={scriptId}
-            steps={["Reading your brief", "Finding the story", "Naming your pages", "Putting them in order"]}
-            elapsed={resumeElapsed}
-            pages={6}
-          />
-        </div>
-      </div>
+      <OutlineLive
+        scriptId={scriptId}
+        steps={["Reading your brief", "Finding the story", "Naming your pages", "Putting them in order"]}
+        elapsed={resumeElapsed}
+        pages={6}
+        leftExtras={
+          <div>
+            <p className="font-mono text-[10.5px] uppercase tracking-[0.16em] text-muted">
+              Still working
+            </p>
+            <h2 className="mt-1.5 font-display text-[20px] font-bold tracking-tight text-ink">
+              Your outline kept generating
+            </h2>
+            <p className="mt-1 text-[12.5px] leading-relaxed text-ink-soft">
+              The reload didn&apos;t interrupt it — it runs on our side. You&apos;ll land on
+              the review the moment it&apos;s ready.
+            </p>
+          </div>
+        }
+      />
     );
   }
 
@@ -869,6 +869,33 @@ export function BlankDocumentPanel({
           />
         </div>
       </div>
+    );
+  }
+
+  // While the outline WRITES, the form yields the floor entirely: rail on the
+  // left, the manuscript full-scale on the stage (founder, 2026-08-14). A
+  // failure returns here with the form and the honest error intact.
+  if (busy) {
+    return (
+      <OutlineLive
+        scriptId={scriptId}
+        steps={generatingSteps(pages, url)}
+        elapsed={elapsed}
+        pages={pages}
+        leftExtras={
+          <div>
+            <p className="font-mono text-[10.5px] uppercase tracking-[0.16em] text-muted">
+              Writing your document
+            </p>
+            <h2 className="mt-1.5 font-display text-[20px] font-bold tracking-tight text-ink">
+              {pages} pages, from your brief
+            </h2>
+            <p className="mt-2 line-clamp-3 text-[12.5px] leading-relaxed text-muted">
+              {prompt.trim() || "Your brief"}
+            </p>
+          </div>
+        }
+      />
     );
   }
 
@@ -1067,17 +1094,13 @@ export function BlankDocumentPanel({
               </p>
             )}
 
-            {busy ? (
-              <OutlineLive scriptId={scriptId} steps={generatingSteps(pages, url)} elapsed={elapsed} pages={pages} />
-            ) : (
-              <button
-                type="button"
-                onClick={() => void generate()}
-                className="mt-4 w-full rounded-md bg-accent px-4 py-2.5 text-[13.5px] font-semibold text-accent-ink transition-all hover:brightness-110"
-              >
-                Generate the document
-              </button>
-            )}
+            <button
+              type="button"
+              onClick={() => void generate()}
+              className="mt-4 w-full rounded-md bg-accent px-4 py-2.5 text-[13.5px] font-semibold text-accent-ink transition-all hover:brightness-110"
+            >
+              Generate the document
+            </button>
             <p className="mt-2 text-center font-mono text-[10.5px] text-faint">
               You approve the outline before anything is designed.
             </p>
@@ -1756,11 +1779,14 @@ export function OutlineLive({
   steps,
   elapsed,
   pages,
+  leftExtras,
 }: {
   scriptId: string;
   steps: string[];
   elapsed: number;
   pages: number;
+  /** Branch-specific header content for the rail (resume explainer / brief echo). */
+  leftExtras?: React.ReactNode;
 }) {
   const [cards, setCards] = useState<{ label: string; lede: string }[]>([]);
   const [phase, setPhase] = useState<
@@ -1838,10 +1864,6 @@ export function OutlineLive({
     if (el) el.scrollTop = el.scrollHeight;
   }, [cards, phase]);
 
-  if (phase === "unavailable") {
-    return <GeneratingSteps steps={steps} elapsed={elapsed} pages={pages} />;
-  }
-
   const mmss = `${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, "0")}`;
   const headline =
     phase === "connecting" || phase === "thinking"
@@ -1851,74 +1873,100 @@ export function OutlineLive({
         : phase === "polish"
           ? "Polishing — checking every page against your brief"
           : "Outline ready";
-  const lastCard = cards[cards.length - 1];
+  const lastIdx = cards.length - 1;
 
+  // STAGE LAYOUT (founder, 2026-08-14): the waiting panel sits LEFT, and the
+  // outline is written FULL SCALE on the stage where the editor canvas
+  // normally lives — the blank slide behind may be covered; the writing IS
+  // the work. When no stream exists, the rail carries the honest paced steps
+  // and the stage waits quietly.
   return (
-    <div className="mt-4 rounded-lg border border-hairline bg-surface-2 p-4">
-      <div className="flex items-center gap-2.5">
-        {phase === "done" ? (
-          <span aria-hidden className="text-accent">
-            <svg viewBox="0 0 12 12" className="h-3 w-3" fill="none">
-              <path d="M2.5 6.2l2.3 2.3 4.7-4.7" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
-          </span>
+    <div className="pointer-events-none absolute inset-0 z-30 flex flex-col gap-5 overflow-y-auto bg-[rgba(238,240,243,0.78)] p-5 backdrop-blur-[2px] lg:flex-row lg:overflow-hidden">
+      <aside className="pointer-events-auto flex w-full shrink-0 flex-col rounded-xl border border-hairline bg-surface p-6 shadow-[0_30px_80px_-40px_rgba(18,26,43,0.45)] lg:max-h-full lg:w-[400px] lg:overflow-y-auto">
+        {leftExtras}
+        {phase === "unavailable" ? (
+          <GeneratingSteps steps={steps} elapsed={elapsed} pages={pages} />
         ) : (
-          <span
-            aria-hidden
-            className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-accent"
-            style={{ animation: "rb-step-pulse 1.4s ease-in-out infinite" }}
-          />
+          <div className="mt-4 rounded-lg border border-hairline bg-surface-2 p-4">
+            <div className="flex items-center gap-2.5">
+              {phase === "done" ? (
+                <span aria-hidden className="text-accent">
+                  <svg viewBox="0 0 12 12" className="h-3 w-3" fill="none">
+                    <path d="M2.5 6.2l2.3 2.3 4.7-4.7" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                </span>
+              ) : (
+                <span
+                  aria-hidden
+                  className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-accent"
+                  style={{ animation: "rb-step-pulse 1.4s ease-in-out infinite" }}
+                />
+              )}
+              <span className="text-[12.5px] leading-relaxed text-ink">{headline}</span>
+            </div>
+            <div className="mt-3 flex items-baseline justify-between gap-3 border-t border-hairline pt-2.5">
+              <span className="font-mono text-[11px] tabular-nums text-muted">{mmss}</span>
+              <span className="text-[11px] leading-relaxed text-faint">
+                {pages > 0 && cards.length >= pages && phase === "polish"
+                  ? "All pages drafted — tightening them now."
+                  : "You can close this tab; it finishes on its own."}
+              </span>
+            </div>
+          </div>
         )}
-        <span className="text-[12.5px] leading-relaxed text-ink">{headline}</span>
-      </div>
-
-      {cards.length > 0 && (
-        <div ref={listRef} className="mt-3 flex max-h-[300px] flex-col gap-2 overflow-y-auto pr-1">
-          {cards.map((c, i) => {
-            const isLast = i === cards.length - 1;
-            const typingLede = isLast && phase === "writing" && c.lede.length > 0;
-            const typingLabel = isLast && phase === "writing" && c.lede.length === 0;
-            return (
-              <div
-                key={i}
-                data-rb-outline-card={i}
-                className="rounded-md border border-hairline bg-surface px-3 py-2"
-                style={{ animation: "rb-fade-up 280ms ease-out backwards" }}
-              >
-                <div className="flex items-baseline gap-2">
-                  <span className="font-mono text-[10px] tabular-nums text-faint">
-                    {String(i + 1).padStart(2, "0")}
-                  </span>
-                  <span className="font-display text-[13.5px] font-bold tracking-tight text-ink">
-                    {c.label}
-                    {typingLabel && <Caret />}
-                  </span>
-                </div>
-                {c.lede.length > 0 && (
-                  <p className="mt-0.5 pl-6 text-[11.5px] leading-relaxed text-muted">
-                    {c.lede}
-                    {typingLede && <Caret />}
-                  </p>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      )}
-      {cards.length === 0 && phase !== "connecting" && (
-        <p className="mt-2 pl-6 text-[11.5px] leading-relaxed text-faint">
-          The first page appears here as soon as it is written.
+        <p className="mt-auto pt-5 text-center font-mono text-[10.5px] text-faint">
+          You approve the outline before anything is designed.
         </p>
-      )}
+      </aside>
 
-      <div className="mt-3 flex items-baseline justify-between gap-3 border-t border-hairline pt-2.5">
-        <span className="font-mono text-[11px] tabular-nums text-muted">{mmss}</span>
-        <span className="text-[11px] leading-relaxed text-faint">
-          {lastCard && pages > 0 && cards.length >= pages && phase === "polish"
-            ? "All pages drafted — tightening them now."
-            : "You can close this tab; it finishes on its own."}
-        </span>
-      </div>
+      <section
+        ref={listRef}
+        data-rb-outline-stage
+        className="pointer-events-auto min-w-0 flex-1 rounded-xl border border-hairline bg-surface p-6 shadow-[0_30px_80px_-40px_rgba(18,26,43,0.45)] lg:max-h-full lg:overflow-y-auto"
+      >
+        {cards.length > 0 ? (
+          <div className="flex flex-col gap-3">
+            {cards.map((c, i) => {
+              const isLast = i === lastIdx;
+              const typingLede = isLast && phase === "writing" && c.lede.length > 0;
+              const typingLabel = isLast && phase === "writing" && c.lede.length === 0;
+              return (
+                <div
+                  key={i}
+                  data-rb-outline-card={i}
+                  className="rounded-lg border border-hairline bg-surface-2 px-5 py-4"
+                  style={{ animation: "rb-fade-up 280ms ease-out backwards" }}
+                >
+                  <div className="flex items-baseline gap-3">
+                    <span className="font-mono text-[11px] tabular-nums text-faint">
+                      {String(i + 1).padStart(2, "0")}
+                    </span>
+                    <span className="font-display text-[clamp(17px,1.8vw,24px)] font-bold tracking-tight text-ink">
+                      {c.label}
+                      {typingLabel && <Caret />}
+                    </span>
+                  </div>
+                  {c.lede.length > 0 && (
+                    <p className="mt-1.5 pl-8 text-[14px] leading-relaxed text-muted">
+                      {c.lede}
+                      {typingLede && <Caret />}
+                    </p>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="flex h-full min-h-[320px] flex-col items-center justify-center gap-3 text-center">
+            <div className="orb orb-spin h-12 w-12 opacity-70" aria-hidden />
+            <p className="max-w-[38ch] text-[13.5px] leading-relaxed text-muted">
+              {phase === "unavailable"
+                ? "The outline is being written on our side — the steps on the left track it."
+                : "Reading your brief. The first page is written here, word by word, the moment it starts."}
+            </p>
+          </div>
+        )}
+      </section>
     </div>
   );
 }

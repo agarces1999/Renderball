@@ -117,6 +117,12 @@ export function BuildPreviewClient({
   const isDeck = kind === "deck";
   const steps = useMemo(() => {
     const s = [isDeck ? "Reading the approved outline" : "Reading the approved story"];
+    // Its own row because it is the single biggest serial step of the build —
+    // measured 48.7s on a 3-page build, and the founder watched 1:20 of it
+    // labeled "Reading the approved outline" (2026-08-14). The read is
+    // instant; THIS is the foundation call: palette, type system, chrome,
+    // the section skeleton.
+    s.push("Laying the foundation — colors, type, chrome");
     sceneLabels.forEach((label, i) =>
       s.push(
         `Designing ${isDeck ? "page" : "scene"} ${i + 1}${label ? ` — ${label}` : ""}`,
@@ -151,19 +157,24 @@ export function BuildPreviewClient({
     const pageCount = sceneLabels.length;
     const fillsDone = seen("design:fills:done") || seen("gates:structural");
     if (i === 0) {
+      // The read really is instant — the first server signal proves it over.
+      return "done";
+    }
+    if (i === 1) {
+      // The foundation call (design:scaffold) — the big serial step.
       return seen("design:scaffold:done") || fillsDone ? "done" : "active";
     }
-    if (i >= 1 && i <= pageCount) {
-      const scene = i - 1;
+    if (i >= 2 && i <= pageCount + 1) {
+      const scene = i - 2;
       if (seen(`design:fill:scene:${scene}:done`) || fillsDone) return "done";
       return seen("design:scaffold:done") ? "active" : "pending";
     }
-    if (i === pageCount + 1) {
+    if (i === pageCount + 2) {
       // Composing: the structural-gate + motion block.
       if (seen("pipeline:done")) return "done";
       return fillsDone ? "active" : "pending";
     }
-    if (i === pageCount + 2) {
+    if (i === pageCount + 3) {
       // Checking: render-truth measurement + the repair ladder.
       if (seen("gate:render-truth:passed") || seen("gate:vision")) return "done";
       return seen("pipeline:done") ? "active" : "pending";
@@ -174,6 +185,21 @@ export function BuildPreviewClient({
 
   const [phase, setPhase] = useState<Phase>({ kind: "building" });
   const [current, setCurrent] = useState(0);
+
+  // ── stage state: which landed page fills the stage ────────────────────────
+  // Follow the newest landing until the user picks one by hand.
+  const [pickedScene, setPickedScene] = useState<number | null>(null);
+  const landed = useMemo(
+    () => sceneLabels.map((_, i) => i).filter((i) => seen(`design:fill:scene:${i}:done`)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [phases, sceneLabels],
+  );
+  const stageScene: number | null =
+    pickedScene !== null && landed.includes(pickedScene)
+      ? pickedScene
+      : landed.length > 0
+        ? landed[landed.length - 1]
+        : null;
 
   /**
    * Seconds since this build started — the ONE measured number on a screen
@@ -522,122 +548,161 @@ export function BuildPreviewClient({
   const pct = Math.min(100, ((doneCount + activeCount * 0.25) / steps.length) * 100);
 
   return (
-    <main className="mx-auto flex min-h-[72vh] max-w-[600px] flex-col items-center justify-center px-6 py-16">
-      <div className="orb orb-spin mx-auto mb-7 h-16 w-16" aria-hidden />
-      <div className="mb-2 text-center font-mono text-[11px] uppercase tracking-[0.18em] text-accent-text">
-        Building
-      </div>
-      <h1 className="mb-2 text-center font-display text-[clamp(24px,3.4vw,32px)] font-semibold tracking-tight text-ink">
-        {isDeck ? "Building your deck" : "Building your video"}
-      </h1>
-      <p className="mb-8 max-w-[44ch] text-center text-[14px] leading-relaxed text-muted">
-        {isDeck
-          ? "Designing every page in your brand, then opening the editor. The outline's already approved, so this is the last wait."
-          : "Designing each scene, choreographing the motion, then compiling a live preview. About a minute — the story's already approved, so this is the last wait."}
-      </p>
+    <main className="flex min-h-[calc(100vh-80px)] flex-col gap-6 px-6 py-6 lg:flex-row">
+      {/* THE RAIL (founder, 2026-08-14): the waiting panel moves LEFT and the
+          pages take the stage. Everything the old centered column carried
+          lives here — orb, honest bar, measured clock, steps, exits. */}
+      <aside className="flex w-full shrink-0 flex-col rounded-xl border border-hairline bg-surface p-6 lg:max-h-[calc(100vh-104px)] lg:w-[400px] lg:overflow-y-auto">
+        <div className="mb-4 flex items-center gap-3">
+          <div className="orb orb-spin h-10 w-10 shrink-0" aria-hidden />
+          <div>
+            <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-accent-text">
+              Building
+            </div>
+            <h1 className="font-display text-[20px] font-semibold tracking-tight text-ink">
+              {isDeck ? "Building your deck" : "Building your video"}
+            </h1>
+          </div>
+        </div>
+        <p className="mb-5 text-[12.5px] leading-relaxed text-muted">
+          {isDeck
+            ? "Every page appears on the right the moment it's designed. The outline's already approved, so this is the last wait."
+            : "Designing each scene, choreographing the motion, then compiling a live preview. About a minute — the story's already approved, so this is the last wait."}
+        </p>
 
-      <div className="mb-2 h-1 w-full overflow-hidden rounded-full bg-surface-3">
-        <div
-          className="h-full rounded-full bg-accent transition-all duration-500"
-          style={{ width: `${pct}%` }}
-        />
-      </div>
+        <div className="mb-2 h-1 w-full overflow-hidden rounded-full bg-surface-3">
+          <div
+            className="h-full rounded-full bg-accent transition-all duration-500"
+            style={{ width: `${pct}%` }}
+          />
+        </div>
 
-      {/* The clock is MEASURED; the bar above it is paced. Keeping them on
-          adjacent lines is deliberate — the number is what a waiting person
-          actually trusts. Past ten minutes it stops implying the pace was
-          right, the same discipline the outline panel uses. */}
-      <div className="mb-6 flex w-full items-baseline justify-between gap-3">
-        <span className="font-mono text-[11.5px] tabular-nums text-muted">
-          {Math.floor(elapsed / 60)}:{String(elapsed % 60).padStart(2, "0")}
-        </span>
-        <span className="text-[11.5px] leading-relaxed text-faint">
-          {elapsed > 600
-            ? "Taking longer than usual — still working."
-            : "You can close this tab; it finishes on its own."}
-        </span>
-      </div>
+        {/* The clock is MEASURED; the bar above it is paced. Keeping them on
+            adjacent lines is deliberate — the number is what a waiting person
+            actually trusts. Past ten minutes it stops implying the pace was
+            right, the same discipline the outline panel uses. */}
+        <div className="mb-5 flex w-full items-baseline justify-between gap-3">
+          <span className="font-mono text-[11.5px] tabular-nums text-muted">
+            {Math.floor(elapsed / 60)}:{String(elapsed % 60).padStart(2, "0")}
+          </span>
+          <span className="text-[11px] leading-relaxed text-faint">
+            {elapsed > 600
+              ? "Taking longer than usual — still working."
+              : "You can close this tab; it finishes on its own."}
+          </span>
+        </div>
 
-      {/* THE PAGES THEMSELVES, materializing (founder, 2026-08-14, from the
-          Gamma comparison — and one better than Gamma's animation: these are
-          the REAL pages, rendered from the section code the moment each fill
-          lands on disk. Honest by construction: a thumbnail exists only
-          because the page does. Each iframe loads ONCE (stable src, no
-          reload churn) and is inert to input. */}
-      {sceneLabels.length > 0 &&
-        sceneLabels.some((_, i) => seen(`design:fill:scene:${i}:done`)) && (
-          <div className="mb-6 grid w-full grid-cols-3 gap-3">
-            {sceneLabels.map((lab, i) =>
-              seen(`design:fill:scene:${i}:done`) ? (
-                <div
-                  key={i}
-                  className="relative overflow-hidden rounded-md border border-hairline bg-surface-2"
-                  style={{ aspectRatio: "16/9", animation: "rb-fade-up 0.5s ease both" }}
-                  title={lab}
-                >
-                  <iframe
-                    src={`/api/preview/${scriptId}/iframe?scene=${i}&settle=1&v=live`}
-                    title={`Page ${i + 1} — ${lab}`}
-                    className="pointer-events-none absolute inset-0 h-full w-full"
-                    style={{ border: 0 }}
-                  />
-                  <span className="absolute bottom-1 left-1.5 rounded bg-[#11141b]/70 px-1.5 py-0.5 font-mono text-[9px] text-white/80">
+        <ul className="w-full space-y-2">
+          {steps.map((label, i) => {
+            // Real signals first; the paced counter only drives rows the server
+            // has not spoken for (old container, or the seconds before the
+            // first poll lands).
+            const status: Status =
+              realStatus(i) ?? (i < current ? "done" : i === current ? "active" : "pending");
+            const checking = i === steps.length - 2;
+            return (
+              <StepRow
+                key={i}
+                label={
+                  checking && repairRounds > 0
+                    ? `${label} — fixing what failed (round ${repairRounds})`
+                    : label
+                }
+                status={status}
+              />
+            );
+          })}
+        </ul>
+
+        {/* The exits (founder ask 2026-08-12). Leaving keeps the build running —
+            the busy screen reattaches on return. Stopping is cooperative: the
+            call in flight finishes, then the build ends at the next phase edge. */}
+        <div className="mt-auto flex w-full flex-col gap-3 pt-6">
+          <button
+            type="button"
+            onClick={() => void stopBuild()}
+            disabled={stopping}
+            className="w-full rounded-md border border-hairline px-3 py-1.5 text-[12px] text-muted transition-colors hover:border-red-500/40 hover:text-ink disabled:opacity-60"
+          >
+            {stopping ? "Stopping — letting the current step finish…" : "Stop this build"}
+          </button>
+          <a
+            href={outlineHref}
+            className="text-center font-mono text-[10.5px] uppercase tracking-[0.14em] text-faint transition-colors hover:text-ink"
+          >
+            ← Back to your {isDeck ? "outline" : "story"} — the build keeps going
+          </a>
+        </div>
+      </aside>
+
+      {/* THE STAGE: the latest landed page, FULL SCALE — the real page, not a
+          tile (founder, 2026-08-14: "everything gets generated on the editor
+          like on full scale not the little boxes"). Every landed page's
+          iframe mounts ONCE and stays mounted (stable src, no reload churn);
+          switching pages only flips which one is visible. Follows the newest
+          landing until the user picks a page by hand. */}
+      <section className="flex min-h-[420px] min-w-0 flex-1 flex-col" data-rb-build-stage>
+        <div className="mb-3 flex min-h-[28px] items-center justify-between gap-3">
+          <span className="truncate text-[13px] font-medium text-ink">
+            {stageScene !== null
+              ? `Page ${stageScene + 1}${sceneLabels[stageScene] ? ` — ${sceneLabels[stageScene]}` : ""}`
+              : "The first page appears here as it lands"}
+          </span>
+          {landed.length > 0 && (
+            <div className="flex shrink-0 items-center gap-1">
+              {sceneLabels.map((lab, i) =>
+                landed.includes(i) ? (
+                  <button
+                    key={i}
+                    type="button"
+                    onClick={() => setPickedScene(i)}
+                    title={lab}
+                    className={cn(
+                      "h-6 min-w-6 rounded px-1 font-mono text-[10px] tabular-nums transition-colors",
+                      stageScene === i
+                        ? "bg-accent text-accent-ink"
+                        : "bg-surface-2 text-muted hover:text-ink",
+                    )}
+                  >
+                    {i + 1}
+                  </button>
+                ) : (
+                  <span
+                    key={i}
+                    title={lab}
+                    className="h-6 min-w-6 rounded border border-dashed border-hairline px-1 text-center font-mono text-[10px] leading-6 text-faint"
+                  >
                     {i + 1}
                   </span>
-                </div>
-              ) : (
-                <div
-                  key={i}
-                  className="rounded-md border border-dashed border-hairline bg-surface-2/50"
-                  style={{ aspectRatio: "16/9" }}
-                  title={lab}
-                />
-              ),
-            )}
-          </div>
-        )}
-
-      <ul className="w-full space-y-2">
-        {steps.map((label, i) => {
-          // Real signals first; the paced counter only drives rows the server
-          // has not spoken for (old container, or the seconds before the
-          // first poll lands).
-          const status: Status =
-            realStatus(i) ?? (i < current ? "done" : i === current ? "active" : "pending");
-          const checking = i === steps.length - 2;
-          return (
-            <StepRow
+                ),
+              )}
+            </div>
+          )}
+        </div>
+        <div
+          className="relative w-full flex-1 overflow-hidden rounded-lg border border-hairline bg-[#0b0d12]"
+          style={{ aspectRatio: "16/9", maxHeight: "calc(100vh - 180px)" }}
+        >
+          {landed.map((i) => (
+            <iframe
               key={i}
-              label={
-                checking && repairRounds > 0
-                  ? `${label} — fixing what failed (round ${repairRounds})`
-                  : label
-              }
-              status={status}
+              src={`/api/preview/${scriptId}/iframe?scene=${i}&settle=1&v=live`}
+              title={`Page ${i + 1}${sceneLabels[i] ? ` — ${sceneLabels[i]}` : ""}`}
+              className="pointer-events-none absolute inset-0 h-full w-full transition-opacity duration-500"
+              style={{ border: 0, opacity: stageScene === i ? 1 : 0 }}
             />
-          );
-        })}
-      </ul>
-
-      {/* The exits (founder ask 2026-08-12). Leaving keeps the build running —
-          the busy screen reattaches on return. Stopping is cooperative: the
-          call in flight finishes, then the build ends at the next phase edge. */}
-      <div className="mt-6 flex w-full items-center justify-between">
-        <a
-          href={outlineHref}
-          className="font-mono text-[10.5px] uppercase tracking-[0.14em] text-faint transition-colors hover:text-ink"
-        >
-          ← Back to your {isDeck ? "outline" : "story"} — the build keeps going
-        </a>
-        <button
-          type="button"
-          onClick={() => void stopBuild()}
-          disabled={stopping}
-          className="rounded-md border border-hairline px-3 py-1.5 text-[12px] text-muted transition-colors hover:border-red-500/40 hover:text-ink disabled:opacity-60"
-        >
-          {stopping ? "Stopping — letting the current step finish…" : "Stop this build"}
-        </button>
-      </div>
+          ))}
+          {landed.length === 0 && (
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-center">
+              <div className="orb orb-spin h-12 w-12 opacity-60" aria-hidden />
+              <p className="max-w-[36ch] text-[13px] leading-relaxed text-white/50">
+                Laying the foundation — your first page appears here the moment
+                it&apos;s designed.
+              </p>
+            </div>
+          )}
+        </div>
+      </section>
     </main>
   );
 }

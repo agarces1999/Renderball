@@ -187,6 +187,18 @@ export const castCall = async (call: CastCall): Promise<CastResult> => {
   }
   const t0 = Date.now();
   let lastErr: CastProviderError | null = null;
+  /**
+   * Consecutive TIMEOUT-shaped failures. A 429 or a reset is transient — the
+   * full retry ladder is right for those. A request the provider accepts and
+   * then never answers is a different animal: retrying the SAME request into
+   * a wedged serving path just multiplies the silence. Verified live
+   * 2026-08-14: fills call this with the 120s default; 5 attempts × 120s of
+   * hang × the caller's own re-emission cycles turned one bad Fireworks hour
+   * into a 35-minute build. Two consecutive timeouts (240s of pure silence
+   * against a measured p99 of 102s) now end the ladder — the caller's
+   * re-prompt CHANGES the request, which is the escape that actually works.
+   */
+  let consecutiveTimeouts = 0;
 
   for (let attempt = 0; attempt <= RETRIES; attempt++) {
     // Per-ATTEMPT clock, separate from t0. A castCall can be up to 5 provider
@@ -227,6 +239,9 @@ export const castCall = async (call: CastCall): Promise<CastResult> => {
       });
     } catch (err) {
       // Network-level failure (reset, DNS, timeout): retryable within budget.
+      const isTimeout =
+        err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError");
+      consecutiveTimeouts = isTimeout ? consecutiveTimeouts + 1 : 0;
       lastErr = new CastProviderError(
         `cast transport error: ${err instanceof Error ? err.message : String(err)}`,
         null,
@@ -249,6 +264,7 @@ export const castCall = async (call: CastCall): Promise<CastResult> => {
         tokensUnknown: true,
         latencyMs: Date.now() - tAttempt,
       });
+      if (consecutiveTimeouts >= 2) throw lastErr;
       if (attempt < RETRIES) await sleep(retryDelayMs(attempt, null));
       continue;
     }
@@ -363,7 +379,18 @@ export const castCall = async (call: CastCall): Promise<CastResult> => {
  * transport-error marker).
  */
 export const castStream = async (
-  call: CastCall,
+  call: CastCall & {
+    /**
+     * Abort when the stream goes SILENT for this long (default 45s). The
+     * total timeout alone let a mid-stream provider stall burn its full
+     * 300s before the caller's non-streaming fallback even started — which,
+     * stacked on the fallback's own runtime, blew through the outline's
+     * 420s phase watchdog (seen live 2026-08-14: "Writing the outline
+     * stalled"). GLM's silent thinking phase runs ~30s, so 45s of true
+     * silence means the stream is dead, not thinking.
+     */
+    idleMs?: number;
+  },
   onDelta: (text: string) => void,
 ): Promise<CastResult> => {
   const model = call.model ?? MODEL();
@@ -413,6 +440,29 @@ export const castStream = async (
 
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
+      const idleMs = call.idleMs ?? 45_000;
+      /** reader.read() raced against the idle clock — a silent stream must
+       *  fail FAST so the fallback still fits inside the phase budget. */
+      const readWithIdle = async (): Promise<ReadableStreamReadResult<Uint8Array>> => {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          return await Promise.race([
+            reader.read(),
+            new Promise<never>((_, reject) => {
+              timer = setTimeout(() => {
+                // Reject BEFORE cancel: cancel() can settle the pending
+                // read() synchronously with {done:true}, and the race would
+                // take that as a clean end-of-stream — a silent stall would
+                // "succeed" with a truncated text.
+                reject(new CastProviderError(`cast stream idle for ${idleMs}ms`, null, true));
+                void reader.cancel().catch(() => {});
+              }, idleMs);
+            }),
+          ]);
+        } finally {
+          clearTimeout(timer);
+        }
+      };
       let buffer = "";
       let text = "";
       interface UsageFrame {
@@ -424,7 +474,7 @@ export const castStream = async (
       let finish: string | null = null;
 
       for (;;) {
-        const { done, value } = await reader.read();
+        const { done, value } = await readWithIdle();
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
         // SSE frames: lines, events split on blank line; we only need `data:`.

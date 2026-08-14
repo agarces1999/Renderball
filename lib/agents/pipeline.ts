@@ -1574,9 +1574,17 @@ export const buildAnimatedSections = async (
               progressiveChain = progressiveChain.then(async () => {
                 const next = replaceSection(progressiveCode, i, r.block!);
                 if (next) {
+                  // Keep the RAW splice for future sections; brand only the
+                  // copy that ships to disk. Without this, every mid-build
+                  // page that references the logo throws "LOGO_SRC is not
+                  // defined" until final assembly injects it (founder saw
+                  // exactly that tile, live, 2026-08-14) — the const is
+                  // deliberately never emitted by the agents; injectLogoSrc
+                  // owns it, so the progressive path must run it too.
                   progressiveCode = next;
                   try {
-                    await options.onSectionAssembled!(i, next);
+                    const branded = injectLogoSrc(next, rawInput.brand_identity?.logo?.url);
+                    await options.onSectionAssembled!(i, branded);
                   } catch (err) {
                     console.warn(`[pipeline] onSectionAssembled(${i}) failed (progress only):`, err);
                   }

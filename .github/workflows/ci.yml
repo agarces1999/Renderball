@@ -74,3 +74,45 @@ jobs:
           CLERK_SECRET_KEY: sk_test_placeholder
           DATABASE_URL: postgresql://placeholder:placeholder@localhost:5432/placeholder
           ANTHROPIC_BASE_URL: https://api.z.ai/api/anthropic
+
+  # ── POST-DEPLOY SMOKE (founder, 2026-08-14: "fix the QA process so every
+  # time you deploy a fix I am not the first one to notice it doesn't work").
+  # Railway auto-deploys every push to launch-deploy regardless of CI. This
+  # job waits for production to actually SERVE the pushed commit, then smokes
+  # the public surface. A deploy that never flips, or flips and breaks, turns
+  # CI red — and CI failure emails already reach the founder. The founder must
+  # never be the first tester again; this job is the floor (full authed
+  # journeys on prod additionally need a prod QA account — founder-side).
+  postdeploy-smoke:
+    if: github.ref == 'refs/heads/launch-deploy'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for production to serve this commit
+        run: |
+          SHORT="${GITHUB_SHA:0:7}"
+          echo "waiting for renderball.com to serve $SHORT"
+          for i in $(seq 1 60); do
+            C=$(curl -s --max-time 10 https://renderball.com/api/health | python3 -c "import json,sys; print(json.load(sys.stdin).get('commit','?'))" 2>/dev/null || echo "?")
+            if [ "$C" = "$SHORT" ]; then echo "deployed: $C"; exit 0; fi
+            sleep 15
+          done
+          echo "::error::production never served $SHORT (still on $C) — the deploy failed or hung"
+          exit 1
+      - name: Health checks all green
+        run: |
+          BODY=$(curl -s --max-time 10 https://renderball.com/api/health)
+          echo "$BODY"
+          echo "$BODY" | python3 -c "
+          import json,sys
+          d=json.load(sys.stdin)
+          bad=[k for k,v in d.get('checks',{}).items() if v not in ('ok','not-configured')]
+          assert d.get('status')=='ok' and not bad, f'unhealthy: {d.get(\"status\")} {bad}'
+          "
+      - name: Public surface answers correctly
+        run: |
+          set -e
+          code() { curl -s -o /dev/null -w "%{http_code}" --max-time 15 "$1"; }
+          [ "$(code https://renderball.com/)" = "200" ] || { echo "::error::landing broken"; exit 1; }
+          [ "$(code 'https://renderball.com/api/documents/generate/stream?scriptId=x')" = "401" ] || { echo "::error::stream route unguarded or dead"; exit 1; }
+          [ "$(code 'https://renderball.com/api/preview/provenance?scriptId=x')" != "500" ] || { echo "::error::provenance route 500s"; exit 1; }
+          echo "public surface ok"

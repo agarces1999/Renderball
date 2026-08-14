@@ -408,6 +408,42 @@ await check("Fireworks model without RB_FIREWORKS_KEY fails fast, names the miss
   }
 });
 
+await check("two consecutive TIMEOUTS end the ladder early; mixed failures keep it", async () => {
+  // Timeout-shaped: fetch rejects with an AbortError/TimeoutError.
+  let calls = 0;
+  const timeoutErr = () => {
+    const e = new Error("The operation was aborted due to timeout");
+    e.name = "TimeoutError";
+    throw e;
+  };
+  mockFetch(() => {
+    calls++;
+    return timeoutErr();
+  });
+  let threw: unknown = null;
+  try {
+    await castCall({ system: "", user: "u", maxTokens: 100, model: CEREBRAS_MODEL });
+  } catch (e) {
+    threw = e;
+  }
+  assert(threw instanceof CastProviderError, "surfaces as a cast error");
+  assert(calls === 2, `wedged request stops after 2 timeouts, got ${calls} attempts`);
+
+  // A timeout FOLLOWED by a different transient failure resets the strike
+  // count — only uninterrupted silence is treated as wedged.
+  calls = 0;
+  mockFetch(() => {
+    calls++;
+    if (calls === 1) return timeoutErr();
+    if (calls === 2) throw new Error("ECONNRESET");
+    if (calls === 3) return timeoutErr();
+    return ok(completion("recovered"));
+  });
+  const r = await castCall({ system: "", user: "u", maxTokens: 100, model: CEREBRAS_MODEL });
+  assert(r.text === "recovered", "mixed failures still recover within the ladder");
+  assert(calls === 4, `full ladder available to mixed failures, got ${calls}`);
+});
+
 // ── castStream: the outline ceremony's transport (2026-08-14) ─────────────
 
 /** An SSE Response whose payload arrives in the given raw chunks. */
@@ -505,6 +541,35 @@ await check("castStream does NOT retry after text has streamed — a mid-stream 
   assert(threw instanceof CastProviderError, "must throw — the caller decides how to fall back");
   assert(calls === 1, `no silent restart after words reached the user, got ${calls} calls`);
   assert(seen.join("") === "half an out", "the delivered prefix reached onDelta before the death");
+});
+
+await check("castStream aborts a SILENT stream at idleMs — the fallback must start fast", async () => {
+  let calls = 0;
+  mockFetch(() => {
+    calls++;
+    const enc = new TextEncoder();
+    return new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          // One delta, then eternal silence — the mid-stream stall shape that
+          // burned the full 300s total timeout live (2026-08-14).
+          controller.enqueue(enc.encode(sseFrame({ choices: [{ delta: { content: "started " } }] })));
+        },
+      }),
+      { status: 200 },
+    );
+  });
+  const t0 = Date.now();
+  let threw: unknown = null;
+  try {
+    await castStream({ system: "", user: "u", maxTokens: 100, idleMs: 150 }, () => {});
+  } catch (e) {
+    threw = e;
+  }
+  const ms = Date.now() - t0;
+  assert(threw instanceof CastProviderError && /idle/.test(threw.message), "idle abort surfaces as a cast error");
+  assert(calls === 1, `no silent restart after words streamed, got ${calls} calls`);
+  assert(ms < 5_000, `aborted promptly (~idleMs), took ${ms}ms`);
 });
 
 await check("castStream survives an onDelta that throws — the paid stream finishes", async () => {
