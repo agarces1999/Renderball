@@ -444,6 +444,23 @@ await check("two consecutive TIMEOUTS end the ladder early; mixed failures keep 
   assert(calls === 4, `full ladder available to mixed failures, got ${calls}`);
 });
 
+await check("RB_FIREWORKS_SERVICE_TIER reaches the Fireworks wire; absent when unset", async () => {
+  let sent: Record<string, unknown> = {};
+  mockFetch((_u, init) => {
+    sent = JSON.parse(String(init?.body));
+    return ok(completion("x"));
+  });
+  process.env.RB_FIREWORKS_SERVICE_TIER = "priority";
+  try {
+    await castCall({ system: "", user: "u", maxTokens: 100 });
+    assert(sent.service_tier === "priority", "tier on the wire when set");
+  } finally {
+    delete process.env.RB_FIREWORKS_SERVICE_TIER;
+  }
+  await castCall({ system: "", user: "u", maxTokens: 100 });
+  assert(!("service_tier" in sent), "field omitted entirely when unset");
+});
+
 // ── castStream: the outline ceremony's transport (2026-08-14) ─────────────
 
 /** An SSE Response whose payload arrives in the given raw chunks. */

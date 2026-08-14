@@ -150,6 +150,7 @@ export const callZaiVision = async (
       body: JSON.stringify({
         model: VISION_MODEL,
         max_tokens: opts.maxTokens ?? 1200,
+        ...(process.env.RB_FIREWORKS_SERVICE_TIER ? { service_tier: process.env.RB_FIREWORKS_SERVICE_TIER } : {}),
         // GLM and Kimi VLMs are thinking models: on terse extraction tasks
         // they burn the budget reasoning (Kimi probe: 294 tokens thinking vs
         // 46 with it off) and can return empty content unless thinking is
@@ -251,6 +252,7 @@ export const callZaiText = async (
       body: JSON.stringify({
         model: VISION_MODEL,
         max_tokens: opts.maxTokens ?? 600,
+        ...(process.env.RB_FIREWORKS_SERVICE_TIER ? { service_tier: process.env.RB_FIREWORKS_SERVICE_TIER } : {}),
         ...(opts.disableThinking && /glm|kimi/i.test(VISION_MODEL)
           ? { thinking: { type: "disabled" } }
           : {}),

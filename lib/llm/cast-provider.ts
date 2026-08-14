@@ -122,6 +122,20 @@ const FIREWORKS_THINKING_BUDGETS: Record<Exclude<CastEffort, "none">, number> = 
   high: 8192,
 };
 
+/**
+ * Fireworks service tier (founder, 2026-08-14, the day two hang stalls hit
+ * within an hour): "priority" pays 1.25-1.5× per token to be scheduled above
+ * Standard traffic when the fleet saturates — the direct counter to the
+ * peak-hour wedged-request class. Probe-verified on this account: the param
+ * is validated (400 enumerates auto|default|flex|priority) and priority
+ * serves 200 on glm-5p2-fast. Unset = field omitted = today's behavior.
+ * Flip: RB_FIREWORKS_SERVICE_TIER=priority (Railway env — a billing
+ * decision, so it lives in the founder's hands). NOTE: costUsd rates do not
+ * yet carry the priority multiplier — the ledger undercounts while this is
+ * on, until the first invoice pins the exact rate.
+ */
+const SERVICE_TIER = () => process.env.RB_FIREWORKS_SERVICE_TIER || "";
+
 const wireFor = (model: string): WireConfig =>
   isFireworksModel(model)
     ? {
@@ -130,6 +144,7 @@ const wireFor = (model: string): WireConfig =>
         body: (call, m) => ({
           model: m,
           max_tokens: call.maxTokens,
+          ...(SERVICE_TIER() ? { service_tier: SERVICE_TIER() } : {}),
           ...(call.effort === "none"
             ? { thinking: { type: "disabled" } }
             : call.effort
