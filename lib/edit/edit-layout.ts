@@ -30,7 +30,7 @@ import {
 import { pieceSlot } from "../agents/lego-decompose";
 import { commitGenDir } from "./commit";
 import { withGenDirLock } from "./gendir-lock";
-import { findChildInScene, removeChildBlock } from "./nested-piece";
+import { findChildInScene, findMappedChildInScene, dropMappedIndex, removeChildBlock } from "./nested-piece";
 
 const msg = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
@@ -140,7 +140,32 @@ export const deleteElement = async (input: DeleteElementInput): Promise<DeleteEl
     const d = await readDecomposed(genDir);
     const scene = d.scenes.find((s) => s.sceneIndex === sceneIndex);
     const nested = scene ? findChildInScene(scene, pieceId) : null;
-    if (!nested) return { ok: false, error: `piece "${pieceId}" not found in scene ${sceneIndex}` };
+    if (!nested) {
+      // Not written out literally either — it may be one item of a MAPPED
+      // list, whose id exists only after the template evaluates. Delete the
+      // DATA (filter the mapped expression), never the <Piece> block, which
+      // is the template for every item in the list.
+      const mapped = scene ? findMappedChildInScene(scene, pieceId) : null;
+      if (!mapped) return { ok: false, error: `piece "${pieceId}" not found in scene ${sceneIndex}` };
+      const before = mapped.parent.body;
+      try {
+        await writePieceBody(
+          genDir,
+          mapped.parent.id,
+          dropMappedIndex(before, mapped.mapAt, mapped.index),
+        );
+        const res = await commit(genDir);
+        if (!res.ok) {
+          await writePieceBody(genDir, mapped.parent.id, before); // rollback
+          return { ok: false, error: res.error };
+        }
+        await commitUndo(genDir, undo, "delete");
+        return { ok: true, code: res.code };
+      } catch (e) {
+        await writePieceBody(genDir, mapped.parent.id, before).catch(() => {});
+        return { ok: false, error: `delete failed: ${msg(e)}` };
+      }
+    }
 
     const originalBody = nested.parent.body;
     try {

@@ -510,6 +510,50 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
   /** Same, for a press that landed inside the frame rather than on the overlay. */
   const pendingIframeDblRef = useRef<{ piece: Element; target: HTMLElement; x: number; y: number } | null>(null);
   const dragHandlersRef = useRef<{ move: (e: MouseEvent) => void; up: (e: MouseEvent) => void } | null>(null);
+  /** Live scene nodes being dragged, with whatever transform they already had. */
+  const liveNodesRef = useRef<{ el: HTMLElement; base: string }[]>([]);
+  const pendingRef = useRef<{ dx: number; dy: number } | null>(null);
+  const rafRef = useRef(0);
+  /** The selection frame element, driven imperatively during a gesture. */
+  const frameRef = useRef<HTMLDivElement | null>(null);
+
+  /**
+   * The real DOM nodes a piece paints. Pieces are `display: contents`, so the
+   * piece wrapper has no box of its own — its element children are what move.
+   * Their existing transform is captured so an entry animation's transform is
+   * composed with, never clobbered.
+   */
+  const livePieceNodes = (pieceId: string): { el: HTMLElement; base: string }[] => {
+    const doc = iframeRef.current?.contentDocument;
+    const wrap = doc?.querySelector(`[data-piece="${CSS.escape(pieceId)}"]`);
+    if (!wrap) return [];
+    const out: { el: HTMLElement; base: string }[] = [];
+    for (const child of Array.from(wrap.children)) {
+      // NOT `instanceof HTMLElement`: these nodes live in the IFRAME's realm,
+      // so the parent window's constructor never matches them and the check
+      // silently rejected every child — the drag stayed invisible while
+      // everything else about it worked. Duck-type on the style object, which
+      // is realm-agnostic.
+      const el = child as HTMLElement;
+      if (!el.style) continue;
+      out.push({ el, base: el.style.transform || "" });
+    }
+    return out;
+  };
+
+  /** Drop the live drag styling — after the gesture, or after the reload lands. */
+  const clearLiveDrag = () => {
+    if (rafRef.current) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = 0;
+    }
+    for (const n of liveNodesRef.current) {
+      n.el.style.transform = n.base;
+      n.el.style.willChange = "";
+    }
+    liveNodesRef.current = [];
+    pendingRef.current = null;
+  };
   const [dragDelta, setDragDelta] = useState<{ dx: number; dy: number } | null>(null);
 
   // A piece's wrapper is display:contents (no box), so its own rect is all-zero.
@@ -1040,9 +1084,34 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
         // The NEW document is live now — recompute anything measured against the
         // old one (x-ray rects) and restore the selection a move/regen preserved.
         setDocTick((t) => t + 1);
-        const reselect = reselectIdRef.current;
+        /**
+         * Only the document we are ACTUALLY waiting for may consume the
+         * reselect intent.
+         *
+         * Measured 2026-08-14: after a move, the selection outline was left
+         * behind at the old position permanently, and every follow-up nudge
+         * aimed at empty space. Cause: onChanged() bumps reloadKey, this
+         * effect re-runs immediately, and at that instant the browser has not
+         * navigated yet — contentDocument is still the OLD document reporting
+         * readyState "complete", so attach() ran synchronously against it,
+         * consumed reselectIdRef and re-measured the stale rect. By the time
+         * the real document loaded (measured 1.49s later) the intent was
+         * already gone. This is the same stale-contentDocument hazard docTick
+         * documents; the reselect path simply was not covered by it.
+         *
+         * The live document carries its reload key in its own URL, so the
+         * check is exact rather than a guess about timing.
+         */
+        const liveSrc = iframe.contentDocument?.location?.search ?? "";
+        const expected = `v=${reloadKey}`;
+        const isTargetDoc = liveSrc.includes(expected);
+        const reselect = isTargetDoc ? reselectIdRef.current : null;
         if (reselect) {
           reselectIdRef.current = null;
+          // The authoritative render is finally on screen — the client's
+          // held drag transform has served its purpose and must go, or the
+          // element would sit double-offset.
+          clearLiveDrag();
           // settle-mode renders land in final layout; a beat for paint, then re-measure.
           setTimeout(() => {
             try {
@@ -1484,6 +1553,31 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
     window.addEventListener("mousemove", move);
     window.addEventListener("mouseup", up);
   };
+  /**
+   * While a gesture is live the IFRAME must stop swallowing mouse events.
+   *
+   * Measured 2026-08-14: a fast drag did NOTHING. The only surface in the
+   * parent document that could see a mousemove before the full-screen shield
+   * existed was the drag surface, sized exactly to the element — and the
+   * shield itself only mounts once a move has already been seen. So any flick
+   * whose FIRST move left the element's box (trivial on a 17px text line:
+   * 120px flick lost, 12px steps tracked) was never seen at all, the shield
+   * never mounted, and the whole gesture died silently. That reads as "the
+   * editor is clunky" when it is really "the editor did not hear you".
+   *
+   * Turning off pointer-events on the iframe for the duration hands every
+   * move to the window immediately. Chosen over mounting the shield on
+   * mousedown deliberately: that path is documented at DRAG_MIN_PX as having
+   * killed double-click (the mouseup landed on the shield), and this one adds
+   * no new hit target at all, so the hand-rolled double-click detector is
+   * untouched. (setPointerCapture is NOT an option here — capture across an
+   * iframe boundary is unspecified, W3C pointerevents#493.)
+   */
+  const setIframeInert = (inert: boolean) => {
+    const f = iframeRef.current;
+    if (f) f.style.pointerEvents = inert ? "none" : "";
+  };
+
   const detachDrag = () => {
     const h = dragHandlersRef.current;
     if (h) {
@@ -1491,6 +1585,7 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
       window.removeEventListener("mouseup", h.up);
       dragHandlersRef.current = null;
     }
+    setIframeInert(false);
   };
   /**
    * How far a press must travel before it counts as a drag.
@@ -1538,14 +1633,49 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
     dragRef.current = { startX: e.clientX, startY: e.clientY, scale: canvasScale() };
     draggingRef.current = false;
     setGestureHeld(true);
+    setIframeInert(true);
+    // Cache the live nodes ONCE (a rect read per move is what forces layout).
+    liveNodesRef.current = livePieceNodes(selected.pieceId);
+    for (const n of liveNodesRef.current) n.el.style.willChange = "transform";
+
+    /**
+     * The element itself follows the cursor now — not just an outline.
+     *
+     * Before this, a drag moved a 2px frame while the real element sat still
+     * and teleported ~1.5s later when the iframe finished reloading. The
+     * scene document is static SSR HTML with no hydration, so writing a
+     * compositor-only transform onto its nodes is safe and the next reload
+     * rebuilds from the server anyway. Written through a ref inside a
+     * rAF-batched callback: no setState per move, no layout, no React commit
+     * for a 2900-line component at 120Hz.
+     */
+    const paint = () => {
+      rafRef.current = 0;
+      const d = dragRef.current;
+      const p = pendingRef.current;
+      if (!d || !p) return;
+      const sx = p.dx / (d.scale || 1);
+      const sy = p.dy / (d.scale || 1);
+      for (const n of liveNodesRef.current) {
+        n.el.style.transform = n.base ? `translate3d(${sx}px, ${sy}px, 0) ${n.base}` : `translate3d(${sx}px, ${sy}px, 0)`;
+      }
+      if (frameRef.current) frameRef.current.style.transform = `translate3d(${p.dx}px, ${p.dy}px, 0)`;
+    };
     const move = (ev: MouseEvent) => {
       const d = dragRef.current;
       if (!d) return;
       const dx = ev.clientX - d.startX;
       const dy = ev.clientY - d.startY;
       if (!draggingRef.current && Math.abs(dx) < DRAG_MIN_PX && Math.abs(dy) < DRAG_MIN_PX) return;
+      const first = !draggingRef.current;
       draggingRef.current = true;
-      setDragDelta({ dx, dy });
+      pendingRef.current = { dx, dy };
+      // One React commit for the WHOLE gesture, and it carries ZERO offset:
+      // it exists only to arm the overlay's dragging mode (shield up,
+      // transitions off, frame positioned at the ORIGINAL rect). The offset
+      // itself rides entirely on the transform, so nothing double-counts.
+      if (first) setDragDelta({ dx: 0, dy: 0 });
+      if (!rafRef.current) rafRef.current = requestAnimationFrame(paint);
     };
     const up = async (ev: MouseEvent) => {
       detachDrag();
@@ -1557,6 +1687,7 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
       draggingRef.current = false;
       secondPressRef.current = false;
       if (!d || !selected || !dragged) {
+        clearLiveDrag();
         setDragDelta(null);
         // It never travelled. If it was the second press of a double-click,
         // NOW it is unambiguous — a drag would have moved by here.
@@ -1570,6 +1701,7 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
       const dx = Math.round((ev.clientX - d.startX) / scale);
       const dy = Math.round((ev.clientY - d.startY) / scale);
       if (dx === 0 && dy === 0) {
+        clearLiveDrag();
         setDragDelta(null);
         return;
       }
@@ -1582,9 +1714,19 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
       setBusy(null);
       setDragDelta(null);
       if (ok) {
+        // HOLD the live transform. The server has accepted the move but the
+        // authoritative re-render is ~1.5s away (esbuild + a sandboxed SSR),
+        // and the old document is still on screen for all of it. Dropping the
+        // transform here is what produced the snap-back-then-teleport the
+        // founder felt as clunk. attach() releases it once the NEW document
+        // is up — the client's own unacknowledged edit wins until the
+        // server's version is actually visible (Figma's rule).
         reselectIdRef.current = selected.pieceId;
         setSelected(null);
         onChanged();
+      } else {
+        // Rejected: put it back where it was rather than lying about it.
+        clearLiveDrag();
       }
     };
     dragHandlersRef.current = { move, up };
@@ -2596,9 +2738,11 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
       {box && selected && (
         <>
           <div
+              ref={frameRef}
               // Stable hook: "something is selected, and it is this piece".
               // The QA suite needs to know that without inferring it from
-              // styling (qa/editor.ts).
+              // styling (qa/editor.ts). getBoundingClientRect includes the
+              // drag transform, so geometry assertions keep working.
               data-rb-selection={selected.pieceId}
             style={{ position: "absolute", left: box.left, top: box.top, width: box.width, height: box.height, border: "2px solid var(--accent, #00c28a)", borderRadius: 8, boxShadow: "0 0 0 9999px rgba(10,12,20,0.28)", pointerEvents: "none", transition: dragDelta || resizeBox ? "none" : "left 100ms, top 100ms" }}
           />
