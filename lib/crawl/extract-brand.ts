@@ -1539,38 +1539,6 @@ export const extractPalette = (
   return final;
 };
 
-// ─── Palette provenance ────────────────────────────────────────────────
-//
-// The palette used to be assembled by LAST WRITER WINS: extractPalette read the
-// stylesheet, then the og:image arm REASSIGNED `palette` in every branch that
-// succeeded — so the CSS palette survived only when the image arm failed
-// outright. Measured over 60 live sites on 2026-08-09: 6/6 spot-checks had a
-// final palette byte-identical to `pixelPalette.slice(0,5)`. stripe.com's own
-// stylesheet declares #635bff and the crawl shipped the ORANGE of its share
-// card; raycast's #ff6363 became five near-blacks; posthog's #f54e00 became
-// olive; anthropic's #d97757 became greys.
-//
-// Colours now arrive in PROVENANCE order — how strong the site's own claim on
-// the colour is — and a weaker source can never displace a stronger one:
-//
-//   1. css-var-named   a custom property the site NAMED brand/primary/accent
-//                      (51% of hosts). The site literally told us.
-//   2. css-stylesheet  chromatic hexes from the site's own CSS (81%), minus
-//                      TEMPLATE_COLORS below.
-//   3. site-icon       the favicon / apple-touch icon's dominant chroma (25% /
-//                      15%). Startlingly accurate where present: stripe→#533afd
-//                      (true #635bff), raycast→#ff6666 (true #ff6363),
-//                      robinhood→#ccff00, cloudflare→#ff5500.
-//   4. image           og:image pixels + the vision read — CORROBORATION ONLY.
-//   5. theme-color     <meta name=theme-color>, declared by 3% of hosts.
-//
-export type PaletteSource =
-  | "css-var-named"
-  | "css-stylesheet"
-  | "site-icon"
-  | "image"
-  | "theme-color";
-
 /**
  * Colours that belong to a TEMPLATE, never to the brand.
  *

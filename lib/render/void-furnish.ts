@@ -64,7 +64,6 @@ const chroma = (hex: string): number => {
   return Math.max(...rgb) - Math.min(...rgb);
 };
 
-export const SURFACE_MIN_LUM_CONTRAST = 0.35;
 export const SURFACE_MAX_CHROMA = 60;
 /** Minimum luminance distance (0..1) an elevated card must clear so it reads as
  *  a distinct surface, not the canvas — ~18/255, matching the placeholder floor. */

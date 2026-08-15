@@ -267,18 +267,6 @@ export const parseGridAscii = (
   return { areas, errors };
 };
 
-/** Classify a parse error for the aggregate failure table. */
-export const classifyGridError = (message: string): GridFailureKind =>
-  message.includes("not a solid rectangle")
-    ? "non-rectangular"
-    : message.includes("characters — every row")
-      ? "row-length"
-      : message.includes("no areas at all")
-        ? "empty-grid"
-        : message.includes("cells carry a single letter")
-          ? "bad-char"
-          : "row-count";
-
 // ─── Grid scene → SceneComposition ──────────────────────────────────────────
 
 /** The raw per-scene shape arm B's head emits. */

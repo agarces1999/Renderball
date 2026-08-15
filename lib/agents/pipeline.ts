@@ -1829,6 +1829,16 @@ export const buildAnimatedSections = async (
       undersizedFailure ||
       accentFailure);
 
+  // The gates have now JUDGED; everything after this is repair. Splitting the
+  // mark here because the single window that used to run from
+  // gates:structural:start straight to "motion:done" was the largest step of
+  // every build (70-242s measured across six stored timelines) and the name
+  // was a lie: applyChoreography returns instantly for decks, so essentially
+  // none of that time was motion. It was gate evaluation plus PAID scoped
+  // retries — and every speed conversation that read this timeline was
+  // pointed at the wrong phase (founder, 2026-08-14).
+  timeline.mark("gates:structural:judged");
+
   // ─── SCOPED per-scene retry fast-path (#1) ─────────────────────────────
   // When the ONLY failures are scene-localizable (sparse density, off-canvas
   // crop, baked-in copy), regenerate just the offending Section{N} blocks in
@@ -2142,6 +2152,10 @@ export const buildAnimatedSections = async (
       );
     }
   }
+
+  // Repairs (scoped retries + any whole-comp fallback) are done — this is the
+  // step that actually costs minutes and money when the gates are unhappy.
+  timeline.mark("design:repairs:done");
 
   // ─── Pass 2 — Motion ───────────────────────────────────────────────
   // Monolithic: an Animation Agent LLM pass re-emits the WHOLE file with CSS

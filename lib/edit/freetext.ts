@@ -125,7 +125,6 @@ export const emitFreetextSpan = (text: string, format: FreetextFormat): string =
 /** The whole emitted span: open tag attrs (1) + the JS-string copy child (2). */
 const SPAN_RX = /<span\s+data-rb-freetext="1"([^>]*)>\s*\{("(?:[^"\\]|\\.)*")\}\s*<\/span>/;
 
-export const hasFreetext = (body: string): boolean => SPAN_RX.test(body);
 
 /** Read the current (text, format) out of a piece body. Null when it has no free-text. */
 export const readFreetext = (body: string): { text: string; format: FreetextFormat } | null => {

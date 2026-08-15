@@ -170,7 +170,7 @@ export function BuildPreviewClient({
       return seen("design:scaffold:done") ? "active" : "pending";
     }
     if (i === pageCount + 2) {
-      // Composing: the structural-gate + motion block.
+      // Composing: the structural-gate + repair + motion block.
       if (seen("pipeline:done")) return "done";
       return fillsDone ? "active" : "pending";
     }
@@ -600,13 +600,22 @@ export function BuildPreviewClient({
             const status: Status =
               realStatus(i) ?? (i < current ? "done" : i === current ? "active" : "pending");
             const checking = i === steps.length - 2;
+            // The composing row spans gate judgment → repairs → motion. When
+            // the gates have judged but repairs have not finished, THAT is
+            // where the minutes go (measured: this window was 70-242s of
+            // every build while the timeline called it "motion"). Say so.
+            const composing = i === steps.length - 3;
+            const repairing =
+              composing && seen("gates:structural:judged") && !seen("design:repairs:done");
             return (
               <StepRow
                 key={i}
                 label={
                   checking && repairRounds > 0
                     ? `${label} — fixing what failed (round ${repairRounds})`
-                    : label
+                    : repairing
+                      ? `${label} — redrawing the pages the checks flagged`
+                      : label
                 }
                 status={status}
               />

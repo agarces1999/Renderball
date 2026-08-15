@@ -141,5 +141,3 @@ export const deletePrefix = async (prefix: string): Promise<number> => {
 
 export const renderKey = (scriptId: string): string =>
   `renders/${scriptId}.mp4`;
-export const uploadKey = (briefId: string, filename: string): string =>
-  `uploads/${briefId}/${filename}`;

@@ -535,6 +535,4 @@ export const summarize = (
   };
 };
 
-/** Zero summary for "nothing recorded" — never null, so callers cannot forget the case. */
-export const emptySummary = (now: Date): SpendSummary => summarize([], { now });
 export { emptyBucket };

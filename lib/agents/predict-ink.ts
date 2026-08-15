@@ -72,17 +72,6 @@ export interface Rect extends Box {
   y: number;
 }
 
-/** The copy fields a text element can own (mirrors layout-composer.COPY_FIELDS). */
-export const INK_COPY_FIELDS = [
-  "eyebrow",
-  "headline",
-  "lede",
-  "bullets",
-  "caption",
-  "meta",
-  "cta",
-  "texts",
-] as const;
 
 /** One owned copy field, with the RAW content value (string | array | object)
  *  exactly as it appears in scene.content — flattening is this module's job so
