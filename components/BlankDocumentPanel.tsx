@@ -1792,7 +1792,26 @@ export function OutlineLive({
   const [phase, setPhase] = useState<
     "connecting" | "thinking" | "writing" | "polish" | "done" | "unavailable"
   >("connecting");
+  /**
+   * REVEAL PACING (founder, 2026-08-14: "it stayed loading for quite some
+   * time and then rendered all the typing in one pass").
+   *
+   * Measured on a real 4-page outline: 45.7s of complete silence while GLM
+   * thinks, then 10,596 characters in 11.5 seconds — 925 chars/sec, 37x
+   * faster than a person reads, with 100% of the text landing in the last
+   * 20% of the wait. Piping that straight to the DOM is technically live
+   * and experientially a dump after a blank stare.
+   *
+   * So the raw stream accumulates in bufRef and the DOM reveals a growing
+   * PREFIX of it. The words are the model's, in the order it wrote them —
+   * only the cadence is ours. The pacer targets a readable rate, catches up
+   * when it falls far behind, and finishes immediately once the job is done
+   * so ceremony never delays the review.
+   */
   const bufRef = useRef("");
+  const [revealed, setRevealed] = useState(0);
+  const revealedRef = useRef(0);
+  const doneRef = useRef(false);
   const lastIRef = useRef(-1);
   const errsRef = useRef(0);
   const listRef = useRef<HTMLDivElement | null>(null);
@@ -1830,12 +1849,12 @@ export function OutlineLive({
       lastIRef.current = ev.i;
       if (ev.kind === "delta" && typeof ev.data === "string") {
         bufRef.current += ev.data;
-        setCards(parseOutlineCards(bufRef.current));
         setPhase((p) => (p === "polish" || p === "done" ? p : "writing"));
       } else if (ev.kind === "note") {
         if (ev.data === "thinking") setPhase((p) => (p === "connecting" ? "thinking" : p));
         else if (ev.data === "polish" || ev.data === "restart") setPhase("polish");
         else if (ev.data === "done") {
+          doneRef.current = true;
           setPhase("done");
           es?.close();
         }
@@ -1857,6 +1876,36 @@ export function OutlineLive({
       es?.close();
     };
   }, [scriptId]);
+
+  // The pacer. 24 fps is plenty for text and cheap; the per-tick budget
+  // adapts so a big backlog still lands in a bounded time instead of
+  // trickling for minutes.
+  useEffect(() => {
+    const TICK_MS = 42;
+    const BASE_CPS = 260; // readable-fast: a fluent reader's skim rate
+    const id = setInterval(() => {
+      const have = bufRef.current.length;
+      const shown = revealedRef.current;
+      if (shown >= have) return;
+      const behind = have - shown;
+      // Catch-up: the further behind, the faster — and once the job is done
+      // the remaining text lands in about a second rather than holding the
+      // user hostage to a cadence that no longer buys anything.
+      const cps = doneRef.current
+        ? Math.max(BASE_CPS * 6, behind)
+        : BASE_CPS * (behind > 4000 ? 4 : behind > 1500 ? 2 : 1);
+      const next = Math.min(have, shown + Math.ceil((cps * TICK_MS) / 1000));
+      revealedRef.current = next;
+      setRevealed(next);
+    }, TICK_MS);
+    return () => clearInterval(id);
+  }, []);
+
+  // Cards derive from the REVEALED prefix, so a half-typed lede renders as
+  // a half-typed lede — the parser already handles truncation mid-token.
+  useEffect(() => {
+    setCards(parseOutlineCards(bufRef.current.slice(0, revealed)));
+  }, [revealed]);
 
   // Keep the newest typing on screen.
   useEffect(() => {
@@ -1957,12 +2006,43 @@ export function OutlineLive({
             })}
           </div>
         ) : (
-          <div className="flex h-full min-h-[320px] flex-col items-center justify-center gap-3 text-center">
-            <div className="orb orb-spin h-12 w-12 opacity-70" aria-hidden />
-            <p className="max-w-[38ch] text-[13.5px] leading-relaxed text-muted">
+          // THE SILENT HEAD. Measured: 45.7 seconds pass before the model
+          // emits its first character (it is thinking, and thinking is
+          // silent). An empty stage for 46s reads as broken, so the pages
+          // the user ASKED for stand up immediately as waiting slots —
+          // honest (we know the count; we do not know the words yet) and it
+          // makes the first real label land INTO a place rather than onto a
+          // void.
+          <div className="flex flex-col gap-3">
+            {Array.from({ length: Math.max(1, Math.min(pages, 12)) }, (_, i) => (
+              <div
+                key={i}
+                className="rounded-lg border border-dashed border-hairline bg-surface-2/40 px-5 py-4"
+                style={{ animation: "rb-fade-up 280ms ease-out backwards", animationDelay: `${i * 70}ms` }}
+              >
+                <div className="flex items-baseline gap-3">
+                  <span className="font-mono text-[11px] tabular-nums text-faint">
+                    {String(i + 1).padStart(2, "0")}
+                  </span>
+                  <span
+                    className="h-[15px] rounded bg-hairline"
+                    style={{
+                      width: `${38 + ((i * 17) % 34)}%`,
+                      animation: "rb-step-pulse 1.8s ease-in-out infinite",
+                      animationDelay: `${i * 140}ms`,
+                    }}
+                  />
+                </div>
+                <div className="mt-2.5 flex flex-col gap-1.5 pl-8">
+                  <span className="h-[9px] w-[92%] rounded bg-hairline/70" />
+                  <span className="h-[9px] w-[64%] rounded bg-hairline/70" />
+                </div>
+              </div>
+            ))}
+            <p className="mt-1 text-center text-[12px] leading-relaxed text-faint">
               {phase === "unavailable"
                 ? "The outline is being written on our side — the steps on the left track it."
-                : "Reading your brief. The first page is written here, word by word, the moment it starts."}
+                : "Reading your brief and deciding what each page must earn. The words appear here as they are written."}
             </p>
           </div>
         )}
