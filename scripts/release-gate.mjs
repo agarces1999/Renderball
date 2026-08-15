@@ -32,6 +32,33 @@
 import { execSync, spawnSync } from "node:child_process";
 
 const args = new Set(process.argv.slice(2));
+
+/**
+ * NEVER run two gates at once. Learned 2026-08-14: a gate was running in the
+ * background while the next change was being written, and its `git add -A`
+ * swept those unrelated files into the commit it was shipping — two features
+ * landed under one message that described only the first. The code was fine;
+ * the history lied. This lock makes the second run refuse instead.
+ */
+const LOCK = "/tmp/rb-release-gate.lock";
+try {
+  const { existsSync, writeFileSync, unlinkSync, readFileSync } = await import("node:fs");
+  if (existsSync(LOCK)) {
+    const pid = Number(readFileSync(LOCK, "utf8"));
+    let alive = false;
+    try { process.kill(pid, 0); alive = true; } catch {}
+    if (alive) {
+      console.error(`✗ another release gate is already running (pid ${pid}). Wait for it — concurrent gates cross-contaminate commits.`);
+      process.exit(1);
+    }
+  }
+  writeFileSync(LOCK, String(process.pid));
+  const release = () => { try { unlinkSync(LOCK); } catch {} };
+  process.on("exit", release);
+  process.on("SIGINT", () => { release(); process.exit(130); });
+} catch {
+  /* lock is best-effort — never block a ship on it */
+}
 const sh = (cmd, opts = {}) => {
   console.log(`\n▶ ${cmd}`);
   const r = spawnSync("bash", ["-c", cmd], { stdio: "inherit", ...opts });
