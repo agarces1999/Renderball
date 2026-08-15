@@ -127,45 +127,49 @@ export default async function PreviewPage({
     );
   }
 
+  // The build ceremony wears the EDITOR's shell now (founder, 2026-08-14), so
+  // it brings its own chrome — an AppHeader on top would stack two headers.
+  if (!compositionExists || outlineAwaitingBuild) {
+    return (
+      <BuildPreviewClient
+        scriptId={params.id}
+        kind={isDeck ? "deck" : "video"}
+        sceneLabels={script.scenes.map((s) => s.label ?? "")}
+        outlineHref={backHref}
+      />
+    );
+  }
+
   return (
     <>
       <AppHeader />
-      {!compositionExists || outlineAwaitingBuild ? (
-        <BuildPreviewClient
-          scriptId={params.id}
-          kind={isDeck ? "deck" : "video"}
-          sceneLabels={script.scenes.map((s) => s.label ?? "")}
-          outlineHref={backHref}
-        />
-      ) : (
-        <main className="mx-auto max-w-5xl px-6 py-8">
-          <Link
-            href={backHref}
-            className="font-mono text-[11px] uppercase tracking-[0.18em] text-muted transition-colors hover:text-ink"
-          >
-            ← {isDeck ? "outline" : "story"}
-          </Link>
-          <div className="mb-6 mt-5">
-            <div className="mb-2 font-mono text-[11px] uppercase tracking-[0.18em] text-muted">
-              {isDeck ? "Editor · every element editable" : "Preview · live playback"}
-            </div>
-            <h1 className="font-display text-[clamp(22px,3vw,30px)] font-semibold tracking-tight text-ink">
-              {script.brief?.purpose ?? "Preview"}
-            </h1>
-            <p className="mt-1.5 text-[14px] leading-relaxed text-muted">
-              {isDeck
-                ? "Move, resize, or rewrite anything — or draw a box to generate an element in place. Then export PDF or PNG."
-                : "Playing live in your browser. Tweak any scene, then export to MP4."}
-            </p>
+      <main className="mx-auto max-w-5xl px-6 py-8">
+        <Link
+          href={backHref}
+          className="font-mono text-[11px] uppercase tracking-[0.18em] text-muted transition-colors hover:text-ink"
+        >
+          ← {isDeck ? "outline" : "story"}
+        </Link>
+        <div className="mb-6 mt-5">
+          <div className="mb-2 font-mono text-[11px] uppercase tracking-[0.18em] text-muted">
+            {isDeck ? "Editor · every element editable" : "Preview · live playback"}
           </div>
-          <PreviewClient
-            scriptId={params.id}
-            script={script}
-            initialWarnings={initialWarnings}
-            isBlank={await isBlankDocument(path.dirname(compPath), script)}
-          />
-        </main>
-      )}
+          <h1 className="font-display text-[clamp(22px,3vw,30px)] font-semibold tracking-tight text-ink">
+            {script.brief?.purpose ?? "Preview"}
+          </h1>
+          <p className="mt-1.5 text-[14px] leading-relaxed text-muted">
+            {isDeck
+              ? "Move, resize, or rewrite anything — or draw a box to generate an element in place. Then export PDF or PNG."
+              : "Playing live in your browser. Tweak any scene, then export to MP4."}
+          </p>
+        </div>
+        <PreviewClient
+          scriptId={params.id}
+          script={script}
+          initialWarnings={initialWarnings}
+          isBlank={await isBlankDocument(path.dirname(compPath), script)}
+        />
+      </main>
     </>
   );
 }

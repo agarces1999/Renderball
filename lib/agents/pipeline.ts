@@ -2237,12 +2237,24 @@ export const buildAnimatedSections = async (
   // If the latest delay in a section is < 60% of the section's duration,
   // the section will freeze for the remaining time. Retry once with a
   // pointed failure message naming the offending sections.
-  const deadAirReport = assessDeadAir(finalCode, input.script);
+  /**
+   * MOTION GATES ARE FOR VIDEO. A deck is a static document — the
+   * choreographer itself early-returns on kind === "deck" — so judging a
+   * slide for "frozen tail" and "slow entrance" is judging it against a
+   * property it is specified NOT to have. Verified 2026-08-14 that decks
+   * pass today only by accident: the design agent bakes ambient CSS into
+   * every page, which short-circuits the dead-air check. Any deck that
+   * did NOT would fire a PAID retry per slide asking a model to add
+   * motion to a static page. Skipping the gates outright removes the
+   * trap instead of relying on the luck.
+   */
+  const isDeckBuild = input.script.config.kind === "deck";
+  const deadAirReport = isDeckBuild ? ({ ok: true } as const) : assessDeadAir(finalCode, input.script);
   // Reading-time gate (coarse v1): text must become legible fast so viewers
   // can read it. Flags text elements with a slow ENTRANCE animation (>1.0s).
   // Slow animation belongs on decoration, which can run while the text is
   // already readable — never on the text itself.
-  const slowText = findSlowTextEntrances(finalCode);
+  const slowText = isDeckBuild ? [] : findSlowTextEntrances(finalCode);
   const readTimeFailure =
     slowText.length > 0
       ? `Reading-time problem — ${slowText.length} text element(s) use a slow ENTRANCE animation (>1.0s): ${slowText
@@ -2257,7 +2269,8 @@ export const buildAnimatedSections = async (
   // delay + duration + max(1.2s, words×0.3s) must fit inside the scene (a
   // headline that settled in the final 15% of a scene was unreadable). The
   // detector skips short scenes, infinite loops, and caption chrome.
-  const undwelled = findUndwelledText(finalCode, input.script);
+  // Same reasoning as the dead-air gate above: dwell is a timeline property.
+  const undwelled = isDeckBuild ? [] : findUndwelledText(finalCode, input.script);
   const dwellFailure =
     undwelled.length > 0
       ? `Late-beat dwell problem — ${undwelled.length} text element(s) land too late to be read: ${undwelled

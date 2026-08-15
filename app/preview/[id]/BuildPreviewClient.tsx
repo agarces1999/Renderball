@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { cn } from "../../../lib/cn";
+import { EditorShell, type EditorToolController } from "../../../components/EditorShell";
 
 /**
  * The build moment (DESIGN.md step 5: "Build it" — one loud action, honest
@@ -547,172 +548,134 @@ export function BuildPreviewClient({
   const activeCount = statuses.filter((st) => st === "active").length;
   const pct = Math.min(100, ((doneCount + activeCount * 0.25) / steps.length) * 100);
 
+  // THE BUILD HAPPENS INSIDE THE EDITOR (founder, 2026-08-14: "you took me
+  // to some new interface I was not expecting; it should all happen inside
+  // the editor with the steps on the left where the user sees the slides").
+  // Same shell, same rail, same canvas frame the editor uses — the pages
+  // simply are not editable yet. Nothing about the app changes shape when a
+  // build starts; the work just appears where the work always appears.
+  const buildControls: EditorToolController = {
+    tool: "select",
+    canUndo: false,
+    busy: true,
+    select: () => {},
+    generate: () => {},
+    addText: () => {},
+    addImage: () => {},
+    undo: () => {},
+  };
+
   return (
-    <main className="flex min-h-[calc(100vh-80px)] flex-col gap-6 px-6 py-6 lg:flex-row">
-      {/* THE RAIL (founder, 2026-08-14): the waiting panel moves LEFT and the
-          pages take the stage. Everything the old centered column carried
-          lives here — orb, honest bar, measured clock, steps, exits. */}
-      <aside className="flex w-full shrink-0 flex-col rounded-xl border border-hairline bg-surface p-6 lg:max-h-[calc(100vh-104px)] lg:w-[400px] lg:overflow-y-auto">
-        <div className="mb-4 flex items-center gap-3">
-          <div className="orb orb-spin h-10 w-10 shrink-0" aria-hidden />
-          <div>
-            <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-accent-text">
-              Building
+    <EditorShell
+      slides={sceneLabels.map((label) => ({ label: label || "Page" }))}
+      active={stageScene ?? 0}
+      onSelect={(i) => landed.includes(i) && setPickedScene(i)}
+      width={1920}
+      height={1080}
+      zoomLabel="Building"
+      status="saving"
+      controls={buildControls}
+      sidePanel={
+        <div className="flex h-full flex-col p-4">
+          <div className="mb-3 flex items-center gap-2.5">
+            <div className="orb orb-spin h-7 w-7 shrink-0" aria-hidden />
+            <div>
+              <div className="font-mono text-[9.5px] uppercase tracking-[0.18em] text-accent-text">
+                Building
+              </div>
+              <div className="font-display text-[15px] font-bold tracking-tight text-ink">
+                {isDeck ? "Designing your pages" : "Building your video"}
+              </div>
             </div>
-            <h1 className="font-display text-[20px] font-semibold tracking-tight text-ink">
-              {isDeck ? "Building your deck" : "Building your video"}
-            </h1>
+          </div>
+
+          <div className="mb-1.5 h-1 w-full overflow-hidden rounded-full bg-surface-3">
+            <div
+              className="h-full rounded-full bg-accent transition-all duration-500"
+              style={{ width: `${pct}%` }}
+            />
+          </div>
+          {/* The clock is MEASURED; the bar above it is paced. The number is
+              what a waiting person actually trusts. */}
+          <div className="mb-4 flex w-full items-baseline justify-between gap-2">
+            <span className="font-mono text-[11px] tabular-nums text-muted">
+              {Math.floor(elapsed / 60)}:{String(elapsed % 60).padStart(2, "0")}
+            </span>
+            <span className="text-[10.5px] leading-relaxed text-faint">
+              {elapsed > 600 ? "Longer than usual — still working." : "You can close this tab."}
+            </span>
+          </div>
+
+          <ul className="w-full space-y-1.5 overflow-y-auto">
+            {steps.map((label, i) => {
+              const status: Status =
+                realStatus(i) ?? (i < current ? "done" : i === current ? "active" : "pending");
+              const checking = i === steps.length - 2;
+              const composing = i === steps.length - 3;
+              const repairing =
+                composing && seen("gates:structural:judged") && !seen("design:repairs:done");
+              return (
+                <StepRow
+                  key={i}
+                  label={
+                    checking && repairRounds > 0
+                      ? `${label} — fixing what failed (round ${repairRounds})`
+                      : repairing
+                        ? `${label} — redrawing the pages the checks flagged`
+                        : label
+                  }
+                  status={status}
+                />
+              );
+            })}
+          </ul>
+
+          <div className="mt-auto flex w-full flex-col gap-2 pt-5">
+            <button
+              type="button"
+              onClick={() => void stopBuild()}
+              disabled={stopping}
+              className="w-full rounded-md border border-hairline px-3 py-1.5 text-[11.5px] text-muted transition-colors hover:border-red-500/40 hover:text-ink disabled:opacity-60"
+            >
+              {stopping ? "Stopping — finishing this step…" : "Stop this build"}
+            </button>
+            <a
+              href={outlineHref}
+              className="text-center font-mono text-[10px] uppercase tracking-[0.14em] text-faint transition-colors hover:text-ink"
+            >
+              ← your {isDeck ? "outline" : "story"} — the build keeps going
+            </a>
           </div>
         </div>
-        <p className="mb-5 text-[12.5px] leading-relaxed text-muted">
-          {isDeck
-            ? "Every page appears on the right the moment it's designed. The outline's already approved, so this is the last wait."
-            : "Designing each scene, choreographing the motion, then compiling a live preview. About a minute — the story's already approved, so this is the last wait."}
-        </p>
-
-        <div className="mb-2 h-1 w-full overflow-hidden rounded-full bg-surface-3">
-          <div
-            className="h-full rounded-full bg-accent transition-all duration-500"
-            style={{ width: `${pct}%` }}
-          />
+      }
+      footer={
+        <a href="/documents" className="transition-colors hover:text-ink">
+          ← Documents
+        </a>
+      }
+    >
+      {/* The pages themselves, in the editor's own canvas frame, full scale.
+          Each landed page mounts ONCE and stays mounted; switching only flips
+          which is visible, so nothing reloads or flickers. */}
+      {landed.map((i) => (
+        <iframe
+          key={i}
+          src={`/api/preview/${scriptId}/iframe?scene=${i}&settle=1&v=live`}
+          title={`Page ${i + 1}${sceneLabels[i] ? ` — ${sceneLabels[i]}` : ""}`}
+          className="pointer-events-none absolute inset-0 h-full w-full transition-opacity duration-500"
+          style={{ border: 0, opacity: stageScene === i ? 1 : 0 }}
+        />
+      ))}
+      {landed.length === 0 && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-center">
+          <div className="orb orb-spin h-12 w-12 opacity-60" aria-hidden />
+          <p className="max-w-[34ch] text-[13px] leading-relaxed text-muted">
+            Laying the foundation — colors, type and chrome. Your first page
+            appears here the moment it is designed.
+          </p>
         </div>
-
-        {/* The clock is MEASURED; the bar above it is paced. Keeping them on
-            adjacent lines is deliberate — the number is what a waiting person
-            actually trusts. Past ten minutes it stops implying the pace was
-            right, the same discipline the outline panel uses. */}
-        <div className="mb-5 flex w-full items-baseline justify-between gap-3">
-          <span className="font-mono text-[11.5px] tabular-nums text-muted">
-            {Math.floor(elapsed / 60)}:{String(elapsed % 60).padStart(2, "0")}
-          </span>
-          <span className="text-[11px] leading-relaxed text-faint">
-            {elapsed > 600
-              ? "Taking longer than usual — still working."
-              : "You can close this tab; it finishes on its own."}
-          </span>
-        </div>
-
-        <ul className="w-full space-y-2">
-          {steps.map((label, i) => {
-            // Real signals first; the paced counter only drives rows the server
-            // has not spoken for (old container, or the seconds before the
-            // first poll lands).
-            const status: Status =
-              realStatus(i) ?? (i < current ? "done" : i === current ? "active" : "pending");
-            const checking = i === steps.length - 2;
-            // The composing row spans gate judgment → repairs → motion. When
-            // the gates have judged but repairs have not finished, THAT is
-            // where the minutes go (measured: this window was 70-242s of
-            // every build while the timeline called it "motion"). Say so.
-            const composing = i === steps.length - 3;
-            const repairing =
-              composing && seen("gates:structural:judged") && !seen("design:repairs:done");
-            return (
-              <StepRow
-                key={i}
-                label={
-                  checking && repairRounds > 0
-                    ? `${label} — fixing what failed (round ${repairRounds})`
-                    : repairing
-                      ? `${label} — redrawing the pages the checks flagged`
-                      : label
-                }
-                status={status}
-              />
-            );
-          })}
-        </ul>
-
-        {/* The exits (founder ask 2026-08-12). Leaving keeps the build running —
-            the busy screen reattaches on return. Stopping is cooperative: the
-            call in flight finishes, then the build ends at the next phase edge. */}
-        <div className="mt-auto flex w-full flex-col gap-3 pt-6">
-          <button
-            type="button"
-            onClick={() => void stopBuild()}
-            disabled={stopping}
-            className="w-full rounded-md border border-hairline px-3 py-1.5 text-[12px] text-muted transition-colors hover:border-red-500/40 hover:text-ink disabled:opacity-60"
-          >
-            {stopping ? "Stopping — letting the current step finish…" : "Stop this build"}
-          </button>
-          <a
-            href={outlineHref}
-            className="text-center font-mono text-[10.5px] uppercase tracking-[0.14em] text-faint transition-colors hover:text-ink"
-          >
-            ← Back to your {isDeck ? "outline" : "story"} — the build keeps going
-          </a>
-        </div>
-      </aside>
-
-      {/* THE STAGE: the latest landed page, FULL SCALE — the real page, not a
-          tile (founder, 2026-08-14: "everything gets generated on the editor
-          like on full scale not the little boxes"). Every landed page's
-          iframe mounts ONCE and stays mounted (stable src, no reload churn);
-          switching pages only flips which one is visible. Follows the newest
-          landing until the user picks a page by hand. */}
-      <section className="flex min-h-[420px] min-w-0 flex-1 flex-col" data-rb-build-stage>
-        <div className="mb-3 flex min-h-[28px] items-center justify-between gap-3">
-          <span className="truncate text-[13px] font-medium text-ink">
-            {stageScene !== null
-              ? `Page ${stageScene + 1}${sceneLabels[stageScene] ? ` — ${sceneLabels[stageScene]}` : ""}`
-              : "The first page appears here as it lands"}
-          </span>
-          {landed.length > 0 && (
-            <div className="flex shrink-0 items-center gap-1">
-              {sceneLabels.map((lab, i) =>
-                landed.includes(i) ? (
-                  <button
-                    key={i}
-                    type="button"
-                    onClick={() => setPickedScene(i)}
-                    title={lab}
-                    className={cn(
-                      "h-6 min-w-6 rounded px-1 font-mono text-[10px] tabular-nums transition-colors",
-                      stageScene === i
-                        ? "bg-accent text-accent-ink"
-                        : "bg-surface-2 text-muted hover:text-ink",
-                    )}
-                  >
-                    {i + 1}
-                  </button>
-                ) : (
-                  <span
-                    key={i}
-                    title={lab}
-                    className="h-6 min-w-6 rounded border border-dashed border-hairline px-1 text-center font-mono text-[10px] leading-6 text-faint"
-                  >
-                    {i + 1}
-                  </span>
-                ),
-              )}
-            </div>
-          )}
-        </div>
-        <div
-          className="relative w-full flex-1 overflow-hidden rounded-lg border border-hairline bg-[#0b0d12]"
-          style={{ aspectRatio: "16/9", maxHeight: "calc(100vh - 180px)" }}
-        >
-          {landed.map((i) => (
-            <iframe
-              key={i}
-              src={`/api/preview/${scriptId}/iframe?scene=${i}&settle=1&v=live`}
-              title={`Page ${i + 1}${sceneLabels[i] ? ` — ${sceneLabels[i]}` : ""}`}
-              className="pointer-events-none absolute inset-0 h-full w-full transition-opacity duration-500"
-              style={{ border: 0, opacity: stageScene === i ? 1 : 0 }}
-            />
-          ))}
-          {landed.length === 0 && (
-            <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-center">
-              <div className="orb orb-spin h-12 w-12 opacity-60" aria-hidden />
-              <p className="max-w-[36ch] text-[13px] leading-relaxed text-white/50">
-                Laying the foundation — your first page appears here the moment
-                it&apos;s designed.
-              </p>
-            </div>
-          )}
-        </div>
-      </section>
-    </main>
+      )}
+    </EditorShell>
   );
 }
 

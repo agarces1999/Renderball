@@ -346,8 +346,20 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
   // vanished mid-success. Held through busy; released on a real deselect.
   const [panelPiece, setPanelPiece] = useState<{ pieceId: string; kind: string } | null>(null);
   useEffect(() => {
-    if (ed.selected) setPanelPiece(ed.selected);
-    else if (!ed.busy) setPanelPiece(null);
+    if (ed.selected) {
+      setPanelPiece(ed.selected);
+      return;
+    }
+    if (ed.busy) return;
+    // A GRACE WINDOW, not an immediate clear. The editor restores the
+    // selection only once the NEW iframe document is actually up (~1.5s: the
+    // reselect used to fire against the stale document and land on the old
+    // rect). That correctness fix opened a gap where busy has cleared but the
+    // document has not arrived — and the Element tab blinked out of existence
+    // mid-regen, which reads as the panel losing your work. Hold the piece
+    // across the gap; a real deselect still lands, just a beat later.
+    const t = setTimeout(() => setPanelPiece(null), 2500);
+    return () => clearTimeout(t);
   }, [ed.selected, ed.busy]);
   // The Element tab exists only while something is selected — it appears on
   // select, and a deselect returns to the page tab rather than stranding an
