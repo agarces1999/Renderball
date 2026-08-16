@@ -402,7 +402,10 @@ export function BlankDocumentPanel({
             if (settled?.ok) {
               const done = settled.body as { reviewUrl?: string } | null;
               if (done?.reviewUrl) {
-                window.location.assign(done.reviewUrl);
+                // They watched it finish — same in-place approval beat as the
+                // uninterrupted path. (The already-done branch below still
+                // assigns: nothing was on screen to stay in.)
+                setApproval({ reviewUrl: done.reviewUrl, buildHref: `/preview/${scriptId}?build=1` });
                 return;
               }
             }
@@ -444,6 +447,16 @@ export function BlankDocumentPanel({
   const [prompt, setPrompt] = useState("");
   const [url, setUrl] = useState("");
   const [pages, setPages] = useState(6);
+  /**
+   * NEVER LEAVE THE EDITOR (founder, 2026-08-14). When the outline
+   * finishes, the user stays exactly where the words just typed
+   * themselves — the aside becomes the approval beat (Build / Refine)
+   * instead of location.assign() yanking them to /review. Review still
+   * exists for page-by-page CRUD, reached only by explicit choice.
+   * Story-before-render is intact: the Build link carries ?build=1,
+   * the same spend consent the review button grants.
+   */
+  const [approval, setApproval] = useState<{ buildHref: string; reviewUrl: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   useEffect(() => {
@@ -802,7 +815,9 @@ export function BlankDocumentPanel({
       // user just paid for is never shown.
       const done = data as { reviewUrl?: string } | null;
       if (done?.reviewUrl) {
-        window.location.assign(done.reviewUrl);
+        // Stay. The manuscript the user just watched being written is the
+        // review surface; the aside flips to Build / Refine.
+        setApproval({ reviewUrl: done.reviewUrl, buildHref: `/preview/${scriptId}?build=1` });
       } else {
         window.location.reload();
       }
@@ -821,19 +836,31 @@ export function BlankDocumentPanel({
         steps={["Reading your brief", "Finding the story", "Naming your pages", "Putting them in order"]}
         elapsed={resumeElapsed}
         pages={6}
+        approval={approval}
         leftExtras={
-          <div>
-            <p className="font-mono text-[10.5px] uppercase tracking-[0.16em] text-muted">
-              Still working
-            </p>
-            <h2 className="mt-1.5 font-display text-[20px] font-bold tracking-tight text-ink">
-              Your outline kept generating
-            </h2>
-            <p className="mt-1 text-[12.5px] leading-relaxed text-ink-soft">
-              The reload didn&apos;t interrupt it — it runs on our side. You&apos;ll land on
-              the review the moment it&apos;s ready.
-            </p>
-          </div>
+          approval ? (
+            <div>
+              <p className="font-mono text-[10.5px] uppercase tracking-[0.16em] text-muted">
+                Outline ready
+              </p>
+              <h2 className="mt-1.5 font-display text-[20px] font-bold tracking-tight text-ink">
+                Read it, then build
+              </h2>
+            </div>
+          ) : (
+            <div>
+              <p className="font-mono text-[10.5px] uppercase tracking-[0.16em] text-muted">
+                Still working
+              </p>
+              <h2 className="mt-1.5 font-display text-[20px] font-bold tracking-tight text-ink">
+                Your outline kept generating
+              </h2>
+              <p className="mt-1 text-[12.5px] leading-relaxed text-ink-soft">
+                The reload didn&apos;t interrupt it — it runs on our side. The moment
+                it&apos;s ready you approve it right here.
+              </p>
+            </div>
+          )
         }
       />
     );
@@ -882,13 +909,14 @@ export function BlankDocumentPanel({
         steps={generatingSteps(pages, url)}
         elapsed={elapsed}
         pages={pages}
+        approval={approval}
         leftExtras={
           <div>
             <p className="font-mono text-[10.5px] uppercase tracking-[0.16em] text-muted">
-              Writing your document
+              {approval ? "Outline ready" : "Writing your document"}
             </p>
             <h2 className="mt-1.5 font-display text-[20px] font-bold tracking-tight text-ink">
-              {pages} pages, from your brief
+              {approval ? "Read it, then build" : `${pages} pages, from your brief`}
             </h2>
             <p className="mt-2 line-clamp-3 text-[12.5px] leading-relaxed text-muted">
               {prompt.trim() || "Your brief"}
@@ -1780,6 +1808,7 @@ export function OutlineLive({
   elapsed,
   pages,
   leftExtras,
+  approval,
 }: {
   scriptId: string;
   steps: string[];
@@ -1787,6 +1816,8 @@ export function OutlineLive({
   pages: number;
   /** Branch-specific header content for the rail (resume explainer / brief echo). */
   leftExtras?: React.ReactNode;
+  /** Set when the outline has settled: the aside becomes the approval beat. */
+  approval?: { buildHref: string; reviewUrl: string } | null;
 }) {
   const [cards, setCards] = useState<{ label: string; lede: string }[]>([]);
   const [phase, setPhase] = useState<
@@ -1815,6 +1846,13 @@ export function OutlineLive({
   const lastIRef = useRef(-1);
   const errsRef = useRef(0);
   const listRef = useRef<HTMLDivElement | null>(null);
+
+  // The POST settling is the authority that the outline is DONE — the SSE's
+  // own done event may still be in flight. Whatever is buffered drains
+  // instantly; approval must never wait on ceremony.
+  useEffect(() => {
+    if (approval) doneRef.current = true;
+  }, [approval]);
 
   useEffect(() => {
     let es: EventSource | null = null;
@@ -1914,8 +1952,9 @@ export function OutlineLive({
   }, [cards, phase]);
 
   const mmss = `${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, "0")}`;
-  const headline =
-    phase === "connecting" || phase === "thinking"
+  const headline = approval
+    ? "Outline ready — read it, then build"
+    : phase === "connecting" || phase === "thinking"
       ? "Reading your brief — deciding what each page must earn"
       : phase === "writing"
         ? "Writing your pages"
@@ -1933,7 +1972,10 @@ export function OutlineLive({
     <div className="pointer-events-none absolute inset-0 z-30 flex flex-col gap-5 overflow-y-auto bg-[rgba(238,240,243,0.78)] p-5 backdrop-blur-[2px] lg:flex-row lg:overflow-hidden">
       <aside className="pointer-events-auto flex w-full shrink-0 flex-col rounded-xl border border-hairline bg-surface p-6 shadow-[0_30px_80px_-40px_rgba(18,26,43,0.45)] lg:max-h-full lg:w-[400px] lg:overflow-y-auto">
         {leftExtras}
-        {phase === "unavailable" ? (
+        {phase === "unavailable" && !approval ? (
+          // Stream never connected — honest paced steps. But if the outline
+          // SETTLED anyway (the POST is the authority), the approval beat
+          // below must win: a broken ceremony must never hide the Build CTA.
           <GeneratingSteps steps={steps} elapsed={elapsed} pages={pages} />
         ) : (
           <div className="mt-4 rounded-lg border border-hairline bg-surface-2 p-4">
@@ -1953,18 +1995,39 @@ export function OutlineLive({
               )}
               <span className="text-[12.5px] leading-relaxed text-ink">{headline}</span>
             </div>
-            <div className="mt-3 flex items-baseline justify-between gap-3 border-t border-hairline pt-2.5">
-              <span className="font-mono text-[11px] tabular-nums text-muted">{mmss}</span>
-              <span className="text-[11px] leading-relaxed text-faint">
-                {pages > 0 && cards.length >= pages && phase === "polish"
-                  ? "All pages drafted — tightening them now."
-                  : "You can close this tab; it finishes on its own."}
-              </span>
-            </div>
+            {approval ? (
+              <div className="mt-3 border-t border-hairline pt-3">
+                <a
+                  href={approval.buildHref}
+                  data-rb-outline-build
+                  className="block w-full rounded-md bg-accent px-4 py-2.5 text-center text-[13.5px] font-semibold text-accent-ink transition-all hover:brightness-110"
+                >
+                  Build the deck →
+                </a>
+                <a
+                  href={approval.reviewUrl}
+                  data-rb-outline-refine
+                  className="mt-2 block w-full rounded-md border border-hairline px-4 py-2 text-center text-[12px] text-muted transition-colors hover:text-ink"
+                >
+                  Refine page by page
+                </a>
+              </div>
+            ) : (
+              <div className="mt-3 flex items-baseline justify-between gap-3 border-t border-hairline pt-2.5">
+                <span className="font-mono text-[11px] tabular-nums text-muted">{mmss}</span>
+                <span className="text-[11px] leading-relaxed text-faint">
+                  {pages > 0 && cards.length >= pages && phase === "polish"
+                    ? "All pages drafted — tightening them now."
+                    : "You can close this tab; it finishes on its own."}
+                </span>
+              </div>
+            )}
           </div>
         )}
         <p className="mt-auto pt-5 text-center font-mono text-[10.5px] text-faint">
-          You approve the outline before anything is designed.
+          {approval
+            ? "The build follows this outline, page for page."
+            : "You approve the outline before anything is designed."}
         </p>
       </aside>
 

@@ -58,39 +58,103 @@ const run = async () => {
       .catch(() => false);
     expect(thinking, "the live manuscript appeared (thinking phase)");
 
-    // 2. A real typed card, while the generation is still running (we are
-    // still on the panel, not on /review). Scoped to the manuscript's own
-    // card hook — the first run of this probe matched the document rail's
-    // permanent "01" chip and called it typing.
-    const card = page.locator("[data-rb-outline-card]").first();
-    const typed = await card
-      .waitFor({ state: "visible", timeout: 4 * 60_000 })
-      .then(() => true)
-      .catch(() => false);
-    const onPanel = !/\/review\//.test(page.url());
-    expect(typed && onPanel, "a page card typed itself while the job was still running");
-    await page.screenshot({ path: `${SHOTS}/outline-typing.png` });
-    const labelText = typed ? await card.textContent().catch(() => "") : "";
-    console.log(`    first card so far: ${JSON.stringify(labelText?.slice(0, 70))}`);
-
-    // 3. Reload mid-generation: the resume card must REPLAY the typed cards.
+    // 2. Reload IMMEDIATELY — while the model is still thinking. Reloading
+    // after a card has typed races completion and loses: the reading-speed
+    // pacer means cards become visible around the moment the model FINISHES
+    // (the burst lands in the last 20% of the wait), so a post-card reload
+    // found status=done and correctly went to review — failing the replay
+    // assertion against correct behavior (2026-08-16 run).
     await page.reload({ waitUntil: "domcontentloaded" });
-    const replayed = await page
-      .locator("[data-rb-outline-card]")
+    const resumed = await page
+      .getByText(/kept generating|Still working/i)
       .first()
       .waitFor({ state: "visible", timeout: 20_000 })
       .then(() => true)
       .catch(() => false);
-    expect(replayed, "a mid-generation reload replayed the typed outline (sink replay)");
-    await page.screenshot({ path: `${SHOTS}/outline-typing-replayed.png` });
+    expect(resumed, "a mid-generation reload resumed the live ceremony (job survived)");
 
-    // 4. The poll remains the authority: we land on review.
-    const landed = await page
-      .waitForURL(/\/review\//, { timeout: 8 * 60_000 })
+    // 3. The resumed stream still TYPES: a card must appear from the replay,
+    // in the editor, not on /review. Scoped to the manuscript's own card
+    // hook — an early run matched the document rail's permanent "01" chip.
+    const card = page.locator("[data-rb-outline-card]").first();
+    const typedAfter = await card
+      .waitFor({ state: "visible", timeout: 4 * 60_000 })
       .then(() => true)
       .catch(() => false);
-    expect(landed, "the flow still landed on the outline review");
-    await page.screenshot({ path: `${SHOTS}/outline-review-after-stream.png` });
+    const onPanel = !/\/review\//.test(page.url());
+    expect(typedAfter && onPanel, "the replayed stream typed a page card in the editor");
+    await page.screenshot({ path: `${SHOTS}/outline-typing-replayed.png` });
+
+    // 4. NEVER LEAVE THE EDITOR (founder, 2026-08-14): completion shows the
+    // approval beat IN PLACE — Build + Refine beside the typed manuscript.
+    // Landing on /review here is the old behavior and now a FAILURE.
+    const beat = await page
+      .locator("[data-rb-outline-build]")
+      .waitFor({ state: "visible", timeout: 8 * 60_000 })
+      .then(() => true)
+      .catch(() => false);
+    const stayed = /\/preview\//.test(page.url()) && !/\/review\//.test(page.url());
+    expect(beat && stayed, `outline completion stayed in the editor with the approval beat (url ${page.url().slice(-40)})`);
+    const refine = await page.locator("[data-rb-outline-refine]").isVisible().catch(() => false);
+    expect(refine, "the page-by-page refine path is still offered (review reachable by choice)");
+    await page.screenshot({ path: `${SHOTS}/outline-approval-beat.png` });
+
+    // 5. Build from the beat: same URL family, the ceremony wears the shell.
+    await page.locator("[data-rb-outline-build]").click();
+    const inCeremony = await page
+      .waitForURL(/build=1/, { timeout: 30_000 })
+      .then(() => true)
+      .catch(() => false);
+    const shell = inCeremony
+      ? await page.getByText(/Designing your pages/).isVisible().catch(() => false)
+      : false;
+    expect(inCeremony && shell, "Build lands in the editor-shell ceremony on the same document URL");
+
+    if (process.env.QA_FULL_BUILD === "1") {
+      // 6. FULL WITNESS (~$1.60): a landed page must ASSEMBLE — the ceremony
+      // injects rb-assemble and elements enter staggered. Presence of the
+      // stylesheet + animated children is the honest proxy the DOM offers.
+      const assembled = await (async () => {
+        const t0 = Date.now();
+        while (Date.now() - t0 < 25 * 60_000) {
+          const st = await page
+            .locator("iframe[data-rb-build-iframe]")
+            .first()
+            .evaluate((f) => {
+              const d = (f as HTMLIFrameElement).contentDocument;
+              if (!d || !d.getElementById("rb-assemble")) return null;
+              let animated = 0;
+              for (const wrap of d.querySelectorAll("[data-piece]")) {
+                for (const c of wrap.children) {
+                  if ((c as HTMLElement).style?.animation?.includes("rb-")) animated++;
+                }
+              }
+              return { animated };
+            })
+            .catch(() => null);
+          if (st) return st;
+          await page.waitForTimeout(3000);
+        }
+        return null;
+      })();
+      expect(
+        !!assembled && assembled.animated >= 3,
+        `the landed page assembled element-by-element (${assembled?.animated ?? 0} staggered entrances)`,
+      );
+      await page.screenshot({ path: `${SHOTS}/build-assembling.png` });
+      const settled = await page
+        .getByRole("button", { name: /select/i })
+        .first()
+        .waitFor({ timeout: 25 * 60_000 })
+        .then(() => true)
+        .catch(() => false);
+      expect(settled, "the build settled into the editor without leaving the URL");
+    } else {
+      // Gate mode (~$0.45): witness the ceremony start, then stop the build
+      // through its own control so the gate doesn't pay for a full design.
+      await page.getByRole("button", { name: /stop this build/i }).click().catch(() => {});
+      await page.waitForTimeout(4000);
+    }
   } finally {
     for (const id of created) {
       await page.request.fetch(`${BASE}/api/documents/${id}`, {

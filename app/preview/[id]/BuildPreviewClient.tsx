@@ -548,6 +548,56 @@ export function BuildPreviewClient({
   const activeCount = statuses.filter((st) => st === "active").length;
   const pct = Math.min(100, ((doneCount + activeCount * 0.25) / steps.length) * 100);
 
+  /**
+   * THE PAGE ASSEMBLES IN FRONT OF YOU (founder, 2026-08-14: "I should be
+   * able to see the actual building of the deck — the text getting typed
+   * into the slide, the graphs getting built… just like Gamma does it").
+   *
+   * A landed page arrives as a complete document, so the assembly is a
+   * REVEAL: when its iframe loads during the ceremony, every element enters
+   * in reading order — text wipes in left-to-right, charts and images grow
+   * from below. Two hard rules make this safe:
+   *
+   * - ANIMATION ONLY, fill-mode backwards, no persistent inline styles: if
+   *   injection fails or the stylesheet is rejected, the page is simply
+   *   visible. The failure mode is "no ceremony", never "blank page".
+   * - The deck itself is untouched — this styles the ceremony's own iframe
+   *   documents, which are rebuilt from the server on every later load.
+   *
+   * (Duck-type on .style, never `instanceof HTMLElement`: these nodes live
+   * in the iframe's realm, where the parent's constructors match nothing —
+   * the same trap that made the live-drag fix silently inert.)
+   */
+  const revealLanded = (frame: HTMLIFrameElement) => {
+    try {
+      if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+      const doc = frame.contentDocument;
+      if (!doc || doc.getElementById("rb-assemble")) return;
+      const style = doc.createElement("style");
+      style.id = "rb-assemble";
+      style.textContent = [
+        "@keyframes rb-wipe { from { clip-path: inset(0 100% 0 0); opacity: 0.4; } to { clip-path: inset(0 0 0 0); opacity: 1; } }",
+        "@keyframes rb-grow { from { transform: translateY(14px) scale(0.96); opacity: 0; } to { transform: none; opacity: 1; } }",
+      ].join("\n");
+      doc.head?.appendChild(style);
+      const els: HTMLElement[] = [];
+      for (const wrap of Array.from(doc.querySelectorAll("[data-piece]"))) {
+        for (const child of Array.from(wrap.children)) {
+          const el = child as HTMLElement;
+          if (el.style) els.push(el);
+        }
+      }
+      els.forEach((el, i) => {
+        const graphic = !!el.querySelector("svg, canvas, img, video");
+        const delay = Math.min(i * 130, 2000);
+        const dur = graphic ? 620 : 520;
+        el.style.animation = `${graphic ? "rb-grow" : "rb-wipe"} ${dur}ms cubic-bezier(0.22,1,0.36,1) ${delay}ms backwards`;
+      });
+    } catch {
+      /* cross-origin or torn-down frame — the page just shows complete */
+    }
+  };
+
   // THE BUILD HAPPENS INSIDE THE EDITOR (founder, 2026-08-14: "you took me
   // to some new interface I was not expecting; it should all happen inside
   // the editor with the steps on the left where the user sees the slides").
@@ -660,10 +710,12 @@ export function BuildPreviewClient({
       {landed.map((i) => (
         <iframe
           key={i}
+          data-rb-build-iframe
           src={`/api/preview/${scriptId}/iframe?scene=${i}&settle=1&v=live`}
           title={`Page ${i + 1}${sceneLabels[i] ? ` — ${sceneLabels[i]}` : ""}`}
           className="pointer-events-none absolute inset-0 h-full w-full transition-opacity duration-500"
           style={{ border: 0, opacity: stageScene === i ? 1 : 0 }}
+          onLoad={(e) => revealLanded(e.currentTarget)}
         />
       ))}
       {landed.length === 0 && (
