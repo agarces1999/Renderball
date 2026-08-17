@@ -1365,8 +1365,12 @@ export const countAccentBorders = (
 
 export interface UnboundCopy {
   scene: number;
-  field: string; // "headline" | "lede" | … | "bullets[2]" | "cta.primary"
-  excerpt: string; // the retyped field text, truncated for the retry message
+  field: string;
+  excerpt: string;
+  /** Where the echo lives — child text or an attribute value. */
+  site: "text" | "attribute";
+  /** The literal as it actually appears in code (null if fused across tags). */
+  found: string | null;
 }
 
 /**
@@ -1527,16 +1531,83 @@ export const findUnboundCopy = (
     const childView = view.replace(/\u0001[^\u0001]*\u0001/g, "");
     for (const f of fields) {
       const needle = f.value.toLowerCase().replace(/\s+/g, "");
-      if (!childView.includes(needle) && !view.includes(`\u0001${needle}\u0001`))
-        continue;
+      const inText = childView.includes(needle);
+      const inAttr = view.includes(`\u0001${needle}\u0001`);
+      if (!inText && !inAttr) continue;
+      // Recover the literal AS IT APPEARS so the repair message can describe
+      // the real defect. Root-caused 2026-08-16: the message used to quote
+      // the SCRIPT's casing ("THE PILOT") for a code literal ("The Pilot") —
+      // the repair model searched for the quoted string, found nothing, saw
+      // the field already bound, and correctly concluded there was nothing
+      // to do. Every retry was futile BY CONSTRUCTION. A case-insensitive,
+      // whitespace-flexible scan of the raw section finds the actual text;
+      // a fused-across-tags split may still elude it (reported as such).
+      const ciRe = new RegExp(
+        f.value
+          .split(/\s+/)
+          .map((word) =>
+            word
+              .split("")
+              .map((ch) =>
+                /[a-zA-Z]/.test(ch)
+                  ? `[${ch.toUpperCase()}${ch.toLowerCase()}]`
+                  : ch.replace(/[.*+?^$()|[\]{}\\]/g, "\\$&"),
+              )
+              .join(""),
+          )
+          .join("\\s+"),
+      );
+      const found = ciRe.exec(section)?.[0] ?? null;
       out.push({
         scene: i,
         field: f.field,
         excerpt: f.value.length > 40 ? `${f.value.slice(0, 37)}…` : f.value,
+        site: inText ? "text" : "attribute",
+        found,
       });
     }
   }
   return out;
+};
+
+/**
+ * CHROME-ECHO ENFORCEMENT (root-caused 2026-08-16). The design prompt's own
+ * rule: category "is a STABLE context label … NEVER the scene's editorial
+ * eyebrow" — yet the observed survivor family is exactly `<Chrome
+ * category="The Pilot" />` echoing scene 1's eyebrow "THE PILOT" in a
+ * different casing. The echo goes stale the moment the eyebrow is edited,
+ * the exact-match binder can't touch attributes, and the repair model was
+ * told a casing it couldn't find. This enforces the documented rule
+ * deterministically: drop the echoing prop. Guarded on the prop being
+ * DECLARED OPTIONAL in the same file (`category?:`), so removal type-checks
+ * and the component's own absent-prop rendering handles the rest.
+ */
+export const stripChromeEyebrowEchoes = (
+  code: string,
+  scenes: SceneTiming[],
+): { code: string; stripped: { scene: number; value: string }[] } => {
+  const stripped: { scene: number; value: string }[] = [];
+  if (!/category\?\s*:/.test(code)) return { code, stripped };
+  let out = code;
+  for (let i = 0; i < scenes.length; i += 1) {
+    const eyebrow = (scenes[i]?.content as { eyebrow?: unknown } | undefined)?.eyebrow;
+    if (typeof eyebrow !== "string" || eyebrow.trim().length === 0) continue;
+    const flat = eyebrow.toLowerCase().replace(/\s+/g, "");
+    const sectionRe = new RegExp(
+      `(?:Section|Scene|Slide)${i}\\b[\\s\\S]*?(?=(?:Section|Scene|Slide)${i + 1}\\b|registerRoot|$)`,
+      "i",
+    );
+    const m = sectionRe.exec(out);
+    if (!m) continue;
+    let section = m[0];
+    section = section.replace(/\s+category="([^"]*)"/g, (full, val: string) => {
+      if (val.toLowerCase().replace(/\s+/g, "") !== flat) return full;
+      stripped.push({ scene: i, value: val });
+      return "";
+    });
+    out = out.slice(0, m.index) + section + out.slice(m.index + m[0].length);
+  }
+  return { code: out, stripped };
 };
 
 // ─── bind-in-place (v13 #5, the twice-deferred editor lever) ───────────────
@@ -1741,6 +1812,35 @@ export const bindLiteralCopyInPlace = (
         section = section.replace(nodeRe, (_full, ws1: string, ws2: string) => {
           count += 1;
           return `>${ws1}{${v.expr}}${ws2}`;
+        });
+      }
+      /**
+       * TRANSFORM-NORMALIZED rung (the survivor family, root-caused
+       * 2026-08-16). The agent echoes a field in a DIFFERENT casing than the
+       * script ("The Reframe" for THE REFRAME) inside an element that
+       * normalizes case anyway (textTransform: "uppercase" | "lowercase").
+       * Under that transform the literal and the bound field RENDER
+       * IDENTICALLY, so binding is still a pixel no-op — but the exact-match
+       * variants above can never see it, the LLM repair was told the
+       * script's casing and couldn't find it, and the flag shipped on every
+       * such build. Guard: the opening tag itself must declare the
+       * normalizing transform, and the text must equal the field
+       * case-insensitively with whitespace EXACT.
+       */
+      {
+        const ciLiteral = f.value
+          .split("")
+          .map((ch) => (/[a-zA-Z]/.test(ch) ? `[${ch.toUpperCase()}${ch.toLowerCase()}]` : escapeRx(ch)))
+          .join("");
+        const normRe = new RegExp(
+          `(<[a-zA-Z][^<>]*textTransform:\\s*"(?:uppercase|lowercase)"[^<>]*>)([ \\t\\r\\n]*)${ciLiteral}([ \\t\\r\\n]*)(?=</?[A-Za-z])`,
+          "g",
+        );
+        section = section.replace(normRe, (full, tag: string, ws1: string, ws2: string) => {
+          // The exact rungs above already bound identical-cased text; anything
+          // still matching here is a case-variant under a normalizing wrapper.
+          count += 1;
+          return `${tag}${ws1}{${accessor}}${ws2}`;
         });
       }
       // Split-span retypes (case-exact): adjacent inline siblings that

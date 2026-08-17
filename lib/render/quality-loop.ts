@@ -141,6 +141,7 @@ import {
   findUndefinedJsxComponents,
   findUnboundCopy,
   bindLiteralCopyInPlace,
+  stripChromeEyebrowEchoes,
   findPlaceholderData,
   findProvidedComponentRedefinitions,
   type AspectRatio,
@@ -1047,6 +1048,14 @@ export async function runQualityLoop(
       }
       const bind = bindLiteralCopyInPlace(fin.code, script.scenes as never);
       for (const b of bind.bound) bindCopyEvents.push({ round, ...b });
+      // Chrome-echo enforcement, same reasoning as the pipeline path — the
+      // design contract forbids the category badge echoing the eyebrow.
+      const chromeStrip = stripChromeEyebrowEchoes(bind.code, script.scenes as never);
+      if (chromeStrip.stripped.length > 0) {
+        log(
+          `  [chrome-echo] dropped ${chromeStrip.stripped.length} category badge(s) echoing a scene eyebrow [${chromeStrip.stripped.map((x) => `s${x.scene}`).join(", ")}]`,
+        );
+      }
       if (bind.bound.length > 0) {
         log(
           `  [bind-in-place] ${bind.bound.reduce((n, b) => n + b.count, 0)} literal copy mount(s) → bound refs [${bind.bound.map((b) => `s${b.scene}.${b.field}`).join(", ")}]`,
@@ -1055,7 +1064,7 @@ export async function runQualityLoop(
       const info = { logoInjected: Boolean(config.logoSrc), fontsInlined: fonts.inlined.length, fontsFailed: fonts.failed, added: fin.added, stubbed: fin.stubbed, neutralized: fin.neutralized, valueStubbed: fin.valueStubbed, copyBound: bind.bound.reduce((n, b) => n + b.count, 0) };
       finalize[`r${round}`] = info;
       hooks.onFinalize?.(round, info);
-      return bind.code;
+      return chromeStrip.code;
     });
 
     // cycle-9 P1 (arm 1): ICON-FONT-IN-A-TEXT-ROLE. An icon/symbol webfont

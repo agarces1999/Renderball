@@ -179,15 +179,26 @@ export const unboundFailuresByScene = (
   const byScene = new Map<number, string[]>();
   for (const u of unbound) {
     if (!byScene.has(u.scene)) byScene.set(u.scene, []);
-    byScene.get(u.scene)!.push(`${u.field} ("${u.excerpt}")`);
+    // Quote the literal AS FOUND — the model must be able to locate the
+    // defect. The old message quoted the SCRIPT's casing; for a case-variant
+    // echo ("The Pilot" for THE PILOT) the model searched, found nothing,
+    // saw the field bound, and correctly changed nothing — every retry
+    // futile by construction (root-caused 2026-08-16).
+    byScene
+      .get(u.scene)!
+      .push(
+        `${u.field}: the script says "${u.excerpt}" and the code carries ${
+          u.found ? `${u.site === "attribute" ? `it in an attribute (…="${u.found}")` : `the literal "${u.found}"`}` : "it split across elements"
+        }`,
+      );
   }
   const out: ScopedFailure[] = [];
   for (const [scene, fields] of byScene) {
     out.push({
       scene,
-      message: `Baked-in script copy — ${fields.join(
-        ", ",
-      )} are retyped as literal JSX. Bind this scene's content ONCE (const c = script.scenes[${scene}].content) and render every field as an expression: {c.headline}, {c.lede}, {c.bullets.map(...)}, {c.cta.primary}. Styling (uppercase, two-tone, emphasis) is CSS on the wrapper — never retype, split, or re-case the text itself.`,
+      message: `Script copy echoed as literal JSX — ${fields.join(
+        "; ",
+      )}. The scene's PRIMARY mount may already be bound — the flagged text is then a SECOND echo (a caption, badge, or chrome label repeating the same words). Fix each occurrence: bind it ({c.<field>}, styling via CSS on the wrapper — textTransform for casing, never retype), or if it is chrome (e.g. a category badge echoing the eyebrow) REPLACE it with a stable context label or omit it — the design contract forbids chrome echoing the scene's eyebrow.`,
     });
   }
   return out;

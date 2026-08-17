@@ -53,6 +53,8 @@ import {
   findDrawnLogoStandIns,
   findProvidedComponentRedefinitions,
   type AspectRatio,
+  bindLiteralCopyInPlace,
+  stripChromeEyebrowEchoes,
 } from "./quality-gates";
 import { buildDesignConstraints } from "./design-constraints";
 import { resolveBrandIdentity, resolveCanvasPlan, genericFor, fontStackFor, type BrandIdentity } from "../crawl/brand-identity";
@@ -1649,6 +1651,31 @@ export const buildAnimatedSections = async (
         // (STAGE 5) regenerates them, so this is a soft signal, not a failure.
         console.warn(`[pipeline] parallel fills incomplete: ${fillWarnings.join("; ")}`);
       }
+    }
+  }
+
+  /**
+   * DETERMINISTIC COPY REPAIRS, BEFORE THE GATES EVER LOOK (root-caused
+   * 2026-08-16): bindLiteralCopyInPlace ran ONLY on the cast path's quality
+   * loop — this default path never ran it, so its only unbound_copy remedy
+   * was an LLM retry whose message described a literal that didn't exist.
+   * Run the zero-token repairs first; the gates then only see residue that
+   * genuinely needs a model.
+   */
+  {
+    const bind = bindLiteralCopyInPlace(designCode, input.script.scenes ?? []);
+    if (bind.bound.length > 0) {
+      designCode = bind.code;
+      console.warn(
+        `[pipeline] bind-in-place: ${bind.bound.reduce((n, b) => n + b.count, 0)} literal copy mount(s) → bound [${bind.bound.map((b) => `s${b.scene}.${b.field}`).join(", ")}]`,
+      );
+    }
+    const strip = stripChromeEyebrowEchoes(designCode, input.script.scenes ?? []);
+    if (strip.stripped.length > 0) {
+      designCode = strip.code;
+      console.warn(
+        `[pipeline] chrome-echo: dropped ${strip.stripped.length} category badge(s) echoing the scene eyebrow [${strip.stripped.map((x) => `s${x.scene} "${x.value}"`).join(", ")}] — the design contract forbids chrome echoing the eyebrow`,
+      );
     }
   }
 
@@ -3646,7 +3673,12 @@ const assessStructuralGates = (
       key: "unbound_copy",
       message: `Baked-in script copy — ${unbound.length} content field(s) are retyped as literal JSX instead of rendered from the script: ${unbound
         .slice(0, 6)
-        .map((u) => `scene ${u.scene} ${u.field} ("${u.excerpt}")`)
+        .map(
+          (u) =>
+            `scene ${u.scene} ${u.field} (script says "${u.excerpt}"; the code carries ${
+              u.found ? `the ${u.site === "attribute" ? "attribute value" : "literal"} "${u.found}"` : "it split across elements"
+            })`,
+        )
         .join(", ")}${unbound.length > 6 ? ", …" : ""}. The script is the single source of copy — an edited or regenerated script must flow into the video with NO code change. In each section bind the scene's content ONCE (\`const c = script.scenes[N].content\`) and render every field as an expression: {c.headline}, {c.lede}, {c.bullets.map(...)}, {c.cta.primary}. Styling (uppercase, two-tone color, emphasis) is CSS on the wrapper (textTransform, color, spans around the BOUND expression) — never retype, split, or re-case the text itself. Invented diegetic labels inside UI mockups (text not in any content field) are fine and need no binding.`,
       summary: `${unbound.length} field(s) baked as literals: ${unbound
         .slice(0, 4)
