@@ -1,3 +1,4 @@
+import { thumbnailVersion } from "../../lib/render/thumbnail";
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { promises as fs } from "fs";
@@ -177,7 +178,9 @@ export default async function DocumentsPage({
           kind === "video" && !hasMp4 && hasComp
             ? `/api/preview/${sid}/iframe?scene=0`
             : null,
-        thumbUrl: deckBuilt ? `/api/preview/${sid}/thumbnail` : null,
+        thumbUrl: deckBuilt
+          ? `/api/preview/${sid}/thumbnail?v=${(await thumbnailVersion(sid)) ?? Date.parse(brief.created_at)}`
+          : null,
         built: deckBuilt,
       };
     }),

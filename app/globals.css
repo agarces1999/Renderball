@@ -306,3 +306,9 @@
 @media (prefers-reduced-motion: reduce) {
   .rb-step-dot, .rb-step-sweep { animation: none !important; }
 }
+
+/* Gallery thumbnails fade in over their placeholder (components/ProjectThumb). */
+@keyframes rb-thumb-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}

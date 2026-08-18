@@ -71,7 +71,12 @@ export function ProjectThumb({
           src={thumbUrl}
           alt=""
           loading="lazy"
+          decoding="async"
           onError={() => setThumbFailed(true)}
+          // Fade in over the dark placeholder instead of popping — the load
+          // itself is now usually instant (R2-persisted, immutable-cached),
+          // and the fade makes the residual cold case read as intentional.
+          style={{ animation: "rb-thumb-in 0.35s ease" }}
           className="h-full w-full object-cover"
         />
       ) : mp4Url ? (

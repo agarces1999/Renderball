@@ -19,6 +19,7 @@ import { decomposeGenDir } from "../agents/lego-store";
 import { resolveCornerBrandMark } from "../agents/logo-inject";
 import { verifyScenesRender } from "./ssr-render";
 import { measureScenes } from "./measure-scene";
+import { cachedThumbnail } from "./thumbnail";
 import { findFlooredCopy, applyShortened, shortenPrompt } from "./semantic-shorten";
 import { findRenderTruthFailures, measureOutDir, BLOCKING_RENDER_TRUTH_KINDS } from "./render-truth-gates";
 import { resolveCanvasPlan, canvasBrandFidelityAdvisory, signatureWithLogoFallback, brandShortName } from "../crawl/brand-identity";
@@ -102,10 +103,35 @@ export async function runPreviewBuild(
   // The wrapper exists because AsyncLocalStorage needs a callback boundary and
   // the body below is 900 lines with a dozen returns; splitting it is safer
   // than threading a try/finally through all of them.
-  return withSpend(
+  const result = await withSpend(
     { stage: "build", scriptId, ownerId, runId: `${scriptId}-${Date.now()}` },
     () => runPreviewBuildInner(scriptId, ownerId, opts),
   );
+  /**
+   * WARM THE GALLERY THUMBNAIL while everything is hot (founder, 2026-08-18:
+   * "previews take a lot to load, makes our product feel pretty bad"). The
+   * genDir is local, chromium is warm, and cachedThumbnail write-throughs to
+   * R2 — so the gallery card is instant from the first visit and survives
+   * the deploy that would have wiped a disk-only cache. Guarded hard: capped
+   * at 45s and failure-blind, because a thumbnail must never fail (or hold)
+   * a build that already succeeded — one capture in the offline harness hung
+   * past 3 minutes, and that class of hang must land on the next lazy
+   * request, not on the build response.
+   */
+  if ((result.body as { ok?: boolean } | undefined)?.ok) {
+    try {
+      const script = await loadScript(scriptId, ownerId);
+      if (script) {
+        await Promise.race([
+          cachedThumbnail(scriptId, script),
+          new Promise((r) => setTimeout(r, 45_000)),
+        ]);
+      }
+    } catch (e) {
+      console.warn(`[preview/build] thumbnail warm skipped: ${e instanceof Error ? e.message : e}`);
+    }
+  }
+  return result;
 }
 
 async function runPreviewBuildInner(

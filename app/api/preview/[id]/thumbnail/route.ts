@@ -28,12 +28,14 @@ export async function GET(request: Request, { params }: { params: { id: string }
   if (request.headers.get("if-none-match") === thumb.etag) {
     return new NextResponse(null, { status: 304, headers: { ETag: thumb.etag } });
   }
+  // A VERSIONED url (?v=<updatedAt>, stamped by the gallery) is immutable —
+  // the browser never re-asks, so repeat gallery visits render from memory
+  // with zero requests. An unversioned url keeps the revalidate contract.
+  const versioned = new URL(request.url).searchParams.has("v");
   return new NextResponse(new Uint8Array(thumb.data), {
     headers: {
       "Content-Type": "image/png",
-      // Revalidate every view (cheap stat + 304); the disk cache does the
-      // heavy lifting, the ETag spares the bytes.
-      "Cache-Control": "private, no-cache",
+      "Cache-Control": versioned ? "private, max-age=31536000, immutable" : "private, no-cache",
       ETag: thumb.etag,
     },
   });

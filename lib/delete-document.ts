@@ -94,7 +94,10 @@ export const deleteDocument = async (
   // Orphaned objects are a sweep job; a slow delete is a bad product.
   if (isStorageConfigured()) {
     void (async () => {
-      for (const prefix of [`uploads/${projectId}/`, ...(scriptId ? [`renders/${scriptId}`] : [])]) {
+      for (const prefix of [
+        `uploads/${projectId}/`,
+        ...(scriptId ? [`renders/${scriptId}`, `thumbs/${scriptId}`, `docs/${scriptId}`] : []),
+      ]) {
         try {
           await deletePrefix(prefix);
         } catch (err) {

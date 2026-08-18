@@ -16,8 +16,9 @@
 import { promises as fs } from "fs";
 import path from "path";
 import type { Script } from "../../src/schema";
-import { documentDir } from "./gen-store";
+import { documentDir, genDirOf } from "./gen-store";
 import { exportPagePng } from "./export-static";
+import { getObjectBytes, isStorageConfigured, putObject } from "../storage/r2";
 
 export type ThumbnailResult =
   | { ok: true; data: Buffer; etag: string }
@@ -60,6 +61,20 @@ const newestMtimeMs = async (dir: string): Promise<number | null> => {
  */
 const inflight = new Map<string, Promise<{ ok: boolean; message?: string }>>();
 
+/**
+ * Cache-version for a gallery URL: the local PNG's mtime, which changes
+ * exactly when the picture changes (edits invalidate → recapture → new
+ * mtime). Null when this dyno has no copy yet — the caller falls back to a
+ * stable key and the immutable cache serves the same bytes either way.
+ */
+export const thumbnailVersion = async (scriptId: string): Promise<number | null> => {
+  const st = await fs.stat(thumbPath(scriptId)).catch(() => null);
+  return st ? Math.round(st.mtimeMs) : null;
+};
+
+/** The thumbnail's durable home. Local disk dies with every deploy; R2 does not. */
+export const thumbKey = (scriptId: string): string => `thumbs/${scriptId}.png`;
+
 const refreshThumb = (scriptId: string, script: Script): Promise<{ ok: boolean; message?: string }> => {
   const running = inflight.get(scriptId);
   if (running) return running;
@@ -69,6 +84,13 @@ const refreshThumb = (scriptId: string, script: Script): Promise<{ ok: boolean; 
     const file = thumbPath(scriptId);
     await fs.mkdir(path.dirname(file), { recursive: true });
     await fs.writeFile(file, result.data);
+    // WRITE-THROUGH: every fresh capture also lands in R2, fire-and-forget —
+    // a failed upload costs nothing now and one extra capture after the next
+    // deploy. Without this, deploys wiped the only copy (12 deploys today =
+    // 12 stampedes of full re-captures on first gallery view).
+    if (isStorageConfigured()) {
+      void putObject(thumbKey(scriptId), result.data, "image/png").catch(() => {});
+    }
     return { ok: true };
   })().finally(() => inflight.delete(scriptId));
   inflight.set(scriptId, job);
@@ -83,11 +105,44 @@ const refreshThumb = (scriptId: string, script: Script): Promise<{ ok: boolean; 
  * disappears from a chat message someone already sent.
  */
 export const cachedThumbnail = async (scriptId: string, script: Script): Promise<ThumbnailResult> => {
+  const file = thumbPath(scriptId);
+
+  /**
+   * ORDER IS THE FIX (measured 2026-08-18). The old shape called
+   * documentDir() FIRST — which HYDRATES the full deck from R2 — before even
+   * looking for a cached PNG. On a fresh dyno every gallery card therefore
+   * downloaded its whole document and then ran a Playwright capture
+   * (minutes, ×N cards, one chromium). New order:
+   *   1. local PNG + LOCAL genDir mtime — zero network, the steady state;
+   *   2. R2 PNG — one small GET, the post-deploy state; warms the disk;
+   *   3. hydrate + capture — only when no picture exists anywhere.
+   */
+  const localDir = genDirOf(scriptId);
+  const localMtime = await newestMtimeMs(localDir);
+  const cached = await fs.stat(file).catch(() => null);
+
+  if (cached && (localMtime === null || cached.mtimeMs > localMtime)) {
+    // Fresh relative to everything this dyno knows. (localMtime null = the
+    // deck isn't hydrated here; the local PNG can only have come from a
+    // capture or R2, both authoritative at write time.)
+    const data = await fs.readFile(file);
+    return { ok: true, data, etag: `"${Math.round(cached.mtimeMs)}-${cached.size}"` };
+  }
+
+  if (!cached && isStorageConfigured()) {
+    const remote = await getObjectBytes(thumbKey(scriptId)).catch(() => null);
+    if (remote && remote.length > 0) {
+      await fs.mkdir(path.dirname(file), { recursive: true }).catch(() => {});
+      await fs.writeFile(file, remote).catch(() => {});
+      const st = await fs.stat(file).catch(() => null);
+      return { ok: true, data: remote, etag: st ? `"${Math.round(st.mtimeMs)}-${st.size}"` : `"r2-${remote.length}"` };
+    }
+  }
+
+  // Nothing usable anywhere (or the local deck is NEWER than the PNG — an
+  // edit happened here). Hydrate if needed and capture; stale beats broken.
   const sourceMtime = await newestMtimeMs(await documentDir(scriptId));
   if (sourceMtime === null) return { ok: false, status: 404, message: "document not built yet" };
-
-  const file = thumbPath(scriptId);
-  const cached = await fs.stat(file).catch(() => null);
   if (!cached || cached.mtimeMs <= sourceMtime) {
     const refreshed = await refreshThumb(scriptId, script);
     if (!refreshed.ok && !cached) {
