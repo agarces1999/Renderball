@@ -6,6 +6,7 @@
  * one clean.
  */
 import { promises as fs } from "fs";
+import { existsSync } from "fs";
 import { transform } from "esbuild";
 import {
   findUnboundCopy,
@@ -15,9 +16,23 @@ import {
 
 let passed = 0;
 let failed = 0;
+let skipped = 0;
 const check = async (name: string, fn: () => void | Promise<void>) => {
   try { await fn(); passed++; console.log(`  ✓ ${name}`); }
   catch (e) { failed++; console.log(`  ✗ ${name}\n      ${e instanceof Error ? e.message : e}`); }
+};
+// The replay half samples STORED BUILDS under gitignored src/generated —
+// present on the long-lived checkout, absent on CI and fresh clones (this
+// exact absence turned CI red twice, 2026-08-16, while the unit half was
+// green). Absent fixture = unrunnable, not failed: skip LOUDLY, counted,
+// same idiom as hero-contrast.test.ts.
+const checkWithDeck = async (name: string, deck: string, fn: () => void | Promise<void>) => {
+  if (!existsSync(`src/generated/${deck}/Composition.tsx`)) {
+    skipped++;
+    console.log(`  ↷ ${name}\n      SKIPPED — stored build src/generated/${deck} not on disk`);
+    return;
+  }
+  await check(name, fn);
 };
 const assert = (c: boolean, m: string) => { if (!c) throw new Error(m); };
 
@@ -92,7 +107,7 @@ const Section1 = () => (<div><Chrome category="Investing for everyone" /><h1>{c.
     "01M05ZFQM60WNAG7F02HDA16NC", // Chrome category attribute echo
     "01KYE26Q8MR6MN68624P99RAAJ", // Chrome category attribute echo
   ];
-  await check("replay 01KW048WG3…: invariant-tagline deck is clean WITHOUT repairs (false positive gone)", async () => {
+  await checkWithDeck("replay 01KW048WG3…: invariant-tagline deck is clean WITHOUT repairs (false positive gone)", "01KW048WG3E399G5ZKS3JV9T16", async () => {
     const dir = "src/generated/01KW048WG3E399G5ZKS3JV9T16";
     const code = await fs.readFile(`${dir}/Composition.tsx`, "utf8");
     const script = JSON.parse(await fs.readFile(`${dir}/script.json`, "utf8"));
@@ -104,7 +119,7 @@ const Section1 = () => (<div><Chrome category="Investing for everyone" /><h1>{c.
     assert(strip.stripped.length === 0, "stable tagline chrome untouched");
   });
   for (const d of decks) {
-    await check(`replay ${d.slice(0, 10)}…: repaired, detector-clean, still compiles`, async () => {
+    await checkWithDeck(`replay ${d.slice(0, 10)}…: repaired, detector-clean, still compiles`, d, async () => {
       const dir = `src/generated/${d}`;
       const code = await fs.readFile(`${dir}/Composition.tsx`, "utf8");
       const script = JSON.parse(await fs.readFile(`${dir}/script.json`, "utf8"));
@@ -122,7 +137,7 @@ const Section1 = () => (<div><Chrome category="Investing for everyone" /><h1>{c.
     });
   }
 
-  console.log(`\n${passed} passed, ${failed} failed`);
+  console.log(`\n${passed} passed, ${failed} failed${skipped ? `, ${skipped} skipped (stored-build fixtures absent)` : ""}`);
   if (failed > 0) process.exitCode = 1;
 };
 void run();
