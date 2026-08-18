@@ -25,6 +25,7 @@
  */
 
 import { noteZaiError, noteZaiSuccess } from "../zai-breaker";
+import { spendContext } from "../spend/context";
 import { recordSpend } from "../spend/record";
 
 export type CastEffort = "none" | "low" | "medium" | "high";
@@ -228,6 +229,13 @@ export const castCall = async (call: CastCall): Promise<CastResult> => {
         headers: {
           "content-type": "application/json",
           authorization: `Bearer ${wire.key}`,
+          // PROMPT-CACHE AFFINITY (speed playbook 2026-08-18): Fireworks'
+          // serverless prefix cache is PER-REPLICA, so a build's 15-30 calls
+          // only hit each other's cached prefixes if they land on the same
+          // replica. The scriptId keys a build's calls together (docs:
+          // x-session-affinity; up to 80% TTFT cut, cached input billed 50%).
+          // Absent context (lab scripts) sends nothing — old behavior.
+          ...(spendContext().scriptId ? { "x-session-affinity": String(spendContext().scriptId) } : {}),
         },
         body: JSON.stringify({
           ...wire.body(call, model),
@@ -425,6 +433,13 @@ export const castStream = async (
         headers: {
           "content-type": "application/json",
           authorization: `Bearer ${wire.key}`,
+          // PROMPT-CACHE AFFINITY (speed playbook 2026-08-18): Fireworks'
+          // serverless prefix cache is PER-REPLICA, so a build's 15-30 calls
+          // only hit each other's cached prefixes if they land on the same
+          // replica. The scriptId keys a build's calls together (docs:
+          // x-session-affinity; up to 80% TTFT cut, cached input billed 50%).
+          // Absent context (lab scripts) sends nothing — old behavior.
+          ...(spendContext().scriptId ? { "x-session-affinity": String(spendContext().scriptId) } : {}),
         },
         body: JSON.stringify({
           ...wire.body(call, model),

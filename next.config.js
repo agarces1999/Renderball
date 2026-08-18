@@ -2,6 +2,8 @@
 const nextConfig = {
   reactStrictMode: true,
   experimental: {
+    // Boot hook (instrumentation.ts): warms the sandbox pool + SIGTERM drain.
+    instrumentationHook: true,
     // Remotion's deps (puppeteer, ffmpeg binaries) are server-only and
     // must not get pulled into client bundles. In Next.js 14 the key is
     // `experimental.serverComponentsExternalPackages`; flat

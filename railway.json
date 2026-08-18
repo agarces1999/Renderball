@@ -1,0 +1,24 @@
+{
+  "$schema": "https://railway.com/railway.schema.json",
+  "deploy": {
+    "healthcheckPath": "/api/health",
+    "healthcheckTimeout": 300,
+    "overlapSeconds": 30,
+    "drainingSeconds": 30
+  },
+  "build": {
+    "watchPatterns": [
+      "app/**",
+      "components/**",
+      "lib/**",
+      "public/**",
+      "prisma/**",
+      "src/schema.ts",
+      "instrumentation.ts",
+      "next.config.js",
+      "package.json",
+      "package-lock.json",
+      "railway.json"
+    ]
+  }
+}

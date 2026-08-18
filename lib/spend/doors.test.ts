@@ -56,6 +56,11 @@ const DECLARED: Record<string, string> = {
     "DEAD — zero call sites (asserted below). Kept per CLAUDE.md as dormant routing, " +
     "but it constructs a real client with a real key, so it stays on this list and " +
     "under the no-call-sites assertion until it is deleted.",
+  "scripts/probe-thinking-off.mjs":
+    "Offline diagnostic (speed playbook 2026-08-18): probes which parameter " +
+    "shapes disable GLM-5.2 reasoning on the Fireworks wire. Five ~8-token " +
+    "calls, cents total, human-run only. Its finding (reasoning_effort:'none' " +
+    "works — 663ms/8 tok vs 6790ms/768 tok) is wired into the shorten paths.",
   "scripts/model-bakeoff.mjs":
     "Offline model decision harness (the 2026-07-14 speed x quality pivot). Not " +
     "referenced by package.json or any product path; spends only when a human runs " +

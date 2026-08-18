@@ -748,13 +748,22 @@ export const generateScript = async (
                   `${k}. scene ${v.sceneIndex} ${v.field} (max ${v.budget} chars, currently ${v.length}): "${v.value}"`,
               )
               .join("\n");
-            const r = await transport([
-              {
-                role: "user",
-                content: `Shorten each numbered line of presentation copy to AT OR UNDER its max characters. Keep the meaning, the brand voice, and the language of the original. Do not add quotes or commentary. Return ONLY a JSON array of the shortened strings, in the same order.\n\n${ask}`,
-              },
-            ]);
-            totalUsage = addUsage(totalUsage, r.usage);
+            // castCall direct with thinking OFF (probe 2026-08-18: 663ms/8
+            // tokens vs 6790ms/768 with reasoning on) — the generation
+            // transport's high-effort settings are for composing outlines,
+            // not for compressing strings.
+            const r = await castCall({
+              stage: "outline",
+              timeoutMs: 60_000,
+              maxTokens: 2000,
+              effort: "none",
+              json: true,
+              model: fireworksScriptModel(),
+              system: "You shorten presentation copy without losing meaning, voice, or language.",
+              user: `Shorten each numbered line of presentation copy to AT OR UNDER its max characters. Do not add quotes or commentary. Return ONLY a JSON array of the shortened strings, in the same order.\n\n${ask}`,
+            });
+
+            totalUsage = addUsage(totalUsage, { input_tokens: r.inputTokens, output_tokens: r.outputTokens, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 });
             const arr = JSON.parse(
               (r.text.match(/\[[\s\S]*\]/) ?? ["[]"])[0],
             ) as unknown[];

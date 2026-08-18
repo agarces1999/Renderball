@@ -89,7 +89,11 @@ export async function renderSceneDoc(
   const dims = dimensionsForScript(script);
 
   const lottieMount = sectionHtml.includes("rb-lottie")
-    ? `<script src="https://cdnjs.cloudflare.com/ajax/libs/lottie-web/5.12.2/lottie.min.js"></script>
+    ? // SELF-HOSTED (speed playbook 2026-08-18): this script sits inside EVERY
+    // scene document — editor re-renders, measure passes, exports — and the
+    // cdnjs fetch put a third-party round-trip (and a third-party outage
+    // mode) on the hot path. Same pinned build, served from our own origin.
+    `<script src="/vendor/lottie-5.12.2.min.js"></script>
 <script>
   (function () {
     function play() {

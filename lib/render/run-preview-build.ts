@@ -440,6 +440,11 @@ async function runPreviewBuildInner(
         user: shortenPrompt(floored),
         maxTokens: 4000,
         json: true,
+        // Thinking OFF — probe-verified 2026-08-18 on this wire: baseline
+        // 6790ms/768 tokens vs 663ms/8 tokens with reasoning disabled, same
+        // task quality on compression work. Shortening copy is not creative
+        // composition; it must not pay the reasoning tax.
+        effort: "none",
         model: MODELS.codingAgentBuild,
       });
       const arr = JSON.parse((r.text?.match(/\[[\s\S]*\]/) ?? ["[]"])[0]) as unknown[];

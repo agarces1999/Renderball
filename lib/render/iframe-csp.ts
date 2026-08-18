@@ -26,9 +26,11 @@
  */
 export const COMPOSITION_CSP = [
   "default-src 'none'",
-  // lottie-web is loaded from cdnjs by the served document; the mount code
-  // and the choreography are inline <script> blocks we generate.
-  "script-src 'unsafe-inline' https://cdnjs.cloudflare.com",
+  // lottie-web is SELF-HOSTED (/vendor/, same origin) since 2026-08-18 —
+  // cdnjs came off the hot path and off this allowlist with it, which also
+  // narrows the script surface: same-origin + our inline mount/choreography
+  // blocks only.
+  "script-src 'unsafe-inline' 'self'",
   // Every composition styles itself with inline style attributes and blocks.
   "style-src 'unsafe-inline' https:",
   "img-src https: data: blob:",

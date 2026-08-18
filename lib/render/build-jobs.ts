@@ -60,6 +60,15 @@ const jobs: Map<string, BuildJob> = (globalForJobs.__rbBuildJobs ??= new Map());
  *  call finishes and the stop lands at the next phase edge. */
 const cancels = new Set<string>();
 
+/** Builds currently in state "running" — the SIGTERM drain (instrumentation.ts)
+ *  holds process exit while this is non-zero so a deploy can't kill a build
+ *  mid-spend. */
+export const activeBuildCount = (): number => {
+  let n = 0;
+  for (const job of jobs.values()) if (job.state === "running") n += 1;
+  return n;
+};
+
 /** Thrown out of the build at a phase boundary after a stop request. The
  *  message is a sentinel because the pipeline's own catch-alls may wrap the
  *  error — DETECTION IS BY SUBSTRING, never instanceof. */

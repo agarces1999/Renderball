@@ -159,6 +159,20 @@ const spawnChild = (slot: Slot): ChildProcess => {
   return c;
 };
 
+/**
+ * Eager-spawn every slot's child. Called once at boot (instrumentation.ts):
+ * the pool historically spawned lazily, so the FIRST render after a deploy
+ * or an idle reap paid the cold-child price — measured 114.5ms for spawn +
+ * module load + first compile, vs 6-7ms warm. Warming at boot moves that
+ * cost to a moment nobody is watching. Idempotent and crash-tolerant:
+ * a slot that dies later still respawns lazily exactly as before.
+ */
+export const warmPool = (): void => {
+  for (const slot of slots) {
+    if (!slot.child || !slot.child.connected) slot.child = spawnChild(slot);
+  }
+};
+
 /** The least-busy slot, spawning its child on first use. */
 const acquireSlot = (): Slot => {
   const slot = slots.reduce((a, b) => (b.load < a.load ? b : a));
