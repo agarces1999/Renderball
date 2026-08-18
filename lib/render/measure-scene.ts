@@ -349,14 +349,24 @@ const PAGE_WALK = `(() => {
       // box shows, and how overfull the fit runtime left it. The path is
       // looked up on the element, then up (a span inside the fitted box),
       // then down (the fitted box wrapping the bound span).
-      contentPath:
-        el.getAttribute("data-content-path") ||
-        (el.closest("[data-content-path]") as Element | null)?.getAttribute("data-content-path") ||
-        el.querySelector("[data-content-path]")?.getAttribute("data-content-path") ||
-        undefined,
-      fitFloor: (() => {
-        const f = parseFloat(el.getAttribute("data-rb-fit-floor") || "");
-        return Number.isFinite(f) && f > 1.02 ? f : undefined;
+      //
+      // PLAIN JAVASCRIPT ONLY in this walker: it reaches page.evaluate as
+      // RAW SOURCE, so a TypeScript cast here is a SyntaxError in the
+      // browser and every scene reports measure-error — which is a
+      // hard-failed build. Caught by the witness build minutes after the
+      // typed version shipped; tsc cannot see this class at all.
+      contentPath: (function () {
+        var own = el.getAttribute("data-content-path");
+        if (own) return own;
+        var up = el.closest("[data-content-path]");
+        if (up) return up.getAttribute("data-content-path") || undefined;
+        var down = el.querySelector("[data-content-path]");
+        if (down) return down.getAttribute("data-content-path") || undefined;
+        return undefined;
+      })(),
+      fitFloor: (function () {
+        var f = parseFloat(el.getAttribute("data-rb-fit-floor") || "");
+        return isFinite(f) && f > 1.02 ? f : undefined;
       })(),
       isImg: el.tagName === "IMG",
       src: el.tagName === "IMG" ? el.getAttribute("src") || undefined : undefined,
