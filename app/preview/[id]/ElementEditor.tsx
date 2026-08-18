@@ -551,6 +551,11 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
       n.el.style.transform = n.base;
       n.el.style.willChange = "";
     }
+    // The FRAME's transform is imperative too — React never manages it, so a
+    // remounted selection box can inherit the stale offset and sit hundreds
+    // of px from the element it claims to outline (probe-caught: frame 1336
+    // vs ink 823 after a drag).
+    if (frameRef.current) frameRef.current.style.transform = "";
     liveNodesRef.current = [];
     pendingRef.current = null;
   };

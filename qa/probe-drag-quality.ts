@@ -7,16 +7,14 @@
  *
  *   npx tsx qa/probe-drag-quality.ts
  */
-import { chromium, type Page } from "playwright";
+import { type Page } from "playwright";
+import { harness, probePage, hittablePiece } from "./kit";
 
 const BASE = process.env.QA_BASE ?? "http://localhost:3000";
 const DOC = process.env.DOC ?? "01KZWJKGF8G7T5SFRNXZRP1HPQ";
 
-let failures = 0;
-const expect = (ok: boolean, what: string) => {
-  console.log(`  ${ok ? "✓" : "✗"} ${what}`);
-  if (!ok) failures++;
-};
+const h = harness();
+const expect = h.expect;
 
 /** Where a piece's visible ink actually is, in page coords. */
 const inkAt = (page: Page, id: string) =>
@@ -35,33 +33,14 @@ const inkAt = (page: Page, id: string) =>
   }, id);
 
 const run = async () => {
-  const browser = await chromium.launch();
-  const page = await (await browser.newContext({ viewport: { width: 1600, height: 1100 } })).newPage();
+  const { browser, page } = await probePage(BASE, false);
   await page.goto(`${BASE}/dev/edit/${DOC}`, { waitUntil: "domcontentloaded" });
   await page.waitForTimeout(7000);
 
-  // Pick a hittable piece and select it.
-  const target = await page.locator("iframe").last().evaluate((f) => {
-    const iframe = f as HTMLIFrameElement;
-    const d = iframe.contentDocument!;
-    const host = iframe.getBoundingClientRect();
-    for (const p of d.querySelectorAll("[data-piece]")) {
-      let l = Infinity, t = Infinity, r = -Infinity, b2 = -Infinity;
-      for (const c of p.children) {
-        const b = c.getBoundingClientRect();
-        if (b.width === 0 && b.height === 0) continue;
-        l = Math.min(l, b.left); t = Math.min(t, b.top);
-        r = Math.max(r, b.right); b2 = Math.max(b2, b.bottom);
-      }
-      if (!(r - l > 60 && b2 - t > 14)) continue;
-      const cx = (l + r) / 2, cy = (t + b2) / 2;
-      if (d.elementFromPoint(cx, cy)?.closest?.("[data-piece]") !== p) continue;
-      return { id: p.getAttribute("data-piece")!, x: host.left + cx, y: host.top + cy, h: Math.round(b2 - t) };
-    }
-    return null;
-  });
+  // Pick a hittable piece and select it (kit: union + hit-test verified).
+  const target = await hittablePiece(page);
   if (!target) throw new Error("no hittable piece");
-  console.log(`  target ${target.id} (height ${target.h}px)`);
+  console.log(`  target ${target.id} (height ${Math.round(target.h)}px)`);
   await page.mouse.click(target.x, target.y);
   await page.waitForTimeout(700);
 
@@ -109,8 +88,14 @@ const run = async () => {
   const onIt = !!(frame && after && Math.abs(frame.x - after.x) < 60);
   expect(onIt, `the selection outline followed the element (frame ${frame ? Math.round(frame.x) : "none"} vs ink ${after?.x})`);
 
+  // SELF-RESTORING: the drag above COMMITTED a move to the fixture deck.
+  // Four unrestored runs accumulated dx=1134 and hit the server's clamp —
+  // the landing assertion then failed against pollution, not code. Undo puts
+  // the fixture back for the next run.
+  await page.request
+    .post(`${BASE}/api/dev/undo`, { data: { scriptId: DOC } })
+    .catch(() => null);
   await browser.close();
-  console.log(failures === 0 ? "\ndrag quality: all green" : `\ndrag quality: ${failures} FAILED`);
-  process.exit(failures === 0 ? 0 : 1);
+  process.exit(h.finish("drag quality"));
 };
 void run();
