@@ -1514,6 +1514,18 @@ const contentCopyFields = (
   return out;
 };
 
+/** Case/space-insensitive count of `="value"` attribute occurrences file-wide. */
+const attrValueCount = (code: string, value: string): number => {
+  const flat = value.toLowerCase().replace(/\s+/g, "");
+  let n = 0;
+  const re = /="([^"]{2,80})"/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(code)) !== null) {
+    if (m[1].toLowerCase().replace(/\s+/g, "") === flat) n += 1;
+  }
+  return n;
+};
+
 export const findUnboundCopy = (
   code: string,
   scenes: SceneTiming[],
@@ -1532,7 +1544,20 @@ export const findUnboundCopy = (
     for (const f of fields) {
       const needle = f.value.toLowerCase().replace(/\s+/g, "");
       const inText = childView.includes(needle);
-      const inAttr = view.includes(`\u0001${needle}\u0001`);
+      let inAttr = view.includes(`\u0001${needle}\u0001`);
+      /**
+       * SCENE-INVARIANT FURNITURE EXEMPTION (measured 2026-08-16). A deck
+       * carried `category="Investing for everyone"` on ALL FIVE pages — the
+       * stable brand tagline the design contract asks chrome to carry — and
+       * scene 1's headline happened to BE that tagline. That is not a
+       * retype: editing the headline must NOT move the chrome, so flagging
+       * it asked the repair loop to "fix" correct code (and it shipped
+       * flagged forever). A real per-scene echo appears ONCE ("The Pilot"
+       * on its own scene only — measured); a stable label repeats. Two or
+       * more identical attribute occurrences file-wide → furniture, exempt.
+       * Child-text matches are never exempted.
+       */
+      if (inAttr && attrValueCount(code, f.value) >= 2) inAttr = false;
       if (!inText && !inAttr) continue;
       // Recover the literal AS IT APPEARS so the repair message can describe
       // the real defect. Root-caused 2026-08-16: the message used to quote
@@ -1602,6 +1627,11 @@ export const stripChromeEyebrowEchoes = (
     let section = m[0];
     section = section.replace(/\s+category="([^"]*)"/g, (full, val: string) => {
       if (val.toLowerCase().replace(/\s+/g, "") !== flat) return full;
+      // Scene-invariant furniture: a label repeated across sections is the
+      // deck's stable chrome, not an echo — coinciding with one scene's
+      // eyebrow is coincidence, and stripping one page's badge would break
+      // chrome consistency deck-wide.
+      if (attrValueCount(out, val) >= 2) return full;
       stripped.push({ scene: i, value: val });
       return "";
     });

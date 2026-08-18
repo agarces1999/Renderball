@@ -70,12 +70,39 @@ const Section0 = () => (<div><Chrome category="The Pilot" /></div>);`;
     assert(hits[0].found === "The Pilot", `found: ${hits[0].found}`);
   });
 
+  await check("scene-invariant furniture is exempt: tagline chrome on every page, one coinciding headline", () => {
+    const code = `const Chrome = (p: { category?: string }) => <div>{p.category}</div>;
+const Section0 = () => (<div><Chrome category="Investing for everyone" /><h1>{c.headline}</h1></div>);
+const Section1 = () => (<div><Chrome category="Investing for everyone" /><h1>{c.headline}</h1></div>);`;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const scenes: any = [{ content: { headline: "Momentum" } }, { content: { headline: "Investing for everyone" } }];
+    const hits = findUnboundCopy(code, scenes);
+    assert(hits.length === 0, `stable label must not flag: ${JSON.stringify(hits)}`);
+    const strip = stripChromeEyebrowEchoes(code, [
+      { content: { eyebrow: "Momentum" } },
+      { content: { eyebrow: "Investing for everyone" } },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ] as any);
+    assert(strip.stripped.length === 0, "stable label must not be stripped");
+  });
+
   // ── THE REPLAY: three real survivor decks must come out clean ────────────
   const decks = [
     "01KZWE4CM7XS20NE5PD43WS4NK", // caption echo, textTransform context
     "01M05ZFQM60WNAG7F02HDA16NC", // Chrome category attribute echo
     "01KYE26Q8MR6MN68624P99RAAJ", // Chrome category attribute echo
   ];
+  await check("replay 01KW048WG3…: invariant-tagline deck is clean WITHOUT repairs (false positive gone)", async () => {
+    const dir = "src/generated/01KW048WG3E399G5ZKS3JV9T16";
+    const code = await fs.readFile(`${dir}/Composition.tsx`, "utf8");
+    const script = JSON.parse(await fs.readFile(`${dir}/script.json`, "utf8"));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const hits = findUnboundCopy(code, script.scenes as any);
+    assert(hits.length === 0, `must be exempt: ${JSON.stringify(hits)}`);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const strip = stripChromeEyebrowEchoes(code, script.scenes as any);
+    assert(strip.stripped.length === 0, "stable tagline chrome untouched");
+  });
   for (const d of decks) {
     await check(`replay ${d.slice(0, 10)}…: repaired, detector-clean, still compiles`, async () => {
       const dir = `src/generated/${d}`;
