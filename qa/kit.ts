@@ -105,3 +105,56 @@ export const hittablePiece = (page: Page, wantId?: string): Promise<HittablePiec
       }
       return null;
     }, wantId ?? null);
+
+/**
+ * Where a piece VISIBLY is — the union of its rendered descendants,
+ * excluding the anti-symmetric offset frame a persisted move wraps around
+ * content (left:dx;right:-dx — a coordinate frame, not ink) and full-bleed
+ * atmosphere layers. This mirrors the editor's own rectOf: a probe that
+ * unions raw children instead reads the WRAPPER's edge after a move and
+ * reports the editor's correct outline as hundreds of px off (task #86 —
+ * filed as a product bug, measured to be exactly this probe mistake).
+ */
+export const inkRect = (
+  page: Page,
+  pieceId: string,
+): Promise<{ x: number; y: number; w: number; h: number } | null> =>
+  page
+    .locator("iframe")
+    .last()
+    .evaluate((f, id) => {
+      const iframe = f as HTMLIFrameElement;
+      const d = iframe.contentDocument;
+      if (!d) return null;
+      const host = iframe.getBoundingClientRect();
+      const vw = d.documentElement.clientWidth;
+      const vh = d.documentElement.clientHeight;
+      const piece = d.querySelector('[data-piece="' + id + '"]');
+      if (!piece) return null;
+      let l = Infinity;
+      let t = Infinity;
+      let r = -Infinity;
+      let b = -Infinity;
+      piece.querySelectorAll("*").forEach((c) => {
+        const rect = c.getBoundingClientRect();
+        if (rect.width === 0 && rect.height === 0) return;
+        const s = (c as HTMLElement).style;
+        if (s && s.position === "absolute") {
+          const sl = parseFloat(s.left);
+          const st = parseFloat(s.top);
+          const sr = parseFloat(s.right);
+          const sb = parseFloat(s.bottom);
+          const offsetFrame =
+            Number.isFinite(sl) && Number.isFinite(st) && Number.isFinite(sr) && Number.isFinite(sb) &&
+            sl === -sr && st === -sb && (sl !== 0 || st !== 0);
+          if (offsetFrame) return;
+        }
+        if (vw > 0 && vh > 0 && rect.width >= vw * 0.92 && rect.height >= vh * 0.92) return;
+        l = Math.min(l, rect.left);
+        t = Math.min(t, rect.top);
+        r = Math.max(r, rect.right);
+        b = Math.max(b, rect.bottom);
+      });
+      if (!Number.isFinite(l)) return null;
+      return { x: Math.round(host.left + l), y: Math.round(host.top + t), w: Math.round(r - l), h: Math.round(b - t) };
+    }, pieceId);

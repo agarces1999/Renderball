@@ -8,7 +8,7 @@
  *   npx tsx qa/probe-drag-quality.ts
  */
 import { type Page } from "playwright";
-import { harness, probePage, hittablePiece } from "./kit";
+import { harness, probePage, hittablePiece, inkRect } from "./kit";
 
 const BASE = process.env.QA_BASE ?? "http://localhost:3000";
 const DOC = process.env.DOC ?? "01KZWJKGF8G7T5SFRNXZRP1HPQ";
@@ -16,21 +16,6 @@ const DOC = process.env.DOC ?? "01KZWJKGF8G7T5SFRNXZRP1HPQ";
 const h = harness();
 const expect = h.expect;
 
-/** Where a piece's visible ink actually is, in page coords. */
-const inkAt = (page: Page, id: string) =>
-  page.locator("iframe").last().evaluate((f, pid) => {
-    const d = (f as HTMLIFrameElement).contentDocument;
-    const host = (f as HTMLIFrameElement).getBoundingClientRect();
-    const p = d?.querySelector(`[data-piece="${pid}"]`);
-    if (!p) return null;
-    let l = Infinity, t = Infinity;
-    for (const c of p.children) {
-      const b = c.getBoundingClientRect();
-      if (b.width === 0 && b.height === 0) continue;
-      l = Math.min(l, b.left); t = Math.min(t, b.top);
-    }
-    return Number.isFinite(l) ? { x: Math.round(host.left + l), y: Math.round(host.top + t) } : null;
-  }, id);
 
 const run = async () => {
   const { browser, page } = await probePage(BASE, false);
@@ -44,7 +29,7 @@ const run = async () => {
   await page.mouse.click(target.x, target.y);
   await page.waitForTimeout(700);
 
-  const before = await inkAt(page, target.id);
+  const before = await inkRect(page, target.id);
   if (!before) throw new Error("no ink measurement");
 
   // Drag from the SELECTION FRAME, which is where the drag surface lives and
@@ -64,7 +49,7 @@ const run = async () => {
   await page.mouse.move(gx + 200, gy + 60);
   await page.mouse.move(gx + 240, gy + 70);
   await page.waitForTimeout(120);
-  const during = await inkAt(page, target.id);
+  const during = await inkRect(page, target.id);
   const movedDuring = during ? during.x - before.x : 0;
   expect(movedDuring > 150, `the element itself tracks a FAST flick mid-drag (moved ${movedDuring}px of ~240)`);
   await page.mouse.up();
@@ -73,14 +58,14 @@ const run = async () => {
   let snapped = false;
   const t0 = Date.now();
   while (Date.now() - t0 < 6000) {
-    const now = await inkAt(page, target.id);
+    const now = await inkRect(page, target.id);
     if (now && Math.abs(now.x - before.x) < 30) snapped = true;
     await page.waitForTimeout(150);
   }
   expect(!snapped, "the element never snaps back to its old position");
 
   await page.waitForTimeout(2500);
-  const after = await inkAt(page, target.id);
+  const after = await inkRect(page, target.id);
   expect(!!after && after.x - before.x > 150, `it landed at the dragged position (${after ? after.x - before.x : "?"}px)`);
 
   // 4. the outline lands ON the element
