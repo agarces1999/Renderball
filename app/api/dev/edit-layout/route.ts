@@ -6,6 +6,7 @@ import {
   resizeElement,
   reorderElement,
 } from "../../../../lib/edit/edit-layout";
+import { duplicateElement } from "../../../../lib/edit/duplicate-element";
 
 /**
  * Dev-only layout-edit route — headless counterpart to /api/preview/edit-layout for
@@ -24,7 +25,7 @@ export async function POST(request: Request) {
     pieceId?: string;
     // front/back were accepted by the runtime guard but missing HERE, so every
     // reorder narrowed to "delete" and took the delete branch.
-    op?: "move" | "resize" | "delete" | "front" | "back";
+    op?: "move" | "resize" | "delete" | "duplicate" | "front" | "back";
     dx?: number;
     dy?: number;
     x?: number;
@@ -48,9 +49,9 @@ export async function POST(request: Request) {
   if (!pieceId || typeof pieceId !== "string") {
     return NextResponse.json({ error: "pieceId required" }, { status: 400 });
   }
-  if (op !== "move" && op !== "resize" && op !== "delete" && op !== "front" && op !== "back") {
+  if (op !== "move" && op !== "resize" && op !== "delete" && op !== "front" && op !== "back" && op !== "duplicate") {
     return NextResponse.json(
-      { error: 'op must be "move", "resize", "delete", "front" or "back"' },
+      { error: 'op must be "move", "resize", "delete", "duplicate", "front" or "back"' },
       { status: 400 },
     );
   }
@@ -64,7 +65,9 @@ export async function POST(request: Request) {
       ? await moveElement({ genDir, sceneIndex, pieceId, dx: Number(dx), dy: Number(dy) })
       : op === "resize"
         ? await resizeElement({ genDir, sceneIndex, pieceId, x: Number(x), y: Number(y), w: Number(w), h: Number(h) })
-        : op === "front" || op === "back"
+        : op === "duplicate"
+          ? await duplicateElement({ genDir, sceneIndex, pieceId, ...(typeof dx === "number" ? { dx } : {}), ...(typeof dy === "number" ? { dy } : {}) })
+          : op === "front" || op === "back"
           // Ordering the element, not removing it. Both routes validated these
           // two ops and then fell through this chain to deleteElement — so a
           // reorder DELETED the piece. That is the whole of the "reordering

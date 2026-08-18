@@ -370,7 +370,7 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
   const [showAll, setShowAll] = useState(defaultShowAll);
   const [allPieces, setAllPieces] = useState<PieceRef[]>([]);
   const [busy, setBusyState] = useState<
-    null | "regenerate" | "delete" | "move" | "text" | "insert" | "resize" | "undo" | "front" | "back"
+    null | "regenerate" | "delete" | "move" | "text" | "insert" | "resize" | "undo" | "front" | "back" | "duplicate"
   >(null);
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
@@ -1802,7 +1802,12 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
   useEffect(() => {
     if (!selected || editing || busy) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Delete" && e.key !== "Backspace") return;
+      const isDelete = e.key === "Delete" || e.key === "Backspace";
+      // ⌘D / Ctrl+D duplicates — same guard set as delete, because the
+      // browser's own ⌘D (bookmark) must keep working the moment focus sits
+      // in any text field.
+      const isDuplicate = (e.key === "d" || e.key === "D") && (e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey;
+      if (!isDelete && !isDuplicate) return;
       const el = document.activeElement as HTMLElement | null;
       const typing =
         !!el &&
@@ -1812,7 +1817,8 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
           el.getAttribute("role") === "textbox");
       if (typing) return;
       e.preventDefault();
-      void remove();
+      if (isDuplicate) void duplicateSelected();
+      else void remove();
     };
 
     // BOTH documents. Selecting an element means clicking inside the canvas
@@ -2162,6 +2168,33 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
     }
   };
 
+  /**
+   * Duplicate the selected element (the editor's ⌘D). Deterministic and free —
+   * the clone is the piece's own body under a fresh id, nudged 24px so it
+   * reads as a new object. The SERVER re-renders before answering, so the
+   * reselect targets the CLONE: the thing you are now holding, per every
+   * editor's convention.
+   */
+  const duplicateSelected = async () => {
+    if (!selected || busy) return;
+    setBusy("duplicate");
+    const res = await fetch(`${apiBase}/edit-layout`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ scriptId, sceneIndex, pieceId: selected.pieceId, op: "duplicate" }),
+    })
+      .then((r) => r.json().then((j) => ({ ok: r.ok, id: (j as { pieceId?: string }).pieceId })))
+      .catch(() => ({ ok: false, id: undefined as string | undefined }));
+    setBusy(null);
+    if (res.ok) {
+      reselectIdRef.current = res.id ?? selected.pieceId;
+      setSelected(null);
+      onChanged();
+    } else {
+      setError("Couldn't duplicate this element.");
+    }
+  };
+
   // A live resize drives the box directly; otherwise it's the measured rect plus any
   // in-flight move delta.
   const box =
@@ -2394,6 +2427,17 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
                 never running. With that fixed, 1,446 reorders across 31 local
                 decks lose nothing, and the render-side safety net still stands
                 behind it. */}
+            <MenuItem
+              onClick={() => {
+                setMenu(null);
+                void duplicateSelected();
+              }}
+              disabled={!!busy}
+            >
+              Duplicate
+              <span className="ml-auto pl-6 font-mono text-[10px] opacity-50">⌘D</span>
+            </MenuItem>
+            <div className="my-1 h-px bg-white/8" />
             <MenuItem
               onClick={() => {
                 setMenu(null);

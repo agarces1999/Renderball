@@ -9,6 +9,7 @@ import {
   resizeElement,
   reorderElement,
 } from "../../../../lib/edit/edit-layout";
+import { duplicateElement } from "../../../../lib/edit/duplicate-element";
 
 /**
  * M3 layout-edit endpoint — reposition, resize, or delete one element, NO LLM.
@@ -32,7 +33,7 @@ export async function POST(request: Request) {
     pieceId?: string;
     // front/back were accepted by the runtime guard but missing HERE, so every
     // reorder narrowed to "delete" and took the delete branch.
-    op?: "move" | "resize" | "delete" | "front" | "back";
+    op?: "move" | "resize" | "delete" | "duplicate" | "front" | "back";
     dx?: number;
     dy?: number;
     x?: number;
@@ -56,9 +57,9 @@ export async function POST(request: Request) {
   if (!pieceId || typeof pieceId !== "string") {
     return NextResponse.json({ error: "pieceId required" }, { status: 400 });
   }
-  if (op !== "move" && op !== "resize" && op !== "delete" && op !== "front" && op !== "back") {
+  if (op !== "move" && op !== "resize" && op !== "delete" && op !== "front" && op !== "back" && op !== "duplicate") {
     return NextResponse.json(
-      { error: 'op must be "move", "resize", "delete", "front" or "back"' },
+      { error: 'op must be "move", "resize", "delete", "duplicate", "front" or "back"' },
       { status: 400 },
     );
   }
@@ -84,6 +85,8 @@ export async function POST(request: Request) {
         ? await moveElement({ genDir, sceneIndex, pieceId, dx: dx as number, dy: dy as number })
         : op === "resize"
           ? await resizeElement({ genDir, sceneIndex, pieceId, x: x as number, y: y as number, w: w as number, h: h as number })
+          : op === "duplicate"
+          ? await duplicateElement({ genDir, sceneIndex, pieceId, ...(typeof dx === "number" ? { dx } : {}), ...(typeof dy === "number" ? { dy } : {}) })
           : op === "front" || op === "back"
             // Ordering the element, not removing it. This chain used to end at
             // deleteElement for these two ops — a validated "bring to front"
