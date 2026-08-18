@@ -1,6 +1,6 @@
 import path from "path";
 import { promises as fs } from "fs";
-import { loadScript, loadBriefByScriptId } from "../store";
+import { loadScript, loadBriefByScriptId, saveScript } from "../store";
 import {
   buildAnimatedSections,
   buildAgentInputFromBrief,
@@ -19,6 +19,7 @@ import { decomposeGenDir } from "../agents/lego-store";
 import { resolveCornerBrandMark } from "../agents/logo-inject";
 import { verifyScenesRender } from "./ssr-render";
 import { measureScenes } from "./measure-scene";
+import { findFlooredCopy, applyShortened, shortenPrompt } from "./semantic-shorten";
 import { findRenderTruthFailures, measureOutDir, BLOCKING_RENDER_TRUTH_KINDS } from "./render-truth-gates";
 import { resolveCanvasPlan, canvasBrandFidelityAdvisory, signatureWithLogoFallback, brandShortName } from "../crawl/brand-identity";
 import { preflightBrandTruth } from "../crawl/brand-truth";
@@ -384,6 +385,56 @@ async function runPreviewBuildInner(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const registersOf = (s: any): (string | undefined)[] =>
     (s?.scenes ?? []).map((sc: { register?: string }) => sc?.register);
+
+  /**
+   * SEMANTIC SHORTEN, BEFORE THE LADDER (TEXT_FIT layer 3). One measure pass
+   * reads the fit runtime's floor marks; copy that stayed overfull at the
+   * readability floor gets ONE bounded shorten call targeting a length
+   * COMPUTED from the measured overfullness. Fields are bound (unbound_copy
+   * work, 2026-08-16), so the shortened script re-renders with zero
+   * regeneration — the ladder then starts from honest, fitted pages instead
+   * of burning paid rounds on copy no layout could ever hold. Persisted to
+   * BOTH stores: the canonical script (the editor's text panel must show
+   * what the pixels show) and genDir/script.json (what renders).
+   */
+  try {
+    const preMeasure = await measureScenes(genDir, currentScript, measureOutDir(genDir));
+    const floored = findFlooredCopy(preMeasure, currentScript.scenes ?? []);
+    if (floored.length > 0) {
+      console.warn(
+        `[preview/build] fit floor hit on ${floored.length} field(s): ${floored
+          .map((f) => `s${f.scene}.${f.path} ${f.fullness}x → ≤${f.target}`)
+          .join(", ")} — one semantic shorten`,
+      );
+      const r = await castCall({
+        stage: "design",
+        timeoutMs: 120_000,
+        system:
+          "You shorten presentation copy to fit measured boxes. Keep meaning, brand voice, and the language of the original.",
+        user: shortenPrompt(floored),
+        maxTokens: 4000,
+        json: true,
+        model: MODELS.codingAgentBuild,
+      });
+      const arr = JSON.parse((r.text?.match(/\[[\s\S]*\]/) ?? ["[]"])[0]) as unknown[];
+      const applied = applyShortened(floored, arr, currentScript.scenes ?? []);
+      console.warn(`[preview/build] semantic shorten applied ${applied}/${floored.length}`);
+      if (applied > 0) {
+        await fs.writeFile(
+          path.join(genDir, "script.json"),
+          JSON.stringify(currentScript, null, 2),
+          "utf8",
+        );
+        await saveScript(currentScript as Script, ownerId).catch((e: unknown) =>
+          console.warn(`[preview/build] canonical script save failed (genDir is updated): ${e}`),
+        );
+      }
+    }
+  } catch (e) {
+    console.warn(
+      `[preview/build] semantic shorten skipped (${e instanceof Error ? e.message : e}) — ladder proceeds on the original copy`,
+    );
+  }
 
   const repair = await repairRenderTruth(
     {

@@ -1,5 +1,6 @@
 import { castCall, castStream } from "../llm/cast-provider";
 import { SCRIPT_GENERATOR_SYSTEM_PROMPT } from "./prompts/script-generator";
+import { findBudgetViolations, applyShortenedValue } from "./copy-budgets";
 import {
   validateScript,
   normalizeScriptContent,
@@ -723,6 +724,56 @@ export const generateScript = async (
           content: buildVisualRichnessRetryMessage(typeOnly),
         });
         continue;
+      }
+      /**
+       * MEASURED COPY BUDGETS — one bounded shorten pass (docs/TEXT_FIT.md
+       * layer 3). Constrained decoding cannot enforce length, so budgets are
+       * validated HERE, post-hoc, with exactly ONE small retry that resends
+       * ONLY the violating fields — never a re-roll of the outline (the #66
+       * lesson). Never blocking: whatever still runs long ships and the
+       * render-time fit + build-time semantic shorten own the residue.
+       */
+      {
+        const violations = findBudgetViolations(validation.script.scenes);
+        if (violations.length > 0) {
+          console.warn(
+            `[script-generator] copy over measured budget: ${violations
+              .map((v) => `s${v.sceneIndex}.${v.field} ${v.length}>${v.budget}`)
+              .join(", ")} — one shorten pass`,
+          );
+          try {
+            const ask = violations
+              .map(
+                (v, k) =>
+                  `${k}. scene ${v.sceneIndex} ${v.field} (max ${v.budget} chars, currently ${v.length}): "${v.value}"`,
+              )
+              .join("\n");
+            const r = await transport([
+              {
+                role: "user",
+                content: `Shorten each numbered line of presentation copy to AT OR UNDER its max characters. Keep the meaning, the brand voice, and the language of the original. Do not add quotes or commentary. Return ONLY a JSON array of the shortened strings, in the same order.\n\n${ask}`,
+              },
+            ]);
+            totalUsage = addUsage(totalUsage, r.usage);
+            const arr = JSON.parse(
+              (r.text.match(/\[[\s\S]*\]/) ?? ["[]"])[0],
+            ) as unknown[];
+            let applied = 0;
+            violations.forEach((v, k) => {
+              const nv = arr[k];
+              if (typeof nv === "string" && nv.length > 0 && nv.length <= v.budget) {
+                if (applyShortenedValue(validation.script.scenes, v, nv.trim())) applied += 1;
+              }
+            });
+            console.warn(
+              `[script-generator] shorten pass applied ${applied}/${violations.length}`,
+            );
+          } catch (e) {
+            console.warn(
+              `[script-generator] shorten pass skipped (${e instanceof Error ? e.message : e}) — fit runtime owns the residue`,
+            );
+          }
+        }
       }
       return {
         ok: true,

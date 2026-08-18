@@ -98,6 +98,10 @@ export interface MeasuredElement {
    *  element — i.e. something else is stacked ON TOP of it (the clipped-by-mock
    *  signal; text that is visibly on top reports false). */
   coveredAtCenter: boolean;
+  /** data-content-path on the element, an ancestor, or (for fit boxes) a descendant. */
+  contentPath?: string;
+  /** Residual fullness when the fit runtime hit its floor on this box (>1 = overfull). */
+  fitFloor?: number;
   /** Computed border-top-left-radius in px (0 = square). Optional: older
    *  fixtures predate it. v13 — the skeleton-bar detector keys on rounding. */
   radius?: number;
@@ -341,6 +345,19 @@ const PAGE_WALK = `(() => {
       color: cs.color,
       bg: cs.backgroundColor,
       text,
+      // Semantic-shorten wiring (TEXT_FIT layer 3): which script field this
+      // box shows, and how overfull the fit runtime left it. The path is
+      // looked up on the element, then up (a span inside the fitted box),
+      // then down (the fitted box wrapping the bound span).
+      contentPath:
+        el.getAttribute("data-content-path") ||
+        (el.closest("[data-content-path]") as Element | null)?.getAttribute("data-content-path") ||
+        el.querySelector("[data-content-path]")?.getAttribute("data-content-path") ||
+        undefined,
+      fitFloor: (() => {
+        const f = parseFloat(el.getAttribute("data-rb-fit-floor") || "");
+        return Number.isFinite(f) && f > 1.02 ? f : undefined;
+      })(),
       isImg: el.tagName === "IMG",
       src: el.tagName === "IMG" ? el.getAttribute("src") || undefined : undefined,
       imgNaturalWidth: el.tagName === "IMG" ? (typeof el.naturalWidth === "number" ? el.naturalWidth : 0) : undefined,

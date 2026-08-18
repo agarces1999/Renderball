@@ -1,4 +1,5 @@
 import { drawableVocabulary, containerVocabulary, interiorVocabulary } from "../schema-validator";
+import { COPY_BUDGETS } from "../copy-budgets";
 
 /**
  * Agent 1 — Script Generator system prompt.
@@ -189,11 +190,11 @@ Every section's \`content\` carries the COPY a viewer reads. Sparse copy makes a
 
 \`\`\`typescript
 content: {
-  eyebrow?: string;            // small uppercase label, e.g. "PURPOSE-BUILT FOR AGENTS"
-  headline: string;            // REQUIRED. The hero text, ≤120 chars
-  lede?: string;               // 1-2 sentence supporting paragraph, ≤280 chars
-  bullets?: string[];          // 2-4 supporting points, each ≤120 chars
-  caption?: string;            // small caption under primary content, ≤140 chars
+  eyebrow?: string;            // small uppercase label ≤${COPY_BUDGETS.eyebrow} chars, e.g. "PURPOSE-BUILT FOR AGENTS"
+  headline: string;            // REQUIRED. The hero text, ≤${COPY_BUDGETS.headline} chars — MEASURED capacity of a hero slot at display size; longer headlines get shrunk by the renderer and read as a defect
+  lede?: string;               // 1-2 sentence supporting paragraph, ≤${COPY_BUDGETS.lede} chars (measured slot capacity)
+  bullets?: string[];          // 2-4 supporting points, each ≤${COPY_BUDGETS.bullet} chars
+  caption?: string;            // small caption under primary content, ≤${COPY_BUDGETS.caption} chars
   meta?: { label: string; value: string }[];   // KPI tiles / footer key-values. value = TERSE number/stat or short datum, NEVER a phrase
   cta?: { primary: string; secondary?: string };
   illustration?: string;       // inline-SVG intent — see "Illustration intent" below
@@ -803,7 +804,7 @@ interface Scene {
   visual_concept: string;                 // 1-3 sentences of prose — the BRIEF for the downstream design pass
   content: {
     eyebrow?: string;                     // uppercase tracking-wide label
-    headline: string;                     // REQUIRED. hero text, ≤120 chars
+    headline: string;                     // REQUIRED. hero text, ≤${COPY_BUDGETS.headline} chars (measured hero-slot capacity)
     lede?: string;                        // 1-2 supporting sentences, ≤280 chars
     bullets?: string[];                   // 2-4 parallel points, each ≤120 chars
     caption?: string;                     // small support text, ≤140 chars
