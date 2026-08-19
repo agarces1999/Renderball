@@ -1840,6 +1840,11 @@ export function OutlineLive({
    * so ceremony never delays the review.
    */
   const bufRef = useRef("");
+  /** The model's live reasoning, last fragment only — the 46s "silent head"
+   *  narrated with the model's own words (labor illusion: the wait shows
+   *  NAMED REAL work; a static plan or fake ticker measurably does nothing). */
+  const [thought, setThought] = useState("");
+  const thoughtRef = useRef("");
   const [revealed, setRevealed] = useState(0);
   const revealedRef = useRef(0);
   const doneRef = useRef(false);
@@ -1885,6 +1890,15 @@ export function OutlineLive({
       // cursor); everything already applied is skipped by index.
       if (ev.i <= lastIRef.current) return;
       lastIRef.current = ev.i;
+      if (ev.kind === "think" && typeof ev.data === "string") {
+        // Keep the tail: the last ~140 chars, broken at a word, is one
+        // readable "currently thinking about…" line.
+        thoughtRef.current = (thoughtRef.current + ev.data).slice(-280);
+        const tail = thoughtRef.current.replace(/\s+/g, " ").trim().slice(-140);
+        setThought(tail.slice(tail.indexOf(" ") + 1));
+        setPhase((p) => (p === "connecting" ? "thinking" : p));
+        return;
+      }
       if (ev.kind === "delta" && typeof ev.data === "string") {
         bufRef.current += ev.data;
         setPhase((p) => (p === "polish" || p === "done" ? p : "writing"));
@@ -1995,6 +2009,12 @@ export function OutlineLive({
               )}
               <span className="text-[12.5px] leading-relaxed text-ink">{headline}</span>
             </div>
+            {!approval && (phase === "thinking" || phase === "connecting") && thought && (
+              // The model's own words, live — quiet mono, one line, honest.
+              <p className="mt-2 line-clamp-2 border-t border-hairline pt-2 font-mono text-[10.5px] leading-relaxed text-muted">
+                …{thought}
+              </p>
+            )}
             {approval ? (
               <div className="mt-3 border-t border-hairline pt-3">
                 <a

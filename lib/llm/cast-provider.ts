@@ -415,6 +415,11 @@ export const castStream = async (
     idleMs?: number;
   },
   onDelta: (text: string) => void,
+  /** Reasoning deltas (Fireworks streams reasoning_content separately). The
+   *  46s outline "silent head" is this stream — narrating it is the labor-
+   *  illusion fix the perception research prescribes. Optional; absent = old
+   *  behavior. */
+  onThinking?: (text: string) => void,
 ): Promise<CastResult> => {
   const model = call.model ?? MODEL();
   const wire = wireFor(model);
@@ -515,13 +520,21 @@ export const castStream = async (
           if (!m) continue;
           if (m[1] === "[DONE]") continue;
           let j: {
-            choices?: { delta?: { content?: string }; finish_reason?: string | null }[];
+            choices?: { delta?: { content?: string; reasoning_content?: string; reasoning?: string }; finish_reason?: string | null }[];
             usage?: UsageFrame;
           };
           try {
             j = JSON.parse(m[1]);
           } catch {
             continue; // a torn frame; the next chunk completes it via buffer
+          }
+          const think = j.choices?.[0]?.delta?.reasoning_content ?? j.choices?.[0]?.delta?.reasoning;
+          if (think && onThinking) {
+            try {
+              onThinking(think);
+            } catch {
+              /* narration must never kill the paid stream */
+            }
           }
           const delta = j.choices?.[0]?.delta?.content;
           if (delta) {

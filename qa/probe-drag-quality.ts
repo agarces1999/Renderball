@@ -21,6 +21,12 @@ const run = async () => {
   const { browser, page } = await probePage(BASE, false);
   await page.goto(`${BASE}/dev/edit/${DOC}`, { waitUntil: "domcontentloaded" });
   await page.waitForTimeout(7000);
+  // Count iframe navigations from the parent: each load event bumps it.
+  await page.evaluate(() => {
+    const w = window as unknown as { __rbLoads?: number };
+    w.__rbLoads = 0;
+    document.querySelectorAll("iframe").forEach((f) => f.addEventListener("load", () => { w.__rbLoads = (w.__rbLoads ?? 0) + 1; }));
+  });
 
   // Pick a hittable piece and select it (kit: union + hit-test verified).
   const target = await hittablePiece(page);
@@ -54,6 +60,11 @@ const run = async () => {
   expect(movedDuring > 150, `the element itself tracks a FAST flick mid-drag (moved ${movedDuring}px of ~240)`);
   await page.mouse.up();
 
+  // OPTIMISTIC-COMMIT ASSERTIONS (speed playbook): the old flow re-rendered
+  // the iframe after every move (measured 1449-1564ms) and blanked the
+  // selection ~2.5s. The new flow must do NEITHER.
+  const loadsBefore = await page.evaluate(() => (window as unknown as { __rbLoads?: number }).__rbLoads ?? -1);
+
   // 3. no snap-back while the server round-trips + reloads
   let snapped = false;
   const t0 = Date.now();
@@ -67,6 +78,16 @@ const run = async () => {
   await page.waitForTimeout(2500);
   const after = await inkRect(page, target.id);
   expect(!!after && after.x - before.x > 150, `it landed at the dragged position (${after ? after.x - before.x : "?"}px)`);
+
+  // 5. THE RELOAD IS GONE: the iframe must not have re-navigated, and the
+  // selection must have survived the whole commit.
+  const loadsAfter = await page.evaluate(() => (window as unknown as { __rbLoads?: number }).__rbLoads ?? -1);
+  expect(
+    loadsBefore >= 0 && loadsAfter === loadsBefore,
+    `no iframe reload on a committed move (loads ${loadsBefore} → ${loadsAfter})`,
+  );
+  const stillSelected = await page.locator("[data-rb-selection]").isVisible().catch(() => false);
+  expect(stillSelected, "selection survived the commit (no blank gap)");
 
   // 4. the outline lands ON the element
   const frame = await page.locator("[data-rb-selection]").boundingBox().catch(() => null);

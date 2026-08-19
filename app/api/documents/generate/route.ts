@@ -231,6 +231,7 @@ export async function POST(request: Request) {
           {
             transport: fireworksScriptStreamTransport(
               (delta) => sink.push(delta),
+              (t) => sink.think(t),
               () => sink.note("polish"),
             ),
           },

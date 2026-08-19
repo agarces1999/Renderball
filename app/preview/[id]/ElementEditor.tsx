@@ -49,6 +49,10 @@ interface Props {
   reloadKey: number;
   canvasWidth: number;
   onChanged: () => void;
+  /** A commit landed WITHOUT needing a reload (optimistic geometry). Parents
+   *  refresh derived things (thumbnails, autosave chips) but must NOT bump
+   *  the iframe. Optional so both clients adopt at their own pace. */
+  onCommitted?: () => void;
   apiBase?: string;
   /** Start with the piece x-ray on (the dev dashboard defaults to visible). */
   defaultShowAll?: boolean;
@@ -358,6 +362,7 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
       reloadKey,
       canvasWidth,
       onChanged,
+      onCommitted,
       apiBase = "/api/preview",
       defaultShowAll = false,
       hideToolbar = false,
@@ -1714,25 +1719,45 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
       // dragDelta before the await snapped the outline back to the old spot for
       // the whole POST. On success the reload shows the piece at its new place
       // and the selection is restored (reselectIdRef) so nudging can continue.
-      setBusy("move");
-      const ok = await post(`${apiBase}/edit-layout`, { scriptId, sceneIndex, pieceId: selected.pieceId, op: "move", dx, dy });
-      setBusy(null);
+      /**
+       * OPTIMISTIC COMMIT (speed playbook 2026-08-18; the pattern every
+       * editor studied uses — Figma, tldraw, Linear, Excalidraw: the server
+       * is the arbiter of eventual truth, never a participant in the frame).
+       * The element is ALREADY at its dropped position via the held
+       * transform; the old flow then paid a full re-render (measured
+       * 1449-1564ms) to redraw identical pixels, blanking the selection
+       * meanwhile. Now the gesture ends HERE: selection stays, frame stays,
+       * no reload. The POST commits in the background; the render cache and
+       * the next natural reload (any structural edit) pick up the
+       * server-rendered truth. Single-user makes this safe with nothing but
+       * a per-piece in-flight guard and reconcile-on-failure — which is
+       * exactly the old reload path, now demoted to the ERROR path.
+       */
       setDragDelta(null);
-      if (ok) {
-        // HOLD the live transform. The server has accepted the move but the
-        // authoritative re-render is ~1.5s away (esbuild + a sandboxed SSR),
-        // and the old document is still on screen for all of it. Dropping the
-        // transform here is what produced the snap-back-then-teleport the
-        // founder felt as clunk. attach() releases it once the NEW document
-        // is up — the client's own unacknowledged edit wins until the
-        // server's version is actually visible (Figma's rule).
-        reselectIdRef.current = selected.pieceId;
-        setSelected(null);
-        onChanged();
-      } else {
-        // Rejected: put it back where it was rather than lying about it.
-        clearLiveDrag();
-      }
+      setBusy(null);
+      const committedPieceId = selected.pieceId;
+      void post(`${apiBase}/edit-layout`, { scriptId, sceneIndex, pieceId: committedPieceId, op: "move", dx, dy })
+        .then((ok) => {
+          if (ok) {
+            // Tell the parent the doc changed WITHOUT forcing a reload-now:
+            // thumbnails/persistence listeners still hear it.
+            onCommitted?.();
+            return;
+          }
+          // Rejected: reconcile from server truth — the old full path.
+          clearLiveDrag();
+          setError("That move didn't save — put back.");
+          reselectIdRef.current = committedPieceId;
+          setSelected(null);
+          onChanged();
+        })
+        .catch(() => {
+          clearLiveDrag();
+          setError("That move didn't save — put back.");
+          reselectIdRef.current = committedPieceId;
+          setSelected(null);
+          onChanged();
+        });
     };
     dragHandlersRef.current = { move, up };
     window.addEventListener("mousemove", move);
@@ -2140,13 +2165,34 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
   };
   const remove = async () => {
     if (!selected) return;
-    setBusy("delete");
-    const ok = await post(`${apiBase}/edit-layout`, { scriptId, sceneIndex, pieceId: selected.pieceId, op: "delete" });
-    setBusy(null);
-    if (ok) {
-      setSelected(null);
-      onChanged();
-    }
+    /**
+     * OPTIMISTIC DELETE (same doctrine as the optimistic move above): the
+     * element disappears NOW — hidden, not removed, so a failed commit can
+     * resurrect it byte-identically. The server round-trip and the reload
+     * leave the felt path entirely; failure reconciles through the old
+     * reload flow and an honest sentence.
+     */
+    const pieceId = selected.pieceId;
+    const hidden = livePieceNodes(pieceId);
+    for (const n of hidden) n.el.style.visibility = "hidden";
+    setSelected(null);
+    void post(`${apiBase}/edit-layout`, { scriptId, sceneIndex, pieceId, op: "delete" })
+      .then((ok) => {
+        if (ok) {
+          onCommitted?.();
+          return;
+        }
+        for (const n of hidden) n.el.style.visibility = "";
+        setError("That delete didn't save — restored.");
+        reselectIdRef.current = pieceId;
+        onChanged();
+      })
+      .catch(() => {
+        for (const n of hidden) n.el.style.visibility = "";
+        setError("That delete didn't save — restored.");
+        reselectIdRef.current = pieceId;
+        onChanged();
+      });
   };
 
   /**

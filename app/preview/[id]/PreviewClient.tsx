@@ -99,6 +99,36 @@ interface PreviewWarnings {
 }
 
 export function PreviewClient({ scriptId, script, initialWarnings, isBlank = false }: Props) {
+  /**
+   * THE RE-ENTRY LINE (perception research: peak-end — the finish is what a
+   * 20-minute build is remembered by; interrupted users take 10-15 min to
+   * re-orient). If the ceremony stashed build facts in this tab, the editor
+   * opens with one quiet sentence of what happened while they were away,
+   * then never mentions it again.
+   */
+  const [builtLine, setBuiltLine] = useState<string | null>(null);
+  useEffect(() => {
+    try {
+      const raw = sessionStorage.getItem(`rb-build-facts:${scriptId}`);
+      if (!raw) return;
+      sessionStorage.removeItem(`rb-build-facts:${scriptId}`);
+      const facts = JSON.parse(raw) as { startedAt?: number };
+      const secs = facts.startedAt ? Math.round((Date.now() - facts.startedAt) / 1000) : null;
+      const mins = secs ? `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")}` : null;
+      const flags = initialWarnings ? Object.keys(initialWarnings).length : 0;
+      setBuiltLine(
+        `Built ${script.scenes.length} page${script.scenes.length === 1 ? "" : "s"}${mins ? ` in ${mins}` : ""}${flags ? ` · ${flags} check${flags === 1 ? "" : "s"} flagged below` : " · every check clean"}`,
+      );
+      document.title = "✓ Ready — Renderball";
+      const t = setTimeout(() => {
+        if (document.title.startsWith("✓")) document.title = "Renderball";
+      }, 4000);
+      return () => clearTimeout(t);
+    } catch {
+      /* no facts — a normal open */
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   // Canvas pivot (docs/PIVOT.md): decks are static page documents — no
   // autoplay, pages render settled, and export is PDF/PNG instead of MP4.
   const isDeck = script.config.kind === "deck";
@@ -462,6 +492,19 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
             </>
           }
           banner={
+            <>
+            {builtLine && (
+              <div className="mx-auto mb-2 flex max-w-[860px] items-center justify-between gap-3 rounded-md border border-accent-line bg-accent-soft px-3 py-1.5">
+                <span className="text-[12px] text-accent-text">{builtLine}</span>
+                <button
+                  type="button"
+                  onClick={() => setBuiltLine(null)}
+                  className="font-mono text-[10px] uppercase tracking-[0.12em] text-accent-text/70 transition-colors hover:text-accent-text"
+                >
+                  Dismiss
+                </button>
+              </div>
+            )}
             <DeckBanner
               regenAsk={regenAsk && !regenerating}
               regenInstruction={regenInstruction}
@@ -488,6 +531,7 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
               }
               warnings={hasWarnings ? warnings : null}
             />
+            </>
           }
           sidePanel={
             // Page inspector and brand live in the same column: brand is a

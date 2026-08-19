@@ -21,8 +21,10 @@
 export interface OutlineStreamEvent {
   /** Monotonic per-stream index, for replay-from-N. */
   i: number;
-  /** "delta" = model text; "note" = phase marker (thinking|writing|polish|restart). */
-  kind: "delta" | "note";
+  /** "delta" = model text; "think" = reasoning narration (the 46s silent
+   *  head, streamed so the wait shows NAMED REAL WORK — the labor-illusion
+   *  prescription); "note" = phase marker (thinking|writing|polish|restart). */
+  kind: "delta" | "think" | "note";
   data: string;
 }
 
@@ -60,6 +62,8 @@ const sweep = () => {
 
 export interface OutlineSink {
   push: (delta: string) => void;
+  /** Reasoning narration; capped with the same memory guard as deltas. */
+  think: (text: string) => void;
   note: (marker: "thinking" | "writing" | "polish" | "restart") => void;
   close: () => void;
 }
@@ -79,7 +83,7 @@ export const openOutlineStream = (scriptId: string): OutlineSink => {
 
   const emit = (kind: OutlineStreamEvent["kind"], data: string) => {
     if (s.done) return;
-    if (kind === "delta") {
+    if (kind === "delta" || kind === "think") {
       s.chars += data.length;
       if (s.chars > MAX_CHARS) return; // cap memory; the poll still finishes the job
     }
@@ -96,6 +100,7 @@ export const openOutlineStream = (scriptId: string): OutlineSink => {
 
   return {
     push: (delta) => emit("delta", delta),
+    think: (text) => emit("think", text),
     note: (marker) => emit("note", marker),
     close: () => {
       if (s.done) return;

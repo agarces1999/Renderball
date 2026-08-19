@@ -418,6 +418,7 @@ export const fireworksScriptTransport: ScriptTransport = async (history) => {
  */
 export const fireworksScriptStreamTransport = (
   onDelta: (text: string) => void,
+  onThinking?: (text: string) => void,
   onPolish?: () => void,
 ): ScriptTransport => {
   let first = true;
@@ -440,6 +441,7 @@ export const fireworksScriptStreamTransport = (
           model: fireworksScriptModel(),
         },
         onDelta,
+        onThinking,
       );
       return {
         text: r.text ?? "",

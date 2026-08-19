@@ -546,7 +546,38 @@ export function BuildPreviewClient({
   );
   const doneCount = statuses.filter((st) => st === "done").length;
   const activeCount = statuses.filter((st) => st === "active").length;
-  const pct = Math.min(100, ((doneCount + activeCount * 0.25) / steps.length) * 100);
+  const rawPct = Math.min(100, ((doneCount + activeCount * 0.25) / steps.length) * 100);
+  /**
+   * MONOTONE DISPLAY PROGRESS (perception research, 2026-08-18): the only
+   * bar behavior users perceive as SLOWER than linear is a stall or
+   * regression near the end — and a gate retry used to be able to do
+   * exactly that. Display progress only ever advances; a retry burns the
+   * gap between display and measured instead of rewinding the bar. The
+   * step labels still tell the honest retry story in words.
+   */
+  const pctFloor = useRef(0);
+  pctFloor.current = Math.max(pctFloor.current, rawPct);
+  const pct = pctFloor.current;
+
+  // The tab carries the build state for people who tabbed away (the
+  // notify-on-done half we can ship without an email transport): ● while
+  // building, ✓ on settle — the settle itself swaps this page for the
+  // editor, so restoring the title is the editor page's mount.
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(
+        `rb-build-facts:${scriptId}`,
+        JSON.stringify({ startedAt: Date.now() }),
+      );
+    } catch {
+      /* private mode — the summary just won't show */
+    }
+    const prev = document.title;
+    document.title = "● Building — Renderball";
+    return () => {
+      document.title = prev.startsWith("●") ? "Renderball" : prev;
+    };
+  }, []);
 
   /**
    * THE PAGE ASSEMBLES IN FRONT OF YOU (founder, 2026-08-14: "I should be
