@@ -424,7 +424,9 @@ async function runPreviewBuildInner(
    * what the pixels show) and genDir/script.json (what renders).
    */
   try {
-    const preMeasure = await measureScenes(genDir, currentScript, measureOutDir(genDir));
+    const preMeasure = await measureScenes(genDir, currentScript, measureOutDir(genDir), {
+      screenshots: false, // rect-only: fitFloor + contentPath need no pixels
+    });
     const floored = findFlooredCopy(preMeasure, currentScript.scenes ?? []);
     if (floored.length > 0) {
       console.warn(

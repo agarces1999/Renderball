@@ -1,5 +1,6 @@
 import { promises as fs } from "fs";
 import path from "path";
+import { createHash } from "crypto";
 import React from "react";
 import * as esbuild from "esbuild";
 import { renderSceneSandboxed } from "./sandbox/pool";
@@ -16,7 +17,7 @@ const { renderToStaticMarkup } = eval("require")("react-dom/server") as {
 };
 
 export type SceneDocResult =
-  | { ok: true; html: string }
+  | { ok: true; html: string; cacheKey?: string; cacheHit?: boolean }
   | { ok: false; status: number; message: string };
 
 /**
@@ -39,6 +40,10 @@ export interface SceneDocOptions {
   settle?: boolean;
 }
 
+const RENDER_CACHE_MAX = 64;
+const globalForRenderCache = globalThis as unknown as { __rbRenderCache?: Map<string, string> };
+const renderCache: Map<string, string> = (globalForRenderCache.__rbRenderCache ??= new Map());
+
 export async function renderSceneDoc(
   scriptId: string,
   sceneIndex: number,
@@ -57,14 +62,44 @@ export async function renderSceneDoc(
   await hydrateGenDir(scriptId);
 
   const compPath = path.join(process.cwd(), "src", "generated", scriptId, "Composition.tsx");
+
+  /**
+   * CONTENT-HASH RENDER CACHE (speed playbook 2026-08-18). renderSceneDoc is
+   * pure given (composition bytes, script, scene, settle) — the comment
+   * below has said so for weeks; this makes it true operationally. Same
+   * inputs → the exact HTML we already produced, no compile, no sandbox,
+   * no SSR. Two callers profit immediately: repeated editor loads of an
+   * unchanged scene, and every measure/gate pass that re-renders scenes a
+   * repair round didn't touch. The key hashes the real bytes (never mtimes)
+   * + scriptId (no cross-document sharing even on collision-shaped input).
+   * LRU on globalThis (the Next dev multi-instance lesson), ~64 entries —
+   * full decks, not fragments, so memory stays bounded.
+   */
+  let compBytes: Buffer;
   try {
-    await fs.access(compPath);
+    compBytes = await fs.readFile(compPath);
   } catch {
     return {
       ok: false,
       status: 404,
       message: `Composition.tsx not found for ${scriptId}. Run a build first.`,
     };
+  }
+
+  const cacheKey = createHash("sha1")
+    .update(scriptId)
+    .update("\u0000")
+    .update(compBytes)
+    .update("\u0000")
+    .update(JSON.stringify(script))
+    .update(`\u0000${sceneIndex}\u0000${opts.settle ? 1 : 0}\u0000v1`)
+    .digest("hex");
+  const cached = renderCache.get(cacheKey);
+  if (cached) {
+    // LRU touch: re-insert as newest.
+    renderCache.delete(cacheKey);
+    renderCache.set(cacheKey, cached);
+    return { ok: true, html: cached, cacheKey, cacheHit: true };
   }
 
   // Compile + execute + render happen in a SEPARATE PROCESS with an empty
@@ -210,5 +245,10 @@ ${lockupMount}
 </body>
 </html>`;
 
-  return { ok: true, html };
+  renderCache.set(cacheKey, html);
+  if (renderCache.size > RENDER_CACHE_MAX) {
+    const oldest = renderCache.keys().next().value;
+    if (oldest !== undefined) renderCache.delete(oldest);
+  }
+  return { ok: true, html, cacheKey, cacheHit: false };
 }

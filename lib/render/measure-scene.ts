@@ -66,6 +66,22 @@ const { renderToStaticMarkup } = nodeRequire("react-dom/server") as {
   renderToStaticMarkup: (node: React.ReactNode) => string;
 };
 
+/**
+ * ONE warm Chromium per process (speed playbook 2026-08-18). Every measure
+ * pass used to launch and close its own browser — a 400-600ms tax per pass,
+ * multiplied by every gate-retry round of every build. Pool practice from
+ * the capture-at-scale literature: keep the browser, hand out fresh pages,
+ * RECYCLE after ~80 passes (held-forever Chromium accumulates leaked memory
+ * and stale GPU state). On globalThis for the Next dev multi-instance
+ * reason (lib/db.ts). The type is `unknown` because playwright itself is
+ * dynamically imported below.
+ */
+const globalForBrowser = globalThis as unknown as {
+  __rbMeasureBrowser?: { browser: { isConnected(): boolean; close(): Promise<void> } | null; uses: number };
+};
+const warmState = (globalForBrowser.__rbMeasureBrowser ??= { browser: null, uses: 0 });
+const WARM_BROWSER_MAX_USES = 80;
+
 export interface MeasuredElement {
   tag: string;
   x: number;
@@ -558,7 +574,16 @@ export const measureScenes = async (
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   script: any,
   outDir: string,
+  opts: {
+    /** Screenshots are the expensive half of a pass (GPU readback + PNG
+     *  encode per scene) and only passes feeding PIXEL gates (contrast,
+     *  washout, vision) need them. Rect-only callers — the semantic-shorten
+     *  pre-measure — pass false. Default true: every existing caller keeps
+     *  its pixels. */
+    screenshots?: boolean;
+  } = {},
 ): Promise<SceneMeasurement[]> => {
+  const wantShots = opts.screenshots !== false;
   const sceneCount: number = Array.isArray(script?.scenes) ? script.scenes.length : 0;
   const aspect: string = script?.config?.aspect_ratio || "16:9";
   const dims = CANVAS_DIMS[aspect] || CANVAS_DIMS["16:9"];
@@ -658,7 +683,16 @@ export const measureScenes = async (
   // the documented per-scene measure-error that fail-closes to a 422.
   let browser: Awaited<ReturnType<typeof chromium.launch>>;
   try {
-    browser = await chromium.launch({ args: ["--no-sandbox"] });
+    const held = warmState.browser as Awaited<ReturnType<typeof chromium.launch>> | null;
+    if (held?.isConnected() && warmState.uses < WARM_BROWSER_MAX_USES) {
+      warmState.uses += 1;
+      browser = held;
+    } else {
+      if (held?.isConnected()) void held.close().catch(() => {});
+      browser = await chromium.launch({ args: ["--no-sandbox"] });
+      warmState.browser = browser;
+      warmState.uses = 1;
+    }
   } catch (err) {
     const msg = err instanceof Error ? err.message.split("\n")[0] : String(err);
     const error = /executable doesn'?t exist|please run|install/i.test(msg)
@@ -669,8 +703,9 @@ export const measureScenes = async (
     }));
   }
   const results: SceneMeasurement[] = [];
+  let page: Awaited<ReturnType<typeof browser.newPage>> | null = null;
   try {
-    const page = await browser.newPage({
+    page = await browser.newPage({
       viewport: { width: dims.w, height: dims.h },
       deviceScaleFactor: 1,
     });
@@ -738,8 +773,10 @@ export const measureScenes = async (
         } catch {
           pieces = [];
         }
-        const screenshotPath = path.join(outDir, `measure-scene-${i}.png`);
-        await page.screenshot({ path: screenshotPath, clip: { x: 0, y: 0, width: dims.w, height: dims.h } });
+        const screenshotPath = wantShots ? path.join(outDir, `measure-scene-${i}.png`) : undefined;
+        if (screenshotPath) {
+          await page.screenshot({ path: screenshotPath, clip: { x: 0, y: 0, width: dims.w, height: dims.h } });
+        }
         // PERSIST the rects. getBoundingClientRect was computed on every build
         // and then thrown away, so "what did this build actually paint, versus
         // what did it declare?" was unanswerable after the fact. Writing it
@@ -782,7 +819,13 @@ export const measureScenes = async (
       }
     }
   } finally {
-    await browser.close();
+    // The page must close now that the browser survives the pass — it was
+    // previously torn down implicitly by browser.close(), and a leaked page
+    // per pass would grow the shared browser until the recycle.
+    if (page) await page.close().catch(() => {});
+    // Shared warm browser: pages are closed per pass, the BROWSER stays for
+    // the next one (launch was 400-600ms x every gate-retry round). Recycled
+    // by the launch block above after {WARM_BROWSER_MAX_USES}-ish uses.
   }
   return results;
 };
