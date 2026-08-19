@@ -564,6 +564,52 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
     liveNodesRef.current = [];
     pendingRef.current = null;
   };
+  /**
+   * MORPH-NOT-RELOAD (speed playbook; the LiveView/Turbo-8/Builder.io
+   * pattern): fetch the freshly rendered scene doc and DOM-patch it into the
+   * LIVE iframe instead of renavigating. The reload's 1.4-1.6s was never
+   * compile (7ms) — it was teardown, parse, fonts, fit, paint; morphing
+   * keeps the document, so only changed nodes ripple. Scripts in the new
+   * HTML deliberately do not re-execute: the fit runtime exposes __rbRefit
+   * for exactly this call. Any failure returns false and the caller falls
+   * back to the full reload — the old path demoted to the error path.
+   * Scoped tonight to TEXT-CLASS edits (content changes, structure stable).
+   */
+  const morphReload = async (): Promise<boolean> => {
+    try {
+      const f = iframeRef.current;
+      const doc = f?.contentDocument;
+      const src = f?.src;
+      if (!f || !doc?.documentElement || !src) return false;
+      const res = await fetch(src, { cache: "no-store" });
+      if (!res.ok) return false;
+      const html = await res.text();
+      const next = new DOMParser().parseFromString(html, "text/html");
+      if (!next.documentElement) return false;
+      // PIECE-SWAP: replace only the pieces whose rendered bytes changed.
+      // (idiomorph was tried first and threw inside its own traversal on our
+      // documents — probe-recorded; the piece partition we already have makes
+      // a whole-doc morpher unnecessary anyway.)
+      let swapped = 0;
+      const liveById = new Map<string, Element>();
+      doc.querySelectorAll("[data-piece]").forEach((el) => liveById.set(el.getAttribute("data-piece") || "", el));
+      next.querySelectorAll("[data-piece]").forEach((newEl) => {
+        const id = newEl.getAttribute("data-piece") || "";
+        const live = liveById.get(id);
+        if (live && live.outerHTML !== newEl.outerHTML) {
+          live.replaceWith(doc.importNode(newEl, true));
+          swapped += 1;
+        }
+      });
+      void swapped;
+      (f.contentWindow as unknown as { __rbRefit?: () => void }).__rbRefit?.();
+      setDocTick((t) => t + 1);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
   const [dragDelta, setDragDelta] = useState<{ dx: number; dy: number } | null>(null);
 
   // A piece's wrapper is display:contents (no box), so its own rect is all-zero.
@@ -837,7 +883,12 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
       if (failedCount > 0) {
         setError(`${failedCount} of ${changed.length} edits could not be applied — the rest were saved.`);
       }
-      if (anyOk) onChanged(); // one reload re-SSRs all edited copy + re-applies accents
+      if (anyOk) {
+        // Morph first (content-only change, structure stable); the full
+        // reload remains as the fallback and re-applies accents identically.
+        const morphed = await morphReload();
+        if (!morphed) onChanged();
+      }
     };
     finishSessionRef.current = finish;
 

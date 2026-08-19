@@ -78,7 +78,7 @@ sh("node scripts/run-tests.mjs");
 // raw-source page.evaluate walker (runtime), and instrumentation.ts pulling
 // child_process into the EDGE bundle (compile) — both green under tsc, both
 // dead on deploy. ~60-90s per gate is the price of pushes that build.
-sh("npm run build");
+sh("RB_BUILD_DIR=.next-gate npm run build");
 
 // ── 2. paid correctness probes (explicit opt-in only) ───────────────────────
 if (args.has("--spend")) {

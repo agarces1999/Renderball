@@ -13,11 +13,23 @@
     "noEmit": true,
     "incremental": true,
     "allowJs": true,
-    "lib": ["ES2022", "DOM", "DOM.Iterable"],
-    "types": ["node"],
-    "plugins": [{ "name": "next" }],
+    "lib": [
+      "ES2022",
+      "DOM",
+      "DOM.Iterable"
+    ],
+    "types": [
+      "node"
+    ],
+    "plugins": [
+      {
+        "name": "next"
+      }
+    ],
     "paths": {
-      "@/*": ["./*"]
+      "@/*": [
+        "./*"
+      ]
     }
   },
   "include": [
@@ -26,7 +38,13 @@
     "app/**/*",
     "lib/**/*",
     "components/**/*",
-    ".next/types/**/*.ts"
+    ".next/types/**/*.ts",
+    ".next-gate/types/**/*.ts"
   ],
-  "exclude": ["node_modules", "out", "public/renders", "src/generated"]
+  "exclude": [
+    "node_modules",
+    "out",
+    "public/renders",
+    "src/generated"
+  ]
 }

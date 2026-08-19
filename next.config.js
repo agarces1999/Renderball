@@ -1,5 +1,10 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  // Gate/CI builds write to their own dir (RB_BUILD_DIR=.next-gate) so a
+  // production build can never corrupt the .next a running dev server is
+  // serving from — that exact clash broke the dev server twice on
+  // 2026-08-19 (pages rendered without their iframe until restart).
+  distDir: process.env.RB_BUILD_DIR || ".next",
   reactStrictMode: true,
   experimental: {
     // Boot hook (instrumentation.ts): warms the sandbox pool + SIGTERM drain.

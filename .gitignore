@@ -16,3 +16,4 @@ next-env.d.ts
 .gstack/
 .data/qa/
 .data/qa-fixtures/
+.next-gate
