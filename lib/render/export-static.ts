@@ -64,36 +64,55 @@ const screenshotScenes = async (
   }
 
   try {
-    const page = await browser.newPage({
-      viewport: { width: dims.width, height: dims.height },
-      deviceScaleFactor: 1,
-    });
-    const pngs: Buffer[] = [];
-    for (const html of docs) {
-      // networkidle waits on the brand's remote images/fonts; retry once on
-      // the lenient `load` so a transient stall doesn't fail the export
-      // (same policy as the measurement gate).
+    /**
+     * PARALLEL CAPTURE (speed playbook, export track): pages are
+     * independent documents, so a 12-page export was 12x one page's cost
+     * for no reason. Bounded at 4 concurrent pages — capture is CPU/memory
+     * heavy, so parallelism tracks cores, not page count. Results land in
+     * scene order regardless of finish order.
+     */
+    const CAPTURE_CONCURRENCY = 4;
+    const pngs: Buffer[] = new Array(docs.length);
+    const captureOne = async (html: string, slot: number): Promise<void> => {
+      const page = await browser.newPage({
+        viewport: { width: dims.width, height: dims.height },
+        deviceScaleFactor: 1,
+      });
       try {
-        await page.setContent(html, { waitUntil: "networkidle", timeout: 30000 });
-      } catch {
-        await page.setContent(html, { waitUntil: "load", timeout: 30000 });
+        // networkidle waits on the brand's remote images/fonts; retry once on
+        // the lenient `load` so a transient stall doesn't fail the export
+        // (same policy as the measurement gate).
+        try {
+          await page.setContent(html, { waitUntil: "networkidle", timeout: 30000 });
+        } catch {
+          await page.setContent(html, { waitUntil: "load", timeout: 30000 });
+        }
+        await page.evaluate("document.fonts && document.fonts.ready").catch(() => {});
+        // Text fit runs post-fonts (fit-text.ts); exporting before it finishes
+        // would ship the unfitted frame the editor never shows.
+        await page.evaluate("window.__rbFitDone").catch(() => {});
+        // Belt + braces over settle-mode CSS: jump any finite animation to its
+        // end state (infinite ambient loops throw on finish() → skipped).
+        await page
+          .evaluate(
+            "try{(document.getAnimations?document.getAnimations():[]).forEach(function(a){try{a.finish()}catch(e){}})}catch(e){}",
+          )
+          .catch(() => {});
+        await page.waitForTimeout(150).catch(() => {});
+        pngs[slot] = await page.screenshot({ clip: { x: 0, y: 0, width: dims.width, height: dims.height } });
+      } finally {
+        await page.close().catch(() => {});
       }
-      await page.evaluate("document.fonts && document.fonts.ready").catch(() => {});
-      // Text fit runs post-fonts (fit-text.ts); exporting before it finishes
-      // would ship the unfitted frame the editor never shows.
-      await page.evaluate("window.__rbFitDone").catch(() => {});
-      // Belt + braces over settle-mode CSS: jump any finite animation to its
-      // end state (infinite ambient loops throw on finish() → skipped).
-      await page
-        .evaluate(
-          "try{(document.getAnimations?document.getAnimations():[]).forEach(function(a){try{a.finish()}catch(e){}})}catch(e){}",
-        )
-        .catch(() => {});
-      await page.waitForTimeout(150).catch(() => {});
-      pngs.push(
-        await page.screenshot({ clip: { x: 0, y: 0, width: dims.width, height: dims.height } }),
-      );
-    }
+    };
+    let cursor = 0;
+    const workers = Array.from({ length: Math.min(CAPTURE_CONCURRENCY, docs.length) }, async () => {
+      while (cursor < docs.length) {
+        const slot = cursor;
+        cursor += 1;
+        await captureOne(docs[slot], slot);
+      }
+    });
+    await Promise.all(workers);
     return { ok: true, pngs };
   } catch (err) {
     return { ok: false, status: 500, message: `capture failed: ${err instanceof Error ? err.message : String(err)}` };

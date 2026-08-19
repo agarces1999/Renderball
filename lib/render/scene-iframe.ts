@@ -150,6 +150,10 @@ export async function renderSceneDoc(
     }
     if (window.lottie) play();
     document.addEventListener('DOMContentLoaded', play);
+    /* Morph hook: a piece-swap can add .rb-lottie nodes after load — the
+       parent editor re-invokes the mount for exactly that. Idempotent via
+       data-rb-init. */
+    window.__rbLottieMount = play;
     window.addEventListener('load', play);
   })();
 </script>`

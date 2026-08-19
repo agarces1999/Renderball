@@ -19,6 +19,47 @@ try {
   console.warn(`[boot] pool warm failed (renders fall back to lazy spawn): ${e}`);
 }
 
+/**
+ * BOOT WARMER (speed playbook, infra track): after a deploy the dyno's disk
+ * is empty, so the FIRST open of every deck paid a 1-3s R2 hydration. Warm
+ * the hot set — the most recently touched documents — in the background
+ * once the process is up. Delayed so the healthcheck wins first; bounded
+ * concurrency so R2 and the event loop stay polite; failure-blind because
+ * a warm miss just means the old lazy path. This also absorbs the DB's
+ * first-query wake off any user request.
+ */
+setTimeout(() => {
+  void (async () => {
+    try {
+      const { prisma } = await import("./lib/db");
+      const { hydrateGenDir } = await import("./lib/render/gen-store");
+      const rows: { id: string }[] = await prisma.scriptDoc.findMany({
+        select: { id: true },
+        orderBy: { updatedAt: "desc" },
+        take: 20,
+      });
+      let cursor = 0;
+      let warmed = 0;
+      await Promise.all(
+        Array.from({ length: 4 }, async () => {
+          while (cursor < rows.length) {
+            const row = rows[cursor];
+            cursor += 1;
+            try {
+              if (await hydrateGenDir(row.id)) warmed += 1;
+            } catch {
+              /* lazy path covers it */
+            }
+          }
+        }),
+      );
+      console.log(`[boot] warmed ${warmed}/${rows.length} recent documents`);
+    } catch (e) {
+      console.warn(`[boot] document warmer skipped: ${e instanceof Error ? e.message : e}`);
+    }
+  })();
+}, 10_000);
+
 let draining = false;
 process.on("SIGTERM", () => {
   if (draining) return;

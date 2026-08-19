@@ -69,6 +69,9 @@ interface Props {
 
 /** The actions a shell toolbar can invoke — the same ones the internal pill fires. */
 export interface ElementEditorHandle {
+  /** Morph the live scene doc from a fresh server render; false = caller
+   *  should fall back to a full reload. */
+  morphReload: () => Promise<boolean>;
   addText: () => void;
   addImage: () => void;
   addIcon: () => void;
@@ -436,6 +439,10 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
   const [colorOpen, setColorOpen] = useState(false);
   // Undo depth drives the control's visibility; every mutating op pushes a snapshot.
   const [undoDepth, setUndoDepth] = useState(0);
+  /** Order-safe handle to refreshUndoDepth (defined much later): optimistic
+   *  and morph commits bypass reloadKey — the old sole refresh trigger — so
+   *  they refresh depth through this ref or the undo control never arms. */
+  const refreshUndoDepthRef = useRef<() => void>(() => {});
   // Live resize (overlay px) while dragging a grip; committed to canvas px on release.
   const [resizeBox, setResizeBox] = useState<null | { left: number; top: number; width: number; height: number }>(null);
   const resizeRef = useRef<null | { left: number; top: number; width: number; height: number }>(null);
@@ -586,28 +593,120 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
       const html = await res.text();
       const next = new DOMParser().parseFromString(html, "text/html");
       if (!next.documentElement) return false;
-      // PIECE-SWAP: replace only the pieces whose rendered bytes changed.
-      // (idiomorph was tried first and threw inside its own traversal on our
-      // documents — probe-recorded; the piece partition we already have makes
-      // a whole-doc morpher unnecessary anyway.)
-      let swapped = 0;
+      // PIECE-SWAP: the piece partition is the morph unit. (idiomorph was
+      // tried first and threw inside its own traversal on our documents —
+      // probe-recorded; the partition we already have is simpler and covers
+      // adds/removes exactly.) Three passes over ids, then an ancestor
+      // style sync so section-level changes (a re-skin's background) land
+      // without a reload.
       const liveById = new Map<string, Element>();
       doc.querySelectorAll("[data-piece]").forEach((el) => liveById.set(el.getAttribute("data-piece") || "", el));
-      next.querySelectorAll("[data-piece]").forEach((newEl) => {
+      const nextIds = new Set<string>();
+      const nextPieces = Array.from(next.querySelectorAll("[data-piece]"));
+      if (liveById.size === 0 || nextPieces.length === 0) return false; // structure too different — reload
+      for (const newEl of nextPieces) nextIds.add(newEl.getAttribute("data-piece") || "");
+
+      let swapped = 0;
+      let removed = 0;
+      let added = 0;
+      // removed: live pieces absent from the fresh render
+      for (const [id, el] of liveById) {
+        if (!nextIds.has(id)) {
+          el.remove();
+          removed += 1;
+        }
+      }
+      // changed + added, in the fresh document's order (paint order matters)
+      let prevLive: Element | null = null;
+      for (const newEl of nextPieces) {
         const id = newEl.getAttribute("data-piece") || "";
         const live = liveById.get(id);
-        if (live && live.outerHTML !== newEl.outerHTML) {
-          live.replaceWith(doc.importNode(newEl, true));
-          swapped += 1;
+        if (live) {
+          if (live.outerHTML !== newEl.outerHTML) {
+            const imported = doc.importNode(newEl, true);
+            live.replaceWith(imported);
+            prevLive = imported;
+            swapped += 1;
+          } else {
+            prevLive = live;
+          }
+        } else {
+          const imported = doc.importNode(newEl, true);
+          if (prevLive && prevLive.parentElement) {
+            prevLive.after(imported);
+          } else {
+            const anchor = doc.querySelector("[data-piece]");
+            if (!anchor?.parentElement) return false;
+            anchor.parentElement.insertBefore(imported, anchor);
+          }
+          prevLive = imported;
+          added += 1;
         }
-      });
-      void swapped;
-      (f.contentWindow as unknown as { __rbRefit?: () => void }).__rbRefit?.();
+      }
+      // Ancestor sync: section root + up to 4 ancestors carry style/class
+      // (a re-skin repaints the canvas outside any piece).
+      let liveAnc = doc.querySelector("[data-piece]")?.parentElement ?? null;
+      let nextAnc = next.querySelector("[data-piece]")?.parentElement ?? null;
+      for (let depth = 0; depth < 4 && liveAnc && nextAnc; depth += 1) {
+        const st = nextAnc.getAttribute("style");
+        const cl = nextAnc.getAttribute("class");
+        if (st !== null) liveAnc.setAttribute("style", st); else liveAnc.removeAttribute("style");
+        if (cl !== null) liveAnc.setAttribute("class", cl); else liveAnc.removeAttribute("class");
+        liveAnc = liveAnc.parentElement;
+        nextAnc = nextAnc.parentElement;
+      }
+      const win = f.contentWindow as unknown as {
+        __rbRefit?: () => void;
+        __rbLottieMount?: () => void;
+      };
+      win.__rbRefit?.();
+      win.__rbLottieMount?.();
+      // Probe-readable trace of what the morph actually did — the drag/undo
+      // probes assert on this instead of guessing from pixels alone.
+      (window as unknown as { __rbLastMorph?: unknown }).__rbLastMorph = {
+        at: Date.now(),
+        swapped,
+        removed,
+        added,
+        pieces: nextPieces.length,
+      };
       setDocTick((t) => t + 1);
       return true;
     } catch {
       return false;
     }
+  };
+
+  /** Every same-scene commit funnels here: morph first, full reload only as
+   *  the fallback. Selection is preserved through a successful morph (the
+   *  document object never changed), so callers skip the reselect dance. */
+  const settleCommit = async (
+    reselectId?: string,
+    opts: {
+      /** After a successful morph: select this piece (an insert's new id),
+       *  or null to clear (an undo whose target may be gone). Default keeps
+       *  the current selection — the document object never changed. */
+      afterMorph?: string | null;
+    } = {},
+  ) => {
+    const morphed = await morphReload();
+    if (morphed) {
+      refreshUndoDepthRef.current();
+      if (opts.afterMorph === null) {
+        setSelected(null);
+      } else if (typeof opts.afterMorph === "string") {
+        const doc = iframeRef.current?.contentDocument;
+        const piece = doc?.querySelector(`[data-piece="${CSS.escape(opts.afterMorph)}"]`);
+        const rect = piece ? rectOf(piece) : null;
+        if (piece && rect) {
+          setSelected({ pieceId: opts.afterMorph, kind: piece.getAttribute("data-kind") ?? "", rect });
+        }
+      }
+      return;
+    }
+    if (reselectId) reselectIdRef.current = reselectId;
+    setSelected(null);
+    onChanged();
   };
 
   const [dragDelta, setDragDelta] = useState<{ dx: number; dy: number } | null>(null);
@@ -1373,8 +1472,9 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
     setBusy(null);
     if (ok) {
       const pid = json.pieceId;
-      if (typeof pid === "string") reselectIdRef.current = pid;
-      onChanged();
+      await settleCommit(typeof pid === "string" ? pid : undefined, {
+        afterMorph: typeof pid === "string" ? pid : undefined,
+      });
     }
   };
 
@@ -1420,11 +1520,12 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
     setBusy(null);
     if (ok) {
       const pid = json.pieceId;
-      if (typeof pid === "string") reselectIdRef.current = pid;
       setGenBox(null);
       setGenPrompt("");
       setTool(null);
-      onChanged();
+      await settleCommit(typeof pid === "string" ? pid : undefined, {
+        afterMorph: typeof pid === "string" ? pid : undefined,
+      });
     }
   };
 
@@ -1461,11 +1562,12 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
     setBusy(null);
     if (ok) {
       const pid = json.pieceId;
-      if (typeof pid === "string") reselectIdRef.current = pid;
       setGenBox(null);
       setGenPrompt("");
       setTool(null);
-      onChanged();
+      await settleCommit(typeof pid === "string" ? pid : undefined, {
+        afterMorph: typeof pid === "string" ? pid : undefined,
+      });
     }
   };
 
@@ -1792,6 +1894,7 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
           if (ok) {
             // Tell the parent the doc changed WITHOUT forcing a reload-now:
             // thumbnails/persistence listeners still hear it.
+            refreshUndoDepthRef.current();
             onCommitted?.();
             return;
           }
@@ -2038,6 +2141,7 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
       /* undo availability is a nicety; never block the editor on it */
     }
   }, [apiBase, scriptId]);
+  refreshUndoDepthRef.current = () => void refreshUndoDepth();
   useEffect(() => {
     void refreshUndoDepth();
   }, [refreshUndoDepth, reloadKey]);
@@ -2055,8 +2159,8 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
     const { ok } = await postJson(`${apiBase}/undo`, { scriptId });
     setBusy(null);
     if (ok) {
-      setSelected(null);
-      onChanged();
+      // Undo may have removed the selected piece — clear rather than dangle.
+      await settleCommit(undefined, { afterMorph: null });
     }
   };
   // ⌘Z / Ctrl+Z anywhere in the editor (not while typing in a field).
@@ -2184,9 +2288,7 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
       setBusy(null);
       setResizeBox(null);
       if (redraw) {
-        reselectIdRef.current = pieceId;
-        setSelected(null);
-        onChanged();
+        await settleCommit(pieceId, { afterMorph: pieceId });
       }
       return;
     }
@@ -2194,9 +2296,7 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
     setBusy(null);
     setResizeBox(null);
     if (ok) {
-      reselectIdRef.current = pieceId;
-      setSelected(null);
-      onChanged();
+      await settleCommit(pieceId, { afterMorph: pieceId });
     }
   };
 
@@ -2209,9 +2309,7 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
     if (ok) {
       setRegenAsk(false);
       setRegenText("");
-      reselectIdRef.current = selected.pieceId; // keep it selected across the reload
-      setSelected(null);
-      onChanged();
+      await settleCommit(selected.pieceId, { afterMorph: selected.pieceId });
     }
   };
   const remove = async () => {
@@ -2230,6 +2328,7 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
     void post(`${apiBase}/edit-layout`, { scriptId, sceneIndex, pieceId, op: "delete" })
       .then((ok) => {
         if (ok) {
+          refreshUndoDepthRef.current();
           onCommitted?.();
           return;
         }
@@ -2264,9 +2363,7 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
     });
     setBusy(null);
     if (ok) {
-      reselectIdRef.current = selected.pieceId;
-      setSelected(null);
-      onChanged();
+      await settleCommit(selected.pieceId, { afterMorph: selected.pieceId });
     }
   };
 
@@ -2352,12 +2449,14 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
           });
           setBusy(null);
           if (ok) {
-            reselectIdRef.current = selected.pieceId; // selection survives the reload
-            setSelected(null);
-            onChanged();
+            await settleCommit(selected.pieceId, { afterMorph: selected.pieceId });
           }
         })();
       },
+      /** Parents call this after their own same-scene commits (brand
+       *  re-skin): morph-first, and the caller falls back to a reload when
+       *  it returns false. */
+      morphReload,
     }),
     [toggleGenerate, toggleOutlines, selected, busy, scriptId, sceneIndex, apiBase],
   );

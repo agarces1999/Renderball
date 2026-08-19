@@ -568,7 +568,14 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
                 ) : panelTab === "brand" ? (
                   <BrandPanel
                     scriptId={scriptId}
-                    onApplied={() => setReloadKey((k) => k + 1)}
+                    onApplied={() => {
+                      // Re-skin is a same-scene repaint: morph the changed
+                      // pieces + section chrome in place; reload only if the
+                      // morph declines.
+                      void editorRef.current?.morphReload().then((ok) => {
+                        if (!ok) setReloadKey((k) => k + 1);
+                      });
+                    }}
                   />
                 ) : (
                   <DeckPagePanel

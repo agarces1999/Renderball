@@ -387,7 +387,7 @@ export const fireworksScriptTransport: ScriptTransport = async (history) => {
     system: SCRIPT_GENERATOR_SYSTEM_PROMPT,
     user: flattenHistoryToUser(history),
     maxTokens: 16000,
-    effort: "high",
+    effort: process.env.RB_CREATIVE_THINKING === "off" ? "none" : "high", // same A/B flag as build calls
     json: true,
     model: fireworksScriptModel(),
   });
@@ -436,7 +436,7 @@ export const fireworksScriptStreamTransport = (
           system: SCRIPT_GENERATOR_SYSTEM_PROMPT,
           user: flattenHistoryToUser(history),
           maxTokens: 16000,
-          effort: "high",
+          effort: process.env.RB_CREATIVE_THINKING === "off" ? "none" : "high", // same A/B flag as build calls
           json: true,
           model: fireworksScriptModel(),
         },
