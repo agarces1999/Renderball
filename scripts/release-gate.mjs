@@ -73,6 +73,12 @@ const out = (cmd) => execSync(cmd, { encoding: "utf8" }).trim();
 sh("npx tsc --noEmit -p tsconfig.json");
 sh("npm run typecheck:qa");
 sh("node scripts/run-tests.mjs");
+// The webpack build catches what tsc structurally cannot: bundle-graph
+// failures. Two same-day instances forced this stage in: TS syntax inside a
+// raw-source page.evaluate walker (runtime), and instrumentation.ts pulling
+// child_process into the EDGE bundle (compile) — both green under tsc, both
+// dead on deploy. ~60-90s per gate is the price of pushes that build.
+sh("npm run build");
 
 // ── 2. paid correctness probes (explicit opt-in only) ───────────────────────
 if (args.has("--spend")) {
