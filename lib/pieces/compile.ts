@@ -235,8 +235,10 @@ const bulletStack = (s: BulletStackSpec, t: DeckTokens): string => {
   const softColor = inverse ? `"rgba(255,255,255,0.62)"` : t.ink;
   const boxedFamily = itemPanel !== "" && v !== "ruled-rows";
 
+  const connected = v === "timeline" || v === "steps";
   const rows = s.items
     .map((it, i) => {
+      const isLast = i === s.items.length - 1;
       const textCore =
         v === "split-lead"
           ? (() => {
@@ -250,11 +252,20 @@ const bulletStack = (s: BulletStackSpec, t: DeckTokens): string => {
         v === "eyebrow-items"
           ? `<div style={{ fontFamily: ${t.fontMono}, fontSize: 11, letterSpacing: "0.13em", textTransform: "uppercase", color: ${t.accent}, marginBottom: 4 }}>0${i + 1}</div>\n          `
           : "";
+      // Connected variants wrap the lead in a stretching column: circle,
+      // then a connector segment that runs to the item's bottom edge — the
+      // line starts under the first marker and ends above the last one by
+      // construction (the old single overlay rail overstepped both ends and
+      // showed through the hollow step rings — founder catch).
       const lead =
         v === "plain" || v === "eyebrow-items" || v === "gradient-panel"
           ? ""
-          : `${stackLead(v, v === "dash" ? "dash" : v === "mono" ? "index" : marker, i, t)}\n        `;
-      return `<div style={{ display: "flex", gap: 12, alignItems: "flex-start", position: "relative", ${itemPanel}${horizontal || grid ? "flex: 1, minWidth: 0, " : ""}}}>
+          : connected
+            ? `<span style={{ display: "flex", flexDirection: "column", alignItems: "center", alignSelf: "stretch", flexShrink: 0 }}>${stackLead(v, marker, i, t)}${
+                isLast ? "" : `<span style={{ width: 1.5, flex: 1, minHeight: 10, background: ${t.line}, marginTop: 4 }} />`
+              }</span>\n        `
+            : `${stackLead(v, v === "dash" ? "dash" : v === "mono" ? "index" : marker, i, t)}\n        `;
+      return `<div style={{ display: "flex", gap: 12, alignItems: "flex-start", position: "relative", ${itemPanel}${horizontal || grid ? "flex: 1, minWidth: 0, " : ""}${connected && !isLast ? "paddingBottom: 16, " : ""}}}>
         ${lead}<div style={{ minWidth: 0 }}>
           ${eyebrowLead}<div style={{ fontFamily: ${v === "mono" ? t.fontMono : t.fontBody}, fontSize: ${v === "mono" ? 15 : 18}, fontWeight: 600, lineHeight: 1.35, color: ${textColor} }}>${textCore}</div>${
             it.detail
@@ -268,17 +279,12 @@ const bulletStack = (s: BulletStackSpec, t: DeckTokens): string => {
 
   const layout = grid
     ? `display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14`
-    : `display: "flex", flexDirection: ${horizontal ? `"row"` : `"column"`}, gap: ${boxedFamily ? 14 : horizontal ? 20 : v === "ruled-rows" ? 14 : 16}`;
+    : `display: "flex", flexDirection: ${horizontal ? `"row"` : `"column"`}, gap: ${connected ? 0 : boxedFamily ? 14 : horizontal ? 20 : v === "ruled-rows" ? 14 : 16}`;
   const wrapPanel =
     v === "gradient-panel"
       ? `background: \`linear-gradient(135deg, \${${t.surface}}, transparent)\`, borderRadius: 16, padding: "22px 24px", `
       : "";
-  const rail =
-    v === "timeline" || v === "steps"
-      ? `\n      <div aria-hidden style={{ position: "absolute", left: ${v === "steps" ? 12 : 3.5}, top: 10, bottom: 10, width: 1.5, background: ${t.line} }} />`
-      : "";
-
-  return `<div style={{ ${layout}, position: "relative", ${wrapPanel}minWidth: 0 }}>${rail}
+  return `<div style={{ ${layout}, position: "relative", ${wrapPanel}minWidth: 0 }}>
       ${rows}
     </div>`;
 };
