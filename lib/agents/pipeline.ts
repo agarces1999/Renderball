@@ -4,6 +4,7 @@ import { DESIGN_AGENT_SYSTEM_PROMPT } from "./prompts/design-agent";
 import { ANIMATION_AGENT_SYSTEM_PROMPT } from "./prompts/animation-agent";
 import { stripCodeFence, verifyCompilable, repairCompile, elideDataUrisOutsideSection } from "./code-extraction";
 import { extractSection, replaceSection, sectionRange } from "./section-splice";
+import { parseSearchReplaceBlocks, applySearchReplace, diffRepairPrompt } from "./section-diff";
 import { applyChoreography, throughlineAnchorFor } from "./choreograph";
 import { AdaptiveGate, mapWithGate, isOverloadSignal } from "./adaptive-gate";
 import { fillLimiter } from "./account-limiter";
@@ -1951,17 +1952,70 @@ export const buildAnimatedSections = async (
           .map((g) => g.scene)
           .join(", ")}] instead of the whole composition`,
       );
+      /**
+       * RUNG 1 — DIFF REPAIR on the thinking-off lane (speed playbook
+       * 2026-08-19): most scoped fixes change a few lines, not a section.
+       * Ask for exact SEARCH/REPLACE blocks (aider/v0-quick-edit class),
+       * apply deterministically, and only fall to the whole-section re-emit
+       * (rung 2, today's behavior, thinking-on) when blocks fail to parse or
+       * apply. Safe by construction: the adoption gate below compiles and
+       * re-gates the spliced result and only accepts strict non-regression —
+       * a bad diff dies exactly where a bad re-emit died.
+       */
+      const tryDiffRepair = async (
+        scene: number,
+        messages: string[],
+      ): Promise<{ block: string | null; usage: Usage }> => {
+        const current = extractSection(designCode, scene);
+        if (!current) return { block: null, usage: EMPTY_USAGE };
+        try {
+          const resp = await client.messages
+            .stream(
+              {
+                model: MODELS.codingAgentBuild,
+                max_tokens: 4000,
+                // Thinking OFF on the diff rung (probe 2026-08-18: this exact
+                // wire shape = 562ms/zero reasoning vs 6.8s/768 tokens).
+                // Precision edits are not creative composition.
+                thinking: { type: "disabled" },
+                system:
+                  "You produce minimal exact SEARCH/REPLACE edits to fix specific issues in one React section. Precision over rewriting.",
+                messages: [{ role: "user", content: diffRepairPrompt(`Section${scene}`, current, messages) }],
+              },
+              { timeout: 90_000 },
+            )
+            .finalMessage();
+          const usage = usageOf(resp.usage);
+          const textPart = resp.content.find((c: { type: string }) => c.type === "text");
+          const raw = textPart && textPart.type === "text" ? textPart.text : "";
+          const blocks = parseSearchReplaceBlocks(raw ?? "");
+          const applied = applySearchReplace(current, blocks);
+          if (!applied.ok) {
+            console.warn(`[pipeline] diff rung s${scene}: ${applied.reason} — escalating to re-emit`);
+            return { block: null, usage };
+          }
+          console.warn(`[pipeline] diff rung s${scene}: applied ${applied.applied} block(s)`);
+          return { block: applied.section, usage };
+        } catch (e) {
+          console.warn(`[pipeline] diff rung s${scene} failed (${e instanceof Error ? e.message : e}) — escalating`);
+          return { block: null, usage: EMPTY_USAGE };
+        }
+      };
+
       const results = await Promise.all(
-        grouped.map(({ scene, messages }) =>
-          regenerateSectionBlock(
+        grouped.map(async ({ scene, messages }) => {
+          const diff = await tryDiffRepair(scene, messages);
+          if (diff.block) return { scene, block: diff.block, usage: diff.usage };
+          const reEmit = await regenerateSectionBlock(
             client,
             MODELS.codingAgentBuild,
             input,
             designCode,
             scene,
             messages,
-          ).then((r) => ({ scene, ...r })),
-        ),
+          );
+          return { scene, block: reEmit.block, usage: addUsage(diff.usage, reEmit.usage) };
+        }),
       );
       let spliced = designCode;
       let anySpliced = false;
