@@ -188,7 +188,18 @@ export const VISION_MODEL =
  * an `any` keeps the call-site object literals type-clean.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export const BUILD_REASONING: any = {
+/**
+ * A/B FLIP (speed playbook 2026-08-19): RB_CREATIVE_THINKING=off turns
+ * reasoning OFF for the creative build calls (probe-verified wire shape).
+ * Gamma's public position from hundreds of deck A/Bs is that LESS thinking
+ * made decks BETTER — but that flip is evidence-gated here, not vibes-gated:
+ * this env exists so the same brief can be built both ways and judged
+ * side by side. Default (unset) = today's thinking-on behavior exactly.
+ */
+export const BUILD_REASONING: any =
+  process.env.RB_CREATIVE_THINKING === "off"
+    ? { thinking: { type: "disabled" } }
+    : {
   thinking: { type: "enabled" },
   // OVERNIGHT BATCH (local): "high", not "max". At "max" a single build does not
   // converge inside 2h on GLM (design + scoped/whole-comp retries + render-truth,
