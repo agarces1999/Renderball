@@ -127,8 +127,13 @@ const statTile = (s: StatTileSpec, t: DeckTokens): string => {
                     ? `borderTop: \`3px solid \${${t.accent}}\`, paddingTop: 16, `
                     : "";
   const inverse = v === "inverse-panel";
-  const textColor = inverse ? `"rgba(255,255,255,0.94)"` : t.ink;
-  const softColor = inverse ? `"rgba(255,255,255,0.66)"` : t.ink;
+  // Inverse panels: the panel is ink-colored, and ink's POLARITY is the
+  // deck's, not ours — on a dark-brand deck ink is LIGHT, so any hardcoded
+  // white text washes out (measured 1.1:1 on the midnight specimen).
+  // difference-blended white self-inverts against either polarity.
+  const textColor = inverse ? `"#fff"` : t.ink;
+  const softColor = inverse ? `"rgba(255,255,255,0.72)"` : t.ink;
+  const blend = inverse ? `mixBlendMode: "difference", ` : "";
 
   // Lead elements above the value.
   const lead =
@@ -156,7 +161,7 @@ const statTile = (s: StatTileSpec, t: DeckTokens): string => {
           ? `\n        <span style={{ color: ${t.accent}, marginLeft: "auto" }}><ArrowUpRight size={22} /></span>`
           : "";
   const valueRow = `<div style={{ display: "flex", alignItems: "baseline", gap: 12${v === "arrow-cta" ? `, width: "100%"` : ""} }}>
-        <div style={{ fontFamily: ${valueFont}, fontWeight: ${big ? 800 : 700}, fontSize: ${big ? 96 : 56}, lineHeight: 1, letterSpacing: "-0.02em", color: ${textColor}, fontVariantNumeric: "tabular-nums" }}>${valueCore}</div>${valueSide}
+        <div style={{ ${blend}fontFamily: ${valueFont}, fontWeight: ${big ? 800 : 700}, fontSize: ${big ? 96 : 56}, lineHeight: 1, letterSpacing: "-0.02em", color: ${textColor}, fontVariantNumeric: "tabular-nums" }}>${valueCore}</div>${valueSide}
       </div>`;
 
   // Label + caption below (eyebrow variant already used the label above).
@@ -165,10 +170,10 @@ const statTile = (s: StatTileSpec, t: DeckTokens): string => {
       ? ""
       : v === "pill-label"
         ? `\n      <div style={{ fontFamily: ${t.fontBody}, fontSize: 13, fontWeight: 600, color: ${t.accent}, background: ${t.surface}, borderRadius: 999, padding: "4px 12px", marginTop: 12, display: "inline-block" }}>${esc(s.label)}</div>`
-        : `\n      <div style={{ fontFamily: ${t.fontBody}, fontSize: 17, fontWeight: 500, opacity: 0.82, marginTop: 10, color: ${softColor} }}>${esc(s.label)}</div>`;
+        : `\n      <div style={{ ${blend}fontFamily: ${t.fontBody}, fontSize: 17, fontWeight: 500, opacity: 0.82, marginTop: 10, color: ${softColor} }}>${esc(s.label)}</div>`;
   const captionEl =
     s.caption && (v === "captioned" || v !== "eyebrow")
-      ? `\n      <div style={{ fontFamily: ${v === "captioned" ? t.fontMono : t.fontBody}, fontSize: ${v === "captioned" ? 13 : 14}, opacity: 0.55, marginTop: 6, color: ${softColor} }}>${esc(s.caption)}</div>`
+      ? `\n      <div style={{ ${blend}fontFamily: ${v === "captioned" ? t.fontMono : t.fontBody}, fontSize: ${v === "captioned" ? 13 : 14}, opacity: 0.55, marginTop: 6, color: ${softColor} }}>${esc(s.caption)}</div>`
       : "";
   const underlineEl =
     k.underline || v === "underline"
@@ -231,8 +236,10 @@ const bulletStack = (s: BulletStackSpec, t: DeckTokens): string => {
                 : v === "ruled-rows"
                   ? `borderBottom: \`1px solid \${${t.line}}\`, paddingBottom: 14, `
                   : "";
-  const textColor = inverse ? `"rgba(255,255,255,0.94)"` : t.ink;
-  const softColor = inverse ? `"rgba(255,255,255,0.62)"` : t.ink;
+  // Same polarity trap as statTile's inverse-panel — see that comment.
+  const textColor = inverse ? `"#fff"` : t.ink;
+  const softColor = inverse ? `"rgba(255,255,255,0.72)"` : t.ink;
+  const blend = inverse ? `mixBlendMode: "difference", ` : "";
   const boxedFamily = itemPanel !== "" && v !== "ruled-rows";
 
   const connected = v === "timeline" || v === "steps";
@@ -267,9 +274,9 @@ const bulletStack = (s: BulletStackSpec, t: DeckTokens): string => {
             : `${stackLead(v, v === "dash" ? "dash" : v === "mono" ? "index" : marker, i, t)}\n        `;
       return `<div style={{ display: "flex", gap: 12, alignItems: "flex-start", position: "relative", ${itemPanel}${horizontal || grid ? "flex: 1, minWidth: 0, " : ""}${connected && !isLast ? "paddingBottom: 16, " : ""}}}>
         ${lead}<div style={{ minWidth: 0 }}>
-          ${eyebrowLead}<div style={{ fontFamily: ${v === "mono" ? t.fontMono : t.fontBody}, fontSize: ${v === "mono" ? 15 : 18}, fontWeight: 600, lineHeight: 1.35, color: ${textColor} }}>${textCore}</div>${
+          ${eyebrowLead}<div style={{ ${blend}fontFamily: ${v === "mono" ? t.fontMono : t.fontBody}, fontSize: ${v === "mono" ? 15 : 18}, fontWeight: 600, lineHeight: 1.35, color: ${textColor} }}>${textCore}</div>${
             it.detail
-              ? `\n          <div style={{ fontFamily: ${t.fontBody}, fontSize: 14, opacity: 0.6, marginTop: 4, lineHeight: 1.4, color: ${softColor} }}>${esc(it.detail)}</div>`
+              ? `\n          <div style={{ ${blend}fontFamily: ${t.fontBody}, fontSize: 14, opacity: 0.6, marginTop: 4, lineHeight: 1.4, color: ${softColor} }}>${esc(it.detail)}</div>`
               : ""
           }
         </div>
