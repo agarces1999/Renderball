@@ -13,6 +13,7 @@ import {
   compilePieceSpec,
   resolveDeckTokens,
   SPEC_ICON_DEPS,
+  ICON_VARIANTS,
 } from "./compile";
 import { recordVariantUse } from "./telemetry";
 
@@ -60,12 +61,12 @@ export const expandSpecMarkers = (
       skipped.push({ raw: json.slice(0, 120), reason: "unknown piece/shape" });
       return whole;
     }
-    const iconLed = spec.variant === "iconled";
-    if (iconLed && !hasLucide) {
-      skipped.push({ raw: json.slice(0, 120), reason: "iconled needs lucide import" });
+    const needsIcons = ICON_VARIANTS.has(spec.variant);
+    if (needsIcons && !hasLucide) {
+      skipped.push({ raw: json.slice(0, 120), reason: `variant "${spec.variant}" needs lucide import` });
       return whole;
     }
-    if (iconLed) for (const dep of SPEC_ICON_DEPS) usedIcons.add(dep);
+    if (needsIcons) for (const dep of SPEC_ICON_DEPS) usedIcons.add(dep);
     expanded++;
     recordVariantUse(spec.piece, spec.variant, opts?.scriptId);
     return compilePieceSpec(spec, tokens);

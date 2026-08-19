@@ -21,25 +21,61 @@
  * killed-by-data doctrine: measure sameness, don't assume either way).
  */
 
-/** Observed statTile morphologies (corpus shares in comments). */
+/**
+ * Observed statTile morphologies. v2 menu (founder: "at least 20 per
+ * type") — every variant anchors to a feature the miner counted on real
+ * corpus pieces (carriage n in comments; miner v2, 355 classified pieces).
+ */
 export const STAT_TILE_VARIANTS = [
-  "plain", // 38% — number + label, no box
-  "iconled", // 14% — small icon leads the label
-  "boxed", // 7% — soft panel behind
-  "boxed-mono", // 7% — panel + mono numerals
-  "bordered-boxed", // 7% — hairline panel
-  "big-number", // 3%+ — display-scale numeral dominates
+  "plain", // bare value + label
+  "eyebrow", // letterSpaced uppercase label above the value (n=26)
+  "captioned", // value + label + secondary caption line (n=22)
+  "big-number", // display-scale numeral dominates (n=21)
+  "boxed", // soft panel behind (n=20)
+  "boxed-mono", // panel + mono numerals (n=17)
+  "shadow-card", // lifted card with shadow (n=10)
+  "delta-up", // trend arrow + delta chip beside the value (n=8)
+  "bordered-boxed", // hairline panel (n=7)
+  "pill-label", // label set in a pill badge (n=6)
+  "iconled", // small icon chip leads (n=4)
+  "split-tone", // value split across two tones (n=3)
+  "ruled-top", // accent rule above (n=3)
+  "underline", // accent underline beneath the value (n=2)
+  "inverse-panel", // ink-dark panel, light text (n=1)
+  "dashed-frame", // dashed hairline frame (n=1)
+  "ghost-number", // huge low-opacity numeral behind the label (n=1)
+  "spark-adjacent", // mini sparkline beside the value (sparkline n=15)
+  "gradient-panel", // soft gradient panel (gradientPanel n=80 corpus-wide)
+  "framed-hairline", // 1px frame, no fill (framedHairline class)
+  "index-chip", // small mono 01-index chip (indexNumbered n=4)
+  "arrow-cta", // ArrowUpRight corner affordance (arrowLed n=8)
 ] as const;
 export type StatTileVariant = (typeof STAT_TILE_VARIANTS)[number];
 
-/** Observed bulletStack morphologies. */
+/** Observed bulletStack morphologies (miner v2 carriage n in comments). */
 export const BULLET_STACK_VARIANTS = [
-  "boxed", // 15% — items in soft panels
-  "boxed-ruled", // 10% — panels with a top rule
-  "horizontal", // 10% — items in a row
-  "mono", // 10% — mono labels, technical register
-  "plain", // 5% — bare stack
-  "iconled", // 5% — leading glyph per item
+  "plain", // bare stack
+  "dot", // dot markers (n=4)
+  "dash", // dash markers (n=1)
+  "mono", // mono labels, index-led technical register (mono n=169)
+  "check", // check glyphs lead (checkLed n=27)
+  "arrow", // arrow glyphs lead (arrowLed n=14)
+  "iconled", // icon chips lead (iconled n=30)
+  "boxed", // items in soft panels (boxed n=270)
+  "boxed-ruled", // panels with an accent top rule (ruledTop n=82)
+  "bordered", // hairline panels (borderedBox n=155)
+  "shadow-cards", // lifted cards (shadowCard n=163)
+  "inverse-panels", // ink-dark item panels (inversePanel n=34)
+  "gradient-panel", // one gradient panel wraps the stack (n=80)
+  "dashed-frame", // dashed hairline item frames (dashed n=10)
+  "pill-lead", // pill badge leads each item (pillBadge n=38)
+  "eyebrow-items", // letterSpaced uppercase item leads (letterSpaced n=207)
+  "ruled-rows", // hairline rules BETWEEN rows
+  "horizontal", // items in a row (n=7)
+  "grid", // two-column grid (grid n=37)
+  "timeline", // vertical connector + nodes (timeline class)
+  "steps", // numbered circles with connector (indexNumbered + timeline)
+  "split-lead", // first word of each item in accent tone (splitTone n=57)
 ] as const;
 export type BulletStackVariant = (typeof BULLET_STACK_VARIANTS)[number];
 
@@ -56,6 +92,8 @@ export interface StatTileSpec {
     /** Mono numerals regardless of variant. */
     mono?: boolean;
     align?: "start" | "center";
+    /** Delta chip copy for delta-up (must come from the script's numbers). */
+    delta?: string;
   };
 }
 

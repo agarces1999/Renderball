@@ -157,12 +157,21 @@ await check("adds missing lucide icons for iconled; refuses without lucide", () 
   const slim = `import { ArrowRight } from "lucide-react";\nconst FONT_BODY = "x";\nexport const S = () => (<div>${marker(JSON.stringify(statSpec("iconled")))}</div>);`;
   const r = expandSpecMarkers(slim);
   assert(r.expanded === 1, "iconled not expanded");
-  assert(/import \{\s*ArrowRight,\s*TrendingUp,\s*Check\s*\} from "lucide-react"/.test(r.code), `import not patched: ${r.code.split("\n")[0]}`);
+  {
+    const importLine = r.code.split("\n")[0];
+    for (const dep of ["TrendingUp", "Check", "ArrowRight", "ArrowUpRight"]) {
+      assert(importLine.includes(dep), `import missing ${dep}: ${importLine}`);
+    }
+  }
   esbuild.transformSync(r.code, { loader: "tsx" });
   const noLucide = expandSpecMarkers(
     `const FONT_BODY="x";\nexport const S=()=>(<div>${marker(JSON.stringify(statSpec("iconled")))}</div>);`,
   );
   assert(noLucide.expanded === 0 && (noLucide.skipped[0]?.reason ?? "").includes("lucide"), "expanded without lucide");
+  const noLucideArrow = expandSpecMarkers(
+    `const FONT_BODY="x";\nexport const S=()=>(<div>${marker(JSON.stringify(stackSpec("arrow")))}</div>);`,
+  );
+  assert(noLucideArrow.expanded === 0, "arrow variant expanded without lucide");
 });
 
 await check("expands multiple markers in one pass", () => {
