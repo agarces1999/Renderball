@@ -49,6 +49,30 @@ test("renders a composition to HTML", async () => {
   if (r.ok) assert.match(r.html, /hello/);
 });
 
+test("<style> children keep REAL quotes — React's escaping is undone there", async () => {
+  // React escapes text children even inside <style>, where browsers never
+  // decode entities — content: &quot;0&quot; is invalid CSS, so count-up
+  // animations were silently dead in SSR (found by the client-preview
+  // parity gate, 2026-08-20). The worker decodes entities in style blocks
+  // only; everywhere else escaping must survive.
+  const p = await write(
+    "styled.tsx",
+    `import React from "react";
+     export const Section0 = () => React.createElement("div", null,
+       React.createElement("style", null, '@keyframes c { 0% { content: "0"; } 100% { content: "9 & done"; } }'),
+       React.createElement("span", null, 'a < b & "c"'),
+     );`,
+  );
+  const r = await renderSceneSandboxed(p, 0, { scenes: [] });
+  assert.equal(r.ok, true, r.ok ? "" : r.message);
+  if (r.ok) {
+    assert.match(r.html, /content: "0"/, "style block must carry real quotes");
+    assert.match(r.html, /"9 & done"/, "ampersand in style must be literal");
+    assert.doesNotMatch(r.html, /<style>[^<]*&quot;/, "no entities inside style");
+    assert.match(r.html, /a &lt; b &amp; &quot;c&quot;/, "escaping OUTSIDE style must survive");
+  }
+});
+
 test("the child holds NO secrets — the whole point of the boundary", async () => {
   // Function("return this")() defeats identifier shadowing (that is why the
   // previous in-process attempt failed), so this reaches the REAL global and

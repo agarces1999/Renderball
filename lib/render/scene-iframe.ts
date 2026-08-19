@@ -101,7 +101,7 @@ export async function renderSceneDoc(
     .update(compBytes)
     .update("\u0000")
     .update(JSON.stringify(script))
-    .update(`\u0000${sceneIndex}\u0000${opts.settle ? 1 : 0}\u0000${opts.hydrate ? `h:${opts.hydrate.bundleUrl}` : ""}\u0000v1`)
+    .update(`\u0000${sceneIndex}\u0000${opts.settle ? 1 : 0}\u0000${opts.hydrate ? `h:${opts.hydrate.bundleUrl}` : ""}\u0000v2`)
     .digest("hex");
   const cached = renderCache.get(cacheKey);
   if (cached) {
