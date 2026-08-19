@@ -115,6 +115,12 @@ export const parsePieceSpec = (raw: unknown): PieceSpec | null => {
   const o = raw as Record<string, unknown>;
   if (o.piece === "statTile") {
     if (typeof o.value !== "string" || typeof o.label !== "string") return null;
+    // Witness build 2 (2026-08-20): the model emitted value:"PLACEHOLDER"
+    // for a scene whose headline held the real number ("12"). A filler
+    // value must never compile — rejecting here leaves the marker as an
+    // invisible comment, so the density/bind gates see the missing mount
+    // and route a freeform repair instead of shipping a fabricated stat.
+    if (/^(placeholder|tbd|todo|n\/?a|xx+|lorem.*|value|number|123)$/i.test(o.value.trim())) return null;
     const variant = STAT_TILE_VARIANTS.includes(o.variant as StatTileVariant)
       ? (o.variant as StatTileVariant)
       : "plain";

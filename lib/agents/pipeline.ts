@@ -3064,6 +3064,7 @@ const buildDesignUserMessage = (input: BuildInput): string => {
   lines.push(
     "Output the complete static Composition.tsx file. Export one `Section{N}` named component per section above (numbering matches the input). Each Section is self-contained with its own `<style>` block for brand fonts. Top-level `export const Generated` lists them as siblings — used for preview only. Every element at its settled position. Density: 6-10 distinct visual elements per section minimum.",
   );
+  if (pieceSpecEnabled()) lines.push("", PIECE_SPEC_PROMPT);
   return lines.join("\n");
 };
 

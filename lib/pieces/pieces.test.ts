@@ -116,6 +116,9 @@ await check("parse: unknown variant defaults to plain; malformed rejected; items
   const s = parsePieceSpec({ piece: "statTile", variant: "hologram", value: "1", label: "x" });
   assert(s?.piece === "statTile" && s.variant === "plain", "unknown variant not defaulted");
   assert(parsePieceSpec({ piece: "statTile", value: 42, label: "x" }) === null, "bad value accepted");
+  assert(parsePieceSpec({ piece: "statTile", variant: "plain", value: "PLACEHOLDER", label: "x" }) === null, "placeholder value accepted");
+  assert(parsePieceSpec({ piece: "statTile", variant: "plain", value: "TBD", label: "x" }) === null, "TBD accepted");
+  assert(parsePieceSpec({ piece: "statTile", variant: "plain", value: "12", label: "facilities" }) !== null, "real value rejected");
   assert(parsePieceSpec({ piece: "bulletStack", items: [] }) === null, "empty items accepted");
   assert(parsePieceSpec({ piece: "waffle" }) === null, "unknown piece accepted");
   assert(parsePieceSpec(null) === null, "null accepted");
@@ -153,7 +156,7 @@ await check("fail-open: unknown piece leaves the comment", () => {
   assert(r.skipped[0]?.reason === "unknown piece/shape", `reason ${r.skipped[0]?.reason}`);
 });
 
-await check("adds missing lucide icons for iconled; refuses without lucide", () => {
+await check("adds missing lucide icons for iconled; creates the import when absent", () => {
   const slim = `import { ArrowRight } from "lucide-react";\nconst FONT_BODY = "x";\nexport const S = () => (<div>${marker(JSON.stringify(statSpec("iconled")))}</div>);`;
   const r = expandSpecMarkers(slim);
   assert(r.expanded === 1, "iconled not expanded");
@@ -164,14 +167,14 @@ await check("adds missing lucide icons for iconled; refuses without lucide", () 
     }
   }
   esbuild.transformSync(r.code, { loader: "tsx" });
+  // No lucide import at all → the expander CREATES one (witness build 3:
+  // refusing left an invisible hole that fed a density failure).
   const noLucide = expandSpecMarkers(
     `const FONT_BODY="x";\nexport const S=()=>(<div>${marker(JSON.stringify(statSpec("iconled")))}</div>);`,
   );
-  assert(noLucide.expanded === 0 && (noLucide.skipped[0]?.reason ?? "").includes("lucide"), "expanded without lucide");
-  const noLucideArrow = expandSpecMarkers(
-    `const FONT_BODY="x";\nexport const S=()=>(<div>${marker(JSON.stringify(stackSpec("arrow")))}</div>);`,
-  );
-  assert(noLucideArrow.expanded === 0, "arrow variant expanded without lucide");
+  assert(noLucide.expanded === 1, "iconled not expanded on lucide-less module");
+  assert(/import \{ [^}]*TrendingUp[^}]* \} from "lucide-react";/.test(noLucide.code), "import not created");
+  esbuild.transformSync(noLucide.code, { loader: "tsx" });
 });
 
 await check("expands multiple markers in one pass", () => {

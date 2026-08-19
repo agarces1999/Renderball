@@ -25,11 +25,23 @@ export interface ExpandResult {
   skipped: { raw: string; reason: string }[];
 }
 
-/** Ensure the lucide import carries the icon names compiled pieces use. */
+/**
+ * Ensure the lucide import carries the icon names compiled pieces use.
+ * When the module has NO lucide import at all, create one — witness build 3
+ * (2026-08-20): refusing the variant left an invisible hole that fed the
+ * density failure which triggered a whole-comp retry. The import line is
+ * mechanical and ours to add.
+ */
 const ensureIconImports = (code: string, needed: string[]): string => {
   if (needed.length === 0) return code;
   const m = code.match(/import\s*\{([\s\S]*?)\}\s*from\s*["']lucide-react["']/);
-  if (!m) return code; // no lucide import — expander already refused icon variants
+  if (!m) {
+    const lastImport = [...code.matchAll(/^import .*$/gm)].pop();
+    const line = `import { ${needed.join(", ")} } from "lucide-react";`;
+    if (!lastImport) return `${line}\n${code}`;
+    const at = (lastImport.index ?? 0) + lastImport[0].length;
+    return `${code.slice(0, at)}\n${line}${code.slice(at)}`;
+  }
   const present = new Set(m[1].split(",").map((s) => s.trim()).filter(Boolean));
   const missing = needed.filter((n) => !present.has(n));
   if (missing.length === 0) return code;
@@ -62,10 +74,6 @@ export const expandSpecMarkers = (
       return whole;
     }
     const needsIcons = ICON_VARIANTS.has(spec.variant);
-    if (needsIcons && !hasLucide) {
-      skipped.push({ raw: json.slice(0, 120), reason: `variant "${spec.variant}" needs lucide import` });
-      return whole;
-    }
     if (needsIcons) for (const dep of SPEC_ICON_DEPS) usedIcons.add(dep);
     expanded++;
     recordVariantUse(spec.piece, spec.variant, opts?.scriptId);

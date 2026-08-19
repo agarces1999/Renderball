@@ -156,6 +156,36 @@ export const cachedThumbnail = async (scriptId: string, script: Script): Promise
   return { ok: true, data, etag: `"${Math.round(st.mtimeMs)}-${st.size}"` };
 };
 
+/**
+ * WebP variant of the page-1 thumbnail, derived from the canonical PNG and
+ * cached beside it. R2 keeps ONLY the PNG (one canonical object); the webp
+ * regenerates locally in ~15ms per dyno on first Accept: image/webp request.
+ * Fail-open: any sharp/write hiccup serves the PNG unchanged.
+ */
+export const webpVariant = async (
+  scriptId: string,
+  png: { data: Buffer; etag: string },
+): Promise<{ data: Buffer; etag: string } | null> => {
+  try {
+    const file = path.join(process.cwd(), ".data", "thumbs", `${scriptId}.webp`);
+    const pngFile = thumbPath(scriptId);
+    const [wStat, pStat] = await Promise.all([
+      fs.stat(file).catch(() => null),
+      fs.stat(pngFile).catch(() => null),
+    ]);
+    if (wStat && pStat && wStat.mtimeMs >= pStat.mtimeMs) {
+      return { data: await fs.readFile(file), etag: `${png.etag.slice(0, -1)}-w"` };
+    }
+    const sharp = (await import("sharp")).default;
+    const out = await sharp(png.data).webp({ quality: 82 }).toBuffer();
+    await fs.mkdir(path.dirname(file), { recursive: true }).catch(() => {});
+    await fs.writeFile(file, out).catch(() => {});
+    return { data: out, etag: `${png.etag.slice(0, -1)}-w"` };
+  } catch {
+    return null;
+  }
+};
+
 /** Where the derived social card lives, beside the PNG it is made from. */
 const cardPath = (scriptId: string): string =>
   path.join(process.cwd(), ".data", "thumbs", `${scriptId}.og.jpg`);
