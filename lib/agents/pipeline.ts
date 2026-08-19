@@ -1151,6 +1151,20 @@ export const buildAnimatedSections = async (
     skipRetries?: boolean;
     timeline?: BuildTimeline;
     /**
+     * SPECULATIVE SCAFFOLD (founder go, 2026-08-19): a scaffold generated
+     * during the outline's approval beat — the ~49s foundation stage ran
+     * while the user was reading. When present and spliceable for this
+     * scene count, the paid scaffold call is skipped entirely and the
+     * timeline records the skip; when it does not fit, the build silently
+     * runs its own scaffold exactly as before. Usage was already billed by
+     * the speculative run's own spend scope.
+     */
+    prescaffold?: { code: string };
+    /** Run ONLY through the scaffold stage and return its code — the
+     *  speculative runner's entry. All prep (reference images, prompts,
+     *  model config) is the build's own by construction. */
+    scaffoldOnly?: boolean;
+    /**
      * Fired as each scene's fill splices into the running composition, with
      * the FULL code as assembled so far (2026-08-14 — the build ceremony
      * shows the real pages materializing, so each page must reach disk the
@@ -1495,26 +1509,50 @@ export const buildAnimatedSections = async (
     // stubs.
     const sceneCount = input.script.scenes.length;
     timeline.mark("design:scaffold:start");
-    let scaffoldResponse: Awaited<ReturnType<typeof runDesign>>;
-    try {
-      scaffoldResponse = await runDesign([
-        {
-          role: "user",
-          content: [...referenceImages, { type: "text", text: buildScaffoldUserMessage(input) }],
-        },
-      ]);
-    } catch (err) {
-      return { ok: false, stage: "design", error: `Scaffold pass API error: ${formatAnthropicError(err)}` };
+    const speculative =
+      options?.prescaffold?.code && sectionsAreSpliceable(options.prescaffold.code, sceneCount)
+        ? options.prescaffold.code
+        : null;
+    if (speculative) {
+      timeline.mark("design:scaffold:speculative-hit");
+      console.log("[pipeline] scaffold: speculative artifact fits — paid call skipped");
+    }
+    let scaffoldResponse: Awaited<ReturnType<typeof runDesign>> = { content: [], usage: undefined } as unknown as Awaited<
+      ReturnType<typeof runDesign>
+    >;
+    if (!speculative) {
+      try {
+        scaffoldResponse = await runDesign([
+          {
+            role: "user",
+            content: [...referenceImages, { type: "text", text: buildScaffoldUserMessage(input) }],
+          },
+        ]);
+      } catch (err) {
+        return { ok: false, stage: "design", error: `Scaffold pass API error: ${formatAnthropicError(err)}` };
+      }
     }
     const scaffoldText = scaffoldResponse.content.find((c: { type: string }) => c.type === "text");
     const scaffoldCode =
-      scaffoldText && scaffoldText.type === "text" ? stripCodeFence(scaffoldText.text.trim()) : "";
+      speculative ??
+      (scaffoldText && scaffoldText.type === "text" ? stripCodeFence(scaffoldText.text.trim()) : "");
     const scaffoldSpliceable =
       scaffoldCode.includes("import") &&
       scaffoldCode.includes("export") &&
       sectionsAreSpliceable(scaffoldCode, sceneCount);
 
     timeline.mark("design:scaffold:done");
+    if (options?.scaffoldOnly) {
+      // Speculative mode: hand the scaffold back; the REAL build later
+      // receives it via options.prescaffold and skips its own call.
+      return {
+        ok: true,
+        scaffoldOnly: true,
+        scaffoldCode,
+        spliceable: scaffoldSpliceable,
+        usage: usageOf(scaffoldResponse.usage ?? null),
+      } as unknown as Awaited<ReturnType<typeof buildAnimatedSections>>;
+    }
     if (!scaffoldSpliceable) {
       // Don't ship stubs — degrade explicitly to a whole-file monolithic pass.
       console.warn(

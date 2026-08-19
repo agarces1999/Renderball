@@ -406,6 +406,7 @@ export function BlankDocumentPanel({
                 // uninterrupted path. (The already-done branch below still
                 // assigns: nothing was on screen to stay in.)
                 setApproval({ reviewUrl: done.reviewUrl, buildHref: `/preview/${scriptId}?build=1` });
+                firePrescaffold();
                 return;
               }
             }
@@ -457,6 +458,20 @@ export function BlankDocumentPanel({
    * the same spend consent the review button grants.
    */
   const [approval, setApproval] = useState<{ buildHref: string; reviewUrl: string } | null>(null);
+  /** The approval beat fires the SPECULATIVE SCAFFOLD exactly once: the
+   *  ~49s design foundation runs while the user reads, so Build starts from
+   *  a finished scaffold. Fire-and-forget; failures degrade to the build
+   *  scaffolding for itself. */
+  const prescaffoldFiredRef = useRef(false);
+  const firePrescaffold = () => {
+    if (prescaffoldFiredRef.current) return;
+    prescaffoldFiredRef.current = true;
+    void fetch("/api/documents/prescaffold", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ scriptId }),
+    }).catch(() => {});
+  };
   const [busy, setBusy] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   useEffect(() => {
@@ -818,6 +833,7 @@ export function BlankDocumentPanel({
         // Stay. The manuscript the user just watched being written is the
         // review surface; the aside flips to Build / Refine.
         setApproval({ reviewUrl: done.reviewUrl, buildHref: `/preview/${scriptId}?build=1` });
+        firePrescaffold();
       } else {
         window.location.reload();
       }

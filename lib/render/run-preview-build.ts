@@ -20,6 +20,13 @@ import { resolveCornerBrandMark } from "../agents/logo-inject";
 import { verifyScenesRender } from "./ssr-render";
 import { measureScenes } from "./measure-scene";
 import { cachedThumbnail } from "./thumbnail";
+import {
+  awaitArtifact,
+  clearInflight,
+  scriptHash,
+  writeArtifact,
+  writeInflight,
+} from "./prescaffold";
 import { findFlooredCopy, applyShortened, shortenPrompt } from "./semantic-shorten";
 import { findRenderTruthFailures, measureOutDir, BLOCKING_RENDER_TRUTH_KINDS } from "./render-truth-gates";
 import { resolveCanvasPlan, canvasBrandFidelityAdvisory, signatureWithLogoFallback, brandShortName } from "../crawl/brand-identity";
@@ -85,6 +92,40 @@ export type BuildRouteResult = {
  * NextResponse. The preview IS the MP4 — this runs the EXACT same gated pipeline,
  * no shortcuts; the MP4 render path reuses the composition written here.
  */
+/**
+ * Speculative scaffold job — fired by the approval beat, runs the pipeline's
+ * OWN prep + scaffold stage (scaffoldOnly) and persists the artifact the
+ * next build resumes from. Fire-and-forget; every failure path just means
+ * the build scaffolds for itself.
+ */
+export async function runPrescaffold(scriptId: string, ownerId: string): Promise<void> {
+  const script = await loadScript(scriptId, ownerId);
+  if (!script || script.config.kind !== "deck") return;
+  const brief = await loadBriefByScriptId(scriptId, ownerId);
+  if (!brief) return;
+  await writeInflight(scriptId);
+  try {
+    const result = await withSpend(
+      { stage: "build", scriptId, ownerId, runId: `${scriptId}-prescaffold-${Date.now()}` },
+      () =>
+        buildAnimatedSections(buildAgentInputFromBrief(brief, script), {
+          scaffoldOnly: true,
+        }),
+    );
+    const r = result as unknown as { ok?: boolean; scaffoldOnly?: boolean; scaffoldCode?: string; spliceable?: boolean };
+    if (r.ok && r.scaffoldOnly && r.spliceable && r.scaffoldCode) {
+      await writeArtifact(scriptId, { hash: scriptHash(script), code: r.scaffoldCode, at: Date.now() });
+      console.log(`[prescaffold] ${scriptId}: artifact ready (${r.scaffoldCode.length} bytes)`);
+    } else {
+      console.warn(`[prescaffold] ${scriptId}: not spliceable — discarded (build will scaffold itself)`);
+    }
+  } catch (e) {
+    console.warn(`[prescaffold] ${scriptId} failed: ${e instanceof Error ? e.message : e}`);
+  } finally {
+    await clearInflight(scriptId).catch(() => {});
+  }
+}
+
 export async function runPreviewBuild(
   scriptId: string,
   ownerId: string,
@@ -250,10 +291,17 @@ async function runPreviewBuildInner(
   // the first fill lands.
   const genDir = path.join(process.cwd(), "src", "generated", scriptId);
 
+  // Speculative scaffold: wait briefly for an in-flight run (clicking Build
+  // during the scaffold's own runtime is the common case), then hand a fresh
+  // matching artifact to the pipeline — which skips its paid scaffold call.
+  const prescaffold = await awaitArtifact(scriptId, script as Script).catch(() => null);
+  if (prescaffold) console.log(`[preview/build] speculative scaffold HIT (${prescaffold.code.length} bytes)`);
+
   const result = await buildAnimatedSections(
     buildAgentInputFromBrief(brief, script),
     {
       timeline,
+      ...(prescaffold ? { prescaffold: { code: prescaffold.code } } : {}),
       // Each landed page reaches disk immediately so the ceremony can show
       // the REAL page materializing (the blank family already on disk makes
       // the scene renderable the moment its section is real). Display path
