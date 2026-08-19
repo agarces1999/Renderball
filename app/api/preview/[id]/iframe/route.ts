@@ -3,6 +3,7 @@ import { compositionDocHeaders } from "../../../../../lib/render/iframe-csp";
 import { loadScript } from "../../../../../lib/store";
 import { getCurrentUser } from "../../../../../lib/auth";
 import { renderSceneDoc } from "../../../../../lib/render/scene-iframe";
+import { clientPreviewEnabled } from "../../../../../lib/render/client-bundle";
 
 /**
  * Self-contained iframe-served preview of one Section{N}. Auth + script load here;
@@ -20,12 +21,18 @@ export async function GET(request: Request, { params }: { params: { id: string }
   const url = new URL(request.url);
   const sceneIndex = parseInt(url.searchParams.get("scene") ?? "0", 10);
   const settle = url.searchParams.get("settle") === "1";
+  // Client-preview parity mode — inert until RB_CLIENT_PREVIEW=on (Phase 1,
+  // docs/CLIENT_PREVIEW_SPIKE.md); flip waits on corpus-wide parity.
+  const hydrate =
+    clientPreviewEnabled() && url.searchParams.get("hydrate") === "1"
+      ? { bundleUrl: `/api/preview/${scriptId}/scene-bundle` }
+      : undefined;
 
   const script = await loadScript(scriptId, user.id);
   if (!script) return new NextResponse(`script not found: ${scriptId}`, { status: 404 });
 
   const t0 = Date.now();
-  const result = await renderSceneDoc(scriptId, sceneIndex, script, { settle });
+  const result = await renderSceneDoc(scriptId, sceneIndex, script, { settle, hydrate });
   if (!result.ok) return new NextResponse(result.message, { status: result.status });
 
   // ETag from the content hash: a reload of an UNCHANGED scene revalidates to

@@ -147,6 +147,8 @@ import {
   type AspectRatio,
 } from "../agents/quality-gates";
 import { sectionRanges } from "../agents/section-splice";
+import { expandSpecMarkers } from "../pieces/expand";
+import { pieceSpecEnabled } from "../pieces/prompt";
 import { makeFontFetcher, inlineFontFaces } from "./font-inline";
 
 // ─── shared types ────────────────────────────────────────────────────────────
@@ -1045,6 +1047,13 @@ export async function runQualityLoop(
         warn(
           `  [finalize] undefined VALUE identifier(s) stubbed: [${fin.valueStubbed.map((v) => `${v.name} (s${v.scenes.join(",s")})`).join(", ")}] — a piece referenced data it never defined (the scene would have thrown at render); stubbed to render empty + routed to a regen of the owning piece`,
         );
+      }
+      if (pieceSpecEnabled()) {
+        const spec = expandSpecMarkers(fin.code);
+        if (spec.expanded > 0) {
+          fin.code = spec.code;
+          warn(`  [piece-spec] expanded ${spec.expanded} marker(s) pre-repair`);
+        }
       }
       const bind = bindLiteralCopyInPlace(fin.code, script.scenes as never);
       for (const b of bind.bound) bindCopyEvents.push({ round, ...b });

@@ -58,6 +58,8 @@ import {
   stripChromeEyebrowEchoes,
 } from "./quality-gates";
 import { buildDesignConstraints } from "./design-constraints";
+import { expandSpecMarkers } from "../pieces/expand";
+import { PIECE_SPEC_PROMPT, pieceSpecEnabled } from "../pieces/prompt";
 import { resolveBrandIdentity, resolveCanvasPlan, genericFor, fontStackFor, type BrandIdentity } from "../crawl/brand-identity";
 import { formatDesignLanguage } from "../crawl/design-language";
 import { makeFontFetcher, inlineFontFaces } from "../render/font-inline";
@@ -1701,6 +1703,20 @@ export const buildAnimatedSections = async (
    * Run the zero-token repairs first; the gates then only see residue that
    * genuinely needs a model.
    */
+  if (pieceSpecEnabled()) {
+    // Spec markers (RB_PIECE_SPEC) become brand-tokened markup BEFORE any
+    // gate or repair reads the file — gates must judge the real render.
+    const spec = expandSpecMarkers(designCode, {});
+    if (spec.expanded > 0 || spec.skipped.length > 0) {
+      designCode = spec.code;
+      console.warn(
+        `[pipeline] piece-spec: expanded ${spec.expanded} marker(s)` +
+          (spec.skipped.length > 0
+            ? `, skipped ${spec.skipped.length} (${spec.skipped.map((x) => x.reason).join("; ")})`
+            : ""),
+      );
+    }
+  }
   {
     const bind = bindLiteralCopyInPlace(designCode, input.script.scenes ?? []);
     if (bind.bound.length > 0) {
@@ -2274,6 +2290,20 @@ export const buildAnimatedSections = async (
 
   // Repairs (scoped retries + any whole-comp fallback) are done — this is the
   // step that actually costs minutes and money when the gates are unhappy.
+  //
+  // Second piece-spec expansion pass: scoped regens and whole-comp retries
+  // run fillSectionBlock/design prompts AFTER the pre-gate expansion, so a
+  // retry can re-introduce @rb-spec markers. Unexpanded markers ship as
+  // invisible JSX comments — a silently MISSING piece. The scan is cheap and
+  // idempotent (no markers → no-op), so run it again now that designCode is
+  // settled.
+  if (pieceSpecEnabled()) {
+    const late = expandSpecMarkers(designCode);
+    if (late.expanded > 0) {
+      designCode = late.code;
+      console.warn(`[pipeline] piece-spec: expanded ${late.expanded} marker(s) introduced by retries`);
+    }
+  }
   timeline.mark("design:repairs:done");
 
   // ─── Pass 2 — Motion ───────────────────────────────────────────────
@@ -3258,6 +3288,7 @@ const fillSectionBlock = async (
     layoutContractLines(scene.register, dims),
     constraints,
     exemplar ?? "",
+    pieceSpecEnabled() ? `\n${PIECE_SPEC_PROMPT}` : "",
     ``,
     `## Full scaffold Composition.tsx (READ-ONLY context — emit ONLY ${sectionName})`,
     "```tsx",

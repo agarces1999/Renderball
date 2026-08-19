@@ -21,12 +21,19 @@ export async function GET(request: Request, { params }: { params: { id: string }
   const url = new URL(request.url);
   const sceneIndex = parseInt(url.searchParams.get("scene") ?? "0", 10);
   const settle = url.searchParams.get("settle") === "1";
+  // Client-preview parity mode (docs/CLIENT_PREVIEW_SPIKE.md Phase 1). Dev
+  // lane honors the query unconditionally so the parity probe can drive it
+  // without env flips; the prod route is the one gated on RB_CLIENT_PREVIEW.
+  const hydrate =
+    url.searchParams.get("hydrate") === "1"
+      ? { bundleUrl: `/api/dev/${scriptId}/scene-bundle` }
+      : undefined;
 
   const script = await loadScript(scriptId, DEV_OWNER_ID);
   if (!script) return new NextResponse(`script not found: ${scriptId}`, { status: 404 });
 
   const t0 = Date.now();
-  const result = await renderSceneDoc(scriptId, sceneIndex, script, { settle });
+  const result = await renderSceneDoc(scriptId, sceneIndex, script, { settle, hydrate });
   if (!result.ok) return new NextResponse(result.message, { status: result.status });
 
   // ETag from the content hash: a reload of an UNCHANGED scene revalidates to

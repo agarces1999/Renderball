@@ -38,6 +38,15 @@ export interface SceneDocOptions {
    * choreography. First loads / scene switches keep animations (settle omitted).
    */
   settle?: boolean;
+  /**
+   * CLIENT PREVIEW Phase 1 (docs/CLIENT_PREVIEW_SPIKE.md): also load the deck's
+   * browser bundle (same compile artifact the sandbox SSRs) and client-render
+   * the Section into a DETACHED container — invisible to the lottie/fit scans —
+   * then publish a canonical-DOM comparison on window.__rbParity. Read-only:
+   * what the user sees stays the SSR markup. bundleUrl is lane-specific
+   * (/api/dev/... vs /api/preview/...), provided by the route.
+   */
+  hydrate?: { bundleUrl: string };
 }
 
 const RENDER_CACHE_MAX = 64;
@@ -92,7 +101,7 @@ export async function renderSceneDoc(
     .update(compBytes)
     .update("\u0000")
     .update(JSON.stringify(script))
-    .update(`\u0000${sceneIndex}\u0000${opts.settle ? 1 : 0}\u0000v1`)
+    .update(`\u0000${sceneIndex}\u0000${opts.settle ? 1 : 0}\u0000${opts.hydrate ? `h:${opts.hydrate.bundleUrl}` : ""}\u0000v1`)
     .digest("hex");
   const cached = renderCache.get(cacheKey);
   if (cached) {
@@ -181,6 +190,125 @@ export async function renderSceneDoc(
 </script>`
     : "";
 
+  /**
+   * CLIENT PREVIEW Phase 1 parity block. Loads the deck's browser bundle
+   * (same compile source the sandbox evaluates), client-renders the Section
+   * into a DETACHED container, and publishes a canonical-DOM comparison on
+   * window.__rbParity. Detached is load-bearing twice: the lottie/fit scans
+   * (document.querySelectorAll) can never see the client tree, and the user
+   * keeps seeing exactly the SSR markup — read-only proof, zero UX change.
+   *
+   * Canonicalization notes, each a real divergence class found in design:
+   * - style attrs compare via el.style longhands (sorted), NEVER the raw
+   *   attribute string — the SSR side carries React's serialization, the
+   *   client side the browser's, and they differ in whitespace for
+   *   identical styles. Routing both through the same CSSStyleDeclaration
+   *   normalizes identically.
+   * - src/href values in the binary classes (data:, blob:, assets/,
+   *   /api/assets) normalize to "[bin]": inlineAssetSrcs rewrote the SSR
+   *   side to data URIs while the client tree keeps the raw token. Bounded,
+   *   documented divergence — everything else about the node still compares.
+   * - adjacent text nodes merge per element (the HTML parser coalesces,
+   *   React keeps them separate).
+   * - raw-text elements (style/script) decode HTML entities before compare
+   *   (corpus find, 2 of 5 mismatches): React SSR escapes quotes in <style>
+   *   children to &quot;/&#x27;, and the browser NEVER decodes entities in
+   *   raw-text — those CSS declarations were silently broken in SSR all
+   *   along; the client render is the more correct one. Decode is
+   *   idempotent, so applying to both sides only collapses the entity form.
+   * - attribute values that are pure floats round to 3 decimals (corpus
+   *   find: recharts branches on environment and emits 112.49999999999993
+   *   vs 112.5 for the same line). Sub-0.001px is invisible; real layout
+   *   differences still compare.
+   * - the capture runs SYNCHRONOUSLY at parse time, before fonts.ready/
+   *   DOMContentLoaded, so fit-text and lottie have not mutated the SSR DOM
+   *   yet, and flushSync captures the client tree before async effects.
+   */
+  const hydrateBlock = opts.hydrate
+    ? `<script src="${opts.hydrate.bundleUrl}"></script>
+<script>
+(function () {
+  var out = { ok: false, phase: "init" };
+  window.__rbParity = out;
+  try {
+    var SCRIPT = ${JSON.stringify(JSON.stringify(script)).replace(/</g, "\\u003c")};
+    var SCENE = ${sceneIndex};
+    var BIN = /^(data:|blob:|assets\\/|\\/api\\/assets)/;
+    var FLOAT = /^-?\\d+\\.\\d+$/;
+    function decodeEntities(t) {
+      return t.replace(/&(quot|#x27|#39|amp|lt|gt);/g, function (_, e) {
+        return e === "quot" ? '"' : e === "amp" ? "&" : e === "lt" ? "<" : e === "gt" ? ">" : "'";
+      });
+    }
+    function canonEl(el, buf) {
+      buf.push("<", el.nodeName);
+      var names = el.getAttributeNames().filter(function (n) { return n.indexOf("data-react") !== 0 && n !== "style"; }).sort();
+      for (var i = 0; i < names.length; i++) {
+        var v = el.getAttribute(names[i]) || "";
+        if ((names[i] === "src" || names[i] === "href" || names[i] === "xlink:href") && BIN.test(v)) v = "[bin]";
+        if (FLOAT.test(v)) v = String(Math.round(parseFloat(v) * 1000) / 1000);
+        buf.push(" ", names[i], "=", JSON.stringify(v));
+      }
+      if (el.style && el.style.length) {
+        var props = [];
+        for (var k = 0; k < el.style.length; k++) props.push(el.style[k] + ":" + el.style.getPropertyValue(el.style[k]));
+        props.sort();
+        buf.push(' style="', props.join(";"), '"');
+      }
+      buf.push(">");
+      var nn = el.nodeName.toUpperCase();
+      if (nn === "STYLE" || nn === "SCRIPT") buf.push(JSON.stringify(decodeEntities(el.textContent || "")));
+      else canonChildren(el, buf);
+      buf.push("</", el.nodeName, ">");
+    }
+    function canonChildren(root, buf) {
+      var text = "";
+      for (var c = root.firstChild; c; c = c.nextSibling) {
+        if (c.nodeType === 3) { text += c.nodeValue; continue; }
+        if (c.nodeType === 1) {
+          if (text) { buf.push(JSON.stringify(text)); text = ""; }
+          canonEl(c, buf);
+        }
+      }
+      if (text) buf.push(JSON.stringify(text));
+    }
+    function canon(root) { var buf = []; canonChildren(root, buf); return buf.join(""); }
+
+    out.phase = "ssr-capture";
+    var ssr = canon(document.querySelector(".renderball-canvas"));
+
+    out.phase = "client-render";
+    var C = window.__rbComposition;
+    if (!C) throw new Error("bundle did not attach __rbComposition");
+    var Section = C.Comp["Section" + SCENE];
+    if (!Section) throw new Error("Section" + SCENE + " not exported by bundle");
+    var host = document.createElement("div");
+    var root = C.createRoot(host);
+    C.flushSync(function () { root.render(C.React.createElement(Section, { script: JSON.parse(SCRIPT) })); });
+
+    out.phase = "client-capture";
+    var client = canon(host);
+    root.unmount();
+
+    var match = ssr === client;
+    var firstDiff = -1;
+    if (!match) {
+      var n = Math.min(ssr.length, client.length);
+      for (var j = 0; j < n; j++) { if (ssr.charAt(j) !== client.charAt(j)) { firstDiff = j; break; } }
+      if (firstDiff < 0) firstDiff = n;
+    }
+    window.__rbParity = {
+      ok: true, match: match, ssrLen: ssr.length, clientLen: client.length, firstDiff: firstDiff,
+      ssrCtx: match ? "" : ssr.slice(Math.max(0, firstDiff - 60), firstDiff + 140),
+      clientCtx: match ? "" : client.slice(Math.max(0, firstDiff - 60), firstDiff + 140)
+    };
+  } catch (e) {
+    window.__rbParity = { ok: false, phase: out.phase, error: String((e && e.message) || e) };
+  }
+})();
+</script>`
+    : "";
+
   // Settled mode: the !important longhand beats inline shorthand delays, jumping
   // finite fill-forwards entry animations to their final frame (infinite ambient
   // loops just phase-shift — they keep looping). Matches measure-scene + MP4 truth.
@@ -246,6 +374,7 @@ export async function renderSceneDoc(
 ${textFitEnabled() ? `<script>${FIT_TEXT_SCRIPT}</script>` : ""}
 ${lottieMount}
 ${lockupMount}
+${hydrateBlock}
 </body>
 </html>`;
 
