@@ -977,6 +977,8 @@ function DeckBanner({
   structural: string[] | null;
   warnings: PreviewWarnings | null;
 }) {
+  // Check panels are collapsed until asked for — see the strip below.
+  const [checksOpen, setChecksOpen] = useState(false);
   const anything =
     regenAsk ||
     regenError ||
@@ -1021,8 +1023,44 @@ function DeckBanner({
       {regenLimit && (
         <LimitStrip message={regenLimit} onDismiss={onLimitDismiss} />
       )}
-      {structural && structural.length > 0 && <StructuralPanel issues={structural} />}
-      {warnings && <WarningsPanel warnings={warnings} />}
+      {/* COLLAPSED BY DEFAULT (first-outside-tester incident, 2026-08-20):
+          the full check panels rendered between toolbar and canvas, and on a
+          fresh build with findings they consumed the stage — the user's new
+          deck shrank to a stamp under a wall of QA chrome, with the suggest
+          bar floating over it. The work stays loudest (DESIGN.md): one quiet
+          summary line; the panels expand only when asked. */}
+      {(structural?.length || warnings) && !checksOpen ? (
+        <button
+          type="button"
+          onClick={() => setChecksOpen(true)}
+          className="flex w-full items-center justify-between gap-3 rounded-md border border-hairline bg-surface px-3 py-1.5 text-left transition-colors hover:border-hairline-strong"
+        >
+          <span className="font-mono text-[11px] uppercase tracking-[0.12em] text-muted">
+            {structural?.length
+              ? `${structural.length} unresolved check${structural.length === 1 ? "" : "s"}`
+              : "Quality notes"}
+            {warnings && structural?.length ? " · quality notes" : ""}
+          </span>
+          <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-faint">
+            Review →
+          </span>
+        </button>
+      ) : null}
+      {checksOpen && (
+        <div className="space-y-2">
+          <div className="flex justify-end">
+            <button
+              type="button"
+              onClick={() => setChecksOpen(false)}
+              className="font-mono text-[10px] uppercase tracking-[0.12em] text-faint transition-colors hover:text-ink"
+            >
+              Collapse checks ×
+            </button>
+          </div>
+          {structural && structural.length > 0 && <StructuralPanel issues={structural} />}
+          {warnings && <WarningsPanel warnings={warnings} />}
+        </div>
+      )}
       {(pageError || regenError) && (
         <ErrorStrip
           message={(pageError ?? regenError)!}
