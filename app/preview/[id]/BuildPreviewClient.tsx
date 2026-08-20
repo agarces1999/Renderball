@@ -195,11 +195,21 @@ export function BuildPreviewClient({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [phases, sceneLabels],
   );
+  // The foundation exists ~20s in and carries the real palette, type and
+  // chrome. Fills run in PARALLEL, so without this the stage stays blank
+  // until nearly every page lands at once — the founder watched a white
+  // rectangle for a whole build. Once the scaffold is on disk we mount the
+  // canvas, and each page fills in place as its own fill lands.
+  const foundationReady = seen("design:scaffold:done");
+  const mounted = useMemo(
+    () => (landed.length > 0 ? landed : foundationReady ? [0] : []),
+    [landed, foundationReady],
+  );
   const stageScene: number | null =
-    pickedScene !== null && landed.includes(pickedScene)
+    pickedScene !== null && mounted.includes(pickedScene)
       ? pickedScene
-      : landed.length > 0
-        ? landed[landed.length - 1]
+      : mounted.length > 0
+        ? mounted[mounted.length - 1]
         : null;
 
   /**
@@ -650,7 +660,7 @@ export function BuildPreviewClient({
     <EditorShell
       slides={sceneLabels.map((label) => ({ label: label || "Page" }))}
       active={stageScene ?? 0}
-      onSelect={(i) => landed.includes(i) && setPickedScene(i)}
+      onSelect={(i) => mounted.includes(i) && setPickedScene(i)}
       width={1920}
       height={1080}
       zoomLabel="Building"
@@ -689,8 +699,14 @@ export function BuildPreviewClient({
 
           <ul className="w-full space-y-1.5 overflow-y-auto">
             {steps.map((label, i) => {
-              const status: Status =
-                realStatus(i) ?? (i < current ? "done" : i === current ? "active" : "pending");
+              // PACING MAY NEVER CLAIM "DONE" (founder, 2026-08-20: pages 1
+              // and 2 showed green checks at 0:20 with an empty stage, then
+              // REVERTED to spinners at 1:29 when the real marks arrived).
+              // Before any server signal exists the fallback may show a row
+              // as active — never finished. A green check is a claim about
+              // the world and only the server may make it.
+              const paced: Status = i < current ? "active" : i === current ? "active" : "pending";
+              const status: Status = realStatus(i) ?? paced;
               const checking = i === steps.length - 2;
               const composing = i === steps.length - 3;
               const repairing =
@@ -738,23 +754,27 @@ export function BuildPreviewClient({
       {/* The pages themselves, in the editor's own canvas frame, full scale.
           Each landed page mounts ONCE and stays mounted; switching only flips
           which is visible, so nothing reloads or flickers. */}
-      {landed.map((i) => (
+      {mounted.map((i) => (
         <iframe
-          key={i}
+          // The key carries how many pages have landed: when a new section
+          // reaches disk the iframe remounts and picks up the real page, so
+          // the foundation visibly becomes the designed deck.
+          key={`${i}:${landed.length}`}
           data-rb-build-iframe
-          src={`/api/preview/${scriptId}/iframe?scene=${i}&settle=1&v=live`}
+          src={`/api/preview/${scriptId}/iframe?scene=${i}&settle=1&v=${landed.length}`}
           title={`Page ${i + 1}${sceneLabels[i] ? ` — ${sceneLabels[i]}` : ""}`}
           className="pointer-events-none absolute inset-0 h-full w-full transition-opacity duration-500"
           style={{ border: 0, opacity: stageScene === i ? 1 : 0 }}
           onLoad={(e) => revealLanded(e.currentTarget)}
         />
       ))}
-      {landed.length === 0 && (
+      {mounted.length === 0 && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-center">
           <div className="orb orb-spin h-12 w-12 opacity-60" aria-hidden />
           <p className="max-w-[34ch] text-[13px] leading-relaxed text-muted">
-            Laying the foundation — colors, type and chrome. Your first page
-            appears here the moment it is designed.
+            Reading your brand — pulling the palette, the type and the
+            chrome. The canvas appears here next, then each page fills in as
+            it is designed.
           </p>
         </div>
       )}

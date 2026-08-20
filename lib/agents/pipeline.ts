@@ -1260,6 +1260,15 @@ export const buildAnimatedSections = async (
      * progress must never break the build it is showing.
      */
     onSectionAssembled?: (sceneIndex: number, code: string) => Promise<void> | void;
+    /**
+     * The branded FOUNDATION, the moment it exists (founder, 2026-08-20: "I
+     * thought I was gonna be able to see the generation" — the stage sat
+     * white for minutes because fills run in PARALLEL, so no page lands
+     * until nearly all of them do). The scaffold carries the real palette,
+     * type and chrome ~20s in; showing it turns a blank wait into watching
+     * the deck take shape, and every landing then fills a page in place.
+     */
+    onScaffold?: (code: string) => Promise<void> | void;
   },
 ): Promise<BuildResult> => {
   const skipRetries = options?.skipRetries === true;
@@ -1629,6 +1638,14 @@ export const buildAnimatedSections = async (
       sectionsAreSpliceable(scaffoldCode, sceneCount);
 
     timeline.mark("design:scaffold:done");
+    if (options?.onScaffold) {
+      // Display path only — never let a persistence hiccup fail the build.
+      try {
+        await options.onScaffold(scaffoldCode);
+      } catch (err) {
+        console.warn("[pipeline] onScaffold failed (display only):", err instanceof Error ? err.message : err);
+      }
+    }
     if (options?.scaffoldOnly) {
       // Speculative mode: hand the scaffold back; the REAL build later
       // receives it via options.prescaffold and skips its own call.

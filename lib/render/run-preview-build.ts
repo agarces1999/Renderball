@@ -310,7 +310,37 @@ async function runPreviewBuildInner(
       onSectionAssembled: async (_scene, code) => {
         const { promises: fsp } = await import("fs");
         await fsp.mkdir(genDir, { recursive: true });
-        await fsp.writeFile(path.join(genDir, "Composition.tsx"), code, "utf8");
+        // RESOLVE REFS BEFORE THE PREVIEW SEES IT (founder, 2026-08-20:
+        // "Render error: GitPullRequest is not defined" on a mid-build page).
+        // A freshly-spliced section can name a lucide icon the file has not
+        // imported yet; the pipeline's deterministic repair only runs at the
+        // END, so the live view was rendering un-finalized code and crashing
+        // on a deck that would ship perfectly fine. Zero-token, and it never
+        // blocks the write: on any failure we persist the raw splice exactly
+        // as before.
+        let display = code;
+        try {
+          const { finalizeUndefinedRefs } = await import("../agents/finalize-refs");
+          display = (await finalizeUndefinedRefs(code)).code;
+        } catch {
+          /* display-only nicety — never fail the build for it */
+        }
+        await fsp.writeFile(path.join(genDir, "Composition.tsx"), display, "utf8");
+      },
+      // The foundation reaches disk the moment it exists, so the ceremony can
+      // put the REAL branded canvas on screen while the pages are still being
+      // designed — instead of a white rectangle for the whole build.
+      onScaffold: async (code) => {
+        const { promises: fsp } = await import("fs");
+        await fsp.mkdir(genDir, { recursive: true });
+        let display = code;
+        try {
+          const { finalizeUndefinedRefs } = await import("../agents/finalize-refs");
+          display = (await finalizeUndefinedRefs(code)).code;
+        } catch {
+          /* display-only */
+        }
+        await fsp.writeFile(path.join(genDir, "Composition.tsx"), display, "utf8");
       },
     },
   );
