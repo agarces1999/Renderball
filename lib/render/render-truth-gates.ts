@@ -35,6 +35,7 @@ export type RenderTruthKind =
   | "stranded-hero"
   | "covered-text-cluster"
   | "rule-through-text"
+  | "decoration-over-text"
   | "measure-error";
 
 export interface RenderTruthFinding {
@@ -89,6 +90,81 @@ export const findRuleThroughText = (m: SceneMeasurement): RenderTruthFinding[] =
   return out;
 };
 
+// ── decoration-over-text (hit-test blind spot, 2026-08-20) ─────────────────
+// The throughline motif is absolutely positioned at a FIXED anchor and marked
+// pointer-events:none. When a scene's content grows into that anchor, the
+// motif paints straight through the copy — and NO existing gate can see it,
+// because every coverage check we own is built on elementFromPoint, which the
+// browser skips for pointer-events:none subtrees. Measured on a real build:
+// all 8 stroke vertices of a zigzag crossing a stats card reported "nothing
+// on top", while the pixels showed the line drawn over the card's labels.
+//
+// Geometry is therefore the only honest signal here. Deliberately narrow: it
+// looks ONLY at elements the measurement marked `decorative` (motif /
+// pointer-events:none) against real CONTENT text, so ordinary overlays,
+// atmosphere washes behind text, and full-bleed backgrounds cannot trip it.
+const DECO_MIN_TEXT_FONT = 11;
+const DECO_MIN_TEXT_LEN = 4;
+// A decorative box big enough to matter, but not a full-bleed wash: an
+// atmosphere layer covering the frame sits BEHIND everything by construction
+// and is not what this gate is about.
+const DECO_MAX_AREA_FRAC = 0.35;
+// AREA IS THE WRONG MEASURE for a crossing element (caught by the fixture
+// built from the real incident): a 28px-wide line cutting through a 420px
+// text box covers ~4% of its area while visibly striking the copy. What
+// matters is that the decoration CUTS THROUGH the line — it spans most of the
+// text's height (a vertical element crossing it) or most of its width (a
+// horizontal one running through it).
+const DECO_CROSS_FRAC = 0.5;
+const DECO_MIN_CROSS_PX = 6;
+
+export const findDecorationOverText = (m: SceneMeasurement): RenderTruthFinding[] => {
+  if (m.error) return [];
+  const frameArea = Math.max(1, m.width * m.height);
+  const decos = m.elements.filter(
+    (e) =>
+      e.decorative &&
+      e.text === "" &&
+      e.w > 4 &&
+      e.h > 4 &&
+      e.opacity > 0.15 &&
+      (e.w * e.h) / frameArea <= DECO_MAX_AREA_FRAC,
+  );
+  if (decos.length === 0) return [];
+  const texts = m.elements.filter(
+    (e) =>
+      !e.decorative &&
+      e.text.length >= DECO_MIN_TEXT_LEN &&
+      e.fontSize >= DECO_MIN_TEXT_FONT &&
+      e.opacity > 0.3,
+  );
+  const out: RenderTruthFinding[] = [];
+  const seen = new Set<string>();
+  for (const t of texts) {
+    for (const d of decos) {
+      // Same piece = the decoration belongs to this content by design.
+      if (d.piece && t.piece && d.piece === t.piece) continue;
+      const ox = Math.min(t.x + t.w, d.x + d.w) - Math.max(t.x, d.x);
+      const oy = Math.min(t.y + t.h, d.y + d.h) - Math.max(t.y, d.y);
+      if (ox <= 0 || oy <= 0) continue;
+      const crossesVertically = oy >= t.h * DECO_CROSS_FRAC && ox >= DECO_MIN_CROSS_PX;
+      const crossesHorizontally = ox >= t.w * DECO_CROSS_FRAC && oy >= DECO_MIN_CROSS_PX;
+      if (!crossesVertically && !crossesHorizontally) continue;
+      const frac = (ox * oy) / Math.max(1, t.w * t.h);
+      const key = `${t.piece}|${t.text.slice(0, 20)}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({
+        scene: m.scene,
+        kind: "decoration-over-text",
+        detail: `a decorative element (${Math.round(d.w)}×${Math.round(d.h)}px, piece ${d.piece || "—"}) runs across the text "${t.text.slice(0, 40)}" (${Math.round(frac * 100)}% of its box) — decoration and copy occupy the same space`,
+      });
+      break;
+    }
+  }
+  return out;
+};
+
 /**
  * R2 (audit-3): the ONE canonical set of measured render-truth kinds that BLOCK a
  * build. Previously four hand-copied literals drifted — the standalone dogfood
@@ -101,7 +177,7 @@ export const findRuleThroughText = (m: SceneMeasurement): RenderTruthFinding[] =
 export const BLOCKING_RENDER_TRUTH_KINDS: RenderTruthKind[] = [
   "overflow", "measure-error", "barbell", "cross-piece-overlap", "canvas-brightness", "stranded-hero",
   "canvas-coherence", "corner-mark-collision", "hollow-cta", "intra-piece-overlap", "ghost-fragment", "stray-card",
-  "mock-occlusion", "covered-text-cluster", "rule-through-text",
+  "mock-occlusion", "covered-text-cluster", "rule-through-text", "decoration-over-text",
 ];
 
 // px tolerance so sub-pixel rounding / intentional full-bleed don't false-fire.
@@ -2533,6 +2609,7 @@ export const findRenderTruthFailures = async (
     findings.push(...findCenteredMockOcclusion(m, opts.registers?.[m.scene]));
     findings.push(...findIntraPieceOverlap(m));
     findings.push(...findRuleThroughText(m));
+    findings.push(...findDecorationOverText(m));
     findings.push(...findCoveredTextCluster(m));
     findings.push(...findGhostFragment(m));
     findings.push(...(await findEmptyBand(m)));

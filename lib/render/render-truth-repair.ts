@@ -110,7 +110,10 @@ const scenesOf = (findings: RenderTruthFinding[]): number[] =>
 const repairInstruction = (sceneFindings: RenderTruthFinding[]): string => {
   const parts: string[] = [];
   const rt = sceneFindings.filter((f) => f.kind === "rule-through-text");
-  const of = sceneFindings.filter((f) => f.kind !== "stranded-hero" && f.kind !== "rule-through-text");
+  const deco = sceneFindings.filter((f) => f.kind === "decoration-over-text");
+  const of = sceneFindings.filter(
+    (f) => f.kind !== "stranded-hero" && f.kind !== "rule-through-text" && f.kind !== "decoration-over-text",
+  );
   const sh = sceneFindings.filter((f) => f.kind === "stranded-hero");
   if (rt.length > 0) {
     // Its own instruction — the generic "make it fit" text would send the
@@ -127,6 +130,17 @@ const repairInstruction = (sceneFindings: RenderTruthFinding[]): string => {
       `This scene has content rendered OUTSIDE the 1920×1080 canvas (it gets clipped): ${detail}. ` +
         `Fix the LAYOUT so every element fits within the canvas with a safe margin: narrow or wrap wide rows, ` +
         `reduce fixed widths, re-anchor off-canvas elements, shrink horizontal flows. Keep the copy and the brand; just make it fit.`,
+    );
+  }
+  if (deco.length > 0) {
+    // The motif is REQUIRED on every scene (the throughline gate fires when it
+    // is missing), so the fix is never "delete it" — it is to give it its own
+    // air. Say that explicitly or the model will simply drop it and trade one
+    // finding for another.
+    parts.push(
+      `Decoration and copy collide on this scene (measured on the real render): ${deco
+        .map((f) => f.detail)
+        .join("; ")}. KEEP the throughline motif — it is required — but MOVE it into empty canvas so it no longer crosses any text or card: shift its anchor to a clear margin, or shrink it. Do not delete it, and do not push the copy off-canvas to make room.`,
     );
   }
   if (sh.length > 0) {

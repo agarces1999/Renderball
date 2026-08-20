@@ -40,6 +40,7 @@ import {
   EDGE_CLAMP_OVERSIZE_FRAC,
   BLOCKING_RENDER_TRUTH_KINDS,
   findRuleThroughText,
+  findDecorationOverText,
   type EdgeCropFinding,
   type SlotTerritory,
 } from "./render-truth-gates";
@@ -1104,9 +1105,9 @@ if (existsSync(path.join(FUSE_FRAMES, "scene3.png"))) {
 // 14th kind added 2026-07-23 with the evidence the frozen-list rule demands:
 // covered-text-cluster, calibrated on all 40 stored scenes (fires on the
 // founder-flagged alloc2-on-2 s0 + flags-notion s4; zero approved-scene fires).
-await check("BLOCKING_RENDER_TRUTH_KINDS (R2): the canonical 15-kind prod set (rule-through-text added 2026-08-20, friend-deck evidence)", () => {
-  assert(BLOCKING_RENDER_TRUTH_KINDS.length === 15, `expected 15 blocking kinds, got ${BLOCKING_RENDER_TRUTH_KINDS.length}`);
-  for (const k of ["overflow", "measure-error", "barbell", "cross-piece-overlap", "canvas-brightness", "stranded-hero", "canvas-coherence", "corner-mark-collision", "hollow-cta", "intra-piece-overlap", "ghost-fragment", "stray-card", "mock-occlusion", "covered-text-cluster", "rule-through-text"] as const) {
+await check("BLOCKING_RENDER_TRUTH_KINDS (R2): the canonical 16-kind prod set (rule-through-text + decoration-over-text added 2026-08-20 on measured evidence)", () => {
+  assert(BLOCKING_RENDER_TRUTH_KINDS.length === 16, `expected 16 blocking kinds, got ${BLOCKING_RENDER_TRUTH_KINDS.length}`);
+  for (const k of ["overflow", "measure-error", "barbell", "cross-piece-overlap", "canvas-brightness", "stranded-hero", "canvas-coherence", "corner-mark-collision", "hollow-cta", "intra-piece-overlap", "ghost-fragment", "stray-card", "mock-occlusion", "covered-text-cluster", "rule-through-text", "decoration-over-text"] as const) {
     assert(BLOCKING_RENDER_TRUTH_KINDS.includes(k), `canonical set must include ${k}`);
   }
   assert(new Set(BLOCKING_RENDER_TRUTH_KINDS).size === BLOCKING_RENDER_TRUTH_KINDS.length, "no duplicate kinds");
@@ -1242,6 +1243,55 @@ await check("transparent-bg spacers never flag", () => {
     el({ tag: "div", x: 100, y: 128, w: 400, h: 4, bg: "rgba(0,0,0,0)" }),
   ]);
   assert(findRuleThroughText(m).length === 0, "invisible spacer flagged");
+});
+
+
+// ── decoration-over-text (the pointer-events:none blind spot) ──────────────
+
+await check("a pointer-events:none motif crossing card text FLAGS (hit-test blind)", () => {
+  // The measured incident: motif stroke box x1348..1376 / y340..738 running
+  // through a stats card's labels, while elementFromPoint reported the CARD
+  // on top at all 8 stroke vertices.
+  const m = scene(1, [
+    el({ tag: "div", text: "Accounts churned without intervention", x: 1043, y: 330, w: 420, h: 24, fontSize: 15, piece: "s1.stats" }),
+    el({ tag: "svg", x: 1348, y: 340, w: 28, h: 398, piece: "s1.gap", decorative: true, opacity: 0.85 }),
+  ]);
+  const f = findDecorationOverText(m);
+  assert(f.length === 1, `got ${f.length}`);
+  assert(f[0].kind === "decoration-over-text", f[0].kind);
+  assert(/runs across the text/.test(f[0].detail), f[0].detail);
+});
+
+await check("decoration in the SAME piece as the text is by design", () => {
+  const m = scene(1, [
+    el({ tag: "div", text: "Accounts churned without intervention", x: 1043, y: 330, w: 420, h: 24, fontSize: 15, piece: "s1.stats" }),
+    el({ tag: "svg", x: 1100, y: 335, w: 28, h: 40, piece: "s1.stats", decorative: true }),
+  ]);
+  assert(findDecorationOverText(m).length === 0, "same-piece decoration flagged");
+});
+
+await check("a full-bleed atmosphere wash never flags (behind, by construction)", () => {
+  const m = scene(1, [
+    el({ tag: "p", text: "Every quarter the gap stays open", x: 100, y: 500, w: 700, h: 60, fontSize: 24, piece: "s1.copy" }),
+    el({ tag: "div", x: 0, y: 0, w: 1920, h: 1080, piece: "s1.atmos", decorative: true, opacity: 0.4 }),
+  ]);
+  assert(findDecorationOverText(m).length === 0, "atmosphere wash flagged");
+});
+
+await check("grazing contact below the overlap floor does not flag", () => {
+  const m = scene(1, [
+    el({ tag: "p", text: "Waiting costs you money", x: 100, y: 500, w: 600, h: 60, fontSize: 24, piece: "s1.copy" }),
+    el({ tag: "svg", x: 690, y: 556, w: 30, h: 200, piece: "s1.gap", decorative: true }),
+  ]);
+  assert(findDecorationOverText(m).length === 0, "grazing contact flagged");
+});
+
+await check("non-decorative overlaps are left to the existing gates", () => {
+  const m = scene(1, [
+    el({ tag: "p", text: "Waiting costs you money", x: 100, y: 500, w: 600, h: 60, fontSize: 24, piece: "s1.copy" }),
+    el({ tag: "div", x: 300, y: 505, w: 200, h: 50, piece: "s1.mock" }),
+  ]);
+  assert(findDecorationOverText(m).length === 0, "non-decorative element flagged by the deco gate");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

@@ -102,6 +102,15 @@ export interface MeasuredElement {
   imgNaturalWidth?: number;
   fontSize: number;
   opacity: number;
+  /**
+   * True when this element is DECORATION the hit test cannot see — inside a
+   * [data-throughline] motif, or any pointer-events:none subtree. Coverage
+   * checks built on elementFromPoint are STRUCTURALLY BLIND to these: the
+   * browser skips them, so a motif painting straight across a card reports
+   * "nothing on top" (measured 2026-08-20, all 8 stroke vertices). Geometry,
+   * not hit testing, is the only honest signal for them.
+   */
+  decorative?: boolean;
   /** Enclosing LEGO piece id (closest [data-piece]), "" when outside any piece. */
   piece: string;
   /** The enclosing piece's kind (data-kind: text/diegetic/image/atmosphere/chrome),
@@ -315,6 +324,9 @@ const PAGE_WALK = `(() => {
     const pieceEl = el.closest ? el.closest("[data-piece]") : null;
     const piece = pieceEl ? pieceEl.getAttribute("data-piece") || "" : "";
     const pieceKind = pieceEl ? pieceEl.getAttribute("data-kind") || "" : "";
+    const decorative =
+      (el.closest && !!el.closest("[data-throughline]")) ||
+      getComputedStyle(el).pointerEvents === "none";
     let onOpaqueSurface = false;
     for (let a = el.parentElement; a && pieceEl && pieceEl.contains(a); a = a.parentElement) {
       const acs = getComputedStyle(a);
@@ -391,6 +403,7 @@ const PAGE_WALK = `(() => {
       opacity: parseFloat(cs.opacity),
       piece,
       pieceKind,
+      decorative,
       onOpaqueSurface,
       coveredAtCenter,
       radius: parseFloat(cs.borderTopLeftRadius) || 0,
