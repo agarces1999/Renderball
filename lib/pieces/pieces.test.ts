@@ -177,6 +177,16 @@ await check("adds missing lucide icons for iconled; creates the import when abse
   esbuild.transformSync(noLucide.code, { loader: "tsx" });
 });
 
+await check("duplicate facts collapse to one marker (flip-witness defect)", () => {
+  const twice =
+    marker(JSON.stringify(statSpec("ruled-top"))) +
+    marker(JSON.stringify({ ...statSpec("framed-hairline") }));
+  const r = expandSpecMarkers(doc(twice));
+  assert(r.expanded === 1, `expanded ${r.expanded}, want 1`);
+  assert((r.skipped[0]?.reason ?? "").includes("duplicate fact"), `reason ${r.skipped[0]?.reason}`);
+  assert(!r.code.includes("@rb-spec"), "dropped marker left residue");
+});
+
 await check("expands multiple markers in one pass", () => {
   const r = expandSpecMarkers(
     doc(marker(JSON.stringify(statSpec("plain"))) + marker(JSON.stringify(stackSpec("boxed-ruled")))),

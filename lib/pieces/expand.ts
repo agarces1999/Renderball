@@ -56,9 +56,13 @@ export const expandSpecMarkers = (
 ): ExpandResult => {
   const skipped: ExpandResult["skipped"] = [];
   let expanded = 0;
-  const hasLucide = /from\s*["']lucide-react["']/.test(code);
   const tokens = resolveDeckTokens(code);
   const usedIcons = new Set<string>();
+  // Duplicate-fact guard (flip witness, 2026-08-20): given "vary variants",
+  // the model rendered EVERY meta datum twice — same value+label in two
+  // variants side by side. The same fact twice in one document is never
+  // intentional; keep the first marker, drop repeats deterministically.
+  const seenFacts = new Set<string>();
 
   const out = code.replace(MARKER, (whole, json: string) => {
     let raw: unknown;
@@ -73,6 +77,15 @@ export const expandSpecMarkers = (
       skipped.push({ raw: json.slice(0, 120), reason: "unknown piece/shape" });
       return whole;
     }
+    const fact =
+      spec.piece === "statTile"
+        ? `stat:${spec.value}|${spec.label}`
+        : `stack:${spec.items.map((i) => i.text).join("|")}`;
+    if (seenFacts.has(fact)) {
+      skipped.push({ raw: json.slice(0, 120), reason: "duplicate fact (same value+label already rendered)" });
+      return "";
+    }
+    seenFacts.add(fact);
     const needsIcons = ICON_VARIANTS.has(spec.variant);
     if (needsIcons) for (const dep of SPEC_ICON_DEPS) usedIcons.add(dep);
     expanded++;
