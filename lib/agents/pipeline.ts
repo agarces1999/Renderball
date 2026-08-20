@@ -888,6 +888,7 @@ export const regenerateScene = async (
       ? `Keep this section on-story — the throughline running through the whole piece is: ${input.script.narrative.throughline}`
       : "",
     instruction ? `\nUser direction: ${instruction}` : "",
+    pieceSpecEnabled() ? `\n${PIECE_SPEC_PROMPT}` : "",
     ``,
     `## Existing Composition.tsx (READ-ONLY context — do not re-emit any of it except ${sectionName})`,
     "```tsx",
@@ -949,13 +950,23 @@ export const regenerateScene = async (
       error: `Design Agent response did not contain an isolable ${sectionName} block.`,
     };
   }
-  const designCode = replaceSection(existingCode, sceneIndex, designBlock);
+  let designCode = replaceSection(existingCode, sceneIndex, designBlock);
   if (!designCode) {
     return {
       ok: false,
       stage: "design",
       error: `Could not splice ${sectionName} into the existing composition (section boundaries not found).`,
     };
+  }
+  // Spec markers in the regenerated section become brand-tokened markup
+  // HERE — this path (render-truth L1/L2 ladder, single-scene regens) never
+  // reaches the pipeline's expansion passes, and an unexpanded marker is an
+  // invisible comment = a silently missing piece (handoff witness 2026-08-20:
+  // an L1 regen erased a scene's 9 compiled tiles because its own emission
+  // was never expanded).
+  if (pieceSpecEnabled()) {
+    const spec = expandSpecMarkers(designCode);
+    if (spec.expanded > 0) designCode = spec.code;
   }
 
   // ─── Pass 2 (single-section EMISSION + splice, animation) ────────
