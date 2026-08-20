@@ -88,6 +88,11 @@ const RATES: Record<
   // yet, so cache rows stay zero (ledger errs on overstating, never under).
   "glm-5.2": { input: 2.1, output: 6.6, cacheRead: 0.21 / 2.1, cacheWrite: 1 }, // all text/build/QA stages (fast router)
   "accounts/fireworks/routers/glm-5p2-fast": { input: 2.1, output: 6.6, cacheRead: 0.21 / 2.1, cacheWrite: 1 }, // same, wire id
+  // Script/outline stage since 2026-08-20 (founder call): DeepSeek-V4-Flash
+  // standard serverless — dashboard-verified $0.14 uncached / $0.028 cached
+  // input, $0.28 output per 1M.
+  "accounts/fireworks/models/deepseek-v4-flash-0731": { input: 0.14, output: 0.28, cacheRead: 0.028 / 0.14, cacheWrite: 1 },
+  "deepseek-v4-flash": { input: 0.14, output: 0.28, cacheRead: 0.028 / 0.14, cacheWrite: 1 },
   "glm-5v-turbo": { input: 1.2, output: 4.0, cacheRead: 0.26 / 1.4, cacheWrite: 1 }, // legacy z.ai vision rows
   // Fireworks vision — Kimi K2.6 (the account's one live serverless VLM,
   // probe-verified 2026-07-23). Rate is the K2-lineage estimate — TODO

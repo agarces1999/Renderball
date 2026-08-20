@@ -51,11 +51,17 @@ Core rules to internalize:
   Geist Mono for timings and technical text.
 
 ## Model routing
-**FIREWORKS ONLY (founder call 2026-07-23) — z.ai is out of the stack.** Every
-text/build stage (script generation, build/regen coding agents, QA, logo
-discovery, design-language, tweak) runs GLM-5.2 **served by Fireworks**
+**FIREWORKS ONLY (founder call 2026-07-23) — z.ai is out of the stack.**
+Deck-code stages (build/regen coding agents, QA, logo discovery,
+design-language, tweak) run GLM-5.2 **served by Fireworks**
 (`accounts/fireworks/routers/glm-5p2-fast`, override RB_BUILD_MODEL; fast
-router bills $2.10/$6.60 per M). Vision (QA gate + crawl image reads) runs
+router bills $2.10/$6.60 per M). The SCRIPT/OUTLINE stage runs
+**DeepSeek-V4-Flash** (`accounts/fireworks/models/deepseek-v4-flash-0731`,
+override RB_SCRIPT_MODEL; $0.14/$0.28 per M — founder call 2026-08-20:
+"use deepseek for non-deck things like the brief"; measured 1.8x faster
+wall-clock because it thinks ~2.4x less, thinking stays ON per the
+same-day verdict). Witnessed clean on first outline: single pass, no gate
+retries, numbers verbatim, budgets respected. Vision (QA gate + crawl image reads) runs
 **Kimi K2.6** (`accounts/fireworks/models/kimi-k2p6`, override
 RB_VISION_MODEL) — the account's ONE live serverless VLM, probe-verified
 reading real slides. GLM-4.5V/Qwen-VL exist on Fireworks' catalog pages but

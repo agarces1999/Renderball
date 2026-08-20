@@ -344,8 +344,16 @@ export const resolveScriptProvider = (): ScriptProvider => "fireworks";
 
 /** Fireworks model for script generation — the same GLM-5.2 Fast router the
  *  cast runs on. Override with RB_SCRIPT_MODEL. */
+/**
+ * Script/outline stage model — DeepSeek-V4-Flash since 2026-08-20 (founder:
+ * "use deepseek for non-deck things like the brief"). Measured same-task:
+ * 1.8x faster wall-clock than glm-5p2-fast (thinks 2.4x less; thinking
+ * stays ON per the same-day verdict) at $0.14/$0.28 per M vs $2.10/$6.60 —
+ * ~20x cheaper. DECK CODE STAGES STAY ON GLM (MODELS.codingAgentBuild).
+ * Kill switch: RB_SCRIPT_MODEL=accounts/fireworks/routers/glm-5p2-fast.
+ */
 const fireworksScriptModel = (): string =>
-  process.env.RB_SCRIPT_MODEL || "accounts/fireworks/routers/glm-5p2-fast";
+  process.env.RB_SCRIPT_MODEL || "accounts/fireworks/models/deepseek-v4-flash-0731";
 
 /**
  * Flatten the repair loop's multi-turn history into castCall's single user
