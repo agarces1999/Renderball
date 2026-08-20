@@ -966,7 +966,13 @@ export const regenerateScene = async (
   // was never expanded).
   if (pieceSpecEnabled()) {
     const spec = expandSpecMarkers(designCode);
-    if (spec.expanded > 0) designCode = spec.code;
+    if (spec.expanded > 0 || spec.skipped.length > 0) {
+      designCode = spec.code;
+      console.warn(
+        `[pipeline] piece-spec: regen ${sectionName} expanded ${spec.expanded} marker(s)` +
+          (spec.skipped.length > 0 ? `, skipped ${spec.skipped.length}` : ""),
+      );
+    }
   }
 
   // ─── Pass 2 (single-section EMISSION + splice, animation) ────────
@@ -1047,6 +1053,26 @@ export const regenerateScene = async (
     };
   }
   let finalCode = splicedFinal;
+  // The animation pass RE-EMITS the whole section — it can carry the input's
+  // markers through verbatim (expand them) and it can silently DROP compiled
+  // pieces (count them, loudly). TECH-deck witness 2026-08-20: every spec
+  // tile vanished through an L1 regen even after the design-side expansion —
+  // this seam is where the evidence lives.
+  if (pieceSpecEnabled()) {
+    const late = expandSpecMarkers(finalCode);
+    if (late.expanded > 0) {
+      finalCode = late.code;
+      console.warn(`[pipeline] piece-spec: regen ${sectionName} anim pass carried ${late.expanded} marker(s) — expanded`);
+    }
+    const TILE = /fontVariantNumeric: "tabular-nums"/g;
+    const beforeTiles = (designCode.match(TILE) ?? []).length;
+    const afterTiles = (finalCode.match(TILE) ?? []).length;
+    if (afterTiles < beforeTiles) {
+      console.warn(
+        `[pipeline] piece-spec: regen ${sectionName} animation re-emission DROPPED ${beforeTiles - afterTiles} compiled tile(s) (${beforeTiles} → ${afterTiles})`,
+      );
+    }
+  }
 
   if (!finalCode.includes("import") || !finalCode.includes("export")) {
     return {
