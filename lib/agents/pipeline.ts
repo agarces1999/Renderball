@@ -976,6 +976,36 @@ export const regenerateScene = async (
   }
 
   // ─── Pass 2 (single-section EMISSION + splice, animation) ────────
+  // DECKS SKIP THIS PASS ENTIRELY: the choreographer early-returns on
+  // kind === "deck" (deck motion is the assembly ceremony, not per-scene
+  // keyframes), so the LLM animation re-emission here was pure spend — and
+  // the erasure vector: it rewrote the section AFTER spec-marker expansion,
+  // which is how every stats-scene regen tonight shipped without its
+  // compiled tiles. For decks the regenerated design IS the final section.
+  const isDeckRegen = input.script.config.kind === "deck";
+  if (isDeckRegen) {
+    let finalCode = designCode;
+    let regenUsage = usageOf(designResponse.usage);
+    const regenCompileRepair = await repairCompile(
+      finalCode,
+      verifyCompilable,
+      async (c, e) => {
+        const r = await surgicalCompileFix(client, MODELS.codingAgent, c, e);
+        regenUsage = addUsage(regenUsage, r.usage);
+        return r.code;
+      },
+    );
+    finalCode = regenCompileRepair.code;
+    if (regenCompileRepair.attempts > 0) {
+      console.warn(
+        `[pipeline] deck regen surgical compile-repair: ${regenCompileRepair.attempts} attempt(s), ${regenCompileRepair.error ? "still failing" : "fixed"}`,
+      );
+    }
+    if (regenCompileRepair.error) {
+      return { ok: false, stage: "design", error: `Regenerated ${sectionName} does not compile: ${regenCompileRepair.error}`, usage: regenUsage };
+    }
+    return finalizeRegen(finalCode, designCode, regenUsage, input);
+  }
   const animationContext = elideDataUrisOutsideSection(designCode, sectionRange, sceneIndex);
   const animationUserMessage = [
     `Add CSS animations to ${sectionName} in the Composition.tsx below. Use ONLY CSS @keyframes / animation / animation-delay / transition. Re-emit ONLY the animated \`export const ${sectionName} = …\` component (with its local <style>/@keyframes) — the rest of the file is READ-ONLY context and is preserved verbatim by the caller.`,
@@ -1112,10 +1142,20 @@ export const regenerateScene = async (
   // Substitute the brand-logo sentinel with the real logo URL. When the logo is
   // a long data: URL (an inline-svg mark), the design agent is handed the short
   // LOGO_SENTINEL token instead — an LLM can't reliably reproduce ~3KB of base64
-  // in <Img src>, so it copies the token and we bake the real URL in here. data:
-  // URLs are self-contained, so they render in both the preview iframe and the
-  // Remotion render with no base-URL needed. Done before warnings so the gates
-  // see the real composition.
+  return finalizeRegen(finalCode, designCode, regenUsage, input);
+};
+
+/**
+ * Shared finalize for single-scene regens (both the deck fast path and the
+ * video path with the LLM animation pass): logo injection, broken-image
+ * repair, font inlining, lucide safety nets, warnings, hard compile gate.
+ */
+const finalizeRegen = async (
+  finalCode: string,
+  designCode: string,
+  regenUsage: Usage,
+  input: BuildInput,
+): Promise<BuildResult> => {
   // Finalize: inject the brand LOGO_SRC + guarantee no broken/invented image URL
   // ships (same pass as the main build). Scene-regen has no search_assets log,
   // so the replacement pool is the crawled page images + og.
