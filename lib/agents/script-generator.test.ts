@@ -92,7 +92,10 @@ await check("fireworks transport → Fireworks wire: model, json, bounded-thinki
   const r = await fireworksScriptTransport(history);
   assert(sentUrl.includes("api.fireworks.ai/inference/v1"), "hits the Fireworks endpoint");
   assert(auth === "Bearer fw-test-key", "uses RB_FIREWORKS_KEY");
-  assert(sent.model === "accounts/fireworks/routers/glm-5p2-fast", `default script model is the GLM-5.2 Fast router, got ${String(sent.model)}`);
+  // Founder call 2026-08-20: the brief/outline stage runs DeepSeek-V4-Flash
+  // (deck code stays on GLM). This assertion LOCKS the default; change it
+  // only with a founder decision recorded in CLAUDE.md's routing section.
+  assert(sent.model === "accounts/fireworks/models/deepseek-v4-flash-0731", `default script model is DeepSeek-V4-Flash, got ${String(sent.model)}`);
   assert(sent.max_tokens === 16000 && !("max_completion_tokens" in sent), "16k output cap via max_tokens (Fireworks, no TPM pre-debit)");
   assert((sent.response_format as { type?: string })?.type === "json_object", "json:true → response_format json_object (script is a JSON contract)");
   const th = sent.thinking as { type?: string; budget_tokens?: number };

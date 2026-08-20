@@ -56,6 +56,12 @@ const DECLARED: Record<string, string> = {
     "DEAD — zero call sites (asserted below). Kept per CLAUDE.md as dormant routing, " +
     "but it constructs a real client with a real key, so it stays on this list and " +
     "under the no-call-sites assertion until it is deleted.",
+  "scripts/probe-model-speed.mjs":
+    "Offline diagnostic (founder question 2026-08-20: faster models with " +
+    "similar quality?): streams one deck-shaped prompt per candidate model " +
+    "to measure TTFT + tokens/sec + wall-clock-to-complete. ~cents per run, " +
+    "human-run only. Its finding (V4-Flash 1.8x faster wall-clock, ~20x " +
+    "cheaper) drove the script-stage swap in script-generator.ts.",
   "scripts/probe-thinking-off.mjs":
     "Offline diagnostic (speed playbook 2026-08-18): probes which parameter " +
     "shapes disable GLM-5.2 reasoning on the Fireworks wire. Five ~8-token " +
