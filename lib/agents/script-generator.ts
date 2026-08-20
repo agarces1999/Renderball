@@ -216,6 +216,68 @@ export const claimGroundingSources = (
 };
 
 /**
+ * How much MATERIAL the user actually gave us (first-outside-tester incident,
+ * 2026-08-20). His entire brief was "A pitch deck for a pre seed round that
+ * helps me get up to USD 4 MM" — no company, no product, no metrics. With
+ * nothing to ground in, the design stage invented a $49,700 burn table and he
+ * was minutes from showing investors numbers we made up.
+ *
+ * The fix is not a better guard; it is telling the pipeline the truth about
+ * its inputs. A "thin" brief must produce a deck that INVITES the user's
+ * facts (visible, obviously-fillable slots) instead of asserting invented
+ * ones. Thresholds are deliberately generous — this only fires for briefs
+ * that genuinely say almost nothing.
+ */
+export interface BriefSubstance {
+  thin: boolean;
+  words: number;
+  /** Distinct numeric tokens the user supplied (their real figures). */
+  numbers: number;
+  /** True when a crawl gave us the company's own words to work from. */
+  hasBrandCorpus: boolean;
+}
+
+const THIN_WORD_FLOOR = 25; // a real brief is a paragraph, not a sentence
+
+export const briefSubstance = (
+  brief: Pick<
+    AgentBrief,
+    "freeform_prompt" | "purpose" | "verified_claims" | "brand_extract"
+  >,
+): BriefSubstance => {
+  // DEDUPE first: the intake stores the user's one sentence in BOTH
+  // freeform_prompt and purpose, which doubled the word count and made the
+  // incident brief (17 real words) measure as 34 — comfortably "substantial".
+  // Distinct text only; a sentence repeated is still one sentence.
+  const userText = [...new Set(
+    [brief.freeform_prompt, brief.purpose, brief.verified_claims]
+      .map((t) => (t ?? "").trim())
+      .filter(Boolean),
+  )].join(" ");
+  const be = brief.brand_extract;
+  const hasBrandCorpus = (be?.body_excerpts?.length ?? 0) > 0 || (be?.headlines?.length ?? 0) > 0;
+  const words = userText.split(/\s+/).filter(Boolean).length;
+  const numbers = new Set(userText.match(/\$?\d[\d,.]*\s*(?:%|[KMB]\b|million|billion)?/gi) ?? []).size;
+  // A crawl gives the deck real material even when the typed brief is short,
+  // so brand-backed briefs are never "thin".
+  return { thin: !hasBrandCorpus && words < THIN_WORD_FLOOR, words, numbers, hasBrandCorpus };
+};
+
+/**
+ * The directive appended to the script prompt when the brief is thin. It does
+ * NOT ask for a smaller deck — it asks for an HONEST one: every specific the
+ * user didn't give becomes a visibly-empty slot they can fill, and no claim
+ * is asserted on their behalf.
+ */
+export const THIN_BRIEF_DIRECTIVE = [
+  `## The brief is THIN — build a deck that asks, never one that invents`,
+  `The user gave almost no material: no company details, no product specifics, no metrics. You therefore have NOTHING to ground specifics in. Two hard rules:`,
+  `1. **Never state a fact the user did not give.** No invented numbers (prices, revenue, headcount, dates, percentages), no invented customer counts, and no confident qualitative claims about traction, results, or adoption ("early users love it", "pilots expand") — those are claims too, and they are equally untrue.`,
+  `2. **Turn every missing specific into an obvious SLOT.** Where a metric belongs, write the LABEL and leave the value as the literal string "—" (an em dash). Where a proof point belongs, write what KIND of proof goes there as an instruction to the user, e.g. bullets like "Your strongest customer outcome here" or "The metric that proves this". A slot reads as an invitation; a fabricated figure reads as a lie.`,
+  `Write the narrative arc, the headlines, the structure and the register with full confidence — that is yours to author. Only the FACTS are the user's, and where they are missing the deck must show it.`,
+].join("\n");
+
+/**
  * The viewer-facing copy of every scene (headline / lede / caption / eyebrow /
  * bullets / meta values) joined into one string — the text the invented-claim
  * guard scans. Exported for the claims audit so reporting and the gate read
@@ -1616,6 +1678,13 @@ export const buildUserMessage = (brief: AgentBrief): string => {
     lines.push(
       "- scene.label MUST be the verbatim moment title shown above. scene.description MUST be the user's moment description verbatim. visual_concept is YOUR creative choice — the chosen visual approach for the moment.",
     );
+  }
+  // A brief with almost nothing in it gets the honesty directive (see
+  // briefSubstance): slots the user can fill, never facts invented for them.
+  const substance = briefSubstance(brief);
+  if (substance.thin) {
+    lines.push("");
+    lines.push(THIN_BRIEF_DIRECTIVE);
   }
   lines.push("");
   lines.push("Output the JSON object only. No prose, no fence.");

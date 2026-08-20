@@ -77,6 +77,9 @@ const friendlyApiError = (txt: string, status: number, op: string): string => {
  * BuildWarnings in pipeline.ts. All non-blocking — surfaced as quiet notes.
  */
 interface PreviewWarnings {
+  /** Built from a brief with almost nothing in it — the deck carries slots,
+   *  not facts, and the user must be told plainly. */
+  thin_brief?: { words: number };
   invented_claims?: string[];
   low_contrast?: { fg: string; bg: string; ratio: number }[];
   missing_charts?: string[];
@@ -351,6 +354,9 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
   // mode. Toggling edit changes the src, so the browser swaps modes naturally.
   const iframeSrc = `/api/preview/${scriptId}/iframe?scene=${sceneIndex}&v=${reloadKey}${editing || isDeck ? "&settle=1" : ""}`;
 
+  // Quality NOTES (the collapsible panel's content) vs anything the banner
+  // must surface. thin_brief is not a quality note — it is a statement about
+  // the input — so it gets the banner without forcing the notes panel open.
   const hasWarnings =
     warnings &&
     (warnings.invented_claims?.length ||
@@ -359,6 +365,7 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
       warnings.throughline_drift?.length ||
       (warnings.duplicate_logo ?? 0) > 1 ||
       warnings.overflow_crop?.length);
+  const bannerWarnings = hasWarnings || warnings?.thin_brief ? warnings : null;
 
   // Tool state for the shell toolbar (deck path). ElementEditor reports its
   // state up through onState; the toolbar buttons drive it back through the ref.
@@ -529,7 +536,7 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
                     ]
                   : null
               }
-              warnings={hasWarnings ? warnings : null}
+              warnings={bannerWarnings}
             />
             </>
           }
@@ -946,6 +953,15 @@ type PageOp =
  * The strip between the deck toolbar and canvas: an open regen form, then any
  * quality warnings and errors. Empty (renders nothing) in the common case.
  */
+/** Does this payload carry real quality NOTES (vs only an input statement)? */
+const hasQualityNotes = (w: PreviewWarnings): boolean =>
+  !!(w.invented_claims?.length ||
+    w.low_contrast?.length ||
+    w.missing_charts?.length ||
+    w.throughline_drift?.length ||
+    (w.duplicate_logo ?? 0) > 1 ||
+    w.overflow_crop?.length);
+
 function DeckBanner({
   regenAsk,
   regenInstruction,
@@ -1023,13 +1039,26 @@ function DeckBanner({
       {regenLimit && (
         <LimitStrip message={regenLimit} onDismiss={onLimitDismiss} />
       )}
+      {/* The honest line (same incident): a one-sentence brief cannot produce
+          a deck full of real facts, so say so ONCE, plainly, where the user
+          will read it — before they send it to an investor. */}
+      {warnings?.thin_brief && (
+        <div className="flex items-start gap-3 rounded-md border border-hairline bg-surface px-3 py-2">
+          <span className="mt-[3px] h-1.5 w-1.5 shrink-0 rounded-full bg-accent" aria-hidden />
+          <p className="text-[12.5px] leading-relaxed text-muted">
+            <span className="text-ink">Your brief was one line, so this deck is a frame, not a finished story.</span>{" "}
+            Anywhere you see an em dash or a prompt in place of a number, that is a slot waiting for your real figure —
+            nothing here was invented on your behalf. Click any text to fill it in.
+          </p>
+        </div>
+      )}
       {/* COLLAPSED BY DEFAULT (first-outside-tester incident, 2026-08-20):
           the full check panels rendered between toolbar and canvas, and on a
           fresh build with findings they consumed the stage — the user's new
           deck shrank to a stamp under a wall of QA chrome, with the suggest
           bar floating over it. The work stays loudest (DESIGN.md): one quiet
           summary line; the panels expand only when asked. */}
-      {(structural?.length || warnings) && !checksOpen ? (
+      {(structural?.length || (warnings && hasQualityNotes(warnings))) && !checksOpen ? (
         <button
           type="button"
           onClick={() => setChecksOpen(true)}
@@ -1039,7 +1068,7 @@ function DeckBanner({
             {structural?.length
               ? `${structural.length} unresolved check${structural.length === 1 ? "" : "s"}`
               : "Quality notes"}
-            {warnings && structural?.length ? " · quality notes" : ""}
+            {warnings && hasQualityNotes(warnings) && structural?.length ? " · quality notes" : ""}
           </span>
           <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-faint">
             Review →
@@ -1058,7 +1087,7 @@ function DeckBanner({
             </button>
           </div>
           {structural && structural.length > 0 && <StructuralPanel issues={structural} />}
-          {warnings && <WarningsPanel warnings={warnings} />}
+          {warnings && hasQualityNotes(warnings) && <WarningsPanel warnings={warnings} />}
         </div>
       )}
       {(pageError || regenError) && (

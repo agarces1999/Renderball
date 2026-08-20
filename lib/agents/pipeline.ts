@@ -58,6 +58,7 @@ import {
   stripChromeEyebrowEchoes,
 } from "./quality-gates";
 import { buildDesignConstraints } from "./design-constraints";
+import { briefSubstance } from "./script-generator";
 import { expandSpecMarkers } from "../pieces/expand";
 import { PIECE_SPEC_PROMPT, pieceSpecEnabled } from "../pieces/prompt";
 import { resolveBrandIdentity, resolveCanvasPlan, genericFor, fontStackFor, type BrandIdentity } from "../crawl/brand-identity";
@@ -277,6 +278,13 @@ export const buildAgentInputFromBrief = (
  * review/preview page can show them as quality chips.
  */
 export interface BuildWarnings {
+  /**
+   * The brief said almost nothing (see briefSubstance), so this deck was
+   * built to HOLD the user's facts rather than assert invented ones — the
+   * editor tells them so plainly instead of letting placeholder slots read
+   * as finished work.
+   */
+  thin_brief?: { words: number };
   /** Numeric tokens in the design that don't appear in source corpus. */
   invented_claims?: string[];
   /** Color pairs whose WCAG contrast ratio is below 4.5:1 (body) or 3:1 (large). */
@@ -3327,6 +3335,18 @@ const fillSectionBlock = async (
     signatureAccent: input.brand_identity?.signature,
   });
   const exemplar = exemplarPromptBlock(scene.register ? [scene.register] : []);
+  // Brief substance decides whether figures may be invented at all.
+  // ONLY the user's own words. `brief.about` holds the typed brief verbatim;
+  // `brief.purpose` is SYNTHESIZED by the outline stage into a fuller
+  // sentence, and counting it let the model vouch for its own inputs — a
+  // 17-word brief measured 47 and escaped the thin check (caught by the
+  // first honest build, 2026-08-20). Same rule as claimGroundingSources:
+  // generated text may never serve as evidence of user-supplied material.
+  const thinBrief = briefSubstance({
+    freeform_prompt: input.script.brief?.about,
+    verified_claims: input.verified_claims,
+    brand_extract: input.brand_extract,
+  } as Parameters<typeof briefSubstance>[0]).thin;
   const userMessage = [
     `You are writing ONE section of a static Composition.tsx whose shared foundation (imports, PALETTE, FONT_*, @keyframes, BrandChrome, helper components) ALREADY EXISTS below. Replace the placeholder stub for ${sectionName} with the real, richly-designed section. STATIC — no animation code; layout, typography, and decorative chrome only.`,
     ``,
@@ -3359,6 +3379,14 @@ const fillSectionBlock = async (
     // design brief carries this implicitly via the full-script context; each
     // isolated fill must be told explicitly.
     `- HARD RULE — NO INVENTED NUMBERS: every numeric value you render (price, stat, percentage, count, date) must appear VERBATIM in the copy slots above. If a diegetic mock (dashboard, receipt, form) needs filler figures beyond the copy, keep them clearly decorative and generic — never a specific-looking business claim (no invented "$72", "38%", "2.4M"). When in doubt, use qualitative copy instead of a number.`,
+    // Where the friend-deck fabrication actually happened (2026-08-20): the
+    // scene copy carried no figures, so the design agent filled a "cost table"
+    // mock with $19,000/$24,500/$6,200 → $49,700 to make the slide look
+    // substantial. A thin brief means there is nothing to ground ANY figure
+    // in, so the sanctioned filler is an empty slot, not a plausible number.
+    thinBrief
+      ? `- THIS DECK CAME FROM A ONE-LINE BRIEF: the user gave no metrics at all, so you have NOTHING to ground a figure in. Do NOT populate mocks, tables, dashboards or receipts with realistic-looking numbers — a viewer reads them as this user's real business data. Render those surfaces with their LABELS and an em dash "—" where each value goes (a visibly empty slot the user fills in), or omit the numeric surface entirely and use a qualitative composition instead.`
+      : "",
     // LAYOUT CONTRACT (founder doctrine after Fuse scene 1 shipped a small UI
     // piece alone in the bottom-right corner): these numbers are MEASURED on
     // the real render by a blocking gate — a violation costs a full regen, so
@@ -4228,6 +4256,13 @@ const buildBuildWarnings = (
   input: BuildInput,
 ): BuildWarnings => {
   const out: BuildWarnings = {};
+  // User's words only — see the note at the fill-stage call site.
+  const substance = briefSubstance({
+    freeform_prompt: input.script?.brief?.about,
+    verified_claims: input.verified_claims,
+    brand_extract: input.brand_extract,
+  } as Parameters<typeof briefSubstance>[0]);
+  if (substance.thin) out.thin_brief = { words: substance.words };
   const invented = findInventedClaims(
     code,
     input.script,
