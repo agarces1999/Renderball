@@ -39,6 +39,7 @@ import {
   EDGE_CROP_FRAC,
   EDGE_CLAMP_OVERSIZE_FRAC,
   BLOCKING_RENDER_TRUTH_KINDS,
+  findRuleThroughText,
   type EdgeCropFinding,
   type SlotTerritory,
 } from "./render-truth-gates";
@@ -1103,9 +1104,9 @@ if (existsSync(path.join(FUSE_FRAMES, "scene3.png"))) {
 // 14th kind added 2026-07-23 with the evidence the frozen-list rule demands:
 // covered-text-cluster, calibrated on all 40 stored scenes (fires on the
 // founder-flagged alloc2-on-2 s0 + flags-notion s4; zero approved-scene fires).
-await check("BLOCKING_RENDER_TRUTH_KINDS (R2): the canonical 14-kind prod set, incl. covered-text-cluster", () => {
-  assert(BLOCKING_RENDER_TRUTH_KINDS.length === 14, `expected 14 blocking kinds, got ${BLOCKING_RENDER_TRUTH_KINDS.length}`);
-  for (const k of ["overflow", "measure-error", "barbell", "cross-piece-overlap", "canvas-brightness", "stranded-hero", "canvas-coherence", "corner-mark-collision", "hollow-cta", "intra-piece-overlap", "ghost-fragment", "stray-card", "mock-occlusion", "covered-text-cluster"] as const) {
+await check("BLOCKING_RENDER_TRUTH_KINDS (R2): the canonical 15-kind prod set (rule-through-text added 2026-08-20, friend-deck evidence)", () => {
+  assert(BLOCKING_RENDER_TRUTH_KINDS.length === 15, `expected 15 blocking kinds, got ${BLOCKING_RENDER_TRUTH_KINDS.length}`);
+  for (const k of ["overflow", "measure-error", "barbell", "cross-piece-overlap", "canvas-brightness", "stranded-hero", "canvas-coherence", "corner-mark-collision", "hollow-cta", "intra-piece-overlap", "ghost-fragment", "stray-card", "mock-occlusion", "covered-text-cluster", "rule-through-text"] as const) {
     assert(BLOCKING_RENDER_TRUTH_KINDS.includes(k), `canonical set must include ${k}`);
   }
   assert(new Set(BLOCKING_RENDER_TRUTH_KINDS).size === BLOCKING_RENDER_TRUTH_KINDS.length, "no duplicate kinds");
@@ -1203,6 +1204,44 @@ await check("an untrusted scene's text-metric findings flag but cannot BLOCK", a
   const me = await findRenderTruthFailures(
     [{ scene: 0, width: 1920, height: 1080, elements: [], error: "boom", fontFailures: ["X"] }], {});
   assert(me.blocking.some((f) => f.kind === "measure-error"), "measure-error stays fail-closed");
+});
+
+// ── rule-through-text (friend-deck page 1: underline struck the wrapped headline) ──
+
+await check("rule crossing the glyph band of a wrapped headline FLAGS", () => {
+  const m = scene(0, [
+    el({ tag: "h1", text: "One customer. That's all it takes.", x: 107, y: 260, w: 560, h: 110, fontSize: 54 }),
+    el({ tag: "div", x: 107, y: 330, w: 373, h: 4, bg: "rgb(79,70,229)" }),
+  ]);
+  const f = findRuleThroughText(m);
+  assert(f.length === 1, `got ${f.length}`);
+  assert(f[0].kind === "rule-through-text", f[0].kind);
+  assert(/strikes through/.test(f[0].detail), f[0].detail);
+});
+
+await check("a legitimate underline BELOW the text block does not flag", () => {
+  const m = scene(0, [
+    el({ tag: "h1", text: "One customer.", x: 107, y: 260, w: 560, h: 60, fontSize: 54 }),
+    el({ tag: "div", x: 107, y: 318, w: 373, h: 4, bg: "rgb(79,70,229)" }),
+  ]);
+  assert(findRuleThroughText(m).length === 0, "underline near baseline flagged");
+});
+
+await check("panels (h>8) and short ticks (w<40) are not rules", () => {
+  const m = scene(0, [
+    el({ tag: "h1", text: "Headline text here", x: 100, y: 100, w: 500, h: 60, fontSize: 40 }),
+    el({ tag: "div", x: 100, y: 120, w: 500, h: 200, bg: "rgb(240,240,240)" }),
+    el({ tag: "div", x: 110, y: 128, w: 14, h: 2, bg: "rgb(79,70,229)" }),
+  ]);
+  assert(findRuleThroughText(m).length === 0, "panel or tick flagged as rule");
+});
+
+await check("transparent-bg spacers never flag", () => {
+  const m = scene(0, [
+    el({ tag: "h1", text: "Headline text here", x: 100, y: 100, w: 500, h: 60, fontSize: 40 }),
+    el({ tag: "div", x: 100, y: 128, w: 400, h: 4, bg: "rgba(0,0,0,0)" }),
+  ]);
+  assert(findRuleThroughText(m).length === 0, "invisible spacer flagged");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

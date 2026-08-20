@@ -4210,8 +4210,13 @@ export const assessDeadAir = (
  * - Skips obviously-decorative tokens (Loan #00X, $•••).
  * - Skips tokens inside diegetic mock UI labels that look generic.
  */
+// Comma-grouped digits are part of the number ("$49,700" is ONE claim).
+// The friend-deck incident (2026-08-20): the old digit run stopped at the
+// comma, so a fabricated $49,700 cost table was reported as "$49" — and the
+// repair model, told to remove "$49", searched for a literal that barely
+// existed and changed nothing. The detector must quote what the viewer sees.
 const NUMERIC_CLAIM_RX =
-  /(\$[0-9]+(?:\.[0-9]+)?\s*[KMBkmb]?(?:illion)?\b|\b[0-9]+(?:\.[0-9]+)?\s*(?:%|percent)\b|\b[0-9]+(?:\.[0-9]+)?\s*(?:days?|weeks?|months?|years?|hours?|minutes?)\b|\b[0-9]+(?:\.[0-9]+)?[xX]\b|\b[0-9]{2,}\+\s*(?:customers?|institutions?|banks?|users?|companies|brands?|teams?|partners?)\b)/g;
+  /(\$[0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]+)?\s*[KMBkmb]?(?:illion)?\b|\b[0-9]{1,3}(?:,[0-9]{3})+\b|\b[0-9]+(?:\.[0-9]+)?\s*(?:%|percent)\b|\b[0-9]+(?:\.[0-9]+)?\s*(?:days?|weeks?|months?|years?|hours?|minutes?)\b|\b[0-9]+(?:\.[0-9]+)?[xX]\b|\b[0-9]{2,}\+\s*(?:customers?|institutions?|banks?|users?|companies|brands?|teams?|partners?)\b)/g;
 
 /**
  * Aggregate soft warnings into a single payload returned with the
@@ -4475,7 +4480,7 @@ const assessContrast = (code: string): ContrastFinding[] => {
   return findings;
 };
 
-const findInventedClaims = (
+export const findInventedClaims = (
   designCode: string,
   script: Script,
   briefAbout: string | undefined,
@@ -4488,6 +4493,18 @@ const findInventedClaims = (
   const visibleText = Array.from(designCode.matchAll(/>([^<>{}]+)</g))
     .map((m) => m[1].trim())
     .filter((s) => s.length > 0)
+    .join(" • ");
+  // Data that reaches the screen through expressions lives in STRING
+  // LITERALS ({ label: "Agency retainer", value: "$19,000" } → rendered via
+  // {row.value}) — the friend-deck cost table's rows were invisible to the
+  // >text< walk. Scan quoted strings for claim-shaped tokens only (the RX
+  // itself filters out widths/ids/props noise).
+  const literalText = Array.from(designCode.matchAll(/"([^"\n]{1,80})"/g))
+    .map((m) => m[1])
+    .filter((t) => /[0-9]/.test(t))
+    // Color strings ("rgba(79,70,229,0.9)", "#4f46e5", gradients) are full
+    // of comma-grouped digits that are NOT business claims.
+    .filter((t) => !/rgba?\s*\(|hsla?\s*\(|#[0-9a-fA-F]{3,8}\b|gradient/.test(t))
     .join(" • ");
 
   // Build the source corpus: every text the agent is allowed to repeat.
@@ -4530,10 +4547,14 @@ const findInventedClaims = (
     if (sourceCorpus.includes(stripped)) return true;
     // Strip the dollar sign.
     if (sourceCorpus.includes(norm.replace(/\$/g, ""))) return true;
+    // Comma-insensitive: the script may write 49700 where the design
+    // grouped it (or vice versa).
+    const noCommas = norm.replace(/,/g, "");
+    if (noCommas !== norm && sourceCorpus.replace(/,/g, "").includes(noCommas)) return true;
     return false;
   };
 
-  for (const match of visibleText.matchAll(NUMERIC_CLAIM_RX)) {
+  for (const match of `${visibleText} • ${literalText}`.matchAll(NUMERIC_CLAIM_RX)) {
     const token = match[0].trim();
     // Skip obviously decorative tokens.
     if (/[•·\.]{3,}/.test(token)) continue;

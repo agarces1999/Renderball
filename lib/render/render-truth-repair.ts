@@ -109,8 +109,18 @@ const scenesOf = (findings: RenderTruthFinding[]): number[] =>
 
 const repairInstruction = (sceneFindings: RenderTruthFinding[]): string => {
   const parts: string[] = [];
-  const of = sceneFindings.filter((f) => f.kind !== "stranded-hero");
+  const rt = sceneFindings.filter((f) => f.kind === "rule-through-text");
+  const of = sceneFindings.filter((f) => f.kind !== "stranded-hero" && f.kind !== "rule-through-text");
   const sh = sceneFindings.filter((f) => f.kind === "stranded-hero");
+  if (rt.length > 0) {
+    // Its own instruction — the generic "make it fit" text would send the
+    // model chasing canvas bounds when the defect is a decoration collision.
+    parts.push(
+      `A decorative accent rule STRIKES THROUGH text on this scene (measured on the real render): ${rt
+        .map((f) => f.detail)
+        .join("; ")}. Fix the RULE, keep the text: place the rule in normal flow BELOW the full text block (e.g. marginTop on a sibling), never at an absolute offset that assumes the text stays on one line — wrapped text must push it down.`,
+    );
+  }
   if (of.length > 0) {
     const detail = of.map((f) => f.detail).join("; ");
     parts.push(

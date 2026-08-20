@@ -34,6 +34,7 @@ export type RenderTruthKind =
   | "mock-occlusion"
   | "stranded-hero"
   | "covered-text-cluster"
+  | "rule-through-text"
   | "measure-error";
 
 export interface RenderTruthFinding {
@@ -41,6 +42,52 @@ export interface RenderTruthFinding {
   kind: RenderTruthKind;
   detail: string;
 }
+
+// ── rule-through-text (friend-deck incident, 2026-08-20) ────────────────────
+// A thin decorative accent rule positioned for a ONE-line headline struck
+// through the second line when the text wrapped ("One customer. That's all it
+// t̶a̶k̶e̶s̶."). No gate saw it: text-vs-text checks ignore bare divs, and the
+// intra-piece overlap gate excludes sub-panel-sized elements. Geometry is
+// unambiguous on measured rects: a rule crossing the GLYPH BAND (not hugging
+// the baseline) of display-class text is always a defect.
+const RULE_MAX_H = 8;
+const RULE_MIN_W = 40;
+const RULE_TEXT_MIN_FONT = 16;
+const RULE_MIN_OVERLAP_PX = 40;
+// The glyph band: strikes register between 15% and 82% of the text box height;
+// a legitimate underline sits at/below the baseline (center > 82%).
+const GLYPH_BAND_TOP = 0.15;
+const GLYPH_BAND_BOTTOM = 0.82;
+
+const isVisibleBg = (bg: string): boolean =>
+  !!bg && !/rgba\(\s*\d+,\s*\d+,\s*\d+,\s*0(?:\.0+)?\s*\)/.test(bg) && bg !== "transparent";
+
+export const findRuleThroughText = (m: SceneMeasurement): RenderTruthFinding[] => {
+  if (m.error) return [];
+  const out: RenderTruthFinding[] = [];
+  const rules = m.elements.filter(
+    (e) => !e.isImg && e.text === "" && e.h <= RULE_MAX_H && e.w >= RULE_MIN_W && e.opacity > 0.3 && isVisibleBg(e.bg),
+  );
+  const texts = m.elements.filter(
+    (e) => e.text.length >= 4 && e.fontSize >= RULE_TEXT_MIN_FONT && e.opacity > 0.3,
+  );
+  for (const t of texts) {
+    for (const r of rules) {
+      const ox = Math.min(t.x + t.w, r.x + r.w) - Math.max(t.x, r.x);
+      if (ox < RULE_MIN_OVERLAP_PX) continue;
+      const ruleCenter = r.y + r.h / 2;
+      const frac = (ruleCenter - t.y) / Math.max(1, t.h);
+      if (frac < GLYPH_BAND_TOP || frac > GLYPH_BAND_BOTTOM) continue;
+      out.push({
+        scene: m.scene,
+        kind: "rule-through-text",
+        detail: `a ${Math.round(r.w)}×${Math.round(r.h)}px accent rule (bg ${r.bg}) crosses the text "${t.text.slice(0, 40)}" at ${Math.round(frac * 100)}% of its height (rule y=${Math.round(r.y)}, text box y=${Math.round(t.y)} h=${Math.round(t.h)}) — it strikes through the glyphs`,
+      });
+      break; // one finding per text element is enough for the repair
+    }
+  }
+  return out;
+};
 
 /**
  * R2 (audit-3): the ONE canonical set of measured render-truth kinds that BLOCK a
@@ -54,7 +101,7 @@ export interface RenderTruthFinding {
 export const BLOCKING_RENDER_TRUTH_KINDS: RenderTruthKind[] = [
   "overflow", "measure-error", "barbell", "cross-piece-overlap", "canvas-brightness", "stranded-hero",
   "canvas-coherence", "corner-mark-collision", "hollow-cta", "intra-piece-overlap", "ghost-fragment", "stray-card",
-  "mock-occlusion", "covered-text-cluster",
+  "mock-occlusion", "covered-text-cluster", "rule-through-text",
 ];
 
 // px tolerance so sub-pixel rounding / intentional full-bleed don't false-fire.
@@ -2485,6 +2532,7 @@ export const findRenderTruthFailures = async (
     findings.push(...findStrayFullBleedCard(m, opts.registers?.[m.scene]));
     findings.push(...findCenteredMockOcclusion(m, opts.registers?.[m.scene]));
     findings.push(...findIntraPieceOverlap(m));
+    findings.push(...findRuleThroughText(m));
     findings.push(...findCoveredTextCluster(m));
     findings.push(...findGhostFragment(m));
     findings.push(...(await findEmptyBand(m)));
