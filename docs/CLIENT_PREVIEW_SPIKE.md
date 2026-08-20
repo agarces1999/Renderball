@@ -42,14 +42,22 @@ normalized diff must be empty (modulo data-react attrs + fit-pass inline
 styles, which re-run identically via __rbRefit). Runs in the suite against
 the stored corpus; any mismatch class blocks the flag flip.
 
-## Phases (each independently shippable, all behind RB_CLIENT_PREVIEW)
+## Phases
 
-1. **Hydrate read-only** — prove the bundle runs in-iframe and the parity
-   gate holds on the corpus. No UX change. (~3-4 days)
-2. **Live text** — the bridge + keystroke path for bound copy fields; commit
-   unchanged. This is the felt win. (~3-4 days)
-3. **Full state bridge** — geometry/props live too; morph retires on
-   hydrated docs. (~1 week, only if 2 proves worth it)
+1. **Hydrate read-only** — DONE 2026-08-20 (f296414): bundle runs in-iframe,
+   corpus parity 419 scenes / 0 mismatches. Behind RB_CLIENT_PREVIEW.
+2. **Live text** — LANDED 2026-08-20, reshaped by a scouting finding: canvas
+   typing was ALREADY live (contentEditable in the SSR DOM) and commits were
+   already morph-first, so the React bridge solved a problem the editor
+   didn't have. The real gap was autofit not tracking keystrokes — text
+   overflowed its fitted box until commit. Shipped as a 120ms-throttled
+   input listener that re-runs window.__rbRefit during text sessions
+   (probe: qa/probe-live-refit.ts — fit stamp changes and font shrinks
+   live, 38.75px→16px before commit). Unflagged: no bundle dependency.
+3. **Full state bridge** — geometry/props live via hydrated React; morph
+   retires on hydrated docs. Only if a concrete need appears (e.g. live
+   preview of side-panel prompt edits before commit). RB_CLIENT_PREVIEW
+   stays the gate.
 
 ## Known traps (from this codebase's own history)
 

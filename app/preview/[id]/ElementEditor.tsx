@@ -495,6 +495,9 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
   const textTargetRef = useRef<TextTarget | null>(null);
   // Active multi-field edit session's finisher (Done button / unmount call it).
   const finishSessionRef = useRef<((save: boolean) => void) | null>(null);
+  // Tears down the live-refit input listener of the CURRENT text session
+  // (registered after finish() is defined, so it rides a ref, not a closure).
+  const cleanupInputRef = useRef<(() => void) | null>(null);
   // The scene's editable copy fields (path+value), fetched so we can tell whether a
   // clicked text element is bound content and resolve its exact path — the affordance
   // for "Edit text" appears only on text that actually maps to a field.
@@ -927,6 +930,8 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
       done = true;
       doc.removeEventListener("keydown", onKey, true);
       doc.removeEventListener("mousedown", onDown, true);
+      cleanupInputRef.current?.();
+      cleanupInputRef.current = null;
       finishSessionRef.current = null;
       editingRef.current = false;
       setEditing(false);
@@ -1007,6 +1012,32 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
       const t = ev.target as Node | null;
       if (t && fields.some((f) => f.el === t || f.el.contains(t))) return; // within a field → keep editing
       finish(true); // clicked elsewhere in the scene → commit
+    };
+    // LIVE AUTOFIT WHILE TYPING (client-preview Phase 2, founder GO
+    // 2026-08-20). Fit sizes were computed for the OLD text at load, so a
+    // growing line overflowed its box until commit re-rendered. Re-run the
+    // scene's fit pass (window.__rbRefit, the same idempotent re-entry hook
+    // the morph path uses) on a trailing throttle per keystroke — text now
+    // shrinks/reflows live, PowerPoint-style. DOM-only; commit unchanged.
+    let refitTimer: number | null = null;
+    const win = doc.defaultView as (Window & { __rbRefit?: () => void }) | null;
+    const onInput = () => {
+      if (!win?.__rbRefit) return;
+      if (refitTimer !== null) win.clearTimeout(refitTimer);
+      refitTimer = win.setTimeout(() => {
+        refitTimer = null;
+        try {
+          win.__rbRefit?.();
+        } catch {
+          /* fit is best-effort during typing; commit re-renders regardless */
+        }
+      }, 120);
+    };
+    doc.addEventListener("input", onInput, true);
+    cleanupInputRef.current = () => {
+      doc.removeEventListener("input", onInput, true);
+      if (refitTimer !== null && win) win.clearTimeout(refitTimer);
+      refitTimer = null;
     };
     doc.addEventListener("keydown", onKey, true);
     doc.addEventListener("mousedown", onDown, true);
