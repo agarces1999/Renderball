@@ -6,8 +6,12 @@
  */
 import { STAT_TILE_VARIANTS, BULLET_STACK_VARIANTS } from "./spec";
 
+/**
+ * ON BY DEFAULT since the founder's specimen approval (2026-08-20, 88-card
+ * gallery verdict: "good to go"). RB_PIECE_SPEC=off is the kill switch.
+ */
 export const pieceSpecEnabled = (): boolean =>
-  process.env.RB_PIECE_SPEC === "on";
+  process.env.RB_PIECE_SPEC !== "off";
 
 export const PIECE_SPEC_PROMPT = [
   `## Spec pieces (REQUIRED for two shapes)`,
