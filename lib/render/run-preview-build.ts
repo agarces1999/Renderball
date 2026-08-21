@@ -322,8 +322,16 @@ async function runPreviewBuildInner(
         try {
           const { finalizeUndefinedRefs } = await import("../agents/finalize-refs");
           display = (await finalizeUndefinedRefs(code)).code;
-        } catch {
-          /* display-only nicety — never fail the build for it */
+        } catch (err) {
+          // NOT a silent degrade: if this ever throws, the live page can show
+          // a render error again, so it must be visible in the logs rather
+          // than quietly reverting to the broken behavior. We still write —
+          // refusing to write would cost the user the page entirely, which is
+          // strictly worse than a page that might render.
+          console.error(
+            "[preview/build] progressive ref-finalize FAILED — live page may show a render error:",
+            err instanceof Error ? err.message : err,
+          );
         }
         await fsp.writeFile(path.join(genDir, "Composition.tsx"), display, "utf8");
       },
@@ -337,8 +345,11 @@ async function runPreviewBuildInner(
         try {
           const { finalizeUndefinedRefs } = await import("../agents/finalize-refs");
           display = (await finalizeUndefinedRefs(code)).code;
-        } catch {
-          /* display-only */
+        } catch (err) {
+          console.error(
+            "[preview/build] scaffold ref-finalize FAILED — foundation may show a render error:",
+            err instanceof Error ? err.message : err,
+          );
         }
         await fsp.writeFile(path.join(genDir, "Composition.tsx"), display, "utf8");
       },
