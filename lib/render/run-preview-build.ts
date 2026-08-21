@@ -668,6 +668,7 @@ async function runPreviewBuildInner(
     await recordTokenUsage({ ownerId, usage: currentUsage, op: "build" });
     await recordGateTelemetry({
       scriptId,
+      genDir,
       fires: tallyGateFires({ findings: repair.initialFindings, warnings: currentWarnings }),
       residual: tallyGateFires({ findings: repair.findings }),
       repairSteps: repair.steps.length,
@@ -945,6 +946,7 @@ async function runPreviewBuildInner(
   // blocking finding fired AND the ladder took zero steps.
   await recordGateTelemetry({
     scriptId,
+    genDir,
     fires: tallyGateFires({ findings: repair.initialFindings, warnings: currentWarnings, visionFindings }),
     residual: tallyGateFires({ findings: repair.findings }),
     repairSteps: repair.steps.length,
@@ -1330,6 +1332,7 @@ async function runCastPreviewBuild(args: {
       }
       await recordGateTelemetry({
         scriptId,
+        genDir,
         fires,
         residual,
         repairSteps: loop.rounds,
@@ -1351,6 +1354,7 @@ async function runCastPreviewBuild(args: {
 
     await recordGateTelemetry({
       scriptId,
+      genDir,
       fires,
       residual,
       repairSteps: loop.rounds,

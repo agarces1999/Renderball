@@ -59,15 +59,36 @@ export const tallyGateFires = (input: {
 
 const TELEMETRY_LOG = path.join(process.cwd(), ".data", "gate-telemetry.jsonl");
 
-/** Append one build's telemetry. Best-effort: never throws. */
+/**
+ * Append one build's telemetry — to the rolling ledger AND to the document's
+ * own directory.
+ *
+ * The ledger alone was not durable. `.data/` lives on the container filesystem,
+ * which a deploy wipes; the deletion criterion's whole evidence base evaporated
+ * with it. Measured 2026-08-21: asked "did any gate fire on this deck?" about a
+ * build from the previous evening, the answer was unrecoverable — the ledger had
+ * zero rows for it, on a machine that had redeployed in between.
+ *
+ * The per-document copy goes in the genDir, which IS in the R2 bundle, so the
+ * evidence travels with the deck it describes and survives every deploy. That
+ * also makes it answerable per-deck rather than only in aggregate: "this page
+ * looks wrong — did a gate see it?" is a question about one document.
+ */
 export const recordGateTelemetry = async (
-  entry: Omit<GateTelemetry, "ts"> & { ts?: string },
+  entry: Omit<GateTelemetry, "ts"> & { ts?: string; genDir?: string },
 ): Promise<void> => {
+  const { genDir, ...rest } = entry;
+  const rec: GateTelemetry = { ts: entry.ts ?? new Date().toISOString(), ...rest };
   try {
-    const rec: GateTelemetry = { ts: entry.ts ?? new Date().toISOString(), ...entry };
     await fs.mkdir(path.dirname(TELEMETRY_LOG), { recursive: true });
     await fs.appendFile(TELEMETRY_LOG, JSON.stringify(rec) + "\n", "utf8");
   } catch (err) {
-    console.warn("[gate-telemetry] write skipped:", err instanceof Error ? err.message : err);
+    console.warn("[gate-telemetry] ledger write skipped:", err instanceof Error ? err.message : err);
+  }
+  if (!genDir) return;
+  try {
+    await fs.writeFile(path.join(genDir, "gate-telemetry.json"), JSON.stringify(rec, null, 2), "utf8");
+  } catch (err) {
+    console.warn("[gate-telemetry] per-document write skipped:", err instanceof Error ? err.message : err);
   }
 };

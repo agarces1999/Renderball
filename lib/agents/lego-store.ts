@@ -17,6 +17,7 @@
 import { promises as fs } from "fs";
 import path from "path";
 import { decompose, reassemble, pieceCount, pieceSlot, type Decomposed, type DecomposedPiece } from "./lego-decompose";
+import { persistGenDir } from "../render/gen-store";
 
 const LEGO_DIR = "lego";
 
@@ -251,6 +252,11 @@ export const healStaleStore = async (
 
   if (reassemble(fresh) !== code) return { healed: false, reason: "round-trip mismatch" };
   await writeDecomposed(genDir, fresh);
+  // Republish, or the repair lives only on this container and the next deploy
+  // restores the same broken snapshot — which is the bug, not the fix. Not
+  // awaited: the heal runs in front of a user's edit, and the edit is already
+  // correct on local disk whether or not the upload lands.
+  void persistGenDir(path.basename(genDir)).catch(() => {});
   console.warn(
     `[lego-store] STALE STORE HEALED for ${path.basename(genDir)}: the store described ` +
       `${currentScenes} scene(s), the shipped composition has ${fresh.scenes.length} — ` +
