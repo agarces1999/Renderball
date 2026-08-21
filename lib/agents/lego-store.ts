@@ -206,6 +206,60 @@ export const decomposeGenDir = async (
 };
 
 /**
+ * STALE-STORE HEAL. The store is by definition a decomposition of the shipped
+ * Composition.tsx; if it describes a different number of scenes, it is not this
+ * document's store at all and every edit op reading it silently does the wrong
+ * thing (page-ops refuses with "store/script scene mismatch"; move/delete/insert
+ * find no piece; re-skin reports it would stop the later pages rendering).
+ *
+ * How a document gets one (measured 2026-08-21, 3 of 94 stored decks): the build
+ * calls writeGeneratedFiles — which snapshots the genDir to R2 — BEFORE it writes
+ * the lego store. The store therefore exists only on the container's disk. A
+ * deploy wipes that disk, the document rehydrates from the R2 snapshot, and it
+ * comes back carrying whatever store predated the build — for a deck generated
+ * from a blank document, the one-scene `s0.hint` scaffold.
+ *
+ * readManifest already repairs an ABSENT store on read (it lazily decomposes).
+ * This closes the other half: a store that is present, readable, and describes
+ * a different document. run-preview-build now re-persists after decomposing, so
+ * new builds cannot land this way. This heals the documents that already did, on first touch, for free:
+ * re-decompose from the code that actually ships. Byte-identity guarded exactly
+ * like decomposeGenDir, so a composition it cannot round-trip is left alone
+ * rather than corrupted. Per-piece offsets are dropped with the stale manifest —
+ * they addressed scenes this document does not have.
+ */
+export const healStaleStore = async (
+  genDir: string,
+): Promise<{ healed: boolean; scenes?: number; reason?: string }> => {
+  let code: string;
+  try {
+    code = await fs.readFile(path.join(genDir, "Composition.tsx"), "utf8");
+  } catch {
+    return { healed: false, reason: "no Composition.tsx" };
+  }
+  const fresh = decompose(code);
+  if (pieceCount(fresh) === 0) return { healed: false, reason: "no <Piece> markers" };
+
+  let currentScenes: number | null = null;
+  try {
+    currentScenes = (await readManifest(genDir)).scenes.length;
+  } catch {
+    currentScenes = null; // no store at all — decomposeGenDir's job, not ours
+  }
+  if (currentScenes === null) return { healed: false, reason: "no store" };
+  if (currentScenes === fresh.scenes.length) return { healed: false };
+
+  if (reassemble(fresh) !== code) return { healed: false, reason: "round-trip mismatch" };
+  await writeDecomposed(genDir, fresh);
+  console.warn(
+    `[lego-store] STALE STORE HEALED for ${path.basename(genDir)}: the store described ` +
+      `${currentScenes} scene(s), the shipped composition has ${fresh.scenes.length} — ` +
+      `re-decomposed from Composition.tsx. Per-piece offsets from the stale manifest were dropped.`,
+  );
+  return { healed: true, scenes: fresh.scenes.length };
+};
+
+/**
  * Overwrite ONE piece's body file in place (M2 regenerate / text edit). Finds the
  * piece by id across scenes via the manifest, writes the new body to its file. The
  * next readDecomposed/reassembleFromDisk picks it up; every sibling file is

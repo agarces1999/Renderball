@@ -16,6 +16,7 @@ import {
   BRAND_CHROME_SOURCE,
 } from "./build-wrapper";
 import { decomposeGenDir } from "../agents/lego-store";
+import { persistGenDir } from "./gen-store";
 import { resolveCornerBrandMark } from "../agents/logo-inject";
 import { verifyScenesRender } from "./ssr-render";
 import { measureScenes } from "./measure-scene";
@@ -957,6 +958,16 @@ async function runPreviewBuildInner(
   try {
     const lego = await decomposeGenDir(genDir);
     console.log(`[preview/build] lego decompose: ${lego.ok ? `${lego.pieces} pieces` : `skipped (${lego.reason})`}`);
+    // RE-PERSIST. writeGeneratedFiles snapshots the genDir to R2, and every one
+    // of its call sites above runs BEFORE this decompose — so without this the
+    // durable copy carries the store that predated the build (for a deck made
+    // from a blank document, the one-scene `s0.hint` scaffold). The next deploy
+    // wipes the container, the document rehydrates from that snapshot, and every
+    // editor operation reads a store describing a document that no longer
+    // exists: move/delete/insert find no piece, page-ops refuses with
+    // "store/script scene mismatch", re-skin reports it would stop the later
+    // pages rendering. Measured 2026-08-21 on 3 of 94 stored decks.
+    if (lego.ok) await persistGenDir(scriptId);
   } catch (err) {
     console.warn("[preview/build] lego decompose skipped:", err);
   }
@@ -1356,6 +1367,8 @@ async function runCastPreviewBuild(args: {
     try {
       const lego = await decomposeGenDir(genDir);
       console.log(`[preview/build:cast] lego decompose: ${lego.ok ? `${lego.pieces} pieces` : `skipped (${lego.reason})`}`);
+      // Same re-persist as the main path — see the comment there.
+      if (lego.ok) await persistGenDir(scriptId);
     } catch (err) {
       console.warn("[preview/build:cast] lego decompose skipped:", err);
     }

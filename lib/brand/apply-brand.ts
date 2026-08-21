@@ -21,6 +21,7 @@ import {
   captureUndo,
   commitUndo,
   decomposeGenDir,
+  healStaleStore,
   readDecomposed,
   readManifest,
   writeManifest,
@@ -87,6 +88,16 @@ export const applyBrandToDocument = async (
       }
       await commitUndo(genDir, undo, "brand");
       return { ok: true, changes: [] };
+    }
+
+    // A document rehydrated from R2 can carry a store that predates its build.
+    // Re-skinning through it drops every scene the store does not know about,
+    // which surfaced as "brand would stop page 2..6 rendering, so it was not
+    // applied" — the safety check firing on a store problem, not a brand one.
+    try {
+      await healStaleStore(genDir);
+    } catch (err) {
+      console.warn(`[apply-brand] stale-store check failed for ${genDir}:`, err);
     }
 
     // 1. The preamble — where PALETTE / FONT_* / BRAND_FONTS_CSS live. The

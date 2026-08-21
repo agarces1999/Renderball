@@ -34,6 +34,7 @@ import {
   commitUndo,
   readUndoRing,
   restoreUndoRing,
+  healStaleStore,
   type PieceOffset,
 } from "../agents/lego-store";
 import {
@@ -222,6 +223,15 @@ export const applyPageOp = async (
 ): Promise<PageOpResult> => {
   let d: Decomposed;
   let manifest: Awaited<ReturnType<typeof readManifest>>;
+  // A document rehydrated from R2 can carry a store that predates its build; the
+  // mismatch below is how that used to surface ("store/script scene mismatch
+  // (1 vs 6)"). Repair it from the shipped composition first — this path does not
+  // run through withGenDirLock, so it needs its own call.
+  try {
+    await healStaleStore(genDir);
+  } catch (err) {
+    console.warn(`[page-ops] stale-store check failed for ${genDir}:`, err);
+  }
   try {
     d = await readDecomposed(genDir);
     manifest = await readManifest(genDir);
