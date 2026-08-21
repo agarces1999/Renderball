@@ -39,6 +39,7 @@ import {
   EDGE_CROP_FRAC,
   EDGE_CLAMP_OVERSIZE_FRAC,
   BLOCKING_RENDER_TRUTH_KINDS,
+  advisoryFindings,
   findRuleThroughText,
   findDecorationOverText,
   type EdgeCropFinding,
@@ -1205,6 +1206,43 @@ await check("an untrusted scene's text-metric findings flag but cannot BLOCK", a
   const me = await findRenderTruthFailures(
     [{ scene: 0, width: 1920, height: 1080, elements: [], error: "boom", fontFailures: ["X"] }], {});
   assert(me.blocking.some((f) => f.kind === "measure-error"), "measure-error stays fail-closed");
+});
+
+await check("REGRESSION: a demoted finding is REPORTED, not silently dropped", async () => {
+  // The page-2 collision the founder reported (2026-08-21). The gate saw it.
+  // The measurement-trust rule demoted it because the deck's three remote brand
+  // webfonts had not loaded. `render_truth_unresolved` is written only when the
+  // ladder returns !ok — and with nothing blocking, the ladder returns "passed".
+  // So the finding reached the HTTP response and a telemetry ledger a deploy
+  // erases, and nothing else. The deck shipped as "checks passed".
+  const overflowing = {
+    tag: "div", x: 1800, y: 100, w: 600, h: 120, color: "rgb(0,0,0)", bg: "rgba(0,0,0,0)",
+    text: "spills", isImg: false, fontSize: 24, opacity: 1, piece: "p1", pieceKind: "copy",
+    onOpaqueSurface: true, coveredAtCenter: false, radius: 0, parentIx: 0,
+    hasTextDesc: true, hasBgImage: false, vx: 1800, vy: 100, vw: 120, vh: 120,
+  };
+  const untrusted = await findRenderTruthFailures(
+    [{ scene: 0, width: 1920, height: 1080, elements: [overflowing], fontFailures: ["Anthropic Serif"] }],
+    { blockingKinds: BLOCKING_RENDER_TRUTH_KINDS },
+  );
+  assert(untrusted.blocking.length === 0, "precondition: nothing may block on an untrusted scene");
+
+  const advisory = advisoryFindings(untrusted.findings, untrusted.blocking, BLOCKING_RENDER_TRUTH_KINDS);
+  assert(advisory.some((f) => f.kind === "overflow"), "the demoted finding must be reportable");
+  assert(advisory.every((f) => BLOCKING_RENDER_TRUTH_KINDS.includes(f.kind)), "only blocking-kind findings are advisory");
+
+  // A TRUSTED scene's finding is already carried by render_truth_unresolved —
+  // reporting it twice would double every flagged page in the editor panel.
+  const trusted = await findRenderTruthFailures(
+    [{ scene: 0, width: 1920, height: 1080, elements: [overflowing], fitSettled: true }],
+    { blockingKinds: BLOCKING_RENDER_TRUTH_KINDS },
+  );
+  assert(trusted.blocking.length > 0, "precondition: a trusted scene blocks");
+  assert(
+    advisoryFindings(trusted.findings, trusted.blocking, BLOCKING_RENDER_TRUTH_KINDS)
+      .every((f) => f.kind !== "overflow"),
+    "a finding that DID block must not also be reported as advisory",
+  );
 });
 
 // ── rule-through-text (friend-deck page 1: underline struck the wrapped headline) ──

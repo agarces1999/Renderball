@@ -342,6 +342,19 @@ export interface BuildWarnings {
    *  Human sentences naming the page and the defect; the editor panel that
    *  renders structural_unresolved shows these the same way. */
   render_truth_unresolved?: string[];
+  /**
+   * Render-truth findings the gate SAW but was not permitted to act on,
+   * because the scene could not vouch for its own text metrics (brand fonts
+   * that did not load, a fit pass that did not settle — see the measurement-
+   * trust rule in render-truth-gates.ts).
+   *
+   * Distinct from render_truth_unresolved on purpose. That key means "we tried
+   * to fix this and could not"; this one means "we could not even trust the
+   * measurement, so we did not try". Before this existed a demoted finding
+   * reached no human at all, and a real page-2 collision shipped as "checks
+   * passed" (measured 2026-08-21).
+   */
+  render_truth_advisory?: string[];
 }
 
 export type BuildResult =

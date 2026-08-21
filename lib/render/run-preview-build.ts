@@ -29,7 +29,7 @@ import {
   writeInflight,
 } from "./prescaffold";
 import { findFlooredCopy, applyShortened, shortenPrompt } from "./semantic-shorten";
-import { findRenderTruthFailures, measureOutDir, BLOCKING_RENDER_TRUTH_KINDS } from "./render-truth-gates";
+import { findRenderTruthFailures, measureOutDir, advisoryFindings, BLOCKING_RENDER_TRUTH_KINDS } from "./render-truth-gates";
 import { resolveCanvasPlan, canvasBrandFidelityAdvisory, signatureWithLogoFallback, brandShortName } from "../crawl/brand-identity";
 import { preflightBrandTruth } from "../crawl/brand-truth";
 import { repairRenderTruth } from "./render-truth-repair";
@@ -733,6 +733,53 @@ async function runPreviewBuildInner(
       `[preview/build] shipping FLAGGED (${repair.reason}) — ${repair.blocking.length} finding(s) carried as warnings:`,
       JSON.stringify(repair.blocking.map((f) => ({ scene: f.scene, kind: f.kind }))),
     );
+  }
+
+  // ADVISORY RENDER-TRUTH FINDINGS — the ones the gate SAW and was not allowed
+  // to block on.
+  //
+  // findRenderTruthFailures demotes a text-metric finding (overflow,
+  // cross-piece-overlap, covered-text-cluster, intra-piece-overlap) to advisory
+  // whenever the scene it fired on could not vouch for its own text metrics —
+  // brand fonts that did not load, a fit pass that did not settle. That rule is
+  // right and stays: a measurement that cannot trust its own glyph widths must
+  // not buy repairs or refuse delivery.
+  //
+  // What was missing is the other half. Its comment promised untrusted findings
+  // "flag, they inform" — but every warnings write below reads repair.blocking,
+  // and `render_truth_unresolved` is only written when the ladder returns !ok.
+  // A demoted finding therefore reached nothing a human ever sees: not the
+  // quality panel, not warnings.json, only the HTTP response and a telemetry
+  // ledger that a deploy erases.
+  //
+  // Measured 2026-08-21 on the deck that surfaced this. Its three brand
+  // webfonts come from a remote CDN; repointing them at a 404 and re-measuring
+  // turns cross-piece-overlap from FOUND 4 / BLOCKING 4 into FOUND 4 /
+  // BLOCKING 0 — the page-2 collision the founder reported, seen by the gate,
+  // silently dropped, and shipped as "checks passed".
+  //
+  // So: advisory findings are now written too, in their own key, worded so the
+  // difference is legible — this was not repaired, and it was not verified
+  // either; here is what the gate saw and why it could not act.
+  {
+    const advisory = advisoryFindings(repair.findings, repair.blocking, BLOCKING_KINDS);
+    if (advisory.length > 0) {
+      const noun = (currentScript?.config?.kind ?? "deck") === "deck" ? "Page" : "Scene";
+      currentWarnings = {
+        ...(currentWarnings ?? {}),
+        render_truth_advisory: advisory.map(
+          (f) =>
+            `${noun} ${f.scene + 1}: ${f.detail || f.kind} — seen but not repaired: this page's ` +
+            `text could not be measured reliably (brand fonts or text-fit did not settle), so the ` +
+            `check was not allowed to act on it. Worth a look by eye.`,
+        ),
+      };
+      console.warn(
+        `[preview/build] ${advisory.length} render-truth finding(s) DEMOTED to advisory (untrusted text metrics):`,
+        JSON.stringify(advisory.map((f) => ({ scene: f.scene, kind: f.kind }))),
+      );
+      timeline.mark(`gate:render-truth:advisory (${advisory.length} finding(s))`);
+    }
   }
 
   // VISION GATE (ADVISORY). Findings surface as warnings, never block — runs

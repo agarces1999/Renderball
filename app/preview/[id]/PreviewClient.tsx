@@ -99,6 +99,7 @@ interface PreviewWarnings {
    */
   structural_unresolved?: string[];
   render_truth_unresolved?: string[];
+  render_truth_advisory?: string[];
 }
 
 export function PreviewClient({ scriptId, script, initialWarnings, isBlank = false }: Props) {
@@ -529,10 +530,13 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
               exportError={exportError}
               onExportDismiss={() => setExportError(null)}
               structural={
-                warnings?.structural_unresolved?.length || warnings?.render_truth_unresolved?.length
+                warnings?.structural_unresolved?.length ||
+                warnings?.render_truth_unresolved?.length ||
+                warnings?.render_truth_advisory?.length
                   ? [
                       ...(warnings?.structural_unresolved ?? []),
                       ...(warnings?.render_truth_unresolved ?? []),
+                      ...(warnings?.render_truth_advisory ?? []),
                     ]
                   : null
               }
@@ -899,7 +903,9 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
         />
       )}
 
-      {(warnings?.structural_unresolved?.length || warnings?.render_truth_unresolved?.length) ? (
+      {(warnings?.structural_unresolved?.length ||
+        warnings?.render_truth_unresolved?.length ||
+        warnings?.render_truth_advisory?.length) ? (
         <StructuralPanel
           issues={[
             ...(warnings?.structural_unresolved ?? []),
@@ -907,6 +913,10 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
             // deck shipped anyway (founder policy 2026-08-13) and these name
             // the pages to touch up by hand.
             ...(warnings?.render_truth_unresolved ?? []),
+            // Findings the gate SAW but was not allowed to act on, because the
+            // page could not vouch for its own text metrics. These used to
+            // reach nobody, and a real collision shipped as "checks passed".
+            ...(warnings?.render_truth_advisory ?? []),
           ]}
         />
       ) : null}

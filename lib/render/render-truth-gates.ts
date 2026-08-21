@@ -2645,6 +2645,31 @@ export const findRenderTruthFailures = async (
   return { findings, blocking };
 };
 
+/**
+ * The findings a gate SAW but was not permitted to act on.
+ *
+ * A blocking-kind finding that is absent from `blocking` was demoted by the
+ * measurement-trust rule above: its scene could not vouch for its own text
+ * metrics, so it may not buy repairs or refuse delivery. That rule is correct.
+ * What was missing is that nothing then TOLD anyone. `render_truth_unresolved`
+ * is written only when the ladder returns !ok, so a demoted finding reached no
+ * human at all — and a real page-2 collision shipped as "checks passed"
+ * (measured 2026-08-21: repointing that deck's three remote brand webfonts at a
+ * 404 turned cross-piece-overlap from FOUND 4 / BLOCKING 4 into FOUND 4 /
+ * BLOCKING 0).
+ *
+ * Pure, so the reporting half is pinned by tests rather than eyeballed.
+ */
+export const advisoryFindings = (
+  findings: RenderTruthFinding[],
+  blocking: RenderTruthFinding[],
+  blockingKinds: RenderTruthKind[],
+): RenderTruthFinding[] => {
+  const kinds = new Set(blockingKinds);
+  const blocked = new Set(blocking.map((f) => `${f.scene}|${f.kind}|${f.detail}`));
+  return findings.filter((f) => kinds.has(f.kind) && !blocked.has(`${f.scene}|${f.kind}|${f.detail}`));
+};
+
 // Re-exported for callers that only need the outDir convention.
 export const measureOutDir = (genDir: string): string =>
   path.join(genDir, ".render-truth");
