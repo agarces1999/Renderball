@@ -10,13 +10,28 @@
 // case. The map holds one settled-promise tail per edited genDir (tiny); not
 // pruned, which is fine for a bounded set of videos in a session.
 //
+import { stat } from "fs/promises";
+import path from "path";
 import { healStaleStore } from "../agents/lego-store";
 
 const chains = new Map<string, Promise<unknown>>();
 
-/** genDirs already checked for a stale store this process — the heal is a
- *  one-shot repair, not a per-edit cost. */
-const healChecked = new Set<string>();
+/**
+ * genDirs already checked, keyed to the STATE of the store when we checked it.
+ *
+ * This was a bare Set — check a genDir once per process, never again. That is
+ * wrong for the way documents actually arrive: production re-hydrates a genDir
+ * from durable storage on read, so the same document can be restored from the
+ * same stale snapshot MORE THAN ONCE inside one process. After the first repair
+ * the Set said "seen" and every later rehydration went unrepaired, which is the
+ * original bug wearing a hat.
+ *
+ * Keyed on the manifest's size and mtime instead: unchanged store, no work;
+ * store rewritten by anything at all, checked again. Found by the QA seam flow
+ * that corrupts a document twice in one run — the coarse memo made the second
+ * corruption survive, and a passing test would have been the wrong answer.
+ */
+const healChecked = new Map<string, string>();
 
 /**
  * A document rehydrated from R2 can come back carrying a store that predates its
@@ -25,11 +40,23 @@ const healChecked = new Set<string>();
  * never fatal: a heal that cannot run leaves the op to fail with its own
  * (accurate) error rather than a new one from the repair.
  */
-const healOnce = async (genDir: string): Promise<void> => {
-  if (healChecked.has(genDir)) return;
-  healChecked.add(genDir);
+const storeFingerprint = async (genDir: string): Promise<string> => {
   try {
+    const st = await stat(path.join(genDir, "lego", "manifest.json"));
+    return `${st.size}:${st.mtimeMs}`;
+  } catch {
+    return "absent";
+  }
+};
+
+const healOnce = async (genDir: string): Promise<void> => {
+  try {
+    const before = await storeFingerprint(genDir);
+    if (healChecked.get(genDir) === before) return; // same store we already cleared
     await healStaleStore(genDir);
+    // Record what we END on: a heal rewrites the manifest, so fingerprinting
+    // the pre-heal state would make the next edit re-check for no reason.
+    healChecked.set(genDir, await storeFingerprint(genDir));
   } catch (err) {
     console.warn(`[gendir-lock] stale-store check failed for ${genDir}:`, err);
   }

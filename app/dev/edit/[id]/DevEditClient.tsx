@@ -13,6 +13,7 @@ import {
 } from "../../../../components/EditorShell";
 import { cn } from "../../../../lib/cn";
 import { BrandPanel } from "../../../../components/BrandPanel";
+import { StructuralPanel } from "../../../../components/StructuralPanel";
 import { DeckPagePanel } from "../../../preview/[id]/PreviewClient";
 
 /**
@@ -41,12 +42,17 @@ export function DevEditClient({
   logline,
   width,
   height,
+  structural,
 }: {
   scriptId: string;
   scenes: SceneSummary[];
   logline: string | null;
   width: number;
   height: number;
+  /** Unresolved + advisory findings the build recorded — the same list the
+   *  production surface shows. This surface used to omit them entirely, which
+   *  is why no QA flow could catch a defect that reached no human. */
+  structural: string[];
 }) {
   const [sceneIndex, setSceneIndex] = useState(0);
   const [reloadKey, setReloadKey] = useState(0);
@@ -164,6 +170,11 @@ export function DevEditClient({
 
   return (
     <div className="min-h-screen bg-canvas">
+      {structural.length > 0 && (
+        <div className="mx-auto max-w-[1400px] px-4 pt-4">
+          <StructuralPanel issues={structural} />
+        </div>
+      )}
       <EditorShell
         slides={scenes.map((s) => ({ label: s.label }))}
         active={sceneIndex}

@@ -1,3 +1,5 @@
+import { promises as fs } from "fs";
+import path from "path";
 import { notFound } from "next/navigation";
 import { DEV_OWNER_ID } from "../../../../lib/auth";
 import { loadScript } from "../../../../lib/store";
@@ -17,6 +19,16 @@ export default async function DevEditPage({ params }: { params: { id: string } }
   if (!script) notFound();
 
   const dims = dimensionsForScript(script);
+
+  // The same three keys the production surface reads. Best-effort: a document
+  // with no warnings.json simply has nothing to report.
+  const warnings = await fs
+    .readFile(path.join(process.cwd(), "src", "generated", params.id, "warnings.json"), "utf8")
+    .then((raw) => JSON.parse(raw) as Record<string, unknown>)
+    .catch(() => ({}) as Record<string, unknown>);
+  const structural = ["structural_unresolved", "render_truth_unresolved", "render_truth_advisory"]
+    .flatMap((k) => (Array.isArray(warnings[k]) ? (warnings[k] as string[]) : []));
+
   return (
     <DevEditClient
       scriptId={params.id}
@@ -26,6 +38,7 @@ export default async function DevEditPage({ params }: { params: { id: string } }
         seconds: Math.max(0, (s.end_seconds ?? 0) - (s.start_seconds ?? 0)),
       }))}
       logline={script.narrative?.logline ?? null}
+      structural={structural}
       width={dims.width}
       height={dims.height}
     />

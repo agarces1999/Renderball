@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { BrandPanel } from "../../../components/BrandPanel";
 import { ElementPanel } from "../../../components/ElementPanel";
 import { ShareButton } from "../../../components/ShareButton";
+import { StructuralPanel } from "../../../components/StructuralPanel";
 import { BlankDocumentPanel } from "../../../components/BlankDocumentPanel";
 import Link from "next/link";
 import type { Script } from "../../../src/schema";
@@ -1272,43 +1273,6 @@ function PageOpBtn({
  * regen-error surfaces) and sits above the notes. It still must not fight the
  * brand-color preview: a thin alarm strip, not a wall of red.
  */
-function StructuralPanel({ issues }: { issues: string[] }) {
-  return (
-    <div className="mb-4 rounded-md border border-red-500/30 bg-red-500/5 p-4">
-      <div className="mb-1.5 font-mono text-[11px] uppercase tracking-[0.16em] text-red-500">
-        Unresolved structural issues ({issues.length})
-      </div>
-      <div className="mb-2.5 text-[12px] text-ink-soft">
-        These failed the build&apos;s structural quality gates and survived
-        every automatic retry — the design shipped with them. Regenerate the
-        affected page or scene, or rebuild, to clear them.
-      </div>
-      <ul className="space-y-1">
-        {issues.slice(0, 10).map((issue, i) => {
-          const sep = issue.indexOf(":");
-          const gate = sep > 0 ? issue.slice(0, sep) : null;
-          const detail = sep > 0 ? issue.slice(sep + 1).trim() : issue;
-          return (
-            <li key={i} className="flex items-baseline gap-2 text-[12px]">
-              <span className="mt-1 inline-block h-1.5 w-1.5 shrink-0 self-center rounded-full bg-red-500" />
-              {gate && (
-                <span className="shrink-0 font-mono text-[11px] text-red-500">
-                  {gate}
-                </span>
-              )}
-              <span className="text-ink-soft">{detail}</span>
-            </li>
-          );
-        })}
-        {issues.length > 10 && (
-          <li className="font-mono text-[11px] text-muted">
-            +{issues.length - 10} more in warnings.json
-          </li>
-        )}
-      </ul>
-    </div>
-  );
-}
 
 /**
  * Soft quality notes — the BuildWarnings the validators produced (invented

@@ -21,6 +21,9 @@ import { limitFlows } from "./flows/journey-limits";
 // The invariant nothing checked: no surface may render an error where
 // another renders content.
 import { surfaceFlows } from "./flows/journey-surfaces";
+// The boundaries BETWEEN subsystems, where six of the seven bugs found by hand
+// on 2026-08-21 were living while every flow above stayed green.
+import { seamFlows } from "./flows/seams";
 import { authenticator, testCredentials } from "./auth";
 
 const BASE = process.env.QA_BASE ?? "http://localhost:3000";
@@ -277,6 +280,7 @@ const main = async (): Promise<void> => {
     ...interruptedFlows,
     ...limitFlows,
     ...surfaceFlows,
+    ...seamFlows,
   ];
   const only = (process.env.QA_ONLY ?? "")
     .split(",")
