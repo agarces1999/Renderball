@@ -267,6 +267,120 @@ export const findUngroundedClaims = (
 const STAGE_LABEL_RX =
   /\bseries\s+[a-k]\b|\bpre-?seed\b|\bseed\s+round\b|\bangel\s+round\b|\bgrowth\s+round\b|\bbridge\s+round\b|\bmezzanine\s+round\b/gi;
 
+/**
+ * Fabricated COMPLIANCE, SECURITY and DEPLOYMENT claims at the script stage.
+ *
+ * Measured 2026-08-21 on the Claude Code test brief. That brief contains no
+ * numbers and no compliance language at all — it asks only for "a page on the
+ * security posture an engineering leader will ask about". Both outline runs
+ * filled that page by inventing the answers:
+ *
+ *   thinking off → "SOC 2 Type II" · "Enterprise SSO" · "AES-256 at rest and
+ *                   in transit" · "On-prem deployment" ·
+ *                   "Your code never leaves your infrastructure"
+ *   thinking on  → "SOC 2 & penetration tests" · "SSO / SAML" ·
+ *                   "Network egress controls" · "No training on your code"
+ *
+ * Two of those are outright false about the product. All eleven fabricated
+ * strings from both runs passed findUngroundedClaims and
+ * findUngroundedStageLabels — the stat gate only matches stat-SHAPED tokens
+ * (currency, percent, multiplier, latency, magnitude counts), and "SOC 2" is
+ * none of those. So the highest-stakes class of invention in a B2B deck had no
+ * gate at all, and the design stage TRUSTS script content, which laundered it
+ * into "approved content" and printed it on a page.
+ *
+ * Deliberately narrow, exactly like findUngroundedStageLabels: it matches only
+ * DISTINCTIVE, CHECKABLE, THIRD-PARTY-VERIFIABLE assertions — named
+ * certifications, named crypto/architecture guarantees, named data-handling
+ * promises. Ordinary copy never trips it; "we take security seriously" is
+ * vague marketing, not a claim anyone can be sued over. A claim is grounded if
+ * it appears in the brief, the user's verified claims, or the crawled site —
+ * i.e. if the company actually says it about itself.
+ *
+ * Returns the ungrounded assertions verbatim, for the retry message.
+ */
+const COMPLIANCE_CLAIM_RX = new RegExp(
+  [
+    // Named audit/certification regimes. SOC and ISO carry their number, so the
+    // token stays specific rather than matching every "soc" in a word.
+    "\\bsoc\\s?-?\\s?[12]\\b(?:\\s+type\\s+(?:i{1,2}|[12]))?",
+    "\\biso\\s?-?\\s?(?:27001|27017|27018|9001)\\b",
+    "\\bpci[\\s-]?dss\\b",
+    "\\bhitrust\\b",
+    "\\bfedramp\\b",
+    "\\bstateramp\\b",
+    "\\bhipaa\\b",
+    "\\bsox\\b|\\bsarbanes[\\s-]?oxley\\b",
+    "\\bgdpr\\b",
+    "\\bccpa\\b",
+    // Named cryptographic / architectural guarantees.
+    "\\baes[\\s-]?256\\b",
+    "\\bend[\\s-]to[\\s-]end\\s+encrypt(?:ed|ion)\\b",
+    "\\bzero[\\s-]knowledge\\b",
+    "\\bair[\\s-]?gapped\\b",
+    "\\bon[\\s-]?prem(?:ise|ises|)\\b",
+    "\\bself[\\s-]?hosted\\b",
+    "\\bsingle[\\s-]?tenant\\b",
+    "\\bdata\\s+residency\\b",
+    // Named data-handling promises — the class most likely to be legally load
+    // bearing and least likely to be true by default.
+    "\\b(?:never|does\\s+not|doesn't|no)\\s+(?:train|training)\\s+on\\s+your\\s+\\w+",
+    "\\bzero\\s+(?:data\\s+)?retention\\b",
+    "\\byour\\s+(?:code|data)\\s+never\\s+leaves\\b",
+    // Named assurance activities.
+    "\\bpen(?:etration)?[\\s-]?test(?:s|ing|ed)?\\b",
+    "\\bbug\\s+bounty\\b",
+    // Identity plumbing asserted as a product capability.
+    "\\bscim\\b",
+    "\\bsaml\\b",
+    "\\bsso\\b",
+  ].join("|"),
+  "gi",
+);
+
+export const findUngroundedComplianceClaims = (
+  scriptText: string,
+  sourceText: string,
+): string[] => {
+  // Grounding is checked TWO ways, because these claims come in two shapes.
+  //
+  // Named regimes are punctuation-noise: "SOC 2", "SOC-2" and "soc2" are one
+  // assertion, so collapsing spaces and hyphens on both sides settles it.
+  const squash = (t: string) => t.toLowerCase().replace(/[\s-]/g, "");
+  const squashedSrc = squash(sourceText);
+
+  // Phrase claims are wording-noise. A site that says "does not train on your
+  // code" HAS grounded a deck bullet reading "No training on your code by
+  // default" — same promise, different sentence. Literal substring matching
+  // called that ungrounded and would have burned a retry forcing the model to
+  // remove something true. So phrases ground on their CONTENT words, lightly
+  // stemmed, ignoring negation and filler (which the regex already required to
+  // be present for the match to happen at all).
+  const FILLER = new Set([
+    "no", "not", "never", "does", "doesnt", "dont", "do", "is", "are", "was",
+    "your", "our", "the", "a", "an", "by", "on", "of", "in", "at", "and", "or",
+    "with", "for", "to", "default", "zero",
+  ]);
+  // Only stem words long enough that the suffix is plausibly inflection —
+  // stemming "aes" to "ae" would ground AES-256 against any word containing it.
+  const stem = (w: string) => (w.length > 4 ? w.replace(/(ing|ed|s)$/, "") : w);
+  const words = (t: string) =>
+    t.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean).map(stem);
+  const srcWords = new Set(words(sourceText));
+
+  const out: string[] = [];
+  for (const m of scriptText.matchAll(COMPLIANCE_CLAIM_RX)) {
+    const token = m[0].trim().replace(/\s+/g, " ");
+    if (squashedSrc.includes(squash(token))) continue; // stated verbatim
+    const content = words(token).filter((w) => !FILLER.has(w));
+    // Every content word present ⇒ the source makes this claim in its own
+    // words. An empty content list can never ground (it would ground anything).
+    if (content.length > 0 && content.every((w) => srcWords.has(w))) continue;
+    if (!out.some((t) => t.toLowerCase() === token.toLowerCase())) out.push(token);
+  }
+  return out;
+};
+
 export const findUngroundedStageLabels = (
   scriptText: string,
   sourceText: string,

@@ -6,6 +6,7 @@ import {
   normalizeScriptContent,
   backfillSceneRegisters,
   findUngroundedClaims,
+  findUngroundedComplianceClaims,
   findUngroundedStageLabels,
   findTypeOnlyScenes,
   drawableVocabulary,
@@ -746,6 +747,14 @@ export const generateScript = async (
       // QA G5: also catch a fabricated funding-stage label ("Series C" when the
       // brief only says "$250M funding round").
       const ungroundedStages = findUngroundedStageLabels(scriptCopy, sourceText);
+      // And a fabricated COMPLIANCE claim. The stat gate above only matches
+      // stat-SHAPED tokens, so "SOC 2 Type II", "AES-256" and "your code never
+      // leaves your infrastructure" all walked straight past it — measured
+      // 2026-08-21, eleven invented strings from two runs of the same brief,
+      // zero caught. It is the highest-stakes class of invention in a B2B deck:
+      // a made-up statistic is embarrassing, a made-up certification is a
+      // representation the reader may act on.
+      const ungroundedCompliance = findUngroundedComplianceClaims(scriptCopy, sourceText);
       // NO BUDGET LEFT AND STILL FABRICATED → FAIL. This guard used to read
       // `attempt < MAX`, so on the final attempt the whole block was skipped
       // and execution fell through to `return { ok: true }` — shipping the
@@ -755,17 +764,19 @@ export const generateScript = async (
       // printed on a page in somebody's investor deck. A failed generation
       // costs a retry; a fabricated statistic costs their credibility. Found by
       // a test asserting a made-up "38ms" could never reach a user.
-      const fabricated = ungrounded.length > 0 || ungroundedStages.length > 0;
+      const fabricated =
+        ungrounded.length > 0 || ungroundedStages.length > 0 || ungroundedCompliance.length > 0;
       if (fabricated && attempt >= MAX_ATTEMPTS + repairRounds) {
         return {
           ok: false,
-          error: `Ungrounded numeric claims survived every attempt: ${[...ungrounded, ...ungroundedStages].join(", ")}`,
+          error: `Ungrounded claims survived every attempt: ${[...ungrounded, ...ungroundedStages, ...ungroundedCompliance].join(", ")}`,
         };
       }
       if (fabricated) {
         lastError = [
           ungrounded.length > 0 ? `Ungrounded numeric claims: ${ungrounded.join(", ")}` : "",
           ungroundedStages.length > 0 ? `Ungrounded funding-stage labels: ${ungroundedStages.join(", ")}` : "",
+          ungroundedCompliance.length > 0 ? `Ungrounded compliance claims: ${ungroundedCompliance.join(", ")}` : "",
         ]
           .filter(Boolean)
           .join("; ");
@@ -778,6 +789,10 @@ export const generateScript = async (
         if (ungroundedStages.length > 0)
           msgs.push(
             `These funding-stage labels aren't stated anywhere in the brief or crawled content: ${ungroundedStages.join(", ")}. The brief mentions a raise but NOT the stage — drop the invented label (say "funding round" / "their raise"), never fabricate "Series C" or similar.`,
+          );
+        if (ungroundedCompliance.length > 0)
+          msgs.push(
+            `These security or compliance claims are NOT stated anywhere in the brief, the verified claims, or the crawled site: ${ungroundedCompliance.join(", ")}. A certification, an encryption standard, a deployment model or a data-handling promise is a factual representation the reader may act on — never infer one from the fact that a page is ABOUT security. Rewrite each as a question the reader will ask ("What does your team need to approve it?"), as the CATEGORY without the claim ("access control", "data handling", "audit posture"), or as an obvious slot for the user to fill — and if the crawled site does state one, use its exact wording.`,
           );
         history.push({ role: "user", content: msgs.join("\n\n") });
         continue;
