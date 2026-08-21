@@ -62,11 +62,23 @@ export const readProvenance = async (genDir: string): Promise<ProvenanceMap> => 
   }
 };
 
-/** Merge one entry in (read-modify-write; last writer wins per pieceId). */
 /**
- * Patch one entry, PRESERVING what is already there — recordProvenance
- * replaces the whole entry, which would wipe a cached styleDescriptor every
- * time a route re-records origin+prompt.
+ * THE writer. Patches one entry, preserving what is already there.
+ *
+ * There used to be a second writer, `recordProvenance`, which replaced the
+ * whole entry. The insert route called record-then-merge, so the merge put the
+ * generation facts straight back and nothing was lost. The regenerate route
+ * called only record — so regenerating a generated icon or image DELETED its
+ * `genMeta`, and `pickStyleReference` (style-match.ts) skips any entry without
+ * one. "Match my existing icons" therefore lost the family the first time you
+ * regenerated a member of it, silently, which is exactly what this function's
+ * preservation was written to prevent.
+ *
+ * Keeping `at` from the previous entry is deliberate: it means "when this
+ * element was created", which is the ordering `pickStyleReference` wants. The
+ * replacing writer reset it to now, so which icon became the style reference
+ * depended on which one you had touched most recently rather than which one you
+ * had made most recently.
  */
 export const mergeProvenance = async (
   genDir: string,
@@ -102,17 +114,3 @@ export const mergeProvenance = async (
   }
 };
 
-export const recordProvenance = async (
-  genDir: string,
-  pieceId: string,
-  entry: Omit<ElementProvenance, "at">,
-): Promise<void> => {
-  try {
-    if (!pieceId) return;
-    const map = await readProvenance(genDir);
-    map[pieceId] = { ...entry, at: new Date().toISOString() };
-    await fs.writeFile(fileOf(genDir), JSON.stringify(map, null, 2), "utf8");
-  } catch (err) {
-    console.warn(`[provenance] write for ${pieceId} failed — the edit itself is unaffected:`, err);
-  }
-};

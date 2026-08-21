@@ -48,11 +48,16 @@ export async function GET(request: Request) {
     await fs.readFile(scriptPath, "utf-8"),
   ) as Script;
 
-  const result = await renderBriefToMp4(brief, script);
+  // disallowRebuild, matching the production export route. Without it this lane
+  // silently re-runs the full Agent-2 pipeline on a reuse miss — an unmetered
+  // ~$1-2 LLM spend path, and one that renders something OTHER than the
+  // composition the preview showed. A stale preview must say so (409), not
+  // quietly regenerate.
+  const result = await renderBriefToMp4(brief, script, { disallowRebuild: true });
   if (!result.ok) {
     return NextResponse.json(
       { error: `${result.stage ?? "render"}: ${result.error}` },
-      { status: 500 },
+      { status: result.stage === "stale-preview" ? 409 : 500 },
     );
   }
 

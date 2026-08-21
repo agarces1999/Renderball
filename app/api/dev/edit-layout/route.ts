@@ -55,6 +55,13 @@ export async function POST(request: Request) {
       { status: 400 },
     );
   }
+  // Same guard as the production lane. Without it `dx: Number(undefined)` below
+  // sends NaN into moveElement — and the whole point of this harness is to
+  // exercise what production actually runs, so a validation that exists on only
+  // one lane means the harness is testing a different program.
+  if (op === "move" && (typeof dx !== "number" || typeof dy !== "number")) {
+    return NextResponse.json({ error: "move requires numeric dx and dy" }, { status: 400 });
+  }
   if (op === "resize" && ![x, y, w, h].every((n) => typeof n === "number" && Number.isFinite(n))) {
     return NextResponse.json({ error: "resize requires numeric x, y, w and h" }, { status: 400 });
   }

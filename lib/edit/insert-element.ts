@@ -31,6 +31,7 @@ import {
 import { generatePiece } from "../agents/generate-piece";
 import { lucideIconNameSet } from "../agents/finalize-refs";
 import { commitGenDir } from "./commit";
+import { highestZIndex } from "./z-index";
 import { withGenDirLock } from "./gendir-lock";
 import { emitFreetextSpan, DEFAULT_FORMAT } from "./freetext";
 import { saveImageAsset } from "./image-assets";
@@ -146,16 +147,14 @@ export interface InsertElementResult {
 const commit = (genDir: string) => commitGenDir(genDir, "inserted element", { checkRender: true });
 
 /** Highest zIndex among a scene's piece bodies (excluding chrome), so a new piece
- *  sits above content. Chrome is not offset-wrapped and keeps its DOM-last paint. */
+ *  sits above content. Chrome is not offset-wrapped and keeps its DOM-last paint.
+ *  The scan itself is shared with the reorder path (lib/edit/z-index.ts) — this
+ *  file used to carry a narrower regex, and a card written as `zIndex={7}` was
+ *  invisible to it, so the inserted element landed underneath. */
 const maxContentZ = async (genDir: string, sceneIndex: number): Promise<number> => {
   const d = await readDecomposed(genDir);
   const scene = d.scenes.find((s) => s.sceneIndex === sceneIndex);
-  let max = 0;
-  for (const p of scene?.pieces ?? []) {
-    if (p.kind === "chrome") continue;
-    for (const m of p.body.matchAll(/zIndex:\s*(\d+)/g)) max = Math.max(max, Number(m[1]));
-  }
-  return max;
+  return highestZIndex((scene?.pieces ?? []).filter((p) => p.kind !== "chrome").map((p) => p.body));
 };
 
 /** Whether the frozen design system defines a given const. Const names vary by build

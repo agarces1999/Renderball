@@ -5,7 +5,7 @@ import { getCurrentUser } from "../../../../lib/auth";
 import { assertZaiAvailable, ZaiUnavailableError } from "../../../../lib/zai-breaker";
 import { takeRegenSlot } from "../../../../lib/edit/op-cap";
 import { loadScript } from "../../../../lib/store";
-import { recordProvenance, mergeProvenance } from "../../../../lib/edit/provenance";
+import { mergeProvenance } from "../../../../lib/edit/provenance";
 import { insertElement, parseInsertBody, type InsertMode } from "../../../../lib/edit/insert-element";
 import { checkTokenAllowance, recordTokenUsage } from "../../../../lib/metering";
 
@@ -88,7 +88,7 @@ export async function POST(request: Request) {
     if (result.usage) await recordTokenUsage({ ownerId: user.id, usage: result.usage, op: "insert-element" });
     if (result.ok && result.pieceId) {
       const p = spec as { mode?: string; prompt?: string };
-      await recordProvenance(genDir, result.pieceId, {
+      await mergeProvenance(genDir, result.pieceId, {
         origin: p.mode === "generate" || p.mode === "generate-image" || p.mode === "generate-icon" ? "marquee" : "added",
         ...(p.prompt ? { prompt: p.prompt } : {}),
       });

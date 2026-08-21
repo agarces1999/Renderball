@@ -36,6 +36,15 @@ export async function POST(request: Request) {
   if (!pieceId || typeof pieceId !== "string") {
     return NextResponse.json({ error: "pieceId required" }, { status: 400 });
   }
+  // Production refuses a blind reroll (founder call, 2026-07-14). This lane used
+  // to allow it, so the harness was exercising — and passing — a path no user
+  // can reach.
+  if (typeof instruction !== "string" || !instruction.trim()) {
+    return NextResponse.json(
+      { error: "Say what to change — regeneration needs an instruction." },
+      { status: 400 },
+    );
+  }
 
   const genDir = path.join(process.cwd(), "src", "generated", scriptId);
   const result = await regenerateElement({ genDir, sceneIndex, pieceId, instruction });

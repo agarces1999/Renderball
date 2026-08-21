@@ -39,6 +39,12 @@ export async function POST(request: Request) {
 
   const script = await loadScript(scriptId, DEV_OWNER_ID);
   if (!script) return NextResponse.json({ error: "document not found" }, { status: 404 });
+  // Without this the scene lookup below silently returns undefined and we bill a
+  // model call describing a page that does not exist. Production 404s; so does
+  // this lane now.
+  if (sceneIndex >= script.scenes.length) {
+    return NextResponse.json({ error: "page not found" }, { status: 404 });
+  }
 
   const genDir = path.join(process.cwd(), "src", "generated", scriptId);
   const dims = dimensionsForScript(script);

@@ -45,7 +45,11 @@ export async function GET(request: Request, { params }: { params: { id: string }
       "Content-Type": contentType,
       Vary: "Accept",
       "Cache-Control": versioned ? "private, max-age=31536000, immutable" : "private, no-cache",
-      ETag: thumb.etag,
+      // body.etag, NOT thumb.etag: on a webp response those differ, so serving
+      // the PNG's tag meant the browser sent back a value the 304 check above
+      // could never match — every webp thumbnail re-downloaded in full, which
+      // is the opposite of what the per-format ETag was introduced to do.
+      ETag: body.etag,
     },
   });
 }

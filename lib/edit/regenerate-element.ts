@@ -12,15 +12,12 @@
 // regeneration doesn't compile, nothing is written — the store + render source stay
 // exactly as they were.
 //
-import { promises as fs } from "fs";
 import { readDocumentBrand } from "../brand/document-brand";
 import { brandPromptBlock } from "../brand/brand-prompt";
-import { persistGenDir } from "../render/gen-store";
 import path from "path";
-import { readDecomposed, writePieceBody, reassembleFromDisk, captureUndo, commitUndo } from "../agents/lego-store";
+import { readDecomposed, writePieceBody, captureUndo, commitUndo } from "../agents/lego-store";
+import { commitGenDir } from "./commit";
 import { regeneratePiece } from "../agents/regenerate-piece";
-import { finalizeUndefinedRefs } from "../agents/finalize-refs";
-import { verifyCompilable } from "../agents/code-extraction";
 import { withGenDirLock } from "./gendir-lock";
 import { findChildInScene, spliceChildBody, blockAsPiece } from "./nested-piece";
 import type { DecomposedPiece } from "../agents/lego-decompose";
@@ -111,41 +108,35 @@ export const regenerateElement = async (
   }
   const newBody = makeBody(regen.body);
 
-  // Reassemble the FULL composition, overriding ONLY the written piece's body; every
-  // sibling re-inlines byte-identically from its own file.
-  const reassembled = await reassembleFromDisk(genDir, (si, p) =>
-    si === sceneIndex && p.id === writeId ? newBody : p.body,
-  );
+  // Through the SHARED write barrier (commitGenDir), not around it.
+  //
+  // This path used to reassemble, finalize, compile-check and write
+  // Composition.tsx itself — the same sequence commit.ts exists to own, minus
+  // its RENDER check. That omission was backwards: commit.ts turns the render
+  // check on precisely for "ops that write NEW COMPONENT CODE, because a model
+  // wrote it and it can reference something that does not exist", and
+  // regeneration is the op where a model writes the code. So the one op most
+  // able to produce a scene that parses and renders `undefined` was the one op
+  // not checked for it, and the result went straight to disk.
+  //
+  // The store is mutated first and rolled back byte-exact on refusal, which is
+  // the contract every other caller of commitGenDir already follows.
+  const priorBody = (
+    await readDecomposed(genDir)
+  ).scenes.find((s) => s.sceneIndex === sceneIndex)?.pieces.find((p) => p.id === writeId)?.body;
 
-  // Finalize the render source the same way the build does — a regen can reach for
-  // a lucide icon it didn't import (<Camera/>) or an invented component; esbuild's
-  // syntax check passes those through, so repair them before rendering. Idempotent,
-  // and applied to the reassembled whole (imports/stubs live in the module scope).
-  const fin = await finalizeUndefinedRefs(reassembled);
-  const candidate = fin.code;
-
-  const compileError = await verifyCompilable(candidate);
-  if (compileError) {
-    logUsage(regen.usage, true); // failed attempts are still billed
-    return { ok: false, usage: regen.usage, error: `regenerated element does not compile: ${compileError}` };
-  }
-
-  // Persist: the one piece file (edit sticks for future reads) + the finalized
-  // Composition.tsx (the render source, with any added imports/stubs). The manifest
-  // preamble stays as-authored; finalize re-applies on every reassemble, so it
-  // self-heals across subsequent edits.
   const undo = await captureUndo(genDir);
   await writePieceBody(genDir, writeId, newBody);
-  await fs.writeFile(path.join(genDir, "Composition.tsx"), candidate, "utf8");
+  const commit = await commitGenDir(genDir, "regenerated element", { checkRender: true });
+  if (!commit.ok) {
+    if (priorBody !== undefined) await writePieceBody(genDir, writeId, priorBody);
+    logUsage(regen.usage, true); // failed attempts are still billed
+    return { ok: false, usage: regen.usage, error: commit.error ?? "regeneration failed" };
+  }
   await commitUndo(genDir, undo, "regenerate");
-  // This path writes Composition.tsx directly rather than through
-  // commitGenDir, so it must republish itself — otherwise a redeploy restores
-  // the pre-regen bundle and the user's PAID regeneration silently reverts to
-  // the old design with no error anywhere.
-  await persistGenDir(path.basename(genDir));
 
   logUsage(regen.usage, false);
-  return { ok: true, code: candidate, body: regen.body, usage: regen.usage };
+  return { ok: true, code: commit.code, body: regen.body, usage: regen.usage };
   }),
   );
 };

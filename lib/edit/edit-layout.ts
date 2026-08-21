@@ -30,6 +30,7 @@ import {
 import { pieceSlot } from "../agents/lego-decompose";
 import { commitGenDir } from "./commit";
 import { withGenDirLock } from "./gendir-lock";
+import { highestZIndex } from "./z-index";
 import { findChildInScene, findMappedChildInScene, dropMappedIndex, removeChildBlock } from "./nested-piece";
 
 const msg = (e: unknown): string => (e instanceof Error ? e.message : String(e));
@@ -202,7 +203,7 @@ export const deleteElement = async (input: DeleteElementInput): Promise<DeleteEl
 // So a reorder does both: it moves the marker AND records an explicit layer
 // that clears (or undercuts) every z-index in the scene. The layer is applied by
 // the reassembler, like a move offset, so it survives a regenerate.
-const zIndexInBody = /(?:zIndex|z-index)\s*[:=]\s*["'{\s]*(-?\d+)/g;
+// The scan itself lives in ./z-index — insert-element needs the same one.
 
 /**
  * Where explicit layers live, above anything generated code writes.
@@ -220,26 +221,6 @@ const zIndexInBody = /(?:zIndex|z-index)\s*[:=]\s*["'{\s]*(-?\d+)/g;
  * below still raises it if a deck ever exceeds the band.
  */
 const FRONT_BAND = 1000;
-
-/**
- * The highest z-index visible in a scene's piece sources.
- *
- * Read from the SOURCE because this runs server-side during an edit and there
- * is no browser. Incomplete by nature — see FRONT_BAND — so it is used only to
- * RAISE the band, never to set the layer on its own. A regex is enough for
- * that: matching a number inside a comment or a string is harmless when the
- * only use is "at least this high".
- */
-const highestZIndex = (bodies: string[]): number => {
-  let max = 0;
-  for (const body of bodies) {
-    for (const m of body.matchAll(zIndexInBody)) {
-      const n = Number(m[1]);
-      if (Number.isFinite(n) && n > max) max = n;
-    }
-  }
-  return max;
-};
 
 export interface ReorderElementInput {
   genDir: string;
