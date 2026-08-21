@@ -253,29 +253,59 @@ const GEN_BAR_W = 560;
 const GEN_BAR_H = 40;
 /** Breathing room required between the bar and the box edge to sit inside. */
 const GEN_BAR_PAD = 14;
+/** The same controls stacked in three rows — chips, prompt, buttons — for a box
+ *  that is tall enough to host them but too narrow for the single row. */
+const GEN_STACK_W = 232;
+const GEN_STACK_H = 116;
+const GEN_STACK_PAD = 10;
+/** A stacked panel never grows past this, so a huge-but-narrow box does not get
+ *  a comically wide column. */
+const GEN_STACK_MAX_W = 320;
+
+export type GenBarLayout = "row" | "stack" | "outside";
 
 /**
- * Where the generate prompt bar goes for a given drawn box.
+ * Where the generate controls go for a given drawn box.
  *
- * Inside the box, centred, whenever the box is big enough to hold it with room
- * to breathe — the box is the thing being filled, so the question about what
- * goes in it belongs in it. Otherwise outside: below when there is room, flipped
- * above when the box hugs the bottom edge, clamped so the bar can never leave
- * the canvas. Pure and exported so both branches are unit-tested rather than
- * eyeballed.
+ * The box is the thing being filled, so the question about what goes in it
+ * belongs IN it — a detached toolbar reads as chrome, and when the box sits near
+ * an edge the detached bar also has to be clamped, which drags it across
+ * whatever is next to the box.
+ *
+ * Two inside shapes, because one fixed 560×40 row made "inside" mean "only for
+ * boxes wider than 588px" and a perfectly ordinary tall-narrow box (a sidebar
+ * card, a portrait image slot) still got the detached bar:
+ *   row   — the full single line, centred, when the box can hold 560×40.
+ *   stack — the identical controls in three rows, centred, when the box can hold
+ *           232×116. Same buttons, same order, nothing dropped.
+ * Only a box too small for even the stack falls outside: below when there is
+ * room, flipped above when it hugs the bottom edge, clamped so the controls can
+ * never leave the canvas.
+ *
+ * Pure and exported so every branch is unit-tested rather than eyeballed.
  */
 export const genBarPosition = (
   box: { left: number; top: number; width: number; height: number },
   overlayW: number,
   overlayH: number,
-): { left: number; top: number; inside: boolean } => {
-  const inside =
-    box.width >= GEN_BAR_W + GEN_BAR_PAD * 2 && box.height >= GEN_BAR_H + GEN_BAR_PAD * 2;
-  if (inside) {
+): { left: number; top: number; inside: boolean; layout: GenBarLayout; width: number } => {
+  if (box.width >= GEN_BAR_W + GEN_BAR_PAD * 2 && box.height >= GEN_BAR_H + GEN_BAR_PAD * 2) {
     return {
       left: box.left + (box.width - GEN_BAR_W) / 2,
       top: box.top + (box.height - GEN_BAR_H) / 2,
-      inside,
+      inside: true,
+      layout: "row",
+      width: GEN_BAR_W,
+    };
+  }
+  if (box.width >= GEN_STACK_W + GEN_STACK_PAD * 2 && box.height >= GEN_STACK_H + GEN_STACK_PAD * 2) {
+    const width = Math.min(box.width - GEN_STACK_PAD * 2, GEN_STACK_MAX_W);
+    return {
+      left: box.left + (box.width - width) / 2,
+      top: box.top + (box.height - GEN_STACK_H) / 2,
+      inside: true,
+      layout: "stack",
+      width,
     };
   }
   return {
@@ -284,7 +314,9 @@ export const genBarPosition = (
       box.top + box.height + 8 + GEN_BAR_H <= overlayH
         ? box.top + box.height + 8
         : Math.max(4, box.top - 44),
-    inside,
+    inside: false,
+    layout: "outside",
+    width: GEN_BAR_W,
   };
 };
 
@@ -2815,8 +2847,16 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
         />
       )}
 
-      {/* Frozen generate box + prompt input anchored under it. */}
-      {genBox && (
+      {/* Frozen generate box + its prompt controls, inside the box wherever the
+          box can hold them (row when wide, stacked when narrow). */}
+      {genBox && (() => {
+        const gp = genBarPosition(
+          genBox,
+          overlayRef.current?.clientWidth ?? 9999,
+          overlayRef.current?.clientHeight ?? 0,
+        );
+        const stacked = gp.layout === "stack";
+        return (
         <>
           <div
             style={{
@@ -2838,23 +2878,26 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
             }}
             style={{
               position: "absolute",
-              // Inside the box when it fits, outside when it doesn't — see
-              // genBarPosition.
-              ...(({ left, top }) => ({ left, top }))(
-                genBarPosition(
-                  genBox,
-                  overlayRef.current?.clientWidth ?? 9999,
-                  overlayRef.current?.clientHeight ?? 0,
-                ),
-              ),
+              left: gp.left,
+              top: gp.top,
+              width: stacked ? gp.width : undefined,
               pointerEvents: "auto",
             }}
-            className={`flex items-center gap-1 ${R_MD} border border-white/10 bg-[#11141b] px-1.5 py-1 shadow-xl`}
+            className={
+              `${R_MD} border border-white/10 bg-[#11141b] shadow-xl ` +
+              (stacked
+                ? "flex flex-col gap-1 px-1.5 py-1.5"
+                : "flex items-center gap-1 px-1.5 py-1")
+            }
           >
             {/* What to put in the box — an explicit switch, never inferred from
                 the prompt. Element = LLM JSX; Image = diffusion photo/art;
                 Icon = diffusion mark with its background removed (transparent). */}
-            <div role="group" aria-label="What to generate" className={`flex items-center gap-0.5 ${R_SM} bg-white/10 p-0.5`}>
+            <div
+              role="group"
+              aria-label="What to generate"
+              className={`flex items-center gap-0.5 ${R_SM} bg-white/10 p-0.5 ${stacked ? "self-stretch" : ""}`}
+            >
               {(["element", "image", "icon"] as const).map((k) => (
                 <button
                   key={k}
@@ -2864,6 +2907,7 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
                   disabled={!!busy}
                   className={
                     `${HIT} rounded-[6px] px-2 text-[11px] font-medium capitalize disabled:opacity-50 ` +
+                    (stacked ? "flex-1 justify-center " : "") +
                     (genKind === k ? ACTIVE : "text-white/70 hover:bg-white/10")
                   }
                 >
@@ -2897,8 +2941,12 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
                     ? "Name the icon, e.g. a shield with a checkmark"
                     : "What goes here? e.g. a KPI tile showing 3.2x"
               }
-              className={`h-[28px] w-72 ${R_SM} bg-white/10 px-2 text-[11px] text-white placeholder-white/45 outline-none focus:bg-white/15 disabled:opacity-50`}
+              className={
+                `h-[28px] ${R_SM} bg-white/10 px-2 text-[11px] text-white placeholder-white/45 outline-none focus:bg-white/15 disabled:opacity-50 ` +
+                (stacked ? "w-full" : "w-72")
+              }
             />
+            <div className={stacked ? "flex items-center gap-1 self-stretch" : "contents"}>
             {genKind !== "element" && (
               <button
                 type="button"
@@ -2919,7 +2967,10 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
             <button
               type="submit"
               disabled={!!busy || !genPrompt.trim()}
-              className={`${HIT} ${R_SM} ${ACTIVE} gap-1.5 px-2.5 text-[11px] font-semibold disabled:opacity-50`}
+              className={
+                `${HIT} ${R_SM} ${ACTIVE} gap-1.5 px-2.5 text-[11px] font-semibold disabled:opacity-50 ` +
+                (stacked ? "flex-1 justify-center" : "")
+              }
             >
               {busy === "insert" ? (
                 <>
@@ -2939,9 +2990,11 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
             >
               {busy === "insert" ? "Stop" : "Cancel"}
             </button>
+            </div>
           </form>
         </>
-      )}
+        );
+      })()}
       {/* Top-right: undo + the x-ray toggle. Hidden when a shell toolbar owns
           these (hideToolbar); otherwise the strip holds ONLY controls. */}
       {!hideToolbar && (
