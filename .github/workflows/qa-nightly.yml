@@ -56,6 +56,9 @@ jobs:
       NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: pk_test_Y2xlcmsuZXhhbXBsZS5jb20k
       CLERK_SECRET_KEY: sk_test_placeholder
       RB_FIREWORKS_KEY: ${{ secrets.RB_FIREWORKS_KEY }}
+      # See the note in ci.yml: Chromium on a runner can resolve `localhost` to
+      # ::1 while the dev server listens on IPv4.
+      QA_BASE: http://127.0.0.1:3000
     steps:
       - name: Is this job armed?
         id: armed
@@ -95,7 +98,7 @@ jobs:
         run: |
           npm run dev:raw > /tmp/dev.log 2>&1 &
           for i in $(seq 1 60); do
-            if curl -sf --max-time 5 http://localhost:3000/api/health > /dev/null; then
+            if curl -sf --max-time 5 http://127.0.0.1:3000/api/health > /dev/null; then
               echo "dev server up"; exit 0
             fi
             sleep 10

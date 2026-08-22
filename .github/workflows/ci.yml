@@ -9,6 +9,17 @@ on:
     branches: [main, launch-deploy]
   pull_request:
 
+# One run per branch. Pushing again supersedes the one in flight and CANCELS it,
+# which matters most for postdeploy-smoke: it waits up to 15 minutes for
+# production to serve ITS commit, and a newer push guarantees that commit is
+# never served — so every rapid follow-up push turned an earlier run red by
+# construction. Six failure emails in one morning, almost none of them a real
+# defect. A cancelled run does not email; a failed one does, and that difference
+# is the whole point.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -115,6 +126,15 @@ jobs:
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/renderball_qa
       NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: pk_test_Y2xlcmsuZXhhbXBsZS5jb20k
       CLERK_SECRET_KEY: sk_test_placeholder
+      # 127.0.0.1, NOT localhost. Two seam flows failed in CI — and only in CI —
+      # with `page.goto: net::ERR_NAME_NOT_RESOLVED at http://localhost:3000`,
+      # for a host other flows in the same run reached without trouble. On a
+      # GitHub runner Chromium can resolve `localhost` to ::1 while the dev
+      # server is listening on IPv4, so the first navigation in a fresh browser
+      # context intermittently finds nothing there. An IP address has no DNS
+      # step to get wrong. (Diagnosed 2026-08-22 after a wrong first guess that
+      # blamed the route interceptor.)
+      QA_BASE: http://127.0.0.1:3000
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -138,7 +158,7 @@ jobs:
         run: |
           npm run dev:raw > /tmp/dev.log 2>&1 &
           for i in $(seq 1 60); do
-            if curl -sf --max-time 5 http://localhost:3000/api/health > /dev/null; then
+            if curl -sf --max-time 5 http://127.0.0.1:3000/api/health > /dev/null; then
               echo "dev server up after ${i}0s"; exit 0
             fi
             sleep 10
