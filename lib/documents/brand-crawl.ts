@@ -161,6 +161,46 @@ export const ceremonyBrand = (extract: BrandExtract, y: BrandYield): CeremonyBra
  * nothing" is the 41% case that used to print "brand loaded from {url}" with
  * an accent dot beside it.
  */
+/**
+ * WHY a read failed, when the reason changes what we should offer.
+ *
+ * Two failures look identical to the user and are completely different to us:
+ *
+ *   refused     the site answered, and the answer was "no". A WAF challenge,
+ *               a 401/403/429/451, a Cloudflare interstitial. Measured on
+ *               openai.com 2026-08-22: plain fetch 403, browser user-agent
+ *               403, and a real headless Chromium 403 with the title
+ *               "Just a moment...". No amount of looking harder gets in,
+ *               because the paid pass is the same request with a renderer
+ *               behind it.
+ *   unreachable there is nothing at that address — DNS does not resolve. The
+ *               only useful next step is a different address.
+ *
+ * Everything else (a slow page, a thin page, a parse that came up empty) is a
+ * read that DID reach the site, and the vision pass genuinely can do better.
+ *
+ * This distinction exists because the failure panel offered "Look harder (uses
+ * a few tokens)" on a hard 403 — charging for an attempt that cannot possibly
+ * succeed — and told the user to "check the address" when the address was
+ * perfect and the site had simply refused us. Both are the same dishonesty:
+ * reporting our own limit as the user's mistake.
+ */
+export type ReadRefusal = "refused" | "unreachable" | null;
+
+export const refusalKind = (error: string | undefined): ReadRefusal => {
+  const e = (error ?? "").toLowerCase();
+  if (!e) return null;
+  if (/\b(enotfound|eai_again|getaddrinfo|dns)\b/.test(e)) return "unreachable";
+  if (
+    /\b(401|403|429|451)\b/.test(e) ||
+    /forbidden|unauthorized|too many requests|unavailable for legal/.test(e) ||
+    /just a moment|cloudflare|captcha|access denied|bot detection|are you a robot/.test(e)
+  ) {
+    return "refused";
+  }
+  return null;
+};
+
 export const describeCrawl = (
   url: string,
   extract: BrandExtract,
@@ -168,6 +208,13 @@ export const describeCrawl = (
 ): string => {
   const host = siteHost(url);
   if (!extract.ok) {
+    const why = refusalKind(extract.error);
+    if (why === "refused") {
+      return `${host} refused our request — a lot of large sites block automated readers. Set your colours and type in the Brand panel, or start without a brand; the deck builds either way.`;
+    }
+    if (why === "unreachable") {
+      return `Nothing answered at ${host} — check the address for a typo, or set your colours and type in the Brand panel.`;
+    }
     return `We could not read ${host} — check the address, or set your colours and type in the Brand panel.`;
   }
   if (y.color && y.font) return `Brand loaded from ${host} — your colours and your type.`;
@@ -331,7 +378,9 @@ export const runBrandCrawl = async (
         yield: y,
         message: describeCrawl(url, failed, y),
         applied: false,
-        canGoDeeper: tier === "free",
+        // Never upsell a paid read that cannot work. A refusal or a dead
+        // address answers the vision pass exactly as it answered this one.
+        canGoDeeper: tier === "free" && refusalKind(failed.error) === null,
         ceremony: ceremonyBrand(failed, y),
       },
     };

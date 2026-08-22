@@ -181,6 +181,52 @@ const run = async () => {
     assert(already.body.canGoDeeper === false, "the paid read must never offer itself again");
   });
 
+  await check("a site that REFUSED us is not blamed on the user, and is not upsold", async () => {
+    // openai.com, measured 2026-08-22: plain fetch 403, browser user-agent 403,
+    // and a real headless Chromium 403 titled "Just a moment...". The paid pass
+    // is the same request with a renderer behind it, so it gets the same 403.
+    for (const err of [
+      "HTTP 403 Forbidden",
+      "fetch failed: 403",
+      "Just a moment... (Cloudflare)",
+      "429 Too Many Requests",
+    ]) {
+      const res = await runBrandCrawl(input, deps({ read: async () => { throw new Error(err); } }));
+      assert(res.body.ok === false, `${err}: a refusal is not a successful read`);
+      assert(
+        res.body.canGoDeeper === false,
+        `${err}: must NOT offer a paid retry that cannot possibly succeed`,
+      );
+      assert(
+        /refused our request/.test(res.body.message),
+        `${err}: must say the site refused us, got ${JSON.stringify(res.body.message)}`,
+      );
+      assert(
+        !/check the address/.test(res.body.message),
+        `${err}: must not tell the user to check an address that was correct`,
+      );
+    }
+  });
+
+  await check("a dead address says so, and is not upsold either", async () => {
+    const res = await runBrandCrawl(
+      input,
+      deps({ read: async () => { throw new Error("getaddrinfo ENOTFOUND nope.example"); } }),
+    );
+    assert(res.body.canGoDeeper === false, "the vision pass cannot resolve DNS either");
+    assert(/Nothing answered/.test(res.body.message), `got ${JSON.stringify(res.body.message)}`);
+  });
+
+  await check("an ORDINARY read failure still offers the paid pass", async () => {
+    // The vision pass genuinely can do better on a page that answered but
+    // parsed thin — narrowing the upsell must not delete it.
+    const res = await runBrandCrawl(
+      input,
+      deps({ read: async () => { throw new Error("timed out after 8000ms"); } }),
+    );
+    assert(res.body.canGoDeeper === true, "a reachable-but-unreadable site is exactly the paid pass's job");
+  });
+
   // ── 1 + 2. the read fires at creation, and creation stays instant ─────────
 
   await check("startBrandCrawl registers the job and RETURNS — creation stays instant", async () => {
