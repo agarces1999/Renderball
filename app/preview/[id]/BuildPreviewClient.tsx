@@ -103,6 +103,7 @@ type Phase =
   | { kind: "busy"; message: string };
 type Status = "done" | "active" | "pending";
 
+import { SceneFrame } from "../../../components/SceneFrame";
 export function BuildPreviewClient({
   scriptId,
   kind = "video",
@@ -755,17 +756,21 @@ export function BuildPreviewClient({
           Each landed page mounts ONCE and stays mounted; switching only flips
           which is visible, so nothing reloads or flickers. */}
       {mounted.map((i) => (
-        <iframe
+        <SceneFrame
           // The key carries how many pages have landed: when a new section
           // reaches disk the iframe remounts and picks up the real page, so
           // the foundation visibly becomes the designed deck.
           key={`${i}:${landed.length}`}
-          data-rb-build-iframe
           src={`/api/preview/${scriptId}/iframe?scene=${i}&settle=1&v=${landed.length}`}
           title={`Page ${i + 1}${sceneLabels[i] ? ` — ${sceneLabels[i]}` : ""}`}
-          className="pointer-events-none absolute inset-0 h-full w-full transition-opacity duration-500"
-          style={{ border: 0, opacity: stageScene === i ? 1 : 0 }}
-          onLoad={(e) => revealLanded(e.currentTarget)}
+          canvas={{ w: 1920, h: 1080 }}
+          className="pointer-events-none absolute inset-0"
+          iframeProps={{
+            "data-rb-build-iframe": true,
+            className: "transition-opacity duration-500",
+            style: { opacity: stageScene === i ? 1 : 0 },
+            onLoad: (e) => revealLanded(e.currentTarget),
+          }}
         />
       ))}
       {mounted.length === 0 && (

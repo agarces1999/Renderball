@@ -9,6 +9,8 @@ import {
   useState,
 } from "react";
 import { matchFieldPath } from "../../../lib/edit/scene-content";
+import { asciiTrim } from "../../../lib/edit/piece-literal";
+import { cascadeBox } from "../../../lib/edit/cascade-box";
 import { parseFmt, serializeFmt, type FreetextFormat } from "../../../lib/edit/freetext";
 
 /**
@@ -907,14 +909,33 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
   // without div/label here, div-rendered copy showed "Edit text" but the session
   // opened zero fields (a silent no-op).
   const BLOCK_FIELD_SEL = "h1,h2,h3,h4,h5,h6,p,li,div,label,figcaption,blockquote,dd,dt,td,th";
-  const collectEditableFields = (piece: Element): { el: HTMLElement; path?: string; oldText: string; freetext?: boolean }[] => {
-    const out: { el: HTMLElement; path?: string; oldText: string; freetext?: boolean }[] = [];
+
+  /**
+   * One editable run of text inside a piece. Exactly one of the three save paths
+   * applies: `path` → SceneContent (the batched /edit-element route), `freetext` → an
+   * inserted box's literal, `literal` → text the model hardcoded into the JSX.
+   */
+  interface EditableEl {
+    el: HTMLElement;
+    path?: string;
+    oldText: string;
+    freetext?: boolean;
+    literal?: { occurrence: number; total: number };
+  }
+  const collectEditableFields = (piece: Element): EditableEl[] => {
+    const out: EditableEl[] = [];
     const seenPaths = new Set<string>();
-    const add = (el: HTMLElement, path: string | undefined, oldText: string, freetext?: boolean) => {
+    const add = (
+      el: HTMLElement,
+      path: string | undefined,
+      oldText: string,
+      freetext?: boolean,
+      literal?: { occurrence: number; total: number },
+    ) => {
       if (!oldText) return;
       if (path && seenPaths.has(path)) return; // one element per content field
       if (out.some((f) => f.el.contains(el) || el.contains(f.el))) return; // no nested editables
-      out.push({ el, path, oldText, freetext });
+      out.push({ el, path, oldText, freetext, literal });
       if (path) seenPaths.add(path);
     };
     // Inserted free-text boxes (data-rb-freetext): their copy is a literal in the
@@ -931,6 +952,35 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
       const path = matchFieldPath(fieldsRef.current, t) ?? undefined;
       if (path) add(el, path, t);
     });
+    // HARDCODED LITERALS — text the model wrote straight into the JSX, bound to no
+    // content field at all. 17% of stored pieces are entirely this (a mocked Linear
+    // window, a phone screen reading "Portfolio"), and until now every word of it was
+    // unreachable: the session opened zero fields and reported "No editable text
+    // found", which was true and read as a bug.
+    //
+    // ONLY single-text-node elements qualify. That is what guarantees the clicked
+    // string is one contiguous run in the source — "Hello <b>world</b>" spans two
+    // literals and must never be offered. occurrence/total are counted over EVERY
+    // qualifying leaf in the piece, including ones the nesting guard drops, because
+    // the server compares that count against the source to detect a literal being
+    // rendered N times by a `.map()` (see lib/edit/piece-literal.ts).
+    const leaves: { el: HTMLElement; text: string }[] = [];
+    piece.querySelectorAll<HTMLElement>(BLOCK_FIELD_SEL + ",span,strong,em,b,i,small").forEach((el) => {
+      if (el.childNodes.length !== 1 || el.firstChild?.nodeType !== 3) return;
+      const text = asciiTrim(el.textContent ?? "");
+      if (text) leaves.push({ el, text });
+    });
+    const seenOfText = new Map<string, number>();
+    for (const { el, text } of leaves) {
+      const occurrence = seenOfText.get(text) ?? 0;
+      seenOfText.set(text, occurrence + 1);
+      if (matchFieldPath(fieldsRef.current, text)) continue; // bound copy — already handled
+      if (el.closest("[data-rb-freetext]")) continue; // inserted box — already handled
+      add(el, undefined, text, false, {
+        occurrence,
+        total: leaves.filter((l) => l.text === text).length,
+      });
+    }
     return out;
   };
 
@@ -979,7 +1029,13 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
       finishSessionRef.current = null;
       editingRef.current = false;
       setEditing(false);
-      const changed: { path?: string; oldText: string; newText: string; freetext?: boolean }[] = [];
+      const changed: {
+        path?: string;
+        oldText: string;
+        newText: string;
+        freetext?: boolean;
+        literal?: { occurrence: number; total: number };
+      }[] = [];
       for (const f of fields) {
         f.el.removeAttribute("contenteditable");
         f.el.style.outline = "";
@@ -988,7 +1044,7 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
         f.el.style.cursor = "";
         const newText = (f.el.textContent ?? "").trim();
         if (save && newText.length > 0 && newText !== f.oldText) {
-          changed.push({ path: f.path, oldText: f.oldText, newText, freetext: f.freetext });
+          changed.push({ path: f.path, oldText: f.oldText, newText, freetext: f.freetext, literal: f.literal });
         } else {
           f.el.innerHTML = f.savedHTML; // revert flatten (unchanged / cancelled)
         }
@@ -998,8 +1054,9 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
       // Split by save path: bound SceneContent copy → the batched edit-element route;
       // inserted free-text boxes → edit-piece-text (their text is a body literal, not
       // a content field). Both reassemble Composition.tsx; one onChanged() reloads.
-      const contentEdits = changed.filter((c) => !c.freetext);
+      const contentEdits = changed.filter((c) => !c.freetext && !c.literal);
       const freeEdits = changed.filter((c) => c.freetext);
+      const literalEdits = changed.filter((c) => c.literal && !c.freetext);
       let anyOk = false;
       let failedCount = 0;
       if (contentEdits.length > 0) {
@@ -1027,9 +1084,33 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
         if (ok) anyOk = true;
         else failedCount += 1;
       }
+      // Hardcoded literals: one request each, and SEQUENTIAL on purpose. Every patch
+      // rewrites the same piece body, so two in flight would race and the second would
+      // be computed against a stale source. The server reports its own reason (notably
+      // a deliberate refusal when one source line renders several elements), so keep
+      // it rather than overwriting it with a generic count.
+      let literalError: string | null = null;
+      for (const c of literalEdits) {
+        const { ok, json } = await postJson(`${apiBase}/edit-piece-text`, {
+          scriptId,
+          sceneIndex,
+          pieceId: sessionPieceId,
+          value: c.newText,
+          literal: { oldText: c.oldText, ...c.literal },
+        });
+        if (ok) anyOk = true;
+        else {
+          failedCount += 1;
+          literalError = literalError ?? (typeof json?.error === "string" ? json.error : null);
+        }
+      }
       setBusy(null);
       if (failedCount > 0) {
-        setError(`${failedCount} of ${changed.length} edits could not be applied — the rest were saved.`);
+        // A literal refusal explains WHY and what to do instead; a bare count does not.
+        setError(
+          literalError ??
+            `${failedCount} of ${changed.length} edits could not be applied — the rest were saved.`,
+        );
       }
       if (anyOk) {
         // Morph first (content-only change, structure stable); the full
@@ -1465,12 +1546,27 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
   }, [showAll, reloadKey, sceneIndex, docTick, iframeRef]);
 
   // ---- drag to move -------------------------------------------------------
-  const canvasScale = (): number => {
+  /**
+   * The canvas's rendered scale, or NULL when it cannot be measured.
+   *
+   * The distinction matters because the fallback is 1, and 1 is a plausible-looking
+   * wrong answer: `overlayToCanvas` divides by it, so an unmeasurable canvas turns a
+   * box drawn 400 screen px wide into "400 canvas px" when the truth is ~770. The
+   * element then arrives at roughly half the size the user drew — reported as "the
+   * element is not the size of the original square" (2026-08-22).
+   *
+   * `occupiedBounds` already refuses to guess here, in those words. Anything that
+   * CREATES or MOVES geometry should refuse too; only read-only callers may take the
+   * 1 and carry on.
+   */
+  const measuredCanvasScale = (): number | null => {
     const canvas = iframeRef.current?.contentDocument?.querySelector(".renderball-canvas");
-    if (!canvas || canvasWidth <= 0) return 1;
+    if (!canvas || canvasWidth <= 0) return null;
     const w = (canvas as HTMLElement).getBoundingClientRect().width;
-    return w > 0 ? w / canvasWidth : 1;
+    return w > 0 ? w / canvasWidth : null;
   };
+  /** Scale for read-only use, falling back to 1. Never use this to build bounds. */
+  const canvasScale = (): number => measuredCanvasScale() ?? 1;
 
   // ── insert (add primitive) + generate (marquee) ───────────────────────────
   const canvasEl = (): HTMLElement | null =>
@@ -1504,8 +1600,12 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
   const canvasIntrinsic = (): { w: number; h: number } | null => {
     const c = canvasEl();
     const r = c?.getBoundingClientRect();
-    const scale = canvasScale() || 1;
-    if (!r || canvasWidth <= 0) return null;
+    // The height is DERIVED by dividing by the scale, so an unmeasurable scale would
+    // report the on-screen height as the canvas height — a default insert box sized
+    // to the viewport rather than the slide. Null is already the "not ready" signal
+    // every caller handles; use it rather than a fallback of 1.
+    const scale = measuredCanvasScale();
+    if (!r || canvasWidth <= 0 || scale === null) return null;
     return { w: canvasWidth, h: Math.round(r.height / scale) };
   };
   const clampBounds = (b: { x: number; y: number; w: number; h: number }): { x: number; y: number; w: number; h: number } => {
@@ -1521,7 +1621,19 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
     return { x, y, w: Math.max(1, w), h: Math.max(1, h) };
   };
 
-  /** Default centred box for a toolbar insert (text/icon/uploaded image). */
+  /**
+   * Default box for a toolbar insert (text/icon/uploaded image), CASCADED off
+   * anything already sitting there.
+   *
+   * The centred box used to be returned verbatim, so every insert landed on exactly
+   * the same pixel: `left: 576, top: 454, width: 768` four times over in the founder's
+   * deck (2026-08-22), four text boxes stacked so precisely that only the last one was
+   * visible or clickable. Adding a second text box looked like adding nothing.
+   *
+   * Occupancy is measured from the live document rather than counted client-side, so
+   * the cascade survives a reload and picks up where the page actually is — a counter
+   * would reset to zero and stack on top again.
+   */
   const defaultBounds = (kind: "text" | "media", aspect?: number | null) => {
     const dims = canvasIntrinsic();
     if (!dims) return null;
@@ -1532,7 +1644,8 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
     if (aspect && Number.isFinite(aspect) && aspect > 0) {
       h = Math.min(Math.round(w / aspect), Math.round(dims.h * 0.8));
     }
-    return clampBounds({ x: Math.round((dims.w - w) / 2), y: Math.round((dims.h - h) / 2), w, h });
+    const base = { x: Math.round((dims.w - w) / 2), y: Math.round((dims.h - h) / 2), w, h };
+    return clampBounds(cascadeBox(base, occupiedBounds(), dims));
   };
 
   const insertPrimitive = async (primitive: "text" | "icon") => {
@@ -1607,6 +1720,12 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
   const submitGenerate = async () => {
     const prompt = genPrompt.trim();
     if (!genBox || !prompt || busy) return;
+    // Refuse rather than send bounds derived from a fallback scale — that is how a
+    // drawn box became a half-size element. Same posture as occupiedBounds.
+    if (measuredCanvasScale() === null) {
+      setError("The slide is still laying out — draw the box again in a moment.");
+      return;
+    }
     const p0 = overlayToCanvas(genBox.left, genBox.top);
     const p1 = overlayToCanvas(genBox.left + genBox.width, genBox.top + genBox.height);
     const bounds = clampBounds({ x: p0.x, y: p0.y, w: p1.x - p0.x, h: p1.y - p0.y });

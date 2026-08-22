@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import path from "path";
-import { editPieceText, freetextSwatches } from "../../../../lib/edit/edit-piece-text";
+import { editPieceText, freetextSwatches, parseLiteralTarget } from "../../../../lib/edit/edit-piece-text";
 
 /**
  * Dev-only free-text edit route — headless counterpart to
@@ -31,14 +31,18 @@ export async function POST(request: Request) {
   const gate = devOnly();
   if (gate) return gate;
 
-  let body: { scriptId?: string; sceneIndex?: number; pieceId?: string; value?: string; format?: unknown };
+  let body: { scriptId?: string; sceneIndex?: number; pieceId?: string; value?: string; format?: unknown; literal?: unknown };
   try {
     body = await request.json();
   } catch {
     return NextResponse.json({ error: "invalid JSON body" }, { status: 400 });
   }
 
-  const { scriptId, sceneIndex, pieceId, value, format } = body;
+  const { scriptId, sceneIndex, pieceId, value, format, literal } = body;
+  // A hardcoded-literal edit targets a text run in the piece source rather than a
+  // free-text span; malformed input falls through as a normal edit and is rejected
+  // with the existing message instead of patching anything.
+  const literalTarget = parseLiteralTarget(literal);
   if (!scriptId || typeof scriptId !== "string") {
     return NextResponse.json({ error: "scriptId required" }, { status: 400 });
   }
@@ -61,6 +65,8 @@ export async function POST(request: Request) {
     pieceId,
     ...(value !== undefined ? { value } : {}),
     ...(format && typeof format === "object" ? { format: format as Record<string, never> } : {}),
+
+    ...(literalTarget ? { literal: literalTarget } : {}),
   });
   return NextResponse.json(result, { status: result.ok ? 200 : 400 });
 }

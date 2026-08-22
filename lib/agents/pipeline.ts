@@ -3120,8 +3120,10 @@ const buildDesignUserMessage = (input: BuildInput): string => {
   // Flat, agent-facing view of the asset manifest. We deliberately
   // surface only the fields an agent needs (id + URL) and embed a
   // copy-paste-ready usage snippet so the model resolves correctly.
-  // (script.assets.images is an Array at runtime — not a dict — so the
-  // agent's code MUST use .find().)
+  // (script.assets.images is an Array of OBJECTS at runtime — not a dict, and not
+  // an array of URL strings — so code that looks one up must match on .id and read
+  // .src. The guidance below says so explicitly; an earlier version said only
+  // "it is an Array", and a deck duly wrote a string predicate that never matched.)
   // Filter out cached customer-logo URLs at read time — the brief
   // may have site_logo / site_img_N pointing at someone else's brand
   // (Fuse case: CFSB.png cached as site_logo). The sanitizer above
@@ -3145,6 +3147,23 @@ const buildDesignUserMessage = (input: BuildInput): string => {
     lines.push(`<Img src="${assetImages[0].src}" style={{ width: 72, height: 72 }} />`);
     lines.push("```");
     lines.push("Don't write `script.assets.images.someId` — `images` is an Array, not an object. Use the literal URL.");
+    // State the ELEMENT shape, not just the container's. Saying "it's an Array"
+    // rules out one mistake and invites another: a shipped deck wrote
+    // `images.find((u) => typeof u === "string" && u.includes("og_image"))`, which
+    // cannot match an array of objects, fell through to `images[0]`, and passed the
+    // whole object to <Img src>. The slide rendered an empty framed box while the
+    // correct og_image URL sat unused in this very manifest. The Img shim now
+    // coerces, so that failure can no longer reach the DOM — but the model should
+    // not be guessing the shape in the first place.
+    lines.push(
+      "If you must look one up instead of pasting, note that each entry is an OBJECT " +
+        "`{ id, src, width, height }` — match on `.id` and read `.src`:",
+    );
+    lines.push("```tsx");
+    lines.push(
+      `const og = script.assets.images.find((a) => a.id === "${assetImages[0].id}")?.src;`,
+    );
+    lines.push("```");
     lines.push("");
   }
   appendBrandContext(lines, input);

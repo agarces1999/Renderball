@@ -20,6 +20,7 @@ import { useEffect, useRef, useState } from "react";
  * Sized to the project's true aspect so portrait/square/landscape read at a
  * glance. Dark frame so the work is the loudest thing on the card.
  */
+import { SceneFrame } from "./SceneFrame";
 export function ProjectThumb({
   aspect,
   mp4Url,
@@ -90,11 +91,11 @@ export function ProjectThumb({
           className="h-full w-full object-cover"
         />
       ) : previewUrl && hover ? (
-        <iframe
+        <SceneFrame
           src={previewUrl}
           title="preview"
-          className="h-full w-full border-0"
-          style={{ background: "#0b0d12" }}
+          canvas={{ w: 1920, h: 1080 }}
+          background="#0b0d12"
         />
       ) : (
         // A thumbUrl that failed to load still means the document is built —

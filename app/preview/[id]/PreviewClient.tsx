@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { SceneFrame } from "../../../components/SceneFrame";
 import { BrandPanel } from "../../../components/BrandPanel";
 import { ElementPanel } from "../../../components/ElementPanel";
 import { ShareButton } from "../../../components/ShareButton";
@@ -651,11 +652,11 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
               onBrandApplied={() => setReloadKey((k) => k + 1)}
             />
           )}
-          <iframe
-            ref={iframeRef}
+          <SceneFrame
+            iframeRef={iframeRef}
             src={iframeSrc}
             title={`Page ${sceneIndex + 1}`}
-            style={{ position: "absolute", inset: 0, width: "100%", height: "100%", border: 0 }}
+            canvas={{ w: dims.width, h: dims.height }}
           />
           <ElementEditor
             ref={editorRef}
@@ -703,11 +704,11 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
                   width: `min(100%, calc((100vh - 7rem) * ${dims.width / dims.height}))`,
                 }}
               >
-                <iframe
+                <SceneFrame
                   key={previewIndex}
                   src={`/api/preview/${scriptId}/iframe?scene=${previewIndex}&v=${reloadKey}&settle=1`}
                   title={`Preview page ${previewIndex + 1}`}
-                  style={{ width: "100%", height: "100%", border: 0 }}
+                  canvas={{ w: dims.width, h: dims.height }}
                 />
               </div>
               {previewIndex > 0 && (
@@ -750,18 +751,12 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
         className="relative mb-5 overflow-hidden rounded-lg border border-hairline bg-[#0b0d12]"
         style={{ aspectRatio: `${dims.width}/${dims.height}` }}
       >
-        <iframe
-          ref={iframeRef}
+        <SceneFrame
+          iframeRef={iframeRef}
           src={iframeSrc}
           title={`${isDeck ? "Page" : "Scene"} ${sceneIndex + 1}`}
-          style={{
-            position: "absolute",
-            inset: 0,
-            width: "100%",
-            height: "100%",
-            border: 0,
-            background: "#0b0d12",
-          }}
+          canvas={{ w: dims.width, h: dims.height }}
+          background="#0b0d12"
         />
         {editing && (
           <ElementEditor

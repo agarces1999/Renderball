@@ -52,6 +52,7 @@
  * degrades to errors[] (never a fabricated finding, never a throw).
  */
 import type { MeasuredElement, SceneMeasurement } from "./measure-scene";
+import type { InkSample } from "./palette-lift";
 
 // ── calibrated bands ─────────────────────────────────────────────────────────
 
@@ -118,6 +119,14 @@ export interface TextContrastFinding {
 export interface TextContrastResult {
   /** Every judged node with ratio under the advisory ceiling (report fodder). */
   stats: TextContrastStat[];
+  /**
+   * EVERY judged text node, including the ones that pass — ink and the surface behind
+   * it. The failing set alone cannot answer "is it safe to darken this palette token",
+   * because the nodes a naive lift would BREAK are exactly the ones currently passing.
+   * Keeping them turns that safety question into arithmetic instead of a second
+   * measurement pass (see palette-lift.ts).
+   */
+  inkSamples: InkSample[];
   findings: TextContrastFinding[];
   advisories: TextContrastFinding[];
   errors: string[];
@@ -315,7 +324,7 @@ const findingFor = (s: TextContrastStat, blocking: boolean): TextContrastFinding
 export const assessTextNodeContrast = async (
   measurements: SceneMeasurement[],
 ): Promise<TextContrastResult> => {
-  const result: TextContrastResult = { stats: [], findings: [], advisories: [], errors: [] };
+  const result: TextContrastResult = { stats: [], inkSamples: [], findings: [], advisories: [], errors: [] };
   const sharpMod = await import("sharp").catch(() => null);
   if (!sharpMod) {
     result.errors.push("text-contrast: sharp unavailable — gate skipped");
@@ -360,6 +369,19 @@ export const assessTextNodeContrast = async (
         b: a * fg.b + (1 - a) * bd.b,
       };
       const ratio = wcagRatio(eff, bd);
+      // Record EVERY node, passing ones included, BEFORE the advisory filter below.
+      // A palette-token lift is a global edit made because one local node failed, and
+      // the nodes it could BREAK are precisely the ones currently passing — so the
+      // clean samples are the safety evidence, not noise. Cheap: two hex strings per
+      // node, and it saves a whole second measurement pass (see palette-lift.ts).
+      const hex2 = (n: number) => Math.max(0, Math.min(255, Math.round(n))).toString(16).padStart(2, "0");
+      result.inkSamples.push({
+        scene: m.scene,
+        pieceId: e.piece || `s${m.scene}.hero`,
+        ink: `#${hex2(eff.r)}${hex2(eff.g)}${hex2(eff.b)}`,
+        backdrop: `#${hex2(bd.r)}${hex2(bd.g)}${hex2(bd.b)}`,
+        ratio: round2(ratio),
+      });
       if (ratio >= TEXT_CONTRAST_ADVISORY_RATIO) continue;
       // Saturated display text on a hue-distant backdrop reads chromatically —
       // record it, but mark it never-blocking (see SATURATED_* docs).

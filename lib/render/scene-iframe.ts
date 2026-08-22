@@ -5,6 +5,7 @@ import React from "react";
 import * as esbuild from "esbuild";
 import { renderSceneSandboxed } from "./sandbox/pool";
 import { hydrateGenDir } from "./gen-store";
+import { hostScaleEnabled } from "../edit/frame-scale";
 import type { Script } from "../../src/schema";
 import { dimensionsForScript, WIDE_LOCKUP_RATIO } from "./build-wrapper";
 import { inlineAssetSrcs } from "../edit/image-assets";
@@ -317,6 +318,46 @@ export async function renderSceneDoc(
   *, *::before, *::after { animation-delay: -100000s !important; }`
     : "";
 
+  /**
+   * Who scales the slide.
+   *
+   * LEGACY (default): the document scales ITSELF — `fit()` measures its own viewport
+   * and writes `transform: scale(s)` as inline style onto `.renderball-canvas`.
+   *
+   * RB_HOST_SCALE=on: the document stays 1:1 and the HOST scales the whole <iframe>
+   * element (lib/edit/frame-scale.ts). Two shipped bugs came from the legacy split —
+   * the editor could only DISCOVER the scale by measuring a document it does not own
+   * (and fell back to 1 when it could not, halving every drawn box), and the morph
+   * path's ancestor sync copied a transform-less style onto the live canvas, snapping
+   * the slide to 1:1 — "everything expanded again". Both stop being possible once the
+   * scale is a value the host sets rather than a fact it reads.
+   *
+   * `__rbFit` is exported in BOTH modes — a no-op under host scaling — so the editor's
+   * existing re-entry calls need no conditional at each site.
+   */
+  const fitScript = hostScaleEnabled()
+    ? `<script>window.__rbFit = function () {};</script>`
+    : `<script>
+  function fit() {
+    var c = document.querySelector('.renderball-canvas');
+    if (!c) return;
+    var sx = window.innerWidth / ${dims.width};
+    var sy = window.innerHeight / ${dims.height};
+    var s = Math.min(sx, sy);
+    c.style.transform = 'scale(' + s + ')';
+    var w = ${dims.width} * s;
+    var h = ${dims.height} * s;
+    c.style.position = 'absolute';
+    c.style.left = ((window.innerWidth - w) / 2) + 'px';
+    c.style.top = ((window.innerHeight - h) / 2) + 'px';
+  }
+  window.addEventListener('resize', fit);
+  document.addEventListener('DOMContentLoaded', fit);
+  // Re-entry for the editor. Idempotent, so calling it after any DOM surgery is
+  // always safe and always correct.
+  window.__rbFit = fit;
+</script>`;
+
   const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -351,31 +392,7 @@ export async function renderSceneDoc(
     transform-origin: top left;
   }
 </style>
-<script>
-  function fit() {
-    var c = document.querySelector('.renderball-canvas');
-    if (!c) return;
-    var sx = window.innerWidth / ${dims.width};
-    var sy = window.innerHeight / ${dims.height};
-    var s = Math.min(sx, sy);
-    c.style.transform = 'scale(' + s + ')';
-    var w = ${dims.width} * s;
-    var h = ${dims.height} * s;
-    c.style.position = 'absolute';
-    c.style.left = ((window.innerWidth - w) / 2) + 'px';
-    c.style.top = ((window.innerHeight - h) / 2) + 'px';
-  }
-  window.addEventListener('resize', fit);
-  document.addEventListener('DOMContentLoaded', fit);
-  // Re-entry for the editor. fit() writes its scale as INLINE STYLE on
-  // .renderball-canvas, and the morph path's ancestor sync copies style from a
-  // freshly-rendered document — where fit() has never run, so the canvas there
-  // carries no transform. Copying that absence onto the live canvas wipes the
-  // scale and the page snaps to 1:1: a 1920px canvas in a ~1000px frame, which
-  // reads as "everything expanded". Idempotent, so calling it after any DOM
-  // surgery is always safe and always correct.
-  window.__rbFit = fit;
-</script>
+${fitScript}
 </head>
 <body>
 <div class="renderball-canvas">${sectionHtml}</div>

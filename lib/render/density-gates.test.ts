@@ -362,15 +362,28 @@ await checkWithFixtures("reference: 0 findings on diegetic-interior, depth, and 
   }
 });
 
-await checkWithFixtures("reference: img-src catches ONLY the known latent scene-3 [object Object] defect", [REF_DIR], () => {
-  // A true positive, not a false one: scene 3's texture layer does
-  // `<Img src={siteImg}>` with siteImg = script.assets.images[0] — an OBJECT.
-  // It ships as src="[object Object]" at opacity 0.03 (why no eyeball caught
-  // it). The gate exists to catch unfetchable srcs, so it must flag this.
+await checkWithFixtures("reference: the scene-3 [object Object] defect is REPAIRED by the Img shim", [REF_DIR], () => {
+  // This test used to assert the defect was PRESENT — one img-src finding on scene 3.
+  // Scene 3's texture layer does `<Img src={siteImg}>` with siteImg =
+  // script.assets.images[0], an OBJECT, so it shipped as src="[object Object]" at
+  // opacity 0.03 (which is why no eyeball ever caught it).
+  //
+  // Fixed 2026-08-22, after the same class shipped visibly on a Linear deck ("image on
+  // slide 4 is not loading"): IMG_SHIM_SOURCE now coerces an asset object to its .src
+  // (lib/render/build-wrapper.ts, lib/render/img-shim.test.ts). This gate SSRs through
+  // that shim, so what reaches the DOM is the real URL — here the HubSpot logo, doing
+  // duty as the 3%-opacity texture the code always intended.
+  //
+  // The gate itself is unchanged and still exercised: the spike build's clause (d)
+  // below fires on raw `site_img_*` asset ids, the OTHER way a src can be unfetchable.
+  // Keeping an assertion here guards the repair — if the shim ever stops coercing,
+  // this goes back to 1 and says so.
   assert(refFindings !== null, "reference did not load");
   const imgs = ofKind(refFindings!, "img-src");
-  assert(imgs.length === 1, `exactly 1 img-src finding expected, got ${imgs.length}: ${imgs.map((f) => f.detail).join(" | ")}`);
-  assert(imgs[0].scene === 3 && imgs[0].detail.includes("[object Object]"), `scene 3 [object Object], got: ${imgs[0].detail}`);
+  assert(
+    imgs.length === 0,
+    `the shim should have resolved every src; still unfetchable: ${imgs.map((f) => f.detail).join(" | ")}`,
+  );
 });
 
 await checkWithFixtures("spike build loads and SSRs on all 5 scenes", [SPIKE_DIR], async () => {

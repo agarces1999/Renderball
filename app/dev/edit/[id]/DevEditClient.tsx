@@ -12,6 +12,7 @@ import {
   type EditorToolController,
 } from "../../../../components/EditorShell";
 import { cn } from "../../../../lib/cn";
+import { SceneFrame } from "../../../../components/SceneFrame";
 import { BrandPanel } from "../../../../components/BrandPanel";
 import { StructuralPanel } from "../../../../components/StructuralPanel";
 import { DeckPagePanel } from "../../../preview/[id]/PreviewClient";
@@ -259,11 +260,11 @@ export function DevEditClient({
         }
         footer={<span className="block truncate">{scriptId}</span>}
       >
-        <iframe
-          ref={iframeRef}
+        <SceneFrame
+          iframeRef={iframeRef}
           src={iframeSrc}
           title={`Scene ${sceneIndex + 1}`}
-          style={{ position: "absolute", inset: 0, width: "100%", height: "100%", border: 0 }}
+          canvas={{ w: width, h: height }}
         />
         {/* While motion plays the overlay unmounts — rects measured mid-animation
             are wrong, and the surface is for watching. */}

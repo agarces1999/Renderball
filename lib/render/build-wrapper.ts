@@ -334,10 +334,43 @@ registerRoot(Root);
  */
 export const IMG_SHIM_SOURCE = `import React from "react";
 
-export type ImgProps = React.ImgHTMLAttributes<HTMLImageElement>;
+export type ImgProps = Omit<React.ImgHTMLAttributes<HTMLImageElement>, "src"> & {
+  /** A URL, or an entry from script.assets.images ({ id, src, ... }). */
+  src?: unknown;
+};
 
-export const Img: React.FC<ImgProps> = (props) =>
-  React.createElement("img", props);
+/**
+ * Resolve whatever the composition handed us into a URL string.
+ *
+ * script.assets.images is an array of OBJECTS — { id, src, width, height, ... } —
+ * and generated code reaches into it in several ways, not all of them right. One
+ * shipped deck wrote:
+ *
+ *   images.find((u) => typeof u === "string" && u.includes("og_image")) || images[0]
+ *
+ * The string test can never match an object array, so it fell through to images[0]
+ * and passed the whole object as src. React stringifies that to "[object Object]",
+ * the browser requests a URL that cannot exist, and the slide shows an empty framed
+ * box where a picture belongs — reported as "image on slide 4 is not loading", with
+ * the real og_image URL sitting unused in the manifest the whole time.
+ *
+ * Coercing here means no shape mistake upstream can ever reach the DOM as a broken
+ * image. An unusable value renders no <img> at all rather than a broken one.
+ */
+const resolveSrc = (src: unknown): string | undefined => {
+  if (typeof src === "string") return src || undefined;
+  if (src && typeof src === "object") {
+    const inner = (src as { src?: unknown }).src;
+    if (typeof inner === "string") return inner || undefined;
+  }
+  return undefined;
+};
+
+export const Img: React.FC<ImgProps> = ({ src, ...rest }) => {
+  const resolved = resolveSrc(src);
+  if (!resolved) return null;
+  return React.createElement("img", { ...rest, src: resolved });
+};
 `;
 
 /**

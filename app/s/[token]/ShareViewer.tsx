@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { SceneFrame } from "../../../components/SceneFrame";
 import Link from "next/link";
 
 /**
@@ -140,14 +141,14 @@ export function ShareViewer({
           className="relative w-full overflow-hidden rounded-lg border border-hairline bg-surface shadow-[0_30px_80px_-42px_rgba(18,26,43,0.5)]"
           style={{ aspectRatio: "16/9", maxWidth: "calc((100vh - 150px) * 16 / 9)" }}
         >
-          <iframe
+          <SceneFrame
             // The key forces a fresh document per page, so a viewer never sees
             // the previous slide while the next one loads.
             key={index}
             src={`/api/share/${encodeURIComponent(token)}/iframe?scene=${index}`}
             title={`${title} — page ${index + 1} of ${total}`}
-            onLoad={() => setLoading(false)}
-            style={{ position: "absolute", inset: 0, width: "100%", height: "100%", border: 0 }}
+            canvas={{ w: 1920, h: 1080 }}
+            iframeProps={{ onLoad: () => setLoading(false) }}
           />
           {loading && (
             <div className="absolute inset-0 flex items-center justify-center bg-surface">
