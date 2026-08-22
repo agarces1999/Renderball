@@ -1893,12 +1893,22 @@ export function OutlineLive({
    *  NAMED REAL work; a static plan or fake ticker measurably does nothing). */
   const [thought, setThought] = useState("");
   const thoughtRef = useRef("");
+  /** The scroll well the reasoning streams into; pinned to the bottom below. */
+  const thoughtBoxRef = useRef<HTMLDivElement | null>(null);
   const [revealed, setRevealed] = useState(0);
   const revealedRef = useRef(0);
   const doneRef = useRef(false);
   const lastIRef = useRef(-1);
   const errsRef = useRef(0);
   const listRef = useRef<HTMLDivElement | null>(null);
+
+  // Keep the reasoning well pinned to its newest line as text streams in.
+  // Without this the box fills once and then silently stops moving, which is
+  // the same "cannot read it" complaint wearing a taller box.
+  useEffect(() => {
+    const el = thoughtBoxRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [thought]);
 
   // The POST settling is the authority that the outline is DONE — the SSE's
   // own done event may still be in flight. Whatever is buffered drains
@@ -1939,11 +1949,20 @@ export function OutlineLive({
       if (ev.i <= lastIRef.current) return;
       lastIRef.current = ev.i;
       if (ev.kind === "think" && typeof ev.data === "string") {
-        // Keep the tail: the last ~140 chars, broken at a word, is one
-        // readable "currently thinking about…" line.
-        thoughtRef.current = (thoughtRef.current + ev.data).slice(-280);
-        const tail = thoughtRef.current.replace(/\s+/g, " ").trim().slice(-140);
-        setThought(tail.slice(tail.indexOf(" ") + 1));
+        // Keep a PARAGRAPH, not a line.
+        //
+        // This kept the last 280 characters and displayed the last 140 of
+        // those, clamped to two lines — so the panel showed a sentence
+        // fragment that scrolled past faster than it could be read, twice
+        // reported as "I can't even read the thinking here". The point of
+        // showing the model's reasoning is that someone can follow it.
+        //
+        // Bounded at 4000 characters because this is a live stream into a
+        // React state value: it is enough to read several paragraphs back,
+        // and small enough that neither the re-render nor the DOM node grows
+        // without limit over a long outline.
+        thoughtRef.current = (thoughtRef.current + ev.data).slice(-4000);
+        setThought(thoughtRef.current.replace(/[ \t]+/g, " ").trimStart());
         setPhase((p) => (p === "connecting" ? "thinking" : p));
         return;
       }
@@ -2058,10 +2077,19 @@ export function OutlineLive({
               <span className="text-[12.5px] leading-relaxed text-ink">{headline}</span>
             </div>
             {!approval && (phase === "thinking" || phase === "connecting") && thought && (
-              // The model's own words, live — quiet mono, one line, honest.
-              <p className="mt-2 line-clamp-2 border-t border-hairline pt-2 font-mono text-[10.5px] leading-relaxed text-muted">
-                …{thought}
-              </p>
+              // The model's own words, live. A fixed-height well that sticks to
+              // the newest line: tall enough to actually read a paragraph, and
+              // fixed so the panel does not grow and shove the controls around
+              // while text streams in. Quiet mono, per DESIGN.md — the user's
+              // work is the loudest thing, and this is the machine muttering.
+              <div
+                ref={thoughtBoxRef}
+                className="mt-2 max-h-[190px] overflow-y-auto border-t border-hairline pt-2"
+              >
+                <p className="whitespace-pre-wrap font-mono text-[10.5px] leading-relaxed text-muted">
+                  {thought}
+                </p>
+              </div>
             )}
             {approval ? (
               <div className="mt-3 border-t border-hairline pt-3">
