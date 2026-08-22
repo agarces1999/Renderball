@@ -101,6 +101,9 @@ export interface BrandCrawlResult {
   brand?: DocumentBrand;
   /** Offer the paid read? Only when the free one came back thin. */
   canGoDeeper: boolean;
+  /** Set when the read failed for a reason a retry cannot change — the panel
+   *  leads with "set the brand yourself" instead of "try a different address". */
+  refusal?: ReadRefusal;
   /** What the ceremony's confirmation beat shows. Present when the site was
    *  reached at all — a thin read still has a host and a suggested name, which
    *  is exactly what the honest thin-crawl path needs. */
@@ -381,6 +384,7 @@ export const runBrandCrawl = async (
         // Never upsell a paid read that cannot work. A refusal or a dead
         // address answers the vision pass exactly as it answered this one.
         canGoDeeper: tier === "free" && refusalKind(failed.error) === null,
+        refusal: refusalKind(failed.error),
         ceremony: ceremonyBrand(failed, y),
       },
     };

@@ -136,6 +136,9 @@ type BrandRead = {
   accent?: string;
   /** The free read came up short and the paid one is worth offering. */
   canGoDeeper?: boolean;
+  /** The read failed for a reason no retry changes (the site refused us, or
+   *  nothing answered). Changes what the panel LEADS with. */
+  refusal?: "refused" | "unreachable" | null;
   /** Which read produced this — so "look deeper" cannot be offered twice. */
   tier?: "free" | "vision";
   /** The confirmation beat's working set, composed server-side. */
@@ -544,6 +547,10 @@ export function BlankDocumentPanel({
             message: typeof result.message === "string" ? result.message : undefined,
             accent: palette?.accent,
             canGoDeeper: result.canGoDeeper === true,
+            refusal:
+              result.refusal === "refused" || result.refusal === "unreachable"
+                ? result.refusal
+                : null,
             tier: result.tier === "vision" ? "vision" : "free",
             ceremony: (result.ceremony as CeremonyInfo | undefined) ?? undefined,
           });
@@ -1455,19 +1462,44 @@ function BrandCeremony({
           New document
         </p>
         <h2 className="mt-1.5 font-display text-[20px] font-bold tracking-tight text-ink">
-          We could not read {ceremony?.host ?? host ?? "that address"}
+          {brand.refusal === "refused"
+            ? `${ceremony?.host ?? host ?? "That site"} does not let us read it`
+            : `We could not read ${ceremony?.host ?? host ?? "that address"}`}
         </h2>
         {brand.message && (
           <p className="mt-2 text-[12.5px] leading-relaxed text-ink-soft">{brand.message}</p>
         )}
+        {/* WHAT TO DO NEXT depends on whether trying again could ever help.
+            When the site refused us, "try a different address" is the wrong
+            headline act — the address was right — so the brand-building path
+            becomes the primary button and retry steps back. */}
         <div className="mt-4 flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={onRetry}
-            className="rounded-md border border-hairline-strong bg-surface px-3 py-1.5 text-[12px] font-medium text-ink transition-colors hover:bg-surface-2"
-          >
-            Try a different address
-          </button>
+          {brand.refusal ? (
+            <>
+              <button
+                type="button"
+                onClick={onSkip}
+                className="rounded-md bg-accent px-3.5 py-1.5 text-[12px] font-semibold text-accent-ink transition-all hover:brightness-110"
+              >
+                Set your brand yourself →
+              </button>
+              <button
+                type="button"
+                onClick={onRetry}
+                className="rounded-md border border-hairline px-3 py-1.5 text-[12px] text-muted transition-colors hover:border-accent-line hover:text-ink"
+              >
+                Try a different address
+              </button>
+            </>
+          ) : (
+            <button
+              type="button"
+              onClick={onRetry}
+              className="rounded-md border border-hairline-strong bg-surface px-3 py-1.5 text-[12px] font-medium text-ink transition-colors hover:bg-surface-2"
+            >
+              Try a different address
+            </button>
+          )}
           {brand.canGoDeeper && (
             <button
               type="button"
