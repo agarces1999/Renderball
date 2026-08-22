@@ -782,6 +782,28 @@ async function runPreviewBuildInner(
     }
   }
 
+  // PERSIST THE FLAGS. Everything above attached findings to `currentWarnings`
+  // IN MEMORY; the last thing that actually wrote warnings.json ran hundreds of
+  // lines earlier, inside the repair loop. So the flags rode home in the HTTP
+  // response — visible once, to the tab that started the build — and the
+  // DOCUMENT never carried them. Reopen it and the quality panel reads
+  // warnings.json and finds nothing, which is indistinguishable from a clean
+  // build.
+  //
+  // Measured 2026-08-22 on a real deck: its per-document gate telemetry records
+  // `warn:render_truth_unresolved: 14` and `warn:render_truth_advisory: 2`,
+  // while the persisted warnings.json carries neither — only throughline_absent
+  // and an empty vision array. Fourteen findings the build knew about, on a deck
+  // the founder was looking at, reported to him as two.
+  //
+  // Written BEFORE the vision gate below on purpose: that block does its own
+  // read-modify-write of warnings.json to add `vision`, so it merges on top of
+  // this rather than being clobbered by it.
+  //
+  // Third instance today of one mistake — the store, the gate telemetry, and now
+  // the warnings were each produced AFTER the step that persists them.
+  await writeCurrent(currentWarnings);
+
   // VISION GATE (ADVISORY). Findings surface as warnings, never block — runs
   // AFTER and OUTSIDE the $10 repair ceiling, recorded separately as "vision-qa".
   // GLM-5V-Turbo via the NATIVE z.ai endpoint (the Anthropic-compat client drops
