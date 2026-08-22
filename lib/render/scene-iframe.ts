@@ -101,7 +101,7 @@ export async function renderSceneDoc(
     .update(compBytes)
     .update("\u0000")
     .update(JSON.stringify(script))
-    .update(`\u0000${sceneIndex}\u0000${opts.settle ? 1 : 0}\u0000${opts.hydrate ? `h:${opts.hydrate.bundleUrl}` : ""}\u0000v2`)
+    .update(`\u0000${sceneIndex}\u0000${opts.settle ? 1 : 0}\u0000${opts.hydrate ? `h:${opts.hydrate.bundleUrl}` : ""}\u0000v3`)
     .digest("hex");
   const cached = renderCache.get(cacheKey);
   if (cached) {
@@ -367,6 +367,14 @@ export async function renderSceneDoc(
   }
   window.addEventListener('resize', fit);
   document.addEventListener('DOMContentLoaded', fit);
+  // Re-entry for the editor. fit() writes its scale as INLINE STYLE on
+  // .renderball-canvas, and the morph path's ancestor sync copies style from a
+  // freshly-rendered document — where fit() has never run, so the canvas there
+  // carries no transform. Copying that absence onto the live canvas wipes the
+  // scale and the page snaps to 1:1: a 1920px canvas in a ~1000px frame, which
+  // reads as "everything expanded". Idempotent, so calling it after any DOM
+  // surgery is always safe and always correct.
+  window.__rbFit = fit;
 </script>
 </head>
 <body>

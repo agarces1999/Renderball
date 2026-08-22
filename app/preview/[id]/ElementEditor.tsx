@@ -705,6 +705,18 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
         added,
         pieces: nextPieces.length,
       };
+      // Re-assert the canvas scale. The ancestor sync above deliberately
+      // overwrites style on the section root and its ancestors so a re-skin
+      // repaints — and .renderball-canvas is one of those ancestors, carrying
+      // the inline transform fit() set at load. The fresh render has no such
+      // transform (fit() never ran in a document that was never attached), so
+      // the sync silently strips it and the whole page renders unscaled.
+      // fit() is idempotent; running it after every morph costs nothing.
+      try {
+        (doc.defaultView as (Window & { __rbFit?: () => void }) | null)?.__rbFit?.();
+      } catch {
+        /* a missing hook means an older scene doc; the reload path still scales */
+      }
       setDocTick((t) => t + 1);
       return true;
     } catch {

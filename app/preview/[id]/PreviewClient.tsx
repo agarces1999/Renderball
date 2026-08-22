@@ -167,9 +167,35 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
   const [warnings, setWarnings] = useState<PreviewWarnings | null>(
     (initialWarnings as PreviewWarnings | null) ?? null,
   );
+  // Preview = the deck as the audience meets it: editor chrome gone, one page
+  // filling the screen. Held separately from sceneIndex so closing preview
+  // returns the user to the page they were editing, not the one they read to.
+  const [previewIndex, setPreviewIndex] = useState<number | null>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
 
   const dims = useMemo(() => getDimensions(doc), [doc]);
+
+  // Preview keyboard nav. Bound only while preview is open so the editor keeps
+  // its own shortcuts the rest of the time.
+  useEffect(() => {
+    if (previewIndex === null) return;
+    const last = doc.scenes.length - 1;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setPreviewIndex(null);
+        return;
+      }
+      if (e.key === "ArrowRight" || e.key === "PageDown" || e.key === " ") {
+        e.preventDefault();
+        setPreviewIndex((i) => (i === null ? i : Math.min(i + 1, last)));
+      } else if (e.key === "ArrowLeft" || e.key === "PageUp") {
+        e.preventDefault();
+        setPreviewIndex((i) => (i === null ? i : Math.max(i - 1, 0)));
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [previewIndex, doc.scenes.length]);
 
   // Auto-advance scenes when playing (never while editing elements, never on decks).
   useEffect(() => {
@@ -470,6 +496,17 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
               >
                 {regenerating ? "Regenerating…" : "Regenerate"}
               </button>
+              {/* Reading the deck is a different act from editing it: preview
+                  drops the chrome so the page can be judged the way it will be
+                  met. Sits before Share because you look before you send. */}
+              <button
+                type="button"
+                onClick={() => setPreviewIndex(sceneIndex)}
+                title="See the deck the way your audience will"
+                className="rounded-md border border-hairline-strong px-3 py-1.5 text-[12px] text-muted transition-colors hover:text-ink"
+              >
+                Preview
+              </button>
               <ShareButton scriptId={scriptId} />
               {/* Scoped to ONE page while its neighbor exports the whole deck —
                   the label carries the page number so a bare "PNG" can't read
@@ -632,6 +669,76 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
             onState={setEd}
           />
         </EditorShell>
+        {previewIndex !== null && (
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="Deck preview"
+            className="fixed inset-0 z-50 flex flex-col bg-black/95"
+          >
+            <div className="flex shrink-0 items-center justify-between px-4 py-2.5">
+              <span className="font-mono text-[10.5px] uppercase tracking-[0.14em] text-white/50">
+                Preview · page {previewIndex + 1} of {doc.scenes.length}
+              </span>
+              <div className="flex items-center gap-3">
+                <span className="hidden font-mono text-[10.5px] uppercase tracking-[0.14em] text-white/35 sm:inline">
+                  ← → to move · Esc to close
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setPreviewIndex(null)}
+                  className="rounded-md border border-white/20 px-3 py-1.5 text-[12px] text-white/80 transition-colors hover:bg-white/10 hover:text-white"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+            <div className="relative flex min-h-0 flex-1 items-center justify-center px-4 pb-4">
+              {/* Width is derived from the viewport height so the page keeps
+                  its exact aspect ratio at any window size. */}
+              <div
+                className="overflow-hidden rounded-lg bg-[#0b0d12] shadow-2xl"
+                style={{
+                  aspectRatio: `${dims.width}/${dims.height}`,
+                  width: `min(100%, calc((100vh - 7rem) * ${dims.width / dims.height}))`,
+                }}
+              >
+                <iframe
+                  key={previewIndex}
+                  src={`/api/preview/${scriptId}/iframe?scene=${previewIndex}&v=${reloadKey}&settle=1`}
+                  title={`Preview page ${previewIndex + 1}`}
+                  style={{ width: "100%", height: "100%", border: 0 }}
+                />
+              </div>
+              {previewIndex > 0 && (
+                <button
+                  type="button"
+                  aria-label="Previous page"
+                  onClick={() =>
+                    setPreviewIndex((i) => (i === null ? i : Math.max(i - 1, 0)))
+                  }
+                  className="absolute left-4 top-1/2 -translate-y-1/2 rounded-full border border-white/15 bg-black/40 px-3.5 py-2 text-[14px] text-white/70 transition-colors hover:bg-white/10 hover:text-white"
+                >
+                  ←
+                </button>
+              )}
+              {previewIndex < doc.scenes.length - 1 && (
+                <button
+                  type="button"
+                  aria-label="Next page"
+                  onClick={() =>
+                    setPreviewIndex((i) =>
+                      i === null ? i : Math.min(i + 1, doc.scenes.length - 1),
+                    )
+                  }
+                  className="absolute right-4 top-1/2 -translate-y-1/2 rounded-full border border-white/15 bg-black/40 px-3.5 py-2 text-[14px] text-white/70 transition-colors hover:bg-white/10 hover:text-white"
+                >
+                  →
+                </button>
+              )}
+            </div>
+          </div>
+        )}
       </div>
     );
   }
