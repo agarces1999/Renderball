@@ -551,20 +551,55 @@ export const summarizeBoxOverflow = (
   return { pieces, overflowing, totalPx, noHeight, worst, line };
 };
 
+/**
+ * Is this font `src` a STYLESHEET rather than a font binary?
+ *
+ * Exported because it decides whether a brand font loads at all, and a wrong
+ * answer silently disarms the text-metric gates (see buildSceneHtml).
+ */
+export const isFontStylesheet = (src: string): boolean =>
+  /(^|\/\/)fonts\.googleapis\.com\//i.test(src) ||
+  /[?&]family=/i.test(src) ||
+  /\.css($|[?#])/i.test(src);
+
 const buildSceneHtml = (
   bodyHtml: string,
   fonts: { family?: string; src?: string }[],
   dims: { w: number; h: number },
 ): string => {
-  // @font-face for any captured brand font so text measures at real metrics.
-  const faces = fonts
-    .filter((f) => f.family && f.src)
-    .map(
-      (f) =>
-        `@font-face{font-family:"${f.family}";src:url("${f.src}");font-display:block;}`,
-    )
+  // Brand fonts, so text measures at REAL metrics.
+  //
+  // A src is one of two completely different things and they cannot be loaded
+  // the same way:
+  //
+  //   a font BINARY   .woff2/.woff/.ttf/.otf → @font-face src
+  //   a STYLESHEET    fonts.googleapis.com/css2?family=... → <link>, because
+  //                   it is CSS that itself contains the @font-face rules
+  //
+  // Both were being wrapped in `@font-face{src:url(...)}`. A stylesheet loaded
+  // as a font binary ALWAYS fails to parse, so document.fonts reported the
+  // family unloaded — and an unloaded brand font marks the scene untrusted,
+  // which demotes every text-metric finding (overflow, cross-piece-overlap,
+  // covered-text-cluster, intra-piece-overlap) from blocking to advisory.
+  //
+  // Measured 2026-08-22 on a real deck whose only font was Google-hosted Inter:
+  // fontFailures ["Inter"] on all six scenes, 30 findings of which just 14
+  // could block — the 11 overflows and 5 covered-text-clusters were all
+  // silenced. The URL returns 200; it was never a network problem. Google
+  // Fonts is the most common brand-font source there is, so this was quietly
+  // disarming the text gates on a large share of decks.
+  const usable = fonts.filter((f): f is { family: string; src: string } => !!f.family && !!f.src);
+  const faces = usable
+    .filter((f) => !isFontStylesheet(f.src))
+    .map((f) => `@font-face{font-family:"${f.family}";src:url("${f.src}");font-display:block;}`)
     .join("\n");
-  return `<!doctype html><html><head><meta charset="utf-8"><style>
+  const sheets = usable
+    .filter((f) => isFontStylesheet(f.src))
+    .map((f) => `<link rel="stylesheet" href="${f.src.replace(/"/g, "&quot;")}">`)
+    .join("\n");
+  return `<!doctype html><html><head><meta charset="utf-8">
+    ${sheets}
+    <style>
     html,body{margin:0;padding:0;}
     ${faces}
     /* Jump every animation to its settled END state (fill-mode forwards/both
