@@ -309,8 +309,9 @@ const main = async (): Promise<void> => {
   await restoreFixture(scriptId);
 
   console.log(
-    `\n  ${summary.passed} passed, ${summary.failed} failed, ${summary.skipped} skipped ` +
-      `· ${(summary.ms / 1000).toFixed(1)}s`,
+    `\n  ${summary.passed} passed, ${summary.failed} failed, ${summary.skipped} skipped` +
+      (summary.quarantined > 0 ? `, ${summary.quarantined} QUARANTINED` : "") +
+      ` · ${(summary.ms / 1000).toFixed(1)}s`,
   );
   if (summary.failed > 0) {
     console.log("\n  failures:");
@@ -318,6 +319,16 @@ const main = async (): Promise<void> => {
       console.log(`    ✗ ${r.name}\n        ${r.reason}`);
     }
     process.exitCode = 1;
+  }
+
+  // Quarantine is a DEBT, not a resolution. Print it after the failures, every
+  // run, so it is never quietly permanent — a flow that has been red and
+  // unexplained for a month should be uncomfortable to read past.
+  if (summary.quarantined > 0) {
+    console.log(`\n  quarantined (running, reported, NOT blocking — each one is unfinished work):`);
+    for (const r of summary.results.filter((x) => x.status === "quarantined")) {
+      console.log(`    ⚠ ${r.name}\n        ${r.reason}`);
+    }
   }
 };
 

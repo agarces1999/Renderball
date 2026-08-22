@@ -75,6 +75,92 @@ jobs:
           DATABASE_URL: postgresql://placeholder:placeholder@localhost:5432/placeholder
           ANTHROPIC_BASE_URL: https://api.z.ai/api/anthropic
 
+  # ── QA: drive the real product in a real browser ─────────────────────────────
+  # The unit suite above and this job answer different questions. `run-tests`
+  # asks whether the code is correct in isolation; this asks whether the product
+  # still works when its parts are put together — which is where every bug the
+  # founder found by hand on 2026-08-21 was living.
+  #
+  # It needs a DOCUMENT to drive, and src/generated/ is gitignored, so a fresh
+  # checkout has none. Before this job existed, wiring the suite into CI would
+  # have produced a suite with nothing to drive and a sweep that scanned zero
+  # directories and passed — green, and meaningless. scripts/qa-fixture.mjs puts
+  # one small committed deck (qa/fixtures/deck) on disk and in the database.
+  #
+  # SCOPE, deliberately: the seam flows plus the invariant sweep, both green and
+  # fast. Six of the editor/journey flows are currently red for reasons not yet
+  # diagnosed; wiring those in today would make CI red on every push and teach
+  # everyone to ignore it, which costs more than the coverage buys. They get
+  # added back as they are resolved — the QA_ONLY line below is the ratchet.
+  #
+  # Against `next dev`, not a production build: /dev/edit is NODE_ENV-gated off
+  # in production on purpose, and it is the surface the harness drives.
+  qa:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: renderball_qa
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/renderball_qa
+      NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: pk_test_Y2xlcmsuZXhhbXBsZS5jb20k
+      CLERK_SECRET_KEY: sk_test_placeholder
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npx prisma generate
+      - run: npx prisma migrate deploy
+      - run: npx playwright install --with-deps chromium
+
+      - name: Put the fixture document on disk and in the database
+        run: node scripts/qa-fixture.mjs
+
+      # Files only — no server needed, and it fails loudly on a fixture whose
+      # store has drifted from its render source.
+      - name: Invariant sweep
+        run: npx tsx scripts/invariants.ts
+
+      - name: Start the dev server
+        run: |
+          npm run dev:raw > /tmp/dev.log 2>&1 &
+          for i in $(seq 1 60); do
+            if curl -sf --max-time 5 http://localhost:3000/api/health > /dev/null; then
+              echo "dev server up after ${i}0s"; exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::dev server never came up"; tail -40 /tmp/dev.log; exit 1
+
+      # The subject is whatever qa-fixture.mjs pinned — no env override, so the
+      # suite cannot silently change what it is testing.
+      - name: QA — seam flows
+        run: QA_ONLY=seam node scripts/run-qa.mjs
+
+      - name: Dev server log on failure
+        if: failure()
+        run: tail -80 /tmp/dev.log
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: qa-screenshots
+          path: .data/qa/
+          if-no-files-found: ignore
+
   # ── POST-DEPLOY SMOKE (founder, 2026-08-14: "fix the QA process so every
   # time you deploy a fix I am not the first one to notice it doesn't work").
   # Railway auto-deploys every push to launch-deploy regardless of CI. This

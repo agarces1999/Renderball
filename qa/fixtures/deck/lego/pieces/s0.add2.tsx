@@ -1,0 +1,1 @@
+<div style={{ position: "absolute", left: 576, top: 454, width: 768, maxWidth: 768, zIndex: 2 }}><span data-rb-freetext="1" data-rb-fmt="f:FONT_BODY;s:32;w:500;i:0;u:0;a:left;c:inherit" style={{ fontFamily: FONT_BODY, fontSize: 32, fontWeight: 500, color: "inherit", lineHeight: 1.3, whiteSpace: "pre-wrap", display: "block", textAlign: "left" }}>{"Your text"}</span></div>

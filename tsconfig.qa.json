@@ -18,5 +18,12 @@
   // one-off spikes deleted) rather than excluded. If a new script does not
   // type-check, fix the script.
   "include": ["qa/**/*", "lib/**/*", "src/**/*", "scripts/**/*.ts"],
-  "exclude": ["node_modules", "out", "public/renders", "src/generated"]
+  // qa/fixtures is the ONE exception, and it is the same exception as
+  // src/generated directly above it: a committed copy of GENERATED DECK CODE,
+  // not source. Its lego pieces are JSX fragments by design — a piece body is
+  // spliced into a template, so it has no single parent element and cannot
+  // type-check as a module. Excluding a directory of our own code would be the
+  // hole this config was written to close; excluding a fixture of model output
+  // is what src/generated already established.
+  "exclude": ["node_modules", "out", "public/renders", "src/generated", "qa/fixtures"]
 }

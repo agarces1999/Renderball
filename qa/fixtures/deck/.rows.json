@@ -1,0 +1,393 @@
+{
+  "project": {
+    "id": "01KY7ZEE2VMSXKB6A5TDCPJQTB",
+    "ownerId": "dev-local",
+    "purpose": "Introduce Flarebit's AI-native design studio: paste a URL, get an on-brand presentation deck in minutes, edit by drawing a box and describing content, close on requesting early access.",
+    "status": "script_generated",
+    "brief": {
+      "id": "01KY7ZEE2VMSXKB6A5TDCPJQTB",
+      "cta": "Solicita acceso anticipado en flarebit.ai",
+      "kind": "deck",
+      "status": "script_generated",
+      "moments": [
+        {
+          "title": "Lienzo vacío",
+          "creativity": "balanced",
+          "description": "Abre con la tensión del lienzo vacío y la presión del tiempo, entregando al siguiente momento la pregunta: ¿y si no tuvieras que empezar de cero?"
+        },
+        {
+          "title": "Pega tu enlace",
+          "creativity": "balanced",
+          "description": "Presenta el giro — pega una URL y Flarebit construye el deck — conectando con la siguiente escena que muestra cómo se edita cualquier elemento."
+        },
+        {
+          "title": "Dibuja y describe",
+          "creativity": "balanced",
+          "description": "Demuestra el control creativo: dibuja un recuadro, describe el contenido y Flarebit lo genera, llevando al resultado final."
+        },
+        {
+          "title": "Tu marca en cada slide",
+          "creativity": "balanced",
+          "description": "Muestra el resultado: un deck completo con la marca del usuario en cada diapositiva, preparando el cierre con la invitación."
+        },
+        {
+          "title": "Acceso anticipado",
+          "creativity": "balanced",
+          "description": "Cierra con la invitación a solicitar acceso anticipado, convirtiendo el recorrido en acción."
+        }
+      ],
+      "purpose": "Introduce Flarebit's AI-native design studio: paste a URL, get an on-brand presentation deck in minutes, edit by drawing a box and describing content, close on requesting early access.",
+      "owner_id": "dev-local",
+      "script_id": "01KY7ZGC4MVDD5J1DSB35GAW5T",
+      "created_at": "2026-07-23T17:12:51.547Z",
+      "brand_extract": {
+        "ok": true,
+        "url": "https://flarebit.ai/",
+        "fonts": [],
+        "title": "Flarebit - Energía Solar Inteligente",
+        "palette": [
+          "#21296a",
+          "#70ddf0",
+          "#1a2332",
+          "#64748b",
+          "#e2e8f0",
+          "#94a3b8",
+          "#0078a8",
+          "#3388ff"
+        ],
+        "headlines": [],
+        "site_lang": "es",
+        "fetched_at": "2026-07-23T17:12:42.635Z",
+        "font_roles": {},
+        "brand_truth": {
+          "ok": false,
+          "signals": {
+            "copy": {
+              "excerpts": 0,
+              "headlines": 0
+            },
+            "logo": {
+              "status": "undecodable",
+              "rejected": [
+                {
+                  "url": "https://flarebit.ai/flarebit-logo.svg",
+                  "reason": "non-image content-type (text/html)"
+                }
+              ],
+              "effectiveUrl": null
+            },
+            "accent": {
+              "status": "ok",
+              "resolved": "#0078a8"
+            },
+            "photos": {
+              "dead": 0,
+              "listed": 0,
+              "deadUrls": [],
+              "timedOut": 0,
+              "verified": 0
+            },
+            "failover": {
+              "patterns": [],
+              "sparseCore": true,
+              "boilerplate": []
+            }
+          },
+          "degraded": [
+            "sparse extract core (no title/description/og:image or near-empty body)",
+            "logo undecodable (non-image content-type (text/html)) — wordmark fallback",
+            "zero page images harvested — no real product/brand imagery available"
+          ],
+          "hardFail": false,
+          "checkedAt": "2026-07-23T17:12:51.546Z"
+        },
+        "description": "Flarebit - Financiamiento inteligente para energía solar",
+        "page_images": [],
+        "body_excerpts": [],
+        "motion_signal": "medium",
+        "site_screenshot": "https://iad.microlink.io/vD6wj1ICM8e2K1ddNFNHWymt3nTKIpHQLgVuF9njzgyqu4X0t4WGwFegvmz9Zpb4bTEOvTT988CbpC8XUFHwxg.png",
+        "background_color": "#ffffff"
+      },
+      "brand_kit_url": "https://flarebit.ai",
+      "duration_seconds": 25,
+      "distribution_format": "landscape"
+    },
+    "script": null,
+    "brandExtract": {
+      "ok": true,
+      "url": "https://flarebit.ai/",
+      "fonts": [],
+      "title": "Flarebit - Energía Solar Inteligente",
+      "palette": [
+        "#21296a",
+        "#70ddf0",
+        "#1a2332",
+        "#64748b",
+        "#e2e8f0",
+        "#94a3b8",
+        "#0078a8",
+        "#3388ff"
+      ],
+      "headlines": [],
+      "site_lang": "es",
+      "fetched_at": "2026-07-23T17:12:42.635Z",
+      "font_roles": {},
+      "brand_truth": {
+        "ok": false,
+        "signals": {
+          "copy": {
+            "excerpts": 0,
+            "headlines": 0
+          },
+          "logo": {
+            "status": "undecodable",
+            "rejected": [
+              {
+                "url": "https://flarebit.ai/flarebit-logo.svg",
+                "reason": "non-image content-type (text/html)"
+              }
+            ],
+            "effectiveUrl": null
+          },
+          "accent": {
+            "status": "ok",
+            "resolved": "#0078a8"
+          },
+          "photos": {
+            "dead": 0,
+            "listed": 0,
+            "deadUrls": [],
+            "timedOut": 0,
+            "verified": 0
+          },
+          "failover": {
+            "patterns": [],
+            "sparseCore": true,
+            "boilerplate": []
+          }
+        },
+        "degraded": [
+          "sparse extract core (no title/description/og:image or near-empty body)",
+          "logo undecodable (non-image content-type (text/html)) — wordmark fallback",
+          "zero page images harvested — no real product/brand imagery available"
+        ],
+        "hardFail": false,
+        "checkedAt": "2026-07-23T17:12:51.546Z"
+      },
+      "description": "Flarebit - Financiamiento inteligente para energía solar",
+      "page_images": [],
+      "body_excerpts": [],
+      "motion_signal": "medium",
+      "site_screenshot": "https://iad.microlink.io/vD6wj1ICM8e2K1ddNFNHWymt3nTKIpHQLgVuF9njzgyqu4X0t4WGwFegvmz9Zpb4bTEOvTT988CbpC8XUFHwxg.png",
+      "background_color": "#ffffff"
+    },
+    "scriptId": "01KY7ZGC4MVDD5J1DSB35GAW5T",
+    "error": null,
+    "createdAt": "2026-07-23T17:12:51.547Z",
+    "updatedAt": "2026-08-21T20:49:08.017Z",
+    "shareToken": null,
+    "sharedAt": null
+  },
+  "scriptDoc": {
+    "id": "01KY7ZGC4MVDD5J1DSB35GAW5T",
+    "json": {
+      "id": "01KY7ZGC4MVDD5J1DSB35GAW5T",
+      "audio": {
+        "sfx": [],
+        "music": {
+          "source": "library",
+          "license": "royalty-free",
+          "asset_id": "lib_calm_build_03",
+          "mood_tags": [
+            "confident",
+            "build",
+            "tech"
+          ],
+          "volume_db": -18
+        },
+        "voiceover": {
+          "script": "Todos conocemos ese momento: la página en blanco, el cursor parpadeando, la presentación que hay que entregar mañana. Con Flarebit basta con pegar la URL de tu sitio. La plataforma lee tu marca y construye una presentación completa en minutos. ¿Quieres editar algo? Dibuja un recuadro sobre el lienzo, describe lo que quieres ver, y Flarebit lo genera al instante. El resultado es un deck con tu tipografía, tu paleta y tu tono en cada diapositiva, listo para presentar. Solicita acceso anticipado hoy en flarebit.ai.",
+          "language": "en-US",
+          "voice_preset": "Nova"
+        }
+      },
+      "brief": {
+        "cta": "Solicita acceso anticipado en flarebit.ai",
+        "about": "Introduce Flarebit's AI-native design studio: paste your URL and get an on-brand presentation deck in minutes; edit any element by drawing a box on the canvas and describing what goes there; close on requesting early access.",
+        "purpose": "Introduce Flarebit's AI-native design studio: paste a URL, get an on-brand presentation deck in minutes, edit by drawing a box and describing content, close on requesting early access."
+      },
+      "assets": {
+        "audio": [],
+        "fonts": [
+          {
+            "id": "font_inter",
+            "src": "https://fonts.gstatic.com/s/inter/v13/UcCO3FwrK3iLTeHuS_fvQtMwCp50KnMa1ZL7.woff2",
+            "family": "Inter",
+            "format": "woff2",
+            "styles": [
+              "normal"
+            ],
+            "preload": true,
+            "weights": [
+              400,
+              500,
+              600,
+              700,
+              800
+            ],
+            "license_id": "open",
+            "fallback_chain": [
+              "system-ui",
+              "sans-serif"
+            ]
+          }
+        ],
+        "images": [
+          {
+            "id": "site_favicon",
+            "src": "https://flarebit.ai/favicon.ico",
+            "width": 32,
+            "format": "png",
+            "height": 32,
+            "alt_text": "Flarebit",
+            "license_id": "brand-owned"
+          },
+          {
+            "id": "og_image",
+            "src": "https://flarebit.ai/og-image.png",
+            "width": 1200,
+            "format": "png",
+            "height": 630,
+            "alt_text": "Flarebit",
+            "license_id": "brand-owned"
+          }
+        ],
+        "videos": []
+      },
+      "config": {
+        "fps": 30,
+        "kind": "deck",
+        "tone": "Confident, product-led, demo-driven — the feeling of watching a friction disappear.",
+        "pacing": "medium",
+        "resolution": "1080p",
+        "aspect_ratio": "16:9",
+        "duration_seconds": 25
+      },
+      "scenes": [
+        {
+          "id": "scene_0",
+          "index": 0,
+          "label": "Lienzo vacío",
+          "content": {
+            "lede": "Necesitas una presentación para mañana. El cursor parpadea. El reloj no se detiene.",
+            "caption": "Diapositiva 1 de ? — 23:47",
+            "eyebrow": "EL PROBLEMA",
+            "headline": "La página en blanco no cede",
+            "asset_ids": []
+          },
+          "register": "quote",
+          "description": "Abre con la tensión del lienzo vacío y la presión del tiempo, entregando al siguiente momento la pregunta: ¿y si no tuvieras que empezar de cero?",
+          "end_seconds": 5,
+          "start_seconds": 0,
+          "visual_concept": "Composition: A large empty presentation-slide frame sits centered on the white #ffffff canvas, its thin #64748b border enclosing a vast blank interior with only a thin vertical caret line at center-left. A faint #e2e8f0 dot grid fills the entire background at 12% opacity, suggesting a design-tool workspace. The slide frame's top-left corner shows a small tab labeled 'Diapositiva 1 de ?'. A short #0078a8 accent bar anchors the manifesto headline below the frame, and a subtle #94a3b8 timestamp '23:47' sits in the frame's bottom-right corner — the hour is late. A compact design-tool toolbar with five muted icon buttons (cursor, rectangle, text, image, shapes) sits along the very top edge of the canvas in a thin #e2e8f0 strip, reinforcing that this is a design workspace sitting idle."
+        },
+        {
+          "id": "scene_1",
+          "index": 1,
+          "label": "Pega tu enlace",
+          "content": {
+            "lede": "Flarebit lee tu sitio y construye una presentación con tu marca, tus colores y tu voz.",
+            "bullets": [
+              "Tipografía extraída de tu sitio",
+              "Paleta aplicada automáticamente",
+              "Estructura narrativa lista para presentar"
+            ],
+            "caption": "https://tuempresa.com → deck on-brand",
+            "eyebrow": "EL CAMBIO",
+            "headline": "Pega tu URL. Recibe tu deck.",
+            "asset_ids": []
+          },
+          "register": "split",
+          "description": "Presenta el giro — pega una URL y Flarebit construye el deck — conectando con la siguiente escena que muestra cómo se edita cualquier elemento.",
+          "end_seconds": 10,
+          "start_seconds": 5,
+          "visual_concept": "Composition: Split layout on white canvas. Left half holds a browser-chrome mock with a URL bar displaying 'flarebit.ai/nuevo' and a green padlock icon; below the chrome, a clean input panel with a field labeled 'Pega tu URL' containing the typed text 'https://tuempresa.com' and a solid #0078a8 button labeled 'Generar deck'. A thin vertical #e2e8f0 divider runs between halves. Right half shows three vertically stacked slide thumbnails: the top thumbnail fully rendered with a 'Tu Empresa' headline and #0078a8 accent bar, the middle thumbnail partially filled with placeholder text lines in #64748b, and the bottom thumbnail a faint #e2e8f0 outline only — suggesting progressive generation from top to bottom. A small circular #70ddf0 progress ring sits between the middle and bottom thumbnails, half-filled, indicating active generation."
+        },
+        {
+          "id": "scene_2",
+          "index": 2,
+          "label": "Dibuja y describe",
+          "content": {
+            "lede": "¿Quieres cambiar algo? Marca una zona del lienzo y escribe lo que imaginas. Flarebit lo genera al instante.",
+            "caption": "Selección → 'Añade un gráfico de barras con los últimos cuatro trimestres.'",
+            "eyebrow": "CONTROL TOTAL",
+            "headline": "Dibuja. Describe. Listo.",
+            "asset_ids": []
+          },
+          "register": "full-bleed",
+          "description": "Demuestra el control creativo: dibuja un recuadro, describe el contenido y Flarebit lo genera, llevando al resultado final.",
+          "end_seconds": 15,
+          "start_seconds": 10,
+          "visual_concept": "Composition: A full design-tool workspace mock fills the entire slide on white #ffffff. A thin toolbar strip runs along the top with five muted #64748b icon buttons (cursor, rectangle, text, image, shapes) and a small #70ddf0 'Editando' status tag at the right end. Below the toolbar, a narrow left sidebar shows a vertical layers list with three stacked layer rows: 'Título', 'Texto', 'Acento' — each row a small label beside a faint #e2e8f0 thumbnail swatch. The main canvas occupies the remaining area and shows a partially-built deck slide: a headline 'Crecimiento trimestral' in #1a2332 at top-left, a #0078a8 accent bar beneath it, and two body-text lines in #64748b. Overlaid on the upper-right quadrant of the canvas, a dashed #0078a8 selection box with visible corner handles encloses a newly-generated bar chart — four vertical bars in #0078a8 and #3388ff of increasing height labeled 'Q1', 'Q2', 'Q3', 'Q4' along the baseline. A floating rounded prompt field with a #0078a8 border sits beside the selection box containing typed text: 'Añade un gráfico de barras con los últimos cuatro trimestres.' with a thin caret at the end."
+        },
+        {
+          "id": "scene_3",
+          "index": 3,
+          "label": "Tu marca en cada slide",
+          "content": {
+            "lede": "Desde la portada hasta el cierre, cada diapositiva refleja tu identidad sin esfuerzo manual.",
+            "bullets": [
+              "Portada con tu tipografía",
+              "Slides de datos con tu paleta",
+              "Cierre con tu llamado a la acción"
+            ],
+            "caption": "Tipografía · Paleta · Tono — coherentes de principio a fin",
+            "eyebrow": "EL RESULTADO",
+            "headline": "Tu marca en cada diapositiva",
+            "asset_ids": []
+          },
+          "register": "list",
+          "description": "Muestra el resultado: un deck completo con la marca del usuario en cada diapositiva, preparando el cierre con la invitación.",
+          "end_seconds": 20,
+          "start_seconds": 15,
+          "visual_concept": "Composition: A horizontal row of four slide thumbnails arranged left-to-right on white canvas, each a thin #64748b-bordered rectangle with rounded corners. Thumbnail 1: a title slide with 'Tu Empresa' headline in #1a2332 and a #0078a8 accent bar beneath. Thumbnail 2: a three-bullet slide with #3388ff bullet dots and three short text lines. Thumbnail 3: a stat slide with a large '2.4×' numeral in #0078a8 and a small #64748b caption beneath reading 'crecimiento interanual'. Thumbnail 4: a closing slide with a centered #0078a8 pill button labeled 'Contáctanos' and two faint #e2e8f0 text lines above it. Below the row, a thin #e2e8f0 divider and a horizontal caption strip with three brand-consistency tags: 'Tipografía', 'Paleta', 'Tono' — each tag a small #70ddf0-bordered chip. A tiny slide-count indicator '4 diapositivas' in #94a3b8 sits at the row's far right above the thumbnails."
+        },
+        {
+          "id": "scene_4",
+          "index": 4,
+          "label": "Acceso anticipado",
+          "content": {
+            "cta": {
+              "primary": "Solicitar acceso",
+              "secondary": "flarebit.ai"
+            },
+            "lede": "Los primeros cupos ya se están llenando. Sé de los primeros en crear tu próximo deck con Flarebit.",
+            "caption": "Cupos limitados · Beta privada",
+            "eyebrow": "FLAREBIT · ACCESO ANTICIPADO",
+            "headline": "Solicita acceso anticipado",
+            "asset_ids": [
+              "site_favicon"
+            ]
+          },
+          "register": "centered",
+          "description": "Cierra con la invitación a solicitar acceso anticipado, convirtiendo el recorrido en acción.",
+          "end_seconds": 25,
+          "start_seconds": 20,
+          "visual_concept": "Composition: Centered CTA composition on white #ffffff canvas. The headline 'Solicita acceso anticipado' sits in #1a2332 display weight, with a bright #0078a8 accent bar directly beneath it spanning roughly 40% of the canvas width. Below the bar, a solid #0078a8 pill button with white text 'Solicitar acceso' anchors the center. The URL 'flarebit.ai' sits below the button in #64748b monospace. The Flarebit logo and wordmark sit in the upper-left corner at modest scale. Two small #70ddf0 accent dots sit at varied positions in the background at 25% opacity, and a faint #e2e8f0 hairline runs the full width at the very bottom edge. A compact #e2e8f0-bordered info card sits below the URL containing two small rows: 'Cupos limitados' on the left and 'Beta privada' on the right, each preceded by a tiny #0078a8 dot."
+        }
+      ],
+      "status": "draft",
+      "narrative": {
+        "arc": "Abre en la tensión del inicio en blanco, gira con la simplicidad de pegar un enlace, escala al control creativo de dibujar y describir, resuelve en el deck terminado con tu identidad, y cierra invitando al acceso anticipado.",
+        "logline": "Para profesionales que enfrentan el lienzo vacío y el reloj corriendo, Flarebit convierte una URL en una presentación con tu marca en minutos — y te deja rediseñar cualquier elemento dibujando un recuadro sobre el lienzo.",
+        "throughline": "El recuadro: un marco de diapositiva vacío en la primera escena, el campo de entrada de URL en la segunda, el recuadro de selección dibujado sobre el lienzo en la tercera, las miniaturas de diapositivas completas en la cuarta, y el botón de acción en la última — el rectángulo evoluciona de vacío a lleno a accionable."
+      },
+      "created_at": "2026-07-23T17:13:55.092Z",
+      "customer_id": "local-dev",
+      "brand_kit_id": "bk_01KY7ZEE2VMSXKB6A5TDCPJQTB",
+      "schema_version": "1.0"
+    },
+    "createdAt": "2026-07-23T17:13:55.452Z",
+    "updatedAt": "2026-08-21T20:59:25.675Z"
+  }
+}

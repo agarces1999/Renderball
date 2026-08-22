@@ -1,0 +1,184 @@
+{
+  "preamble": "import React from \"react\";\nimport { Img } from \"./Img\";\nimport { Piece } from \"./Piece\";\nimport { BrandChrome } from \"./BrandChrome\";\nimport { Check, Lock, ArrowRight } from \"lucide-react\";\n\ninterface Script {\n  scenes: Array<{\n    content: {\n      eyebrow?: string;\n      headline?: string;\n      lede?: string;\n      bullets?: string[];\n      caption?: string;\n      meta?: Array<{ label: string; value: string }>;\n      cta?: { primary?: string; secondary?: string };\n      illustration?: string;\n      asset_ids?: string[];\n    };\n    register?: string;\n    visual_concept?: string;\n  }>;\n  assets: { images: string[]; fonts: string[] };\n  config: Record<string, unknown>;\n}\n\n// ─── Palette (crawled — used verbatim, no invented hex) ───────────────────\nconst PALETTE = {\n  white: \"#ffffff\",\n  ink: \"#1a2332\",\n  navy: \"#21296a\",\n  signature: \"#0078a8\",\n  sky: \"#3388ff\",\n  cyan: \"#70ddf0\",\n  slate: \"#64748b\",\n  mist: \"#e2e8f0\",\n  steel: \"#94a3b8\",\n} as const;\n\nconst BRAND_LIGHT = PALETTE.white;\nconst BRAND_INK = PALETTE.ink;\nconst BRAND_ACCENT = PALETTE.signature;\nconst BRAND_ACCENT_SOFT = PALETTE.cyan;\n\n// ─── Fonts (LOCKED — verbatim) ────────────────────────────────────────────\nconst FONT_DISPLAY = '\"Inter\", undefined';\nconst FONT_BODY = '\"Inter\", undefined';\nconst FONT_MONO = '\"JetBrains Mono\", \"SFMono-Regular\", Consolas, monospace';\n\nconst BRAND_FONTS_CSS = `\n@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');\n`;\n\n// ─── Section frame ────────────────────────────────────────────────────────\nconst SECTION_FRAME: React.CSSProperties = {\n  position: \"absolute\",\n  inset: 0,\n  width: \"100%\",\n  height: \"100%\",\n  overflow: \"hidden\",\n  boxSizing: \"border-box\",\n  background: PALETTE.white,\n};\n\n// ─── Shared @keyframes ────────────────────────────────────────────────────\nconst SHARED_KEYFRAMES = `\n@keyframes recuadroBreathe {\n  0%, 100% { opacity: 0.92; transform: translate(-50%, -50%) scale(1); }\n  50%      { opacity: 1;    transform: translate(-50%, -50%) scale(1.012); }\n}\n@keyframes recuadroDraw {\n  0%   { stroke-dashoffset: 720; }\n  100% { stroke-dashoffset: 0; }\n}\n@keyframes recuadroCornerPulse {\n  0%, 100% { box-shadow: 0 0 0 0 rgba(0,120,168,0.0); }\n  50%      { box-shadow: 0 0 0 4px rgba(0,120,168,0.18); }\n}\n@keyframes glowBreathe {\n  0%, 100% { opacity: 0.18; }\n  50%      { opacity: 0.34; }\n}\n@keyframes drift1 {\n  0%, 100% { transform: translate(0, 0); }\n  50%      { transform: translate(18px, -14px); }\n}\n@keyframes drift2 {\n  0%, 100% { transform: translate(0, 0); }\n  50%      { transform: translate(-22px, 16px); }\n}\n@keyframes drift3 {\n  0%, 100% { transform: translate(0, 0); }\n  50%      { transform: translate(12px, 22px); }\n}\n@keyframes sweep {\n  0%   { transform: translateX(-30%); opacity: 0; }\n  40%  { opacity: 0.5; }\n  100% { transform: translateX(130%); opacity: 0; }\n}\n@keyframes breathe {\n  0%, 100% { transform: scale(1); }\n  50%      { transform: scale(1.015); }\n}\n@keyframes caretBlink {\n  0%, 49%  { opacity: 1; }\n  50%, 100%{ opacity: 0; }\n}\n@keyframes ringSpin {\n  0%   { transform: rotate(0deg); }\n  100% { transform: rotate(360deg); }\n}\n@keyframes dotPulse {\n  0%, 100% { opacity: 0.25; transform: scale(1); }\n  50%      { opacity: 0.55; transform: scale(1.4); }\n}\n@keyframes barRise {\n  0%   { transform: scaleY(0); }\n  100% { transform: scaleY(1); }\n}\n@keyframes fadeRise {\n  0%   { opacity: 0; transform: translateY(14px); }\n  100% { opacity: 1; transform: translateY(0); }\n}\n`;\n\n// ─── Throughline motif anchor ─────────────────────────────────────────────\nconst THROUGHLINE_SLUG = \"el-recuadro-un-marco-de-diapositiva-vac-o-en-la-\";\nconst THROUGHLINE_ANCHOR: React.CSSProperties = {\n  position: \"absolute\",\n  left: 1360,\n  top: 540,\n  transform: \"translate(-50%, -50%)\",\n};\n\nconst ThroughlineRect: React.FC<{\n  width: number;\n  height: number;\n  style?: React.CSSProperties;\n  children?: React.ReactNode;\n  animate?: \"breathe\" | \"cornerPulse\" | \"none\";\n}> = ({ width, height, style, children, animate = \"breathe\" }) => (\n  <div\n    data-throughline={THROUGHLINE_SLUG}\n    style={{\n      ...THROUGHLINE_ANCHOR,\n      width,\n      height,\n      boxSizing: \"border-box\",\n      animation:\n        animate === \"breathe\"\n          ? \"recuadroBreathe 5s ease-in-out infinite\"\n          : animate === \"cornerPulse\"\n            ? \"recuadroCornerPulse 3.2s ease-in-out infinite\"\n            : undefined,\n      ...style,\n    }}\n  >\n    {children}\n  </div>\n);\n\n// ─── Recurring atmospheric helpers ────────────────────────────────────────\nconst DotGrid: React.FC<{ opacity?: number; size?: number; gap?: number }> = ({\n  opacity = 0.12,\n  size = 2,\n  gap = 28,\n}) => (\n  <div\n    style={{\n      position: \"absolute\",\n      inset: 0,\n      pointerEvents: \"none\",\n      opacity,\n      backgroundImage: `radial-gradient(${PALETTE.mist} ${size}px, transparent ${size + 1}px)`,\n      backgroundSize: `${gap}px ${gap}px`,\n    }}\n  />\n);\n\nconst GrainOverlay: React.FC<{ opacity?: number }> = ({ opacity = 0.05 }) => (\n  <div\n    style={{\n      position: \"absolute\",\n      inset: 0,\n      pointerEvents: \"none\",\n      opacity,\n      backgroundImage: `url(\"data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3' seed='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E\")`,\n    }}\n  />\n);\n\nconst DriftEmbers: React.FC<{ color?: string }> = ({\n  color = PALETTE.signature,\n}) => {\n  const embers = [\n    { x: 18, y: 22, s: 6, d: \"drift1 9s ease-in-out infinite\" },\n    { x: 72, y: 38, s: 4, d: \"drift2 11s ease-in-out infinite\" },\n    { x: 36, y: 78, s: 5, d: \"drift3 13s ease-in-out infinite\" },\n    { x: 84, y: 70, s: 3, d: \"drift1 10s ease-in-out infinite\" },\n  ];\n  return (\n    <>\n      {embers.map((e, i) => (\n        <div\n          key={i}\n          style={{\n            position: \"absolute\",\n            left: `${e.x}%`,\n            top: `${e.y}%`,\n            width: e.s,\n            height: e.s,\n            borderRadius: \"50%\",\n            background: color,\n            boxShadow: `0 0 18px ${color}, 0 0 36px ${color}66`,\n            opacity: 0.45,\n            animation: e.d,\n            pointerEvents: \"none\",\n          }}\n        />\n      ))}\n    </>\n  );\n};\n\n// ─── Brand chrome wrapper (configured once, used in every scene) ───────────\nconst Chrome: React.FC<{\n  sceneIndex: number;\n  totalScenes: number;\n  category?: string;\n  showCornerLogo?: boolean;\n  onBrandColorBg?: boolean;\n}> = (p) => (\n  <BrandChrome\n    {...p}\n    variant=\"corner\"\n    wordmark=\"Flarebit\"\n    ink={BRAND_INK}\n    accent={BRAND_ACCENT}\n    fontDisplay={FONT_DISPLAY}\n    fontBody={FONT_BODY}\n  />\n);\n\nconst TOTAL_SCENES = 5;\n\n// ═══════════════════════════════════════════════════════════════════════════\n// Section 0 — \"Lienzo vacío\"\n// ═══════════════════════════════════════════════════════════════════════════\n\n",
+  "tail": "export const Generated: React.FC<{ script: Script }> = ({ script }) => (\n  <>\n    <style dangerouslySetInnerHTML={{ __html: BRAND_FONTS_CSS }} />\n    <style dangerouslySetInnerHTML={{ __html: SHARED_KEYFRAMES }} />\n    <Section0 script={script} />\n    <Section1 script={script} />\n    <Section2 script={script} />\n    <Section3 script={script} />\n    <Section4 script={script} />\n  </>\n);",
+  "scenes": [
+    {
+      "sceneIndex": 0,
+      "template": "export const Section0: React.FC<{ script: Script }> = ({ script }) => {\n  const c = script.scenes[0].content;\n\n  const ToolbarIcon: React.FC<{ d: string }> = ({ d }) => (\n    <svg viewBox=\"0 0 24 24\" width={18} height={18} fill=\"none\" stroke={PALETTE.slate} strokeWidth={1.75} strokeLinecap=\"round\" strokeLinejoin=\"round\" dangerouslySetInnerHTML={{ __html: d }} />\n  );\n  const toolbarD = [\n    '<path d=\"M5 3 L5 18 L9 14 L12 21 L14 20 L11 13 L17 13 Z\" fill=\"' + PALETTE.slate + '\"/>',\n    '<rect x=\"4\" y=\"6\" width=\"16\" height=\"12\" rx=\"1.5\"/>',\n    '<path d=\"M5 5 H19 M12 5 V19 M9 19 H15\"/>',\n    '<rect x=\"4\" y=\"5\" width=\"16\" height=\"14\" rx=\"1.5\"/><circle cx=\"9\" cy=\"10\" r=\"1.6\" fill=\"' + PALETTE.slate + '\"/><path d=\"M5 17 L10 12 L14 16 L17 13 L19 15\"/>',\n    '<circle cx=\"8\" cy=\"9\" r=\"3.2\"/><rect x=\"13\" y=\"6\" width=\"6\" height=\"6\" rx=\"1\"/><path d=\"M8 14 L12 20 L4 20 Z\"/>',\n  ];\n\n  return (\n    <div style={{ ...SECTION_FRAME, background: PALETTE.white, fontFamily: FONT_BODY, color: BRAND_INK }}>\n      <style dangerouslySetInnerHTML={{ __html: BRAND_FONTS_CSS }} />\n\n      {/* Atmosphere */}\n      {/*RB:s0.atmos*/}\n\n      {/* Design-tool toolbar (floating, top center) */}\n      {/*RB:s0.toolbar*/}\n\n      {/* Throughline — empty slide frame */}\n      \n\n      {/* Editorial copy stack */}\n      \n\n      {/* Brand chrome */}\n      {/*RB:s0.add1*/}\n\n      {/*RB:s0.add2*/}\n\n      \n\n      \n\n      \n\n      {/*RB:s0.chrome*/}\n    </div>\n  );\n};\n\n// ═══════════════════════════════════════════════════════════════════════════\n// Section 1 — \"Pega tu enlace\"\n// ═══════════════════════════════════════════════════════════════════════════\n\n",
+      "pieces": [
+        {
+          "id": "s0.atmos",
+          "kind": "atmosphere",
+          "openTag": "<Piece id=\"s0.atmos\" kind=\"atmosphere\">",
+          "file": "pieces/s0.atmos.tsx"
+        },
+        {
+          "id": "s0.toolbar",
+          "kind": "diegetic",
+          "openTag": "<Piece id=\"s0.toolbar\" kind=\"diegetic\">",
+          "file": "pieces/s0.toolbar.tsx",
+          "offset": {
+            "dx": 8,
+            "dy": 4
+          }
+        },
+        {
+          "id": "s0.add1",
+          "kind": "diegetic",
+          "openTag": "<Piece id=\"s0.add1\" kind=\"diegetic\">",
+          "file": "pieces/s0.add1.tsx"
+        },
+        {
+          "id": "s0.add2",
+          "kind": "text",
+          "openTag": "<Piece id=\"s0.add2\" kind=\"text\">",
+          "file": "pieces/s0.add2.tsx"
+        },
+        {
+          "id": "s0.chrome",
+          "kind": "chrome",
+          "openTag": "<Piece id=\"s0.chrome\" kind=\"chrome\">",
+          "file": "pieces/s0.chrome.tsx"
+        }
+      ]
+    },
+    {
+      "sceneIndex": 1,
+      "template": "export const Section1: React.FC<{ script: Script }> = ({ script }) => {\n  const c = script.scenes[1].content;\n\n  const ThumbFull: React.FC = () => (\n    <div\n      style={{\n        width: 620,\n        height: 230,\n        background: PALETTE.white,\n        border: `1px solid ${PALETTE.mist}`,\n        borderRadius: 12,\n        boxShadow: \"0 16px 48px rgba(0,0,0,0.08)\",\n        padding: 28,\n        display: \"flex\",\n        flexDirection: \"column\",\n        justifyContent: \"center\",\n        gap: 14,\n        boxSizing: \"border-box\",\n      }}\n    >\n      <div style={{ width: 52, height: 4, background: PALETTE.signature, borderRadius: 2 }} />\n      <div\n        style={{\n          fontFamily: FONT_DISPLAY,\n          fontWeight: 700,\n          fontSize: 34,\n          color: PALETTE.ink,\n          lineHeight: 1.08,\n          letterSpacing: \"-0.02em\",\n        }}\n      >\n        Tu Empresa\n      </div>\n      <div style={{ display: \"flex\", flexDirection: \"column\", gap: 6 }}>\n        <div style={{ width: \"82%\", height: 6, borderRadius: 3, background: PALETTE.mist }} />\n        <div style={{ width: \"58%\", height: 6, borderRadius: 3, background: PALETTE.mist, opacity: 0.6 }} />\n      </div>\n    </div>\n  );\n\n  const ThumbPartial: React.FC = () => (\n    <div\n      style={{\n        width: 620,\n        height: 230,\n        background: `${PALETTE.white}80`,\n        border: `1px solid ${PALETTE.mist}`,\n        borderRadius: 12,\n        padding: 28,\n        display: \"flex\",\n        flexDirection: \"column\",\n        justifyContent: \"center\",\n        gap: 14,\n        opacity: 0.72,\n        boxSizing: \"border-box\",\n      }}\n    >\n      <div style={{ width: 36, height: 4, background: PALETTE.mist, borderRadius: 2 }} />\n      <div style={{ display: \"flex\", flexDirection: \"column\", gap: 8 }}>\n        <div style={{ width: \"70%\", height: 8, borderRadius: 4, background: PALETTE.slate, opacity: 0.4 }} />\n        <div style={{ width: \"48%\", height: 6, borderRadius: 3, background: PALETTE.slate, opacity: 0.32 }} />\n        <div style={{ width: \"62%\", height: 6, borderRadius: 3, background: PALETTE.slate, opacity: 0.25 }} />\n      </div>\n    </div>\n  );\n\n  const ThumbOutline: React.FC = () => (\n    <div\n      style={{\n        width: 620,\n        height: 230,\n        border: `1px solid ${PALETTE.mist}`,\n        borderRadius: 12,\n        background: \"transparent\",\n        opacity: 0.5,\n      }}\n    />\n  );\n\n  return (\n    <div style={{ ...SECTION_FRAME, background: PALETTE.white, fontFamily: FONT_BODY }}>\n      <style dangerouslySetInnerHTML={{ __html: SHARED_KEYFRAMES }} />\n\n      {/* Atmosphere */}\n      {/*RB:s1.atmos*/}\n\n      {/* Vertical divider */}\n      <div\n        style={{\n          position: \"absolute\",\n          left: 878,\n          top: 72,\n          bottom: 72,\n          width: 1,\n          background: PALETTE.mist,\n        }}\n      />\n\n      {/* Copy stack — LEFT */}\n      {/*RB:s1.copy*/}\n\n      {/* Browser mock + input panel — LEFT, lower */}\n      {/*RB:s1.browser*/}\n\n      {/* Three thumbnails + progress ring — RIGHT, throughline-wrapped */}\n      {/*RB:s1.thumbnails*/}\n\n      {/* Brand chrome */}\n      {/*RB:s1.chrome*/}\n    </div>\n  );\n};\n\n// ═══════════════════════════════════════════════════════════════════════════\n// Section 2 — \"Dibuja y describe\"\n// ═══════════════════════════════════════════════════════════════════════════\n\n",
+      "pieces": [
+        {
+          "id": "s1.atmos",
+          "kind": "atmosphere",
+          "openTag": "<Piece id=\"s1.atmos\" kind=\"atmosphere\">",
+          "file": "pieces/s1.atmos.tsx"
+        },
+        {
+          "id": "s1.copy",
+          "kind": "text",
+          "openTag": "<Piece id=\"s1.copy\" kind=\"text\">",
+          "file": "pieces/s1.copy.tsx"
+        },
+        {
+          "id": "s1.browser",
+          "kind": "diegetic",
+          "openTag": "<Piece id=\"s1.browser\" kind=\"diegetic\">",
+          "file": "pieces/s1.browser.tsx"
+        },
+        {
+          "id": "s1.thumbnails",
+          "kind": "diegetic",
+          "openTag": "<Piece id=\"s1.thumbnails\" kind=\"diegetic\" throughline={THROUGHLINE_SLUG}>",
+          "file": "pieces/s1.thumbnails.tsx"
+        },
+        {
+          "id": "s1.chrome",
+          "kind": "chrome",
+          "openTag": "<Piece id=\"s1.chrome\" kind=\"chrome\">",
+          "file": "pieces/s1.chrome.tsx"
+        }
+      ]
+    },
+    {
+      "sceneIndex": 2,
+      "template": "export const Section2: React.FC<{ script: Script }> = ({ script }) => {\n  const c = script.scenes[2].content;\n\n  const toolbarIcons = [\n    { name: \"cursor\", svg: '<path d=\"M5 3l5.5 14.5-2.2-5.8 5.3-4.2z\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.6\" stroke-linejoin=\"round\"/>' },\n    { name: \"rectangle\", svg: '<rect x=\"3\" y=\"5\" width=\"14\" height=\"10\" rx=\"1.5\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.6\"/>' },\n    { name: \"text\", svg: '<path d=\"M4 5h12M10 5v11M7 16h6\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.6\" stroke-linecap=\"round\"/>' },\n    { name: \"image\", svg: '<rect x=\"3\" y=\"4\" width=\"14\" height=\"11\" rx=\"1.5\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.6\"/><circle cx=\"7\" cy=\"8\" r=\"1.3\" fill=\"currentColor\"/><path d=\"M4 13l3.5-3 2.5 2.5L13 9l3 4\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.4\" stroke-linejoin=\"round\"/>' },\n    { name: \"shapes\", svg: '<rect x=\"3\" y=\"9\" width=\"7\" height=\"6\" rx=\"1\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\"/><circle cx=\"13\" cy=\"12\" r=\"3.5\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\"/>' },\n  ];\n\n  const layers = [\n    { label: \"Título\", swatchBg: \"linear-gradient(135deg, #1a2332 0%, #1a2332 100%)\" },\n    { label: \"Texto\", swatchBg: \"repeating-linear-gradient(90deg, #64748b 0, #64748b 3px, transparent 3px, transparent 6px)\" },\n    { label: \"Acento\", swatchBg: PALETTE.signature },\n  ];\n\n  const bars = [\n    { label: \"Q1\", h: 70, color: PALETTE.signature },\n    { label: \"Q2\", h: 110, color: PALETTE.sky },\n    { label: \"Q3\", h: 155, color: PALETTE.signature },\n    { label: \"Q4\", h: 200, color: PALETTE.sky },\n  ];\n\n  const SECTION2_KEYFRAMES = `\n    @keyframes s2PromptGlow {\n      0%, 100% { box-shadow: 0 4px 24px rgba(0,120,168,0.12); }\n      50%      { box-shadow: 0 4px 32px rgba(0,120,168,0.22); }\n    }\n    @keyframes s2EditPulse {\n      0%, 100% { opacity: 1; }\n      50%      { opacity: 0.4; }\n    }\n    @keyframes s2ChartGlow {\n      0%, 100% { opacity: 0.0; }\n      50%      { opacity: 0.08; }\n    }\n    @keyframes s2Shimmer {\n      0%   { transform: translateX(-40%); }\n      100% { transform: translateX(140%); }\n    }\n  `;\n\n  return (\n    <div style={{ ...SECTION_FRAME, background: PALETTE.white, fontFamily: FONT_BODY, color: BRAND_INK }}>\n      <style dangerouslySetInnerHTML={{ __html: BRAND_FONTS_CSS + SHARED_KEYFRAMES + SECTION2_KEYFRAMES }} />\n\n      {/* Atmosphere */}\n      {/*RB:s2.atmos*/}\n\n      {/* Workspace mock (full-frame diegetic hero) */}\n      {/*RB:s2.workspace*/}\n\n      {/* Editorial copy overlay */}\n      {/*RB:s2.copy*/}\n\n      {/* Brand chrome */}\n      {/*RB:s2.chrome*/}\n    </div>\n  );\n};\n\n// ═══════════════════════════════════════════════════════════════════════════\n// Section 3 — \"Tu marca en cada slide\"\n// ═══════════════════════════════════════════════════════════════════════════\n\n",
+      "pieces": [
+        {
+          "id": "s2.atmos",
+          "kind": "atmosphere",
+          "openTag": "<Piece id=\"s2.atmos\" kind=\"atmosphere\">",
+          "file": "pieces/s2.atmos.tsx"
+        },
+        {
+          "id": "s2.workspace",
+          "kind": "diegetic",
+          "openTag": "<Piece id=\"s2.workspace\" kind=\"diegetic\">",
+          "file": "pieces/s2.workspace.tsx"
+        },
+        {
+          "id": "s2.copy",
+          "kind": "text",
+          "openTag": "<Piece id=\"s2.copy\" kind=\"text\">",
+          "file": "pieces/s2.copy.tsx"
+        },
+        {
+          "id": "s2.chrome",
+          "kind": "chrome",
+          "openTag": "<Piece id=\"s2.chrome\" kind=\"chrome\">",
+          "file": "pieces/s2.chrome.tsx"
+        }
+      ]
+    },
+    {
+      "sceneIndex": 3,
+      "template": "export const Section3: React.FC<{ script: Script }> = ({ script }) => {\n  const c = script.scenes[3].content;\n\n  const bulletLines = [\"Línea de texto\", \"Línea de texto\", \"Línea de texto\"];\n  const chips = [\"Tipografía\", \"Paleta\", \"Tono\"];\n\n  const SECTION3_KEYFRAMES = `\n    @keyframes s3ThumbFloat { 0%,100%{ transform: translateY(0); } 50%{ transform: translateY(-4px); } }\n    @keyframes s3ChipGlow { 0%,100%{ box-shadow: 0 0 0 0 rgba(112,221,240,0); } 50%{ box-shadow: 0 0 14px 2px rgba(112,221,240,0.22); } }\n    @keyframes s3AccentBarGrow { 0%{ transform: scaleX(0); } 100%{ transform: scaleX(1); } }\n    @keyframes s3PillPulse { 0%,100%{ box-shadow: 0 0 0 0 rgba(0,120,168,0); } 50%{ box-shadow: 0 0 0 3px rgba(0,120,168,0.20); } }\n    @keyframes s3SparkDraw { 0%{ stroke-dashoffset: 200; } 100%{ stroke-dashoffset: 0; } }\n  `;\n\n  return (\n    <div style={{ ...SECTION_FRAME, background: PALETTE.white, fontFamily: FONT_BODY }}>\n      <style\n        dangerouslySetInnerHTML={{\n          __html:\n            BRAND_FONTS_CSS +\n            SHARED_KEYFRAMES +\n            SECTION3_KEYFRAMES,\n        }}\n      />\n\n      {/* Atmosphere */}\n      {/*RB:s3.atmos*/}\n\n      {/* Editorial copy — left zone */}\n      {/*RB:s3.copy*/}\n\n      {/* Throughline — slide thumbnails row (el recuadro evolved) */}\n      {/*RB:s3.thumbnails*/}\n\n      {/* Lower zone — divider + consistency chips + caption + meta footer */}\n      {/*RB:s3.footer*/}\n\n      {/* Brand chrome */}\n      {/*RB:s3.chrome*/}\n    </div>\n  );\n};\n\n// ═══════════════════════════════════════════════════════════════════════════\n// Section 4 — \"Acceso anticipado\"\n// ═══════════════════════════════════════════════════════════════════════════\n\n",
+      "pieces": [
+        {
+          "id": "s3.atmos",
+          "kind": "atmosphere",
+          "openTag": "<Piece id=\"s3.atmos\" kind=\"atmosphere\">",
+          "file": "pieces/s3.atmos.tsx"
+        },
+        {
+          "id": "s3.copy",
+          "kind": "text",
+          "openTag": "<Piece id=\"s3.copy\" kind=\"text\">",
+          "file": "pieces/s3.copy.tsx"
+        },
+        {
+          "id": "s3.thumbnails",
+          "kind": "diegetic",
+          "openTag": "<Piece id=\"s3.thumbnails\" kind=\"diegetic\" throughline={THROUGHLINE_SLUG}>",
+          "file": "pieces/s3.thumbnails.tsx"
+        },
+        {
+          "id": "s3.footer",
+          "kind": "diegetic",
+          "openTag": "<Piece id=\"s3.footer\" kind=\"diegetic\">",
+          "file": "pieces/s3.footer.tsx"
+        },
+        {
+          "id": "s3.chrome",
+          "kind": "chrome",
+          "openTag": "<Piece id=\"s3.chrome\" kind=\"chrome\">",
+          "file": "pieces/s3.chrome.tsx"
+        }
+      ]
+    },
+    {
+      "sceneIndex": 4,
+      "template": "export const Section4: React.FC<{ script: Script }> = ({ script }) => {\n  const c = script.scenes[4].content;\n\n  const SECTION4_KEYFRAMES = `\n    @keyframes s4BarGrow { 0% { transform: scaleX(0); } 100% { transform: scaleX(1); } }\n    @keyframes s4GlowPulse { 0%,100% { opacity: 0.16; } 50% { opacity: 0.30; } }\n  `;\n\n  return (\n    <div style={{ ...SECTION_FRAME, background: PALETTE.white, fontFamily: FONT_BODY }}>\n      <style dangerouslySetInnerHTML={{ __html: BRAND_FONTS_CSS + SHARED_KEYFRAMES + SECTION4_KEYFRAMES }} />\n\n      {/* Atmosphere */}\n      {/*RB:s4.atmos*/}\n\n      {/* Centered editorial copy stack */}\n      {/*RB:s4.copy*/}\n\n      {/* Throughline — the rectangle evolved into an actionable button */}\n      {/*RB:s4.cta*/}\n\n      {/* URL + info card below the CTA button, anchored to same x */}\n      {/*RB:s4.meta*/}\n\n      {/* Chrome */}\n      {/*RB:s4.chrome*/}\n    </div>\n  );\n};\n\n// ═══════════════════════════════════════════════════════════════════════════\n// Generated — preview only\n// ═══════════════════════════════════════════════════════════════════════════\n\n",
+      "pieces": [
+        {
+          "id": "s4.atmos",
+          "kind": "atmosphere",
+          "openTag": "<Piece id=\"s4.atmos\" kind=\"atmosphere\">",
+          "file": "pieces/s4.atmos.tsx"
+        },
+        {
+          "id": "s4.copy",
+          "kind": "text",
+          "openTag": "<Piece id=\"s4.copy\" kind=\"text\">",
+          "file": "pieces/s4.copy.tsx"
+        },
+        {
+          "id": "s4.cta",
+          "kind": "diegetic",
+          "openTag": "<Piece id=\"s4.cta\" kind=\"diegetic\" throughline={THROUGHLINE_SLUG}>",
+          "file": "pieces/s4.cta.tsx"
+        },
+        {
+          "id": "s4.meta",
+          "kind": "text",
+          "openTag": "<Piece id=\"s4.meta\" kind=\"text\">",
+          "file": "pieces/s4.meta.tsx"
+        },
+        {
+          "id": "s4.chrome",
+          "kind": "chrome",
+          "openTag": "<Piece id=\"s4.chrome\" kind=\"chrome\">",
+          "file": "pieces/s4.chrome.tsx"
+        }
+      ]
+    }
+  ]
+}

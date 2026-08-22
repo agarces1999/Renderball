@@ -1,0 +1,126 @@
+#
+# NIGHTLY FULL-TIER QA — the only thing that exercises GENERATION.
+#
+# The `qa` job in ci.yml runs on every push and drives an already-built fixture
+# deck. That covers editing, and it covers the seams. It never builds a deck, so
+# it never touches the outline stage, the render-truth gates, the repair ladder
+# or the vision pass — which is precisely the path that shipped a visible page-2
+# collision reporting "checks passed" on 2026-08-21.
+#
+# This runs once a day and builds a real deck. It costs real money (~$1/run, a
+# few dollars a month) and it is the cheapest possible insurance against a
+# generation regression reaching a user, because the alternative is finding out
+# from the person holding the deck.
+#
+# NOT WIRED UNTIL THE SECRETS EXIST. Without RB_FIREWORKS_KEY this job skips
+# with a loud message rather than failing — a red nightly nobody can fix teaches
+# the same lesson as a red suite: ignore it. Add these repository secrets to arm
+# it (founder-side, they are spend credentials):
+#
+#   RB_FIREWORKS_KEY   model access — this is what makes the build possible
+#   DATABASE_URL       a scratch Postgres; the service below is used if unset
+#
+# Deliberately NOT on push: a per-commit paid build would cost more than it
+# tells you, and a generation regression is a "within a day" problem, not a
+# "within a minute" one.
+#
+name: qa-nightly
+
+on:
+  schedule:
+    # 07:17 UTC. Not :00 — every scheduled job on the platform fires there, and
+    # the queue is shorter a few minutes off the hour.
+    - cron: "17 7 * * *"
+  workflow_dispatch: # so it can be run by hand before a release
+
+jobs:
+  full-tier:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: renderball_qa
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/renderball_qa
+      NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: pk_test_Y2xlcmsuZXhhbXBsZS5jb20k
+      CLERK_SECRET_KEY: sk_test_placeholder
+      RB_FIREWORKS_KEY: ${{ secrets.RB_FIREWORKS_KEY }}
+    steps:
+      - name: Is this job armed?
+        id: armed
+        run: |
+          if [ -z "$RB_FIREWORKS_KEY" ]; then
+            echo "armed=no" >> "$GITHUB_OUTPUT"
+            echo "::notice::SKIPPED — RB_FIREWORKS_KEY is not set, so no deck can be built."
+            echo "::notice::Generation is therefore UNTESTED by CI. Add the secret to arm this job."
+          else
+            echo "armed=yes" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.armed.outputs.armed == 'yes'
+      - uses: actions/setup-node@v4
+        if: steps.armed.outputs.armed == 'yes'
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+        if: steps.armed.outputs.armed == 'yes'
+      - run: npx prisma generate
+        if: steps.armed.outputs.armed == 'yes'
+      - run: npx prisma migrate deploy
+        if: steps.armed.outputs.armed == 'yes'
+      - run: npx playwright install --with-deps chromium
+        if: steps.armed.outputs.armed == 'yes'
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+        if: steps.armed.outputs.armed == 'yes'
+
+      - name: Put the fixture document on disk and in the database
+        if: steps.armed.outputs.armed == 'yes'
+        run: node scripts/qa-fixture.mjs
+
+      - name: Start the dev server
+        if: steps.armed.outputs.armed == 'yes'
+        run: |
+          npm run dev:raw > /tmp/dev.log 2>&1 &
+          for i in $(seq 1 60); do
+            if curl -sf --max-time 5 http://localhost:3000/api/health > /dev/null; then
+              echo "dev server up"; exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::dev server never came up"; tail -40 /tmp/dev.log; exit 1
+
+      # The whole suite, including the tiers that generate. Quarantined flows
+      # report and do not block (see qa/harness.ts) — so a red here is new.
+      - name: QA — full tier
+        if: steps.armed.outputs.armed == 'yes'
+        run: QA_TIER=full node scripts/run-qa.mjs
+
+      - name: Invariant sweep over everything the run built
+        if: steps.armed.outputs.armed == 'yes'
+        run: npx tsx scripts/invariants.ts --deep
+
+      - name: Dev server log on failure
+        if: failure() && steps.armed.outputs.armed == 'yes'
+        run: tail -120 /tmp/dev.log
+
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.armed.outputs.armed == 'yes'
+        with:
+          name: qa-nightly-artifacts
+          path: |
+            .data/qa/
+            .data/gate-telemetry.jsonl
+          if-no-files-found: ignore

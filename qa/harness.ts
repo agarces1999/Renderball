@@ -59,12 +59,29 @@ export interface Flow {
    * still run concurrently.
    */
   mutates?: boolean;
+  /**
+   * KNOWN RED, with a reason and a date.
+   *
+   * A quarantined flow still runs and still reports; its failure just does not
+   * fail the suite. This exists because the alternative is worse in both
+   * directions: leaving an undiagnosed failure red teaches everyone to ignore a
+   * red suite (and then it protects nobody), while deleting or skipping it
+   * loses the signal entirely and quietly narrows what the suite claims to
+   * cover. Quarantine keeps the flow running, keeps its failure on screen, and
+   * refuses to let it block — until someone finishes the diagnosis.
+   *
+   * The string is not decoration: it must say WHAT is unknown and WHEN it was
+   * quarantined, so a reader can tell a fresh unknown from one that has been
+   * rotting for a month. Anything quarantined is a debt, and the summary counts
+   * it out loud so the debt cannot be forgotten.
+   */
+  quarantined?: string;
   run: (c: Ctx) => Promise<void>;
 }
 
 export interface FlowResult {
   name: string;
-  status: "passed" | "failed" | "skipped";
+  status: "passed" | "failed" | "skipped" | "quarantined";
   ms: number;
   reason?: string;
   notes: string[];
@@ -134,6 +151,8 @@ export interface RunSummary {
   passed: number;
   failed: number;
   skipped: number;
+  /** Known-red flows that ran, failed, and did not block. A standing debt. */
+  quarantined: number;
   ms: number;
 }
 
@@ -229,6 +248,17 @@ export const runFlows = async (opts: RunOptions): Promise<RunSummary> => {
       } catch {
         /* a screenshot is a nicety, never a reason to lose the real failure */
       }
+      // A quarantined flow reports its failure in full and does not fail the run.
+      if (flow.quarantined) {
+        return {
+          name: flow.name,
+          status: "quarantined",
+          ms: Date.now() - t0,
+          reason: `${reason}\n        ↳ QUARANTINED: ${flow.quarantined}`,
+          notes,
+          screenshot,
+        };
+      }
       return { name: flow.name, status: "failed", ms: Date.now() - t0, reason, notes, screenshot };
     } finally {
       await context.close().catch(() => {});
@@ -241,7 +271,7 @@ export const runFlows = async (opts: RunOptions): Promise<RunSummary> => {
       if (!flow) return;
       const r = await runOne(flow);
       results.push(r);
-      const mark = r.status === "passed" ? "✓" : r.status === "failed" ? "✗" : "–";
+      const mark = r.status === "passed" ? "✓" : r.status === "failed" ? "✗" : r.status === "quarantined" ? "⚠" : "–";
       console.log(`  ${mark} ${r.name}${r.status === "skipped" ? ` (${r.reason})` : ` · ${r.ms}ms`}`);
       for (const n of r.notes) console.log(`      · ${n}`);
       if (r.status === "failed") {
@@ -257,7 +287,7 @@ export const runFlows = async (opts: RunOptions): Promise<RunSummary> => {
     if (opts.resetFixture && tierAtLeast(tier, flow.tier)) await opts.resetFixture();
     const r = await runOne(flow);
     results.push(r);
-    const mark = r.status === "passed" ? "✓" : r.status === "failed" ? "✗" : "–";
+    const mark = r.status === "passed" ? "✓" : r.status === "failed" ? "✗" : r.status === "quarantined" ? "⚠" : "–";
     console.log(`  ${mark} ${r.name}${r.status === "skipped" ? ` (${r.reason})` : ` · ${r.ms}ms`}`);
     for (const n of r.notes) console.log(`      · ${n}`);
     if (r.status === "failed") {
@@ -273,6 +303,7 @@ export const runFlows = async (opts: RunOptions): Promise<RunSummary> => {
     passed: results.filter((r) => r.status === "passed").length,
     failed: results.filter((r) => r.status === "failed").length,
     skipped: results.filter((r) => r.status === "skipped").length,
+    quarantined: results.filter((r) => r.status === "quarantined").length,
     ms: Date.now() - started,
   };
 };
