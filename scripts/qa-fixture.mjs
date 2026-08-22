@@ -81,6 +81,25 @@ const restoreRows = async () => {
       );
     const doc = dates(scriptDoc);
     const proj = dates(project);
+
+    // The OWNER first. Project.ownerId is a required relation to User, so on a
+    // database that has never seen this developer — CI, a fresh clone — the
+    // project insert fails on a foreign key and the whole fixture is unusable.
+    // It worked on the machine it was written on because that user already
+    // existed, which is the entire reason a fixture has to carry its own
+    // preconditions instead of inheriting them. (Caught by CI on the first run
+    // of the job this fixture exists for.)
+    await db.user.upsert({
+      where: { id: proj.ownerId },
+      update: {},
+      create: {
+        id: proj.ownerId,
+        // .invalid is reserved by RFC 2606 and can never resolve, so this row
+        // can never be mistaken for — or mailed as — a real account.
+        clerkId: `qa-fixture-${proj.ownerId}`,
+        email: `${proj.ownerId}@qa.invalid`,
+      },
+    });
     await db.scriptDoc.upsert({ where: { id: doc.id }, update: doc, create: doc });
     await db.project.upsert({ where: { id: proj.id }, update: proj, create: proj });
   } finally {
