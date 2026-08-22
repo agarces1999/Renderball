@@ -11,6 +11,11 @@ import {
 import { matchFieldPath } from "../../../lib/edit/scene-content";
 import { asciiTrim } from "../../../lib/edit/piece-literal";
 import { cascadeBox } from "../../../lib/edit/cascade-box";
+
+/** Host-scaling mode — see components/SceneFrame.tsx for why the literal is required. */
+const HOST_SCALE = ["on", "1", "true", "yes"].includes(
+  String(process.env.NEXT_PUBLIC_RB_HOST_SCALE ?? "").trim().toLowerCase(),
+);
 import { parseFmt, serializeFmt, type FreetextFormat } from "../../../lib/edit/freetext";
 
 /**
@@ -1560,8 +1565,21 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
    * 1 and carry on.
    */
   const measuredCanvasScale = (): number | null => {
+    if (canvasWidth <= 0) return null;
+    if (HOST_SCALE) {
+      // HOST-SCALED: the document inside is 1:1 and the IFRAME ELEMENT carries the
+      // transform. An element's getBoundingClientRect() inside a frame is reported in
+      // that frame's own viewport and is NOT affected by the parent's transform — so
+      // measuring the inner canvas here would always return 1 and every pointer
+      // coordinate would be off by the scale. The frame's own rect, read from the
+      // parent where the transform lives, is the honest number.
+      const f = iframeRef.current;
+      if (!f) return null;
+      const w = f.getBoundingClientRect().width;
+      return w > 0 ? w / canvasWidth : null;
+    }
     const canvas = iframeRef.current?.contentDocument?.querySelector(".renderball-canvas");
-    if (!canvas || canvasWidth <= 0) return null;
+    if (!canvas) return null;
     const w = (canvas as HTMLElement).getBoundingClientRect().width;
     return w > 0 ? w / canvasWidth : null;
   };
@@ -1589,8 +1607,12 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
 
   const overlayToCanvas = (localX: number, localY: number): { x: number; y: number } => {
     const scale = canvasScale() || 1;
-    const c = canvasEl();
-    const r = c?.getBoundingClientRect();
+    // WHOSE origin. Legacy: the canvas is positioned and scaled inside the frame, so
+    // its own rect is the letterboxed origin. Host-scaled: the canvas sits at 0,0 in a
+    // 1:1 document, and the offset that matters is where the transformed FRAME lands in
+    // the parent — the inner rect knows nothing about it.
+    const originEl = HOST_SCALE ? (iframeRef.current as Element | null) : canvasEl();
+    const r = originEl?.getBoundingClientRect();
     const ox = r ? r.left : 0;
     const oy = r ? r.top : 0;
     return { x: (localX - ox) / scale, y: (localY - oy) / scale };

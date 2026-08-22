@@ -698,7 +698,7 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
               {/* Width is derived from the viewport height so the page keeps
                   its exact aspect ratio at any window size. */}
               <div
-                className="overflow-hidden rounded-lg bg-[#0b0d12] shadow-2xl"
+                className="relative overflow-hidden rounded-lg bg-[#0b0d12] shadow-2xl"
                 style={{
                   aspectRatio: `${dims.width}/${dims.height}`,
                   width: `min(100%, calc((100vh - 7rem) * ${dims.width / dims.height}))`,

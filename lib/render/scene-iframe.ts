@@ -96,13 +96,18 @@ export async function renderSceneDoc(
     };
   }
 
+  // The host-scale flag CHANGES THE EMITTED DOCUMENT (which fit script it carries),
+  // so it belongs in the key. Found by flipping the flag for real: the server kept
+  // serving the cached host-scaled HTML after the flag went back off, because every
+  // other key input was identical. A flag that silently fails to take effect is worse
+  // than no flag - the next A/B would quietly compare a thing to itself.
   const cacheKey = createHash("sha1")
     .update(scriptId)
     .update("\u0000")
     .update(compBytes)
     .update("\u0000")
     .update(JSON.stringify(script))
-    .update(`\u0000${sceneIndex}\u0000${opts.settle ? 1 : 0}\u0000${opts.hydrate ? `h:${opts.hydrate.bundleUrl}` : ""}\u0000v3`)
+    .update(`\u0000${sceneIndex}\u0000${opts.settle ? 1 : 0}\u0000${opts.hydrate ? `h:${opts.hydrate.bundleUrl}` : ""}\u0000hs:${hostScaleEnabled() ? 1 : 0}\u0000v4`)
     .digest("hex");
   const cached = renderCache.get(cacheKey);
   if (cached) {

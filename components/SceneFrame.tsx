@@ -114,7 +114,7 @@ export const SceneFrame: React.FC<SceneFrameProps> = ({
   // LEGACY: unchanged from what every host wrote by hand.
   if (!hostScale) {
     return (
-      <div ref={containerRef} className={className} style={{ position: "relative", width: "100%", height: "100%", background }}>
+      <div ref={containerRef} className={className} style={{ position: "absolute", inset: 0, background }}>
         <iframe
           {...iframeProps}
           ref={iframeRef}
@@ -141,11 +141,13 @@ export const SceneFrame: React.FC<SceneFrameProps> = ({
     <div
       ref={containerRef}
       className={className}
-      // relative + 100%/100% rather than absolute inset-0: the three embedding shapes
-      // differ (an absolutely-positioned editor shell, an aspect-ratio lightbox, a
-      // bordered canvas surface) and only some parents are positioned. Filling by
-      // percentage is correct in all of them; inset-0 would escape the unpositioned one.
-      style={{ position: "relative", width: "100%", height: "100%", overflow: "hidden", background }}
+      // absolute + inset-0, which is what all seven hand-written frames used. The
+      // percentage alternative looks more portable and is not: `height: 100%` needs a
+      // parent with a DEFINITE height, and the editor shell sizes its canvas area by
+      // positioning rather than by height — so the wrapper measured 0x0, fitFrame
+      // correctly returned null, and the slide stayed hidden. Measured, not reasoned.
+      // Every embedding parent is positioned; the one that was not now says so.
+      style={{ position: "absolute", inset: 0, overflow: "hidden", background }}
     >
       <iframe
         {...iframeProps}
