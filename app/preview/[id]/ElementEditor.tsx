@@ -11,6 +11,8 @@ import {
 import { matchFieldPath } from "../../../lib/edit/scene-content";
 import { asciiTrim } from "../../../lib/edit/piece-literal";
 import { cascadeBox } from "../../../lib/edit/cascade-box";
+import { snapBox, DEFAULT_SNAP_THRESHOLD, type Guide } from "../../../lib/edit/snap";
+import { nudgeFor, constrainToAxis } from "../../../lib/edit/nudge";
 
 /** Host-scaling mode — see components/SceneFrame.tsx for why the literal is required. */
 const HOST_SCALE = ["on", "1", "true", "yes"].includes(
@@ -429,6 +431,27 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
   const [tool, setTool] = useState<null | "generate">(null);
   const [marquee, setMarquee] = useState<null | { x0: number; y0: number; x1: number; y1: number }>(null);
   const [genBox, setGenBox] = useState<null | { left: number; top: number; width: number; height: number }>(null);
+  /**
+   * Alignment guides for the drag in flight. Written from the rAF paint loop, but ONLY
+   * when the set actually changes — a setState per frame would undo the whole reason
+   * the drag path is transform-only. A drag crosses a handful of guides, not sixty a
+   * second.
+   */
+  const [guides, setGuides] = useState<Guide[]>([]);
+  const guidesKeyRef = useRef("");
+  /**
+   * Nudges accumulate and commit once the keys stop.
+   *
+   * Held arrows fire at the OS repeat rate; one POST per repeat would be dozens of
+   * round trips for a single intent, and each reply racing the next. The element moves
+   * optimistically on every keystroke (same transform the drag uses) and the total
+   * lands in a single request when the burst ends — the pattern the drag path already
+   * established, applied to the keyboard.
+   */
+  const nudgeRef = useRef<{ dx: number; dy: number; timer: number | null }>({ dx: 0, dy: 0, timer: null });
+
+  /** The offset the paint loop last applied, in canvas px — what commit must persist. */
+  const snappedRef = useRef<null | { sx: number; sy: number }>(null);
   const [genPrompt, setGenPrompt] = useState("");
   // What the marquee generates: a JSX element (LLM) or an image (diffusion).
   // An explicit switch on the prompt bar — never guessed from the prompt text.
@@ -566,7 +589,7 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
   const dragHandlersRef = useRef<{ move: (e: MouseEvent) => void; up: (e: MouseEvent) => void } | null>(null);
   /** Live scene nodes being dragged, with whatever transform they already had. */
   const liveNodesRef = useRef<{ el: HTMLElement; base: string }[]>([]);
-  const pendingRef = useRef<{ dx: number; dy: number } | null>(null);
+  const pendingRef = useRef<null | { dx: number; dy: number; bypass?: boolean }>(null);
   const rafRef = useRef(0);
   /** The selection frame element, driven imperatively during a gesture. */
   const frameRef = useRef<HTMLDivElement | null>(null);
@@ -1587,6 +1610,11 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
   const canvasScale = (): number => measuredCanvasScale() ?? 1;
 
   // ── insert (add primitive) + generate (marquee) ───────────────────────────
+
+  /** Origin of the rendered slide in overlay px. Under host scaling the transform is on
+   *  the FRAME, so its rect is the canvas origin; under legacy the inner canvas is. */
+  const hostFrameRect = (): DOMRect | null =>
+    HOST_SCALE ? (iframeRef.current?.getBoundingClientRect() ?? null) : null;
   const canvasEl = (): HTMLElement | null =>
     (iframeRef.current?.contentDocument?.querySelector(".renderball-canvas") as HTMLElement | null) ?? null;
   // Overlay-local px (== iframe-viewport px) → canvas px. The canvas is scaled to fit
@@ -1668,6 +1696,39 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
     }
     const base = { x: Math.round((dims.w - w) / 2), y: Math.round((dims.h - h) / 2), w, h };
     return clampBounds(cascadeBox(base, occupiedBounds(), dims));
+  };
+
+  /**
+   * Move the selection by a document offset: paint now, persist when the burst ends.
+   *
+   * The optimistic transform is the same one the drag uses, so a nudge after a drag
+   * composes with it rather than fighting it, and the element never visibly waits for
+   * the network.
+   */
+  const applyNudge = (dx: number, dy: number) => {
+    if (!selected) return;
+    const n = nudgeRef.current;
+    n.dx += dx;
+    n.dy += dy;
+    const nodes = liveNodesRef.current.length ? liveNodesRef.current : livePieceNodes(selected.pieceId);
+    liveNodesRef.current = nodes;
+    for (const node of nodes) {
+      node.el.style.transform = node.base
+        ? `translate3d(${n.dx}px, ${n.dy}px, 0) ${node.base}`
+        : `translate3d(${n.dx}px, ${n.dy}px, 0)`;
+    }
+    if (n.timer !== null) window.clearTimeout(n.timer);
+    n.timer = window.setTimeout(() => {
+      const { dx: tx, dy: ty } = nudgeRef.current;
+      nudgeRef.current = { dx: 0, dy: 0, timer: null };
+      if (tx === 0 && ty === 0) return;
+      const pieceId = selected.pieceId;
+      void post(`${apiBase}/edit-layout`, { scriptId, sceneIndex, pieceId, op: "move", dx: tx, dy: ty }).then((ok) => {
+        // The transform is a local illusion until the server agrees. On failure the
+        // reload is the reconcile — the same error path the drag commit uses.
+        if (!ok) onChanged();
+      });
+    }, 350);
   };
 
   const insertPrimitive = async (primitive: "text" | "icon") => {
@@ -2009,6 +2070,25 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
       Math.abs(e.clientX - prev.x) <= DOUBLE_CLICK_SLOP &&
       Math.abs(e.clientY - prev.y) <= DOUBLE_CLICK_SLOP;
 
+    // Snap inputs, captured ONCE: reading sibling rects per frame is exactly the
+    // layout thrash the transform-only drag path exists to avoid. Canvas px.
+    const startTopLeft = overlayToCanvas(selected.rect.left, selected.rect.top);
+    const startBottomRight = overlayToCanvas(
+      selected.rect.left + selected.rect.width,
+      selected.rect.top + selected.rect.height,
+    );
+    const movingBox = {
+      x: startTopLeft.x,
+      y: startTopLeft.y,
+      w: startBottomRight.x - startTopLeft.x,
+      h: startBottomRight.y - startTopLeft.y,
+    };
+    const dims0 = canvasIntrinsic();
+    // Drop the moving piece's own box out of the targets — a box cannot align to
+    // itself, and leaving it in pins the element to where it started.
+    const siblings = occupiedBounds().filter(
+      (b) => Math.abs(b.x - movingBox.x) > 2 || Math.abs(b.y - movingBox.y) > 2,
+    );
     dragRef.current = { startX: e.clientX, startY: e.clientY, scale: canvasScale() };
     draggingRef.current = false;
     setGestureHeld(true);
@@ -2033,12 +2113,36 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
       const d = dragRef.current;
       const p = pendingRef.current;
       if (!d || !p) return;
-      const sx = p.dx / (d.scale || 1);
-      const sy = p.dy / (d.scale || 1);
+      let sx = p.dx / (d.scale || 1);
+      let sy = p.dy / (d.scale || 1);
+      // SNAP. The threshold is a SCREEN distance divided by the zoom, so the pull feels
+      // the same under the hand whether the slide is at 40% or 100%. Cmd/Ctrl bypasses
+      // (p.bypass) — snapping you cannot escape makes the one position you want the one
+      // position unreachable.
+      if (dims0) {
+        const raw = { ...movingBox, x: movingBox.x + sx, y: movingBox.y + sy };
+        const snap = snapBox(raw, siblings, dims0, {
+          threshold: DEFAULT_SNAP_THRESHOLD / (d.scale || 1),
+          bypass: p.bypass,
+        });
+        sx = snap.x - movingBox.x;
+        sy = snap.y - movingBox.y;
+        snappedRef.current = { sx, sy };
+        const key = snap.guides.map((g) => `${g.axis}${g.at}${g.source}`).join("|");
+        if (key !== guidesKeyRef.current) {
+          guidesKeyRef.current = key;
+          setGuides(snap.guides);
+        }
+      }
       for (const n of liveNodesRef.current) {
         n.el.style.transform = n.base ? `translate3d(${sx}px, ${sy}px, 0) ${n.base}` : `translate3d(${sx}px, ${sy}px, 0)`;
       }
-      if (frameRef.current) frameRef.current.style.transform = `translate3d(${p.dx}px, ${p.dy}px, 0)`;
+      // The outline follows the SNAPPED element, not the raw pointer — otherwise the
+      // frame and the thing it frames drift apart by up to the threshold.
+      const scale = d.scale || 1;
+      if (frameRef.current) {
+        frameRef.current.style.transform = `translate3d(${sx * scale}px, ${sy * scale}px, 0)`;
+      }
     };
     const move = (ev: MouseEvent) => {
       const d = dragRef.current;
@@ -2048,7 +2152,9 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
       if (!draggingRef.current && Math.abs(dx) < DRAG_MIN_PX && Math.abs(dy) < DRAG_MIN_PX) return;
       const first = !draggingRef.current;
       draggingRef.current = true;
-      pendingRef.current = { dx, dy };
+      // Shift locks the drag to whichever axis it has travelled furthest along.
+      const locked = ev.shiftKey ? constrainToAxis(dx, dy) : { dx, dy };
+      pendingRef.current = { dx: locked.dx, dy: locked.dy, bypass: ev.metaKey || ev.ctrlKey };
       // One React commit for the WHOLE gesture, and it carries ZERO offset:
       // it exists only to arm the overlay's dragging mode (shield up,
       // transitions off, frame positioned at the ORIGINAL rect). The offset
@@ -2076,9 +2182,16 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
         }
         return;
       }
+      setGuides([]);
+      guidesKeyRef.current = "";
       const scale = d.scale || 1;
-      const dx = Math.round((ev.clientX - d.startX) / scale);
-      const dy = Math.round((ev.clientY - d.startY) / scale);
+      // Commit what the user SAW — the snapped offset the paint loop last applied, not
+      // the raw pointer travel. Committing the raw delta would jump the element off its
+      // guide the moment the mouse came up, which reads as the snap being a lie.
+      const snappedNow = snappedRef.current;
+      const dx = Math.round(snappedNow ? snappedNow.sx : (ev.clientX - d.startX) / scale);
+      const dy = Math.round(snappedNow ? snappedNow.sy : (ev.clientY - d.startY) / scale);
+      snappedRef.current = null;
       if (dx === 0 && dy === 0) {
         clearLiveDrag();
         setDragDelta(null);
@@ -2207,7 +2320,11 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
       // browser's own ⌘D (bookmark) must keep working the moment focus sits
       // in any text field.
       const isDuplicate = (e.key === "d" || e.key === "D") && (e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey;
-      if (!isDelete && !isDuplicate) return;
+      // Arrows nudge. No modifier beyond Shift: Cmd/Alt+Arrow are the browser's and the
+      // OS's (history, word jump, Spaces), and stealing them would be worse than the
+      // feature is worth.
+      const nudge = e.metaKey || e.ctrlKey || e.altKey ? null : nudgeFor(e.key, e.shiftKey);
+      if (!isDelete && !isDuplicate && !nudge) return;
       const el = document.activeElement as HTMLElement | null;
       const typing =
         !!el &&
@@ -2217,6 +2334,10 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
           el.getAttribute("role") === "textbox");
       if (typing) return;
       e.preventDefault();
+      if (nudge) {
+        applyNudge(nudge.dx, nudge.dy);
+        return;
+      }
       if (isDuplicate) void duplicateSelected();
       else void remove();
     };
@@ -2999,6 +3120,46 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
           }}
         />
       )}
+
+      {/* ALIGNMENT GUIDES. Drawn only while a drag is snapping. Canvas coordinates are
+          converted back to overlay px through the same fit the drag used, so the line
+          sits exactly on the edge it describes at any zoom. A sibling guide is the
+          accent; a page guide is quieter, because "you lined up with the page" is
+          weaker information than "you lined up with that". */}
+      {guides.map((g, i) => {
+        const scale = canvasScale() || 1;
+        const c = canvasEl()?.getBoundingClientRect();
+        const host = hostFrameRect();
+        const ox = host ? host.left : c ? c.left : 0;
+        const oy = host ? host.top : c ? c.top : 0;
+        const colour = g.source === "sibling" ? "var(--accent, #00c28a)" : "rgba(120,130,150,0.55)";
+        const common = { position: "absolute" as const, pointerEvents: "none" as const, zIndex: 44 };
+        return g.axis === "x" ? (
+          <div
+            key={`gx${i}`}
+            style={{
+              ...common,
+              left: ox + g.at * scale,
+              top: oy + g.from * scale,
+              width: 1,
+              height: Math.max(1, (g.to - g.from) * scale),
+              background: colour,
+            }}
+          />
+        ) : (
+          <div
+            key={`gy${i}`}
+            style={{
+              ...common,
+              left: ox + g.from * scale,
+              top: oy + g.at * scale,
+              height: 1,
+              width: Math.max(1, (g.to - g.from) * scale),
+              background: colour,
+            }}
+          />
+        );
+      })}
 
       {/* Frozen generate box + its prompt controls, inside the box wherever the
           box can hold them (row when wide, stacked when narrow). */}
