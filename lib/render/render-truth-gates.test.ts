@@ -1316,6 +1316,44 @@ await check("a full-bleed atmosphere wash never flags (behind, by construction)"
   assert(findDecorationOverText(m).length === 0, "atmosphere wash flagged");
 });
 
+await check("a SUB-full-bleed atmosphere wash never flags either", () => {
+  // The test above asserts the right principle with a fixture that could not
+  // fail: a 1920x1080 wash is excluded by the area cap before the atmosphere
+  // rule is ever consulted. Real washes are nothing like full-bleed — measured
+  // on shipped decks at 602x602, 900x420 and 360x360 — and every one of them
+  // slipped under the cap and flagged. Fourteen findings on one deck, all
+  // atmosphere, all blocking, six repair rounds, none cleared.
+  for (const [w, h] of [[602, 602], [900, 420], [360, 360]] as const) {
+    const m = scene(1, [
+      el({ tag: "div", x: 300, y: 400, w, h, piece: "s1.atmos", pieceKind: "atmosphere", decorative: true, opacity: 0.4 }),
+      el({ tag: "p", text: "Every quarter the gap stays open", x: 320, y: 500, w: 700, h: 60, fontSize: 24, piece: "s1.copy" }),
+    ]);
+    assert(
+      findDecorationOverText(m).length === 0,
+      `a ${w}x${h} atmosphere wash must not flag — it is the background`,
+    );
+  }
+});
+
+await check("a decoration painted BEHIND the text does not flag", () => {
+  // Paint order decides. Earlier sibling = painted first = underneath, and
+  // something underneath the copy is not running across it. Without this the
+  // gate fires on anything that merely shares space with text, in either
+  // direction, which is most of a designed page.
+  const behind = scene(1, [
+    el({ tag: "svg", x: 340, y: 330, w: 28, h: 398, piece: "s1.gap", decorative: true, opacity: 0.85 }),
+    el({ tag: "div", text: "Accounts churned without intervention", x: 100, y: 330, w: 420, h: 24, fontSize: 15, piece: "s1.stats" }),
+  ]);
+  assert(findDecorationOverText(behind).length === 0, "a decoration under the copy is not over it");
+
+  // The same two elements the other way round IS the reported defect.
+  const over = scene(1, [
+    el({ tag: "div", text: "Accounts churned without intervention", x: 100, y: 330, w: 420, h: 24, fontSize: 15, piece: "s1.stats" }),
+    el({ tag: "svg", x: 340, y: 330, w: 28, h: 398, piece: "s1.gap", decorative: true, opacity: 0.85 }),
+  ]);
+  assert(findDecorationOverText(over).length === 1, "a decoration on top of the copy still flags");
+});
+
 await check("grazing contact below the overlap floor does not flag", () => {
   const m = scene(1, [
     el({ tag: "p", text: "Waiting costs you money", x: 100, y: 500, w: 600, h: 60, fontSize: 24, piece: "s1.copy" }),

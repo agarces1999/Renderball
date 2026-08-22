@@ -121,9 +121,20 @@ const DECO_MIN_CROSS_PX = 6;
 export const findDecorationOverText = (m: SceneMeasurement): RenderTruthFinding[] => {
   if (m.error) return [];
   const frameArea = Math.max(1, m.width * m.height);
+  // ATMOSPHERE IS THE BACKGROUND. It is painted first, behind everything, and
+  // a soft wash under a headline is the house style rather than a defect.
+  // Excluding it is not a tolerance: it is the difference between "covers" and
+  // "is behind".
+  //
+  // Measured 2026-08-22, the day after this gate shipped: on a real deck it
+  // produced 14 findings and ALL 14 named an `.atmos` piece. Blocking, so the
+  // repair ladder regenerated those scenes six times and cleared none of them —
+  // there was nothing to clear. A gate whose defect the generator reproduces on
+  // every retry does not protect quality, it spends the repair budget.
   const decos = m.elements.filter(
     (e) =>
       e.decorative &&
+      e.pieceKind !== "atmosphere" &&
       e.text === "" &&
       e.w > 4 &&
       e.h > 4 &&
@@ -138,12 +149,21 @@ export const findDecorationOverText = (m: SceneMeasurement): RenderTruthFinding[
       e.fontSize >= DECO_MIN_TEXT_FONT &&
       e.opacity > 0.3,
   );
+  // Paint order. m.elements is built by walking the DOM, so a later index is a
+  // later sibling — and a later sibling paints ON TOP. Without this the gate
+  // fires on anything that merely SHARES space with copy, in either direction,
+  // which is most of a designed page. "Over" has to mean over.
+  const orderOf = new Map<MeasuredElement, number>();
+  m.elements.forEach((e, i) => orderOf.set(e, i));
+
   const out: RenderTruthFinding[] = [];
   const seen = new Set<string>();
   for (const t of texts) {
     for (const d of decos) {
       // Same piece = the decoration belongs to this content by design.
       if (d.piece && t.piece && d.piece === t.piece) continue;
+      // Behind the text, not over it — the text is the thing you see.
+      if ((orderOf.get(d) ?? 0) < (orderOf.get(t) ?? 0)) continue;
       const ox = Math.min(t.x + t.w, d.x + d.w) - Math.max(t.x, d.x);
       const oy = Math.min(t.y + t.h, d.y + d.h) - Math.max(t.y, d.y);
       if (ox <= 0 || oy <= 0) continue;
