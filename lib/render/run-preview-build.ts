@@ -1197,6 +1197,35 @@ async function runCastPreviewBuild(args: {
       fonts: [be?.font_roles?.display, be?.font_roles?.body].filter((f: unknown): f is string => !!f),
     };
 
+    /**
+     * WHERE THE VISION JUDGE RUNS.
+     *
+     * Measured over 7 complete builds (2026-08-22): vision-r + sequence-vision-final
+     * are 130s of a 294s build — 44% of the wall clock, the single largest phase. The
+     * SeaSlides ablation puts the visual-review stage at 0.11-0.15 quality points while
+     * the cheap deterministic checks it sits beside are worth 0.37-1.52, and AeSlides
+     * measured iterative visual reflection failing outright (70% of samples stop after
+     * one round, because VLMs cannot give precise enough geometric feedback to act on).
+     *
+     * So `RB_VISION_MODE=advisory` takes it out of the REPAIR LOOP: the loop runs
+     * without it, and the same judge runs ONCE on the settled deck with its findings
+     * recorded as warnings rather than routing regens.
+     *
+     * Be precise about the saving, because the headline number oversells it. On a
+     * multi-round build this collapses N passes into one — most of the 44%. On a
+     * first-pass-clean build (54% of them) it is the same single call and saves no
+     * wall clock at all. What changes in BOTH cases is that vision stops triggering
+     * repair rounds. It is still ahead of the file write, so the user waits for that
+     * one call; moving it fully behind the write needs a warnings-only republish path
+     * and is deliberately NOT done here.
+     *
+     * Default stays `blocking` — today's behaviour — because flipping this changes what
+     * a build spends and what it repairs, and that is a founder call.
+     *
+     * RB_VISION_GATE=off remains the separate, blunter switch: no vision at all.
+     */
+    const VISION_ADVISORY = String(process.env.RB_VISION_MODE ?? "").trim().toLowerCase() === "advisory";
+
     // ── per-scene vision (advisory driver of severe→regen targets) ──
     let visionUsage: Usage = { ...EMPTY_USAGE };
     let visionRan = false;
@@ -1273,7 +1302,9 @@ async function runCastPreviewBuild(args: {
           track(r);
           return r;
         },
-        runPerSceneVision,
+        // Advisory mode withholds the judge from the loop entirely — that is where
+        // the 44% lives. It runs once after the deck ships, below.
+        runPerSceneVision: VISION_ADVISORY ? undefined : runPerSceneVision,
         ensureGenDir: async () => {
           await fs.mkdir(genDir, { recursive: true });
           await fs.writeFile(path.join(genDir, "Img.tsx"), IMG_SHIM_SOURCE, "utf8");
@@ -1304,9 +1335,52 @@ async function runCastPreviewBuild(args: {
 
     // ── canonical persistence (identical layout to the MP4 path). The cast
     // composition is self-contained (theme inlined), so designCode is empty. ──
-    const warnings = brandTruthDegraded?.length
-      ? { brand_truth_degraded: brandTruthDegraded }
-      : undefined;
+    /**
+     * VISION, ONCE, AS A REPORT (RB_VISION_MODE=advisory).
+     *
+     * In blocking mode the judge runs inside every repair round and its severe findings
+     * route regens. Here it runs a single time on the settled deck and only RECORDS
+     * what it saw.
+     *
+     * What that is worth, precisely, because the headline number is easy to overstate:
+     * on a multi-round build it collapses N vision passes into one, which is most of
+     * the measured 44%; on a first-pass-clean build (54% of them) it is the same single
+     * call and saves no wall clock. In BOTH cases vision stops triggering repair
+     * rounds, which is the change the research actually supports — AeSlides measured
+     * iterative visual reflection failing outright, and SeaSlides put the whole visual
+     * stage at 0.11-0.15 quality points.
+     *
+     * Still ahead of the file write, so the user does wait for this one call. Moving it
+     * fully behind the write needs a warnings-only republish path (warnings.json is
+     * written and pushed to durable storage inside writeGeneratedFiles); that is a
+     * separate, small change and is NOT done here.
+     */
+    let visionAdvisoryFindings: { scene: number; issue: string }[] = [];
+    if (VISION_ADVISORY && runPerSceneVision) {
+      try {
+        const verdicts = await runPerSceneVision(
+          loop.finalMeasurements,
+          composedScript as unknown as LoopScript,
+          brandTruth,
+        );
+        visionAdvisoryFindings = verdicts.flatMap((v) =>
+          v.actionable.map((issue: string) => ({ scene: v.scene, issue })),
+        );
+        timeline.mark(`gate:vision:advisory done (${visionAdvisoryFindings.length} finding(s))`);
+      } catch (err) {
+        // Loud, never silent: an absent vision record must not read as "ran clean".
+        console.warn("[preview/build] advisory vision skipped:", err);
+        timeline.mark("gate:vision:advisory skipped (error)");
+      }
+    }
+
+    const warnings =
+      brandTruthDegraded?.length || visionAdvisoryFindings.length
+        ? {
+            ...(brandTruthDegraded?.length ? { brand_truth_degraded: brandTruthDegraded } : {}),
+            ...(visionAdvisoryFindings.length ? { vision: visionAdvisoryFindings } : {}),
+          }
+        : undefined;
     await writeGeneratedFiles(genDir, {
       designCode: "",
       code: loop.finalCode,
