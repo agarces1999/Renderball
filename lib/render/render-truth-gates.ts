@@ -118,6 +118,53 @@ const DECO_MAX_AREA_FRAC = 0.35;
 const DECO_CROSS_FRAC = 0.5;
 const DECO_MIN_CROSS_PX = 6;
 
+/**
+ * Does this element PAINT anything across its box, or is it hollow?
+ *
+ * "'Over' has to mean over" (the paint-order note below) — and it also has to mean
+ * PAINTED. Witnessed 2026-08-24: a stroke-only drawn-rectangle motif (transparent
+ * div + transparent svg + fill-less rect, 691×188) was flagged as covering the three
+ * text runs it merely framed, while the vision judge scored the scene clean. A
+ * decoration whose interior carries no ink cannot cover text.
+ *
+ * Ink is: an image, a CSS background-image (gradients included), a non-transparent
+ * background colour, or — for SVG shapes — a non-transparent computed fill. A
+ * stroke-only shape's border is rule-through-text's territory, not coverage.
+ * Measurements from before the walker captured `fill` have no svgShape field; their
+ * transparent-bg containers are excluded by the same test, and their painted
+ * CHILDREN are separate measured elements that answer for themselves.
+ */
+const paintAlpha = (c?: string): number => {
+  if (!c) return 0;
+  if (c === "none" || c === "transparent") return 0;
+  const m = /rgba?\(\s*\d+\s*,\s*\d+\s*,\s*\d+\s*(?:,\s*([\d.]+))?\s*\)/.exec(c);
+  if (m) return m[1] === undefined ? 1 : parseFloat(m[1]);
+  return 1; // named colours / hex — painted
+};
+/**
+ * Below this, an unpainted decoration's BOX is treated as its ink anyway.
+ *
+ * Two real specimens define the line. The pointer-events incident (adc6cfd): a
+ * 28×398 svg STROKE motif crossing a stats card — nothing measurable paints (the
+ * stroke is inside an svg container, invisible to computed background), yet the box
+ * IS the stroke and must flag. The hollow-frame phantom (task #113): a 691×188
+ * drawn-rectangle whose only ink is its border — the text sits in the empty
+ * interior and must NOT flag. A thin box cannot have a meaningful empty interior;
+ * a deep one is only "over" the text if something actually paints across it.
+ */
+const DECO_THIN_STROKE_MAX = 40;
+
+const paintsInk = (e: MeasuredElement): boolean => {
+  if (e.isImg || e.hasBgImage) return true;
+  if (paintAlpha(e.bg) > 0.05) return true;
+  if (e.svgShape) return paintAlpha(e.fill) > 0.05;
+  return false;
+};
+
+/** Painted, or thin enough that its box is its ink (see DECO_THIN_STROKE_MAX). */
+const coversLikeInk = (e: MeasuredElement): boolean =>
+  paintsInk(e) || Math.min(e.w, e.h) <= DECO_THIN_STROKE_MAX;
+
 export const findDecorationOverText = (m: SceneMeasurement): RenderTruthFinding[] => {
   if (m.error) return [];
   const frameArea = Math.max(1, m.width * m.height);
@@ -139,6 +186,7 @@ export const findDecorationOverText = (m: SceneMeasurement): RenderTruthFinding[
       e.w > 4 &&
       e.h > 4 &&
       e.opacity > 0.15 &&
+      coversLikeInk(e) &&
       (e.w * e.h) / frameArea <= DECO_MAX_AREA_FRAC,
   );
   if (decos.length === 0) return [];

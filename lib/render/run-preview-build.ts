@@ -1546,6 +1546,26 @@ async function runCastPreviewBuild(args: {
       console.warn("[preview/build:cast] lego decompose skipped:", err);
     }
 
+    // ── C1 instrumentation: the plan AS THE ASSEMBLER CONSUMED IT, on disk. ──
+    // The dry run that compared measured ink to composeSceneLayout() re-derived the
+    // plan and could not prove it derived the SAME plan the build used (it omits the
+    // build's opts). SceneManifest.pieces[].bounds IS the consumed plan, so writing
+    // it makes every future cast deck self-auditing: diff layout-plans.json against
+    // .render-truth rects and the "does generation follow the plan" question stops
+    // being a reconstruction argument.
+    try {
+      const planScenes = loop.castResult?.scenes;
+      if (planScenes?.length) {
+        const plans = planScenes.map((sc) => ({
+          scene: sc.scene,
+          pieces: sc.pieces.map((pc) => ({ id: pc.id, kind: pc.kind, bounds: pc.bounds })),
+        }));
+        await fs.writeFile(path.join(genDir, "layout-plans.json"), JSON.stringify(plans, null, 2), "utf8");
+      }
+    } catch (err) {
+      console.warn("[preview/build:cast] layout-plans write skipped:", err);
+    }
+
     // ── build timeline (best-effort) — written AFTER decompose + palette lift, so
     // their marks are durable. It used to be written just above, which made the
     // lift's mark in-memory only: the one artifact that proves the lift ran never

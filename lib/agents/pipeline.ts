@@ -1,4 +1,5 @@
 import { MODELS, BUILD_REASONING, BUILD_MAX_TOKENS } from "../anthropic";
+import { dedupeTopLevelConsts } from "./dedupe-scaffold-consts";
 import { getBuildClient, type BuildClient } from "../llm/build-client";
 import { DESIGN_AGENT_SYSTEM_PROMPT } from "./prompts/design-agent";
 import { ANIMATION_AGENT_SYSTEM_PROMPT } from "./prompts/animation-agent";
@@ -1226,6 +1227,19 @@ const finalizeRegen = async (
 
   // Hard syntax gate (see buildAnimatedSections) — never ship a scene-regen
   // that can't parse. ok:true === "this compiles."
+  // Scaffold-const dedupe (task #112, witnessed 2026-08-24): a regenerated or
+  // freshly generated file can re-emit a scaffold-owned top-level const
+  // (BRAND_WORDMARK, duplicated at <stdin>:8 on the witness build). The duplicate
+  // is a guaranteed compile failure, which turned the repair ladder's own regen
+  // into a no-progress stop and shipped the deck flagged. Dropping the later
+  // duplicate is compile-safe and keeps the scaffold's value.
+  {
+    const dd = dedupeTopLevelConsts(finalCodeOut);
+    if (dd.removed.length) {
+      console.warn(`[pipeline] dropped duplicate top-level const(s): ${dd.removed.join(", ")}`);
+      finalCodeOut = dd.code;
+    }
+  }
   const compileErr = await verifyCompilable(finalCodeOut);
   if (compileErr) {
     console.error("[pipeline] regen composition failed to compile:", compileErr);
@@ -2830,6 +2844,19 @@ export const buildAnimatedSections = async (
   // the build reported success; only the iframe/MP4 esbuild later surfaced the
   // error. stripCodeFence should keep this from ever firing; it is the
   // deterministic backstop that makes the false-positive impossible.
+  // Scaffold-const dedupe (task #112, witnessed 2026-08-24): a regenerated or
+  // freshly generated file can re-emit a scaffold-owned top-level const
+  // (BRAND_WORDMARK, duplicated at <stdin>:8 on the witness build). The duplicate
+  // is a guaranteed compile failure, which turned the repair ladder's own regen
+  // into a no-progress stop and shipped the deck flagged. Dropping the later
+  // duplicate is compile-safe and keeps the scaffold's value.
+  {
+    const dd = dedupeTopLevelConsts(finalCodeOut);
+    if (dd.removed.length) {
+      console.warn(`[pipeline] dropped duplicate top-level const(s): ${dd.removed.join(", ")}`);
+      finalCodeOut = dd.code;
+    }
+  }
   const compileErr = await verifyCompilable(finalCodeOut);
   if (compileErr) {
     console.error("[pipeline] composition failed to compile:", compileErr);

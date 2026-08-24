@@ -125,6 +125,10 @@ export interface MeasuredElement {
   coveredAtCenter: boolean;
   /** data-content-path on the element, an ancestor, or (for fit boxes) a descendant. */
   contentPath?: string;
+  /** True for SVG shape tags (rect/circle/ellipse/path/polygon/polyline/line). */
+  svgShape?: boolean;
+  /** Computed `fill`, captured for SVG shapes only — see the walker note. */
+  fill?: string;
   /** Residual fullness when the fit runtime hit its floor on this box (>1 = overfull). */
   fitFloor?: number;
   /** Computed border-top-left-radius in px (0 = square). Optional: older
@@ -396,6 +400,17 @@ const PAGE_WALK = `(() => {
         var f = parseFloat(el.getAttribute("data-rb-fit-floor") || "");
         return isFinite(f) && f > 1.02 ? f : undefined;
       })(),
+      // SVG shapes paint through FILL, which computed background-color never
+      // shows: a solid-filled <rect> reports bg "rgba(0,0,0,0)". Captured for
+      // shape tags ONLY — every element has a computed fill (black by
+      // default), so reading it on a <div> would make plain boxes look inked.
+      // NO BACKTICKS IN THIS BLOCK: the walker is a template literal shipped
+      // to page.evaluate as raw source, and a backtick in a comment ends the
+      // template mid-file (caught by tsc the moment it was tried).
+      // Witnessed 2026-08-24: a stroke-only drawn-frame motif was flagged as
+      // "covering" the three text runs it merely framed (task #113).
+      svgShape: ["rect", "circle", "ellipse", "path", "polygon", "polyline", "line"].indexOf(el.tagName.toLowerCase()) >= 0,
+      fill: ["rect", "circle", "ellipse", "path", "polygon", "polyline", "line"].indexOf(el.tagName.toLowerCase()) >= 0 ? cs.fill : undefined,
       isImg: el.tagName === "IMG",
       src: el.tagName === "IMG" ? el.getAttribute("src") || undefined : undefined,
       imgNaturalWidth: el.tagName === "IMG" ? (typeof el.naturalWidth === "number" ? el.naturalWidth : 0) : undefined,
