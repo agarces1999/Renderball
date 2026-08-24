@@ -17,7 +17,8 @@ import {
 } from "./build-wrapper";
 import { decomposeGenDir, readManifest, writeManifest } from "../agents/lego-store";
 import { persistGenDir } from "./gen-store";
-import { liftWashedPaletteTokens } from "./palette-lift";
+import { liftWashedPaletteTokens, type InkSample } from "./palette-lift";
+import { assessTextNodeContrast } from "./text-contrast";
 import { commitGenDir } from "../edit/commit";
 import { resolveCornerBrandMark } from "../agents/logo-inject";
 import { verifyScenesRender } from "./ssr-render";
@@ -1041,6 +1042,25 @@ async function runPreviewBuildInner(
     // "store/script scene mismatch", re-skin reports it would stop the later
     // pages rendering. Measured 2026-08-21 on 3 of 94 stored decks.
     if (lego.ok) await persistGenDir(scriptId);
+
+    // THE PORT (founder plan step 2, 2026-08-24): production runs THIS path, and
+    // until now no render-measured contrast repair existed on it — the founder's
+    // dim-text report (#64748b at 4.3:1) shipped here and would again. The repair
+    // ladder's final measurements are reused (repair.measurements — screenshots
+    // included), so this costs one sharp pass and zero model calls. Skipped with a
+    // durable mark when no measurements survived, never silently.
+    if (lego.ok) {
+      let inkSamples: InkSample[] = [];
+      if (repair.measurements?.some((m) => m.screenshotPath)) {
+        try {
+          inkSamples = (await assessTextNodeContrast(repair.measurements)).inkSamples;
+        } catch (err) {
+          console.warn("[palette-lift] contrast measurement skipped:", err);
+        }
+      }
+      await runPaletteLiftPostDecompose(genDir, inkSamples, (m) => timeline.mark(m));
+      await persistTimeline(); // the mark above must reach disk — the earlier write predates it
+    }
   } catch (err) {
     console.warn("[preview/build] lego decompose skipped:", err);
   }
@@ -1079,6 +1099,49 @@ type LoadedBrief = any;
  * telemetry, entitlement metering, gen-dir persistence, gate telemetry, and the
  * lego decompose — nothing about the surrounding contract changes.
  */
+/**
+ * The measured-contrast palette lift, post-decompose — ONE implementation for both
+ * engines.
+ *
+ * History, because it explains the shape: the lift was first wired inside the cast
+ * quality loop (could not stick — the next round overwrote it), then moved
+ * post-decompose but only on the CAST path — which production does not run, so the
+ * fix for the founder-reported dim-text bug could never fire for a user (the fifth
+ * review finding, 2026-08-24). This helper is the port to wherever a build ends:
+ * after decompose the store is real and final, commitGenDir re-persists durable
+ * storage itself, and a failure only logs — a colour polish must never take down a
+ * build that already succeeded. The mark is written via the caller's timeline so the
+ * artifact is durable (both callers persist the timeline AFTER this runs).
+ */
+async function runPaletteLiftPostDecompose(
+  genDir: string,
+  inkSamples: InkSample[],
+  mark: (m: string) => void,
+): Promise<void> {
+  if (inkSamples.length === 0) {
+    mark("palette-lift: skipped (no measured ink samples)");
+    return;
+  }
+  try {
+    const lifts = await liftWashedPaletteTokens(genDir, inkSamples, {
+      readManifest: (g) => readManifest(g) as Promise<{ preamble: string }>,
+      writeManifest: (g, m) => writeManifest(g, m),
+      commit: (g, msg) => commitGenDir(g, msg, { checkRender: true }),
+    });
+    for (const e of lifts) {
+      if (e.applied) {
+        console.log(`[palette-lift] ${e.token}: ${e.from} → ${e.to} (${e.improved} improved, ${e.unchanged} unchanged)`);
+      } else if (e.to) {
+        console.log(`[palette-lift] ${e.token}: refused (${e.reason}) — a regen should target ${e.to}`);
+      }
+    }
+    mark(`palette-lift: ${lifts.filter((e) => e.applied).length} applied / ${lifts.length} candidate(s)`);
+  } catch (err) {
+    console.warn("[palette-lift] skipped:", err);
+    mark("palette-lift: skipped (error)");
+  }
+}
+
 async function runCastPreviewBuild(args: {
   script: LoadedScript;
   brief: LoadedBrief;
@@ -1523,24 +1586,8 @@ async function runCastPreviewBuild(args: {
       // the store is real and final, nothing overwrites the commit, and commitGenDir
       // re-persists to durable storage itself (lib/edit/commit.ts). A failure only
       // logs: a colour polish must never take down a build that already succeeded.
-      if (lego.ok && loop.finalInkSamples.length > 0) {
-        try {
-          const lifts = await liftWashedPaletteTokens(genDir, loop.finalInkSamples, {
-            readManifest: (g) => readManifest(g) as Promise<{ preamble: string }>,
-            writeManifest: (g, m) => writeManifest(g, m),
-            commit: (g, msg) => commitGenDir(g, msg, { checkRender: true }),
-          });
-          for (const e of lifts) {
-            if (e.applied) {
-              console.log(`[palette-lift] ${e.token}: ${e.from} → ${e.to} (${e.improved} improved, ${e.unchanged} unchanged)`);
-            } else if (e.to) {
-              console.log(`[palette-lift] ${e.token}: refused (${e.reason}) — a regen should target ${e.to}`);
-            }
-          }
-          timeline.mark(`palette-lift: ${lifts.filter((e) => e.applied).length} applied / ${lifts.length} candidate(s)`);
-        } catch (err) {
-          console.warn("[palette-lift] skipped:", err);
-        }
+      if (lego.ok) {
+        await runPaletteLiftPostDecompose(genDir, loop.finalInkSamples, (m) => timeline.mark(m));
       }
     } catch (err) {
       console.warn("[preview/build:cast] lego decompose skipped:", err);
