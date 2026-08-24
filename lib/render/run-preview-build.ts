@@ -1507,11 +1507,6 @@ async function runCastPreviewBuild(args: {
       buildWallMs: Date.now() - buildT0,
     });
 
-    // ── build timeline (best-effort) ──
-    try {
-      await fs.writeFile(path.join(genDir, "build-timeline.json"), JSON.stringify(timeline.toJSON(), null, 2));
-    } catch { /* attribution is never worth failing a build over */ }
-
     // ── LEGO engine: split into editable per-piece artifacts for the editor. ──
     try {
       const lego = await decomposeGenDir(genDir);
@@ -1550,6 +1545,14 @@ async function runCastPreviewBuild(args: {
     } catch (err) {
       console.warn("[preview/build:cast] lego decompose skipped:", err);
     }
+
+    // ── build timeline (best-effort) — written AFTER decompose + palette lift, so
+    // their marks are durable. It used to be written just above, which made the
+    // lift's mark in-memory only: the one artifact that proves the lift ran never
+    // reached disk (noticed while trying to verify it from a witness build). ──
+    try {
+      await fs.writeFile(path.join(genDir, "build-timeline.json"), JSON.stringify(timeline.toJSON(), null, 2));
+    } catch { /* attribution is never worth failing a build over */ }
 
     return {
       status: 200,

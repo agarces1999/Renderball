@@ -84,6 +84,16 @@ export const normaliseHex = (hex: string): string => {
  * is to see the nodes a naive lift would break. A token with no samples is refused:
  * silence is not evidence of safety.
  */
+/**
+ * SCOPE, measured on the first cast witness (2026-08-24, 0 candidates from a deck with
+ * ~30 advisory-ish nodes): matching is EXACT ink-hex to token-hex, and generated decks
+ * dim text with OPACITY, whose composited ink never equals the token. So this repair
+ * covers precisely the founder-reported class — full-opacity token text a hair under
+ * AA (#64748b at 4.3) — and is blind to opacity-dimmed text by design: a token edit
+ * cannot fix per-node opacity, and pretending to would repaint every full-opacity use
+ * of the token to rescue a node the edit cannot reach. Opacity dimness needs its own
+ * repair (an opacity floor at the node), which this deliberately is not.
+ */
 export const judgeTokenLift = (
   entry: PaletteEntry,
   samples: InkSample[],
