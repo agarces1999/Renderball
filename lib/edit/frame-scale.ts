@@ -61,10 +61,16 @@ export const hostScaleDisagreement = (
   env: Record<string, string | undefined> = process.env,
 ): boolean => {
   const on = (v: string | undefined) => ENABLED.has(String(v ?? "").trim().toLowerCase());
-  const pub = env.NEXT_PUBLIC_RB_HOST_SCALE;
-  const srv = env.RB_HOST_SCALE;
-  if (pub === undefined || srv === undefined) return false; // only one configured at all
-  return on(pub) !== on(srv);
+  // The half-flip that actually bites: RB_HOST_SCALE alone turns the SERVER on (the
+  // emitted document stops scaling itself, because the server-side read falls back to
+  // it) while the client bundle — which inlines only NEXT_PUBLIC_RB_HOST_SCALE —
+  // stays off, so NOBODY scales the slide and it renders at 1:1. The first version
+  // returned false whenever only one name was set, i.e. it ignored precisely the case
+  // it existed to catch, and nothing called it besides (review, 2026-08-24; the
+  // renderer now warns through it). Any single-name-on configuration is flagged:
+  // even the benign direction is a config that stops meaning what it says the moment
+  // the fallback order changes.
+  return on(env.RB_HOST_SCALE) !== on(env.NEXT_PUBLIC_RB_HOST_SCALE);
 };
 
 export interface FrameFit {

@@ -5,7 +5,10 @@ import React from "react";
 import * as esbuild from "esbuild";
 import { renderSceneSandboxed } from "./sandbox/pool";
 import { hydrateGenDir } from "./gen-store";
-import { hostScaleEnabled } from "../edit/frame-scale";
+import { hostScaleEnabled, hostScaleDisagreement } from "../edit/frame-scale";
+
+/** Once per process: a half-configured host-scale flag must be loud, not a mystery. */
+let warnedHostScaleHalfFlip = false;
 import type { Script } from "../../src/schema";
 import { dimensionsForScript, WIDE_LOCKUP_RATIO } from "./build-wrapper";
 import { inlineAssetSrcs } from "../edit/image-assets";
@@ -340,6 +343,13 @@ export async function renderSceneDoc(
    * `__rbFit` is exported in BOTH modes — a no-op under host scaling — so the editor's
    * existing re-entry calls need no conditional at each site.
    */
+  if (!warnedHostScaleHalfFlip && hostScaleDisagreement()) {
+    warnedHostScaleHalfFlip = true;
+    console.warn(
+      "[scene-iframe] RB_HOST_SCALE and NEXT_PUBLIC_RB_HOST_SCALE disagree — set BOTH or neither. " +
+        "Half-set, the document and its host each assume the other is scaling and the slide renders unscaled.",
+    );
+  }
   const fitScript = hostScaleEnabled()
     ? `<script>window.__rbFit = function () {};</script>`
     : `<script>

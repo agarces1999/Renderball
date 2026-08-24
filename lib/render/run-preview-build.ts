@@ -15,8 +15,10 @@ import {
   LOTTIE_SHIM_SOURCE,
   BRAND_CHROME_SOURCE,
 } from "./build-wrapper";
-import { decomposeGenDir } from "../agents/lego-store";
+import { decomposeGenDir, readManifest, writeManifest } from "../agents/lego-store";
 import { persistGenDir } from "./gen-store";
+import { liftWashedPaletteTokens } from "./palette-lift";
+import { commitGenDir } from "../edit/commit";
 import { resolveCornerBrandMark } from "../agents/logo-inject";
 import { verifyScenesRender } from "./ssr-render";
 import { measureScenes } from "./measure-scene";
@@ -1516,6 +1518,35 @@ async function runCastPreviewBuild(args: {
       console.log(`[preview/build:cast] lego decompose: ${lego.ok ? `${lego.pieces} pieces` : `skipped (${lego.reason})`}`);
       // Same re-persist as the main path — see the comment there.
       if (lego.ok) await persistGenDir(scriptId);
+
+      // DETERMINISTIC PALETTE CONTRAST LIFT — deliberately HERE, after decompose
+      // (review, 2026-08-24). As first wired it ran inside every gate round: the lego
+      // store did not exist yet, so readManifest lazily decomposed a half-built
+      // composition into being, and the NEXT round's writeComposition overwrote the
+      // lifted Composition.tsx while the store kept the lift — the exact
+      // store/composition divergence this codebase keeps re-finding. Post-decompose
+      // the store is real and final, nothing overwrites the commit, and commitGenDir
+      // re-persists to durable storage itself (lib/edit/commit.ts). A failure only
+      // logs: a colour polish must never take down a build that already succeeded.
+      if (lego.ok && loop.finalInkSamples.length > 0) {
+        try {
+          const lifts = await liftWashedPaletteTokens(genDir, loop.finalInkSamples, {
+            readManifest: (g) => readManifest(g) as Promise<{ preamble: string }>,
+            writeManifest: (g, m) => writeManifest(g, m),
+            commit: (g, msg) => commitGenDir(g, msg, { checkRender: true }),
+          });
+          for (const e of lifts) {
+            if (e.applied) {
+              console.log(`[palette-lift] ${e.token}: ${e.from} → ${e.to} (${e.improved} improved, ${e.unchanged} unchanged)`);
+            } else if (e.to) {
+              console.log(`[palette-lift] ${e.token}: refused (${e.reason}) — a regen should target ${e.to}`);
+            }
+          }
+          timeline.mark(`palette-lift: ${lifts.filter((e) => e.applied).length} applied / ${lifts.length} candidate(s)`);
+        } catch (err) {
+          console.warn("[palette-lift] skipped:", err);
+        }
+      }
     } catch (err) {
       console.warn("[preview/build:cast] lego decompose skipped:", err);
     }

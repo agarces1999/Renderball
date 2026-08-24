@@ -452,6 +452,16 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
 
   /** The offset the paint loop last applied, in canvas px — what commit must persist. */
   const snappedRef = useRef<null | { sx: number; sy: number }>(null);
+  /**
+   * The numeric X/Y/W/H panel's draft, as STRINGS. Strings, not numbers, because a
+   * user mid-edit legitimately passes through states like "" and "-" that a number
+   * cannot hold — parse at commit, never at keystroke. Null while nothing is selected.
+   */
+  const [boundsDraft, setBoundsDraft] = useState<null | { x: string; y: string; w: string; h: string }>(null);
+  const [aspectLock, setAspectLock] = useState(false);
+  /** True while any of the four fields has focus — the sync effect must not clobber
+   *  half-typed input with a remeasure. */
+  const boundsFocusRef = useRef(false);
   const [genPrompt, setGenPrompt] = useState("");
   // What the marquee generates: a JSX element (LLM) or an image (diffusion).
   // An explicit switch on the prompt bar — never guessed from the prompt text.
@@ -1611,10 +1621,6 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
 
   // ── insert (add primitive) + generate (marquee) ───────────────────────────
 
-  /** Origin of the rendered slide in overlay px. Under host scaling the transform is on
-   *  the FRAME, so its rect is the canvas origin; under legacy the inner canvas is. */
-  const hostFrameRect = (): DOMRect | null =>
-    HOST_SCALE ? (iframeRef.current?.getBoundingClientRect() ?? null) : null;
   const canvasEl = (): HTMLElement | null =>
     (iframeRef.current?.contentDocument?.querySelector(".renderball-canvas") as HTMLElement | null) ?? null;
   // Overlay-local px (== iframe-viewport px) → canvas px. The canvas is scaled to fit
@@ -1633,17 +1639,36 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
     };
   };
 
+  /**
+   * Where the slide's (0,0) sits in OVERLAY-local px.
+   *
+   * Legacy: the inner canvas is positioned and scaled inside the frame, and its rect —
+   * reported in the iframe's own viewport, which the overlay exactly covers — IS the
+   * origin. Host-scaled: the canvas sits at 0,0 in a 1:1 document and the transform
+   * lives on the frame element, so the origin is the frame's offset WITHIN ITS
+   * CONTAINER (SceneFrame's inset-0 wrapper — the same box the overlay fills). The
+   * first host branch subtracted the frame's raw viewport rect, which is only correct
+   * when that container happens to sit at the viewport origin; anywhere else every
+   * marquee and guide would shift by the container's page position (review,
+   * 2026-08-24 — latent, the flag has never shipped on).
+   */
+  const originInOverlay = (): { x: number; y: number } => {
+    if (HOST_SCALE) {
+      const f = iframeRef.current;
+      const parent = f?.parentElement;
+      if (!f || !parent) return { x: 0, y: 0 };
+      const fr = f.getBoundingClientRect();
+      const pr = parent.getBoundingClientRect();
+      return { x: fr.left - pr.left, y: fr.top - pr.top };
+    }
+    const r = canvasEl()?.getBoundingClientRect();
+    return { x: r ? r.left : 0, y: r ? r.top : 0 };
+  };
+
   const overlayToCanvas = (localX: number, localY: number): { x: number; y: number } => {
     const scale = canvasScale() || 1;
-    // WHOSE origin. Legacy: the canvas is positioned and scaled inside the frame, so
-    // its own rect is the letterboxed origin. Host-scaled: the canvas sits at 0,0 in a
-    // 1:1 document, and the offset that matters is where the transformed FRAME lands in
-    // the parent — the inner rect knows nothing about it.
-    const originEl = HOST_SCALE ? (iframeRef.current as Element | null) : canvasEl();
-    const r = originEl?.getBoundingClientRect();
-    const ox = r ? r.left : 0;
-    const oy = r ? r.top : 0;
-    return { x: (localX - ox) / scale, y: (localY - oy) / scale };
+    const o = originInOverlay();
+    return { x: (localX - o.x) / scale, y: (localY - o.y) / scale };
   };
   // Intrinsic canvas dimensions in canvas px (width is the known prop; height is the
   // rendered height un-scaled) — used to centre a default box for add-primitive.
@@ -1669,6 +1694,65 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
       h = Math.min(h, dims.h - y);
     }
     return { x, y, w: Math.max(1, w), h: Math.max(1, h) };
+  };
+
+  /** The selection's bounds in CANVAS px, from the same transform every gesture uses. */
+  const selectedCanvasBounds = (): { x: number; y: number; w: number; h: number } | null => {
+    if (!selected) return null;
+    const p0 = overlayToCanvas(selected.rect.left, selected.rect.top);
+    const p1 = overlayToCanvas(selected.rect.left + selected.rect.width, selected.rect.top + selected.rect.height);
+    return { x: Math.round(p0.x), y: Math.round(p0.y), w: Math.round(p1.x - p0.x), h: Math.round(p1.y - p0.y) };
+  };
+
+  // Keep the numeric panel in step with the selection — except while the user is
+  // typing in it, when a remeasure would eat their half-typed value.
+  useEffect(() => {
+    if (boundsFocusRef.current) return;
+    const b = selectedCanvasBounds();
+    setBoundsDraft(b ? { x: String(b.x), y: String(b.y), w: String(b.w), h: String(b.h) } : null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected, reloadKey, docTick]);
+
+  /**
+   * Commit the numeric panel: a pure position change goes through the MOVE op (cheap,
+   * wrapper untouched), a size change through RESIZE with absolute bounds. The one
+   * deliberate divergence from the drag-resize path: its no-wrapper fallback silently
+   * REGENERATES the element, which costs tokens — the right trade under a drag
+   * gesture, the wrong one for a typo in a number field. Here it explains instead.
+   */
+  const commitBounds = async () => {
+    const d = boundsDraft;
+    const cur = selectedCanvasBounds();
+    if (!d || !cur || !selected || busy) return;
+    const nx = Math.round(Number(d.x));
+    const ny = Math.round(Number(d.y));
+    const nw = Math.round(Number(d.w));
+    const nh = Math.round(Number(d.h));
+    if (![nx, ny, nw, nh].every(Number.isFinite) || nw <= 0 || nh <= 0) {
+      setBoundsDraft({ x: String(cur.x), y: String(cur.y), w: String(cur.w), h: String(cur.h) });
+      return;
+    }
+    const sizeChanged = nw !== cur.w || nh !== cur.h;
+    const posChanged = nx !== cur.x || ny !== cur.y;
+    if (!sizeChanged && !posChanged) return;
+    const pieceId = selected.pieceId;
+    setBusy("resize");
+    if (!sizeChanged) {
+      const ok = await post(`${apiBase}/edit-layout`, { scriptId, sceneIndex, pieceId, op: "move", dx: nx - cur.x, dy: ny - cur.y });
+      setBusy(null);
+      if (ok) await settleCommit(pieceId, { afterMorph: pieceId });
+      return;
+    }
+    const bounds = clampBounds({ x: nx, y: ny, w: nw, h: nh });
+    const { ok, json } = await postJson(`${apiBase}/edit-layout`, { scriptId, sceneIndex, pieceId, op: "resize", ...bounds });
+    setBusy(null);
+    if (!ok && json.code === "no-wrapper") {
+      setError("This element has no plain box to resize — drag a corner instead, which rebuilds it at the new size.");
+      const b = selectedCanvasBounds();
+      if (b) setBoundsDraft({ x: String(b.x), y: String(b.y), w: String(b.w), h: String(b.h) });
+      return;
+    }
+    if (ok) await settleCommit(pieceId, { afterMorph: pieceId });
   };
 
   /**
@@ -1871,7 +1955,7 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
    * that a single page-sized backdrop would mark the whole canvas as occupied and
    * every suggestion would be rejected.
    */
-  const occupiedBounds = (): { x: number; y: number; w: number; h: number }[] => {
+  const occupiedBounds = (): { x: number; y: number; w: number; h: number; pieceId: string }[] => {
     const doc = iframeRef.current?.contentDocument;
     if (!doc) return [];
     const vw = doc.documentElement?.clientWidth ?? 0;
@@ -1883,7 +1967,7 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
     // wrong geometry.
     const canvasRect = canvasEl()?.getBoundingClientRect();
     if (!canvasRect || canvasRect.width <= 0 || canvasWidth <= 0) return [];
-    const out: { x: number; y: number; w: number; h: number }[] = [];
+    const out: { x: number; y: number; w: number; h: number; pieceId: string }[] = [];
 
     for (const piece of Array.from(doc.querySelectorAll("[data-piece]"))) {
       // Atmosphere is decorative — soft gradient washes and sparklines that span
@@ -1891,6 +1975,7 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
       // came back 723×723 with nothing in it) and every proposal was rejected.
       // Content sits over a gradient perfectly happily, so it is not occupancy.
       if (piece.getAttribute("data-kind") === "atmosphere") continue;
+      const pieceId = piece.getAttribute("data-piece") ?? "";
 
       for (const el of Array.from(piece.querySelectorAll("*"))) {
         if (el.querySelector("*")) continue; // leaves only — see below
@@ -1908,6 +1993,7 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
           y: Math.round(p0.y),
           w: Math.round(p1.x - p0.x),
           h: Math.round(p1.y - p0.y),
+          pieceId,
         });
       }
     }
@@ -1924,7 +2010,9 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
       scriptId,
       sceneIndex,
       prompt,
-      occupied: occupiedBounds(),
+      // Wire payload unchanged: pieceId is an editor-side concern and the
+      // suggest-layout schema was never told about it.
+      occupied: occupiedBounds().map(({ x, y, w, h }) => ({ x, y, w, h })),
     });
     setSuggesting(false);
     if (ok && Array.isArray(json.suggestions)) {
@@ -2084,11 +2172,28 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
       h: startBottomRight.y - startTopLeft.y,
     };
     const dims0 = canvasIntrinsic();
-    // Drop the moving piece's own box out of the targets — a box cannot align to
-    // itself, and leaving it in pins the element to where it started.
-    const siblings = occupiedBounds().filter(
-      (b) => Math.abs(b.x - movingBox.x) > 2 || Math.abs(b.y - movingBox.y) > 2,
-    );
+    // Snap targets: SIBLING pieces only, unioned to piece-level boxes.
+    //
+    // Two corrections from review (2026-08-24). The first cut excluded the moving
+    // piece GEOMETRICALLY — origin within 2px of the selection rect — but
+    // occupiedBounds returns one box per text LEAF, and a leaf's origin almost never
+    // matches the piece rect, so the moving piece's own leaves stayed in the target
+    // set and the element could snap to itself. Exclusion is by id now. And leaves
+    // are unioned per piece: "align to that card" means the card's edges and centre,
+    // not sixty micro-targets from every line of text inside it.
+    const leafBoxes = occupiedBounds().filter((b) => b.pieceId !== selected.pieceId);
+    const unions = new Map<string, { x1: number; y1: number; x2: number; y2: number }>();
+    for (const b of leafBoxes) {
+      const u = unions.get(b.pieceId);
+      if (!u) unions.set(b.pieceId, { x1: b.x, y1: b.y, x2: b.x + b.w, y2: b.y + b.h });
+      else {
+        u.x1 = Math.min(u.x1, b.x);
+        u.y1 = Math.min(u.y1, b.y);
+        u.x2 = Math.max(u.x2, b.x + b.w);
+        u.y2 = Math.max(u.y2, b.y + b.h);
+      }
+    }
+    const siblings = [...unions.values()].map((u) => ({ x: u.x1, y: u.y1, w: u.x2 - u.x1, h: u.y2 - u.y1 }));
     dragRef.current = { startX: e.clientX, startY: e.clientY, scale: canvasScale() };
     draggingRef.current = false;
     setGestureHeld(true);
@@ -3128,10 +3233,9 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
           weaker information than "you lined up with that". */}
       {guides.map((g, i) => {
         const scale = canvasScale() || 1;
-        const c = canvasEl()?.getBoundingClientRect();
-        const host = hostFrameRect();
-        const ox = host ? host.left : c ? c.left : 0;
-        const oy = host ? host.top : c ? c.top : 0;
+        const o = originInOverlay();
+        const ox = o.x;
+        const oy = o.y;
         const colour = g.source === "sibling" ? "var(--accent, #00c28a)" : "rgba(120,130,150,0.55)";
         const common = { position: "absolute" as const, pointerEvents: "none" as const, zIndex: 44 };
         return g.axis === "x" ? (
@@ -3160,6 +3264,100 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
           />
         );
       })}
+
+      {/* NUMERIC BOUNDS PANEL — type an exact X/Y/W/H instead of nudging toward it.
+          Geist Mono per DESIGN.md (numbers are technical text); quiet chrome, bottom
+          right so it never sits over the selection toolbar or the Suggest box. The
+          ratio toggle keeps W and H proportional while either is edited. */}
+      {selected && boundsDraft && !editing && !genBox && !marquee && !dragDelta && !resizeBox && (
+        <div
+          onMouseDown={(e) => e.stopPropagation()}
+          style={{
+            position: "absolute",
+            right: 12,
+            bottom: 12,
+            zIndex: 45,
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            padding: "6px 8px",
+            borderRadius: 10,
+            background: "rgba(15,17,22,0.9)",
+            border: "1px solid rgba(255,255,255,0.09)",
+            fontFamily: "var(--font-mono, ui-monospace, monospace)",
+            fontSize: 11,
+            color: "#e6e8ee",
+          }}
+        >
+          {(["x", "y", "w", "h"] as const).map((k) => (
+            <label key={k} style={{ display: "flex", alignItems: "center", gap: 3 }}>
+              <span style={{ opacity: 0.55, textTransform: "uppercase" }}>{k}</span>
+              <input
+                value={boundsDraft[k]}
+                onFocus={() => {
+                  boundsFocusRef.current = true;
+                }}
+                onBlur={() => {
+                  boundsFocusRef.current = false;
+                  void commitBounds();
+                }}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setBoundsDraft((d) => {
+                    if (!d) return d;
+                    if (!aspectLock || (k !== "w" && k !== "h")) return { ...d, [k]: v };
+                    const cw = Number(d.w) || 1;
+                    const ch = Number(d.h) || 1;
+                    const n = Number(v);
+                    if (!Number.isFinite(n) || n <= 0) return { ...d, [k]: v };
+                    return k === "w"
+                      ? { ...d, w: v, h: String(Math.max(1, Math.round((n * ch) / cw))) }
+                      : { ...d, h: v, w: String(Math.max(1, Math.round((n * cw) / ch))) };
+                  });
+                }}
+                onKeyDown={(e) => {
+                  // The document-level key handler must never see these: Backspace here
+                  // is editing a number, not deleting the element.
+                  e.stopPropagation();
+                  if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                  if (e.key === "Escape") {
+                    boundsFocusRef.current = false;
+                    const b = selectedCanvasBounds();
+                    if (b) setBoundsDraft({ x: String(b.x), y: String(b.y), w: String(b.w), h: String(b.h) });
+                    (e.target as HTMLInputElement).blur();
+                  }
+                }}
+                style={{
+                  width: 44,
+                  background: "rgba(255,255,255,0.06)",
+                  border: "1px solid rgba(255,255,255,0.1)",
+                  borderRadius: 6,
+                  color: "inherit",
+                  font: "inherit",
+                  padding: "3px 5px",
+                  textAlign: "right",
+                }}
+              />
+            </label>
+          ))}
+          <button
+            type="button"
+            onClick={() => setAspectLock((v) => !v)}
+            title={aspectLock ? "W and H move together — click to unlock" : "Lock the aspect ratio"}
+            style={{
+              background: "transparent",
+              border: `1px solid ${aspectLock ? "var(--accent, #00c28a)" : "rgba(255,255,255,0.14)"}`,
+              color: aspectLock ? "var(--accent, #00c28a)" : "#9aa3b2",
+              borderRadius: 6,
+              padding: "3px 7px",
+              font: "inherit",
+              cursor: "pointer",
+            }}
+          >
+            ratio
+          </button>
+        </div>
+      )}
 
       {/* Frozen generate box + its prompt controls, inside the box wherever the
           box can hold them (row when wide, stacked when narrow). */}

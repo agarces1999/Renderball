@@ -56,9 +56,7 @@ import {
   type OccupancySceneStat,
   type CardOccupancyAdvisory,
 } from "./occupancy";
-import { liftWashedPaletteTokens } from "./palette-lift";
-import { readManifest, writeManifest } from "../agents/lego-store";
-import { commitGenDir } from "../edit/commit";
+import type { InkSample } from "./palette-lift";
 import {
   buildFurnishPanelJsx,
   injectFurnishIntoSection,
@@ -495,6 +493,16 @@ export interface QualityLoopHooks {
 export interface QualityLoopResult {
   finalCode: string;
   finalMeasurements: SceneMeasurement[];
+  /**
+   * Every measured text node from the LAST gate round — ink, backdrop, ratio. The
+   * palette contrast lift runs POST-LOOP in run-preview-build (it commits through the
+   * lego store, which does not exist until after the build decomposes; as first wired
+   * it ran per round and the next round's writeComposition overwrote the lift while
+   * the store kept it — a store/composition divergence found in review, never in a
+   * test, because no test runs a real build). One sub-round of staleness is the same
+   * fidelity every other final-state consumer accepts.
+   */
+  finalInkSamples: InkSample[];
   gateRounds: GateRoundReport[];
   roundTelemetry: CastBuildResult["telemetry"][];
   round0: Round0Report | null;
@@ -889,6 +897,7 @@ export async function runQualityLoop(
   const finalize: Record<string, unknown> = {};
   let profile: DensityProfile | null = null;
   let finalMeasurements: SceneMeasurement[] = [];
+  let lastInkSamples: InkSample[] = [];
   let finalContrast: HeroContrastResult | null = null;
   let finalAccentFill: AccentFillResult | null = null;
   let round0: Round0Report | null = null;
@@ -1605,6 +1614,7 @@ export async function runQualityLoop(
 
     // (b5) v15 (#2): PER-TEXT-NODE CONTRAST.
     const textContrast = await phase(`text-contrast-r${round}`, () => assessTextNodeContrast(measurements));
+    lastInkSamples = textContrast.inkSamples; // post-loop palette lift reads the final round's samples
     for (const a of textContrast.advisories) {
       structural.push({ scene: a.scene, key: "text_contrast_advisory", detail: a.detail });
     }
@@ -1614,39 +1624,6 @@ export async function runQualityLoop(
         ` · ${textContrast.advisories.length} advisory` +
         `${textContrast.errors.length ? ` · errors: ${textContrast.errors.join(" | ")}` : ""}`,
     );
-
-    // (b6b) DETERMINISTIC PALETTE CONTRAST LIFT — 0 tokens, no model call.
-    // The advisory band (2.5–4.5) had no repair of its own: its findings "ride along
-    // on regens", so dim text on an otherwise-clean scene shipped dim. Founder report
-    // 2026-08-22 ("the element on the right is bad on visibility") was a node at 4.3,
-    // seen and shipped. Darkening a colour to a contrast target is arithmetic, so it
-    // happens here instead of costing a regen. The guard in palette-lift.ts re-scores
-    // EVERY measured node using the token — a global edit for a local failure is only
-    // allowed when nothing else regresses.
-    if (textContrast.inkSamples.length > 0) {
-      try {
-        const lifts = await liftWashedPaletteTokens(genDir, textContrast.inkSamples, {
-          readManifest: (g) => readManifest(g) as Promise<{ preamble: string }>,
-          writeManifest: (g, m) => writeManifest(g, m),
-          commit: (g, msg) => commitGenDir(g, msg, { checkRender: true }),
-        });
-        for (const e of lifts) {
-          if (e.applied) {
-            log(
-              `  [palette-lift] ${e.token}: ${e.from} → ${e.to} — ${e.improved} node(s) improved, ` +
-                `${e.unchanged} unchanged, none regressed`,
-            );
-          } else if (e.to) {
-            // Name the hex even on refusal: a regen aiming at a number beats one told
-            // to "make it darker", which is how this band kept shipping dim.
-            log(`  [palette-lift] ${e.token}: REFUSED (${e.reason}) — a regen should target ${e.to}`);
-          }
-        }
-      } catch (err) {
-        // A colour polish must never take a build down.
-        warn(`  [palette-lift] skipped: ${err instanceof Error ? err.message : err}`);
-      }
-    }
 
     // (b7) cycle-9 P1 (arm 2): ORPHANED COPY FRAGMENTS — a copy node rendered as
     // a lone char / value-less label-colon / dotted initials (a bind/emit
@@ -2281,6 +2258,7 @@ export async function runQualityLoop(
   return {
     finalCode,
     finalMeasurements,
+    finalInkSamples: lastInkSamples,
     gateRounds,
     roundTelemetry,
     round0,
