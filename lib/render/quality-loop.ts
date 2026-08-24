@@ -81,7 +81,7 @@ import {
   type TextContrastFinding,
   type TextContrastStat,
 } from "./text-contrast";
-import { clampPieceOffsets } from "../agents/assemble";
+import { clampPieceOffsets, planOverfillShrinks, shrinkOverfilledPieces, findBoxCroppedInk, boxContractEnabled } from "../agents/assemble";
 import {
   assessDensity,
   renderSectionsForAnalysis,
@@ -1256,6 +1256,54 @@ export async function runQualityLoop(
         `  edge-crop: ${edgeCropInitial.length} initial [${edgeCropInitial.map((f) => `${f.pieceId}:${f.edge}+${f.overflowPx}px`).join(", ")}] · ` +
           `${clamp.applied.length} clamped · ${plan.regens.length} clamp-refused → regen · ${edgeCropResidual.length} residual${edgeCropResidual.length ? ` [${edgeCropResidual.map((f) => f.pieceId).join(", ")}] → routed to regen` : ""}`,
       );
+    }
+    // ── interior-overfill shrink (box contract's honest companion) ──────────
+    // Only meaningful when RB_BOX_CONTRACT clips interiors: an overfilled piece
+    // is then AMPUTATED at its box edge (witness 5: chips and a headline cut
+    // mid-glyph). Deterministic measured shrink — content complete, slightly
+    // smaller — same doctrine as the text fitScale. Shrink-only, so it cannot
+    // oscillate; sub-floor overfills stay clipped and visible for the gates.
+    if (boxContractEnabled()) {
+      const overfill = planOverfillShrinks(finalCode, measurements);
+      for (const r of overfill.refused) {
+        warn(`  [overfill] ${r.pieceId}: ${r.reason}`);
+      }
+      if (overfill.shrinks.length > 0) {
+        const sh = shrinkOverfilledPieces(finalCode, overfill.shrinks);
+        for (const a of sh.applied) {
+          log(`  [overfill] ${a.pieceId}: ink exceeds its ${a.from.w}x${a.from.h} box — scaled to ${a.fitScale} (deterministic, zero tokens, content complete)`);
+        }
+        for (const sk of sh.skipped) {
+          warn(`  [overfill] ${sk.pieceId}: shrink skipped — ${sk.reason}`);
+        }
+        if (sh.applied.length > 0) {
+          finalCode = sh.code;
+          await hooks.writeComposition(finalCode);
+          measurements = await phase(`measure-overfill-r${round}`, () => measureScenes(genDir, script, genDir));
+        }
+      }
+      // Residual after the shrink = a CONTRACT violation (offset past 100%,
+      // rows below the box, fake chrome at the box edge) — geometry no scale
+      // can fix. Route to the regen ladder through the same residual channel
+      // the canvas edge-crop uses; the finding kind is reused deliberately
+      // (it IS ink cropping at an edge — the piece's own box edge).
+      const boxCrops = findBoxCroppedInk(finalCode, measurements).filter(
+        (f) => !edgeCropResidual.some((e) => e.pieceId === f.pieceId),
+      );
+      for (const f of boxCrops) {
+        warn(`  [overfill] ${f.pieceId}: ink ${f.overflowPx}px past its own ${f.edge} box edge AFTER repair — contract violation, routed to regen`);
+        edgeCropResidual.push({
+          kind: "piece-edge-crop",
+          scene: f.scene,
+          pieceId: f.pieceId,
+          blocking: true,
+          edge: f.edge,
+          overflowPx: f.overflowPx,
+          union: f.union,
+          detail: `ink extends ${f.overflowPx}px past the piece's own ${f.edge} box edge and is CLIPPED mid-content (box contract: the interior must fit its 100%×100% box)`,
+          repairInstruction: `Your content extends ${f.overflowPx}px past your box's ${f.edge} edge and is being cut off mid-content. Your OUTERMOST element must contain ALL children inside its 100%×100% box: remove offsets, margins or absolutely-positioned children that push past the edge, remove any decorative page-counter/chrome you added at the box edge, and let nothing exceed the box.`,
+        });
+      }
     }
     finalMeasurements = measurements;
 

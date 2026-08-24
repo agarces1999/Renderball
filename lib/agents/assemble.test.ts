@@ -6,7 +6,7 @@
  * data-throughline attribute, a Generated alias — and that the output actually
  * COMPILES (esbuild tsx transform, the same verifyCompilable the build uses).
  */
-import { assembleComposition, clampPieceOffsets, type AssembleInput } from "./assemble";
+import { assembleComposition, clampPieceOffsets, planOverfillShrinks, shrinkOverfilledPieces, OVERFILL_SHRINK_FLOOR, findBoxCroppedInk, type AssembleInput } from "./assemble";
 import { verifyCompilable } from "./code-extraction";
 import { decompose, reassemble, pieceCount } from "./lego-decompose";
 import type { Theme, SceneManifest, Piece } from "../edit/piece-model";
@@ -292,6 +292,20 @@ await check("RB_ENFORCE_BOX is OFF by default: no overflow, no maxHeight, no sca
   assert(off.includes(`width: 800, height: 500`), "non-text keeps its fixed rect");
 });
 
+await check("RB_BOX_CONTRACT implies enforcement (Half 2: the contract flag turns the box real)", () => {
+  const prev = process.env.RB_BOX_CONTRACT;
+  process.env.RB_BOX_CONTRACT = "on";
+  try {
+    const on = withFlag(undefined, assembleBox); // RB_ENFORCE_BOX genuinely unset
+    const heroTag = /<div data-piece="s0\.hero"[^>]*>/.exec(on)?.[0] ?? "";
+    assert(/overflow:\s*"hidden"/.test(heroTag), "contract flag alone must clip non-text");
+    assert(on.includes("maxHeight: 240"), "contract flag alone must ceiling text");
+  } finally {
+    if (prev === undefined) delete process.env.RB_BOX_CONTRACT;
+    else process.env.RB_BOX_CONTRACT = prev;
+  }
+});
+
 await check("RB_ENFORCE_BOX=on clips NON-TEXT pieces at the piece boundary", () => {
   const on = withFlag("on", assembleBox);
   const heroTag = /<div data-piece="s0\.hero"[^>]*>/.exec(on)?.[0] ?? "";
@@ -396,6 +410,79 @@ await check("both Chrome emissions COMPILE", async () => {
     const err = await verifyCompilable(assembleChrome(v));
     assert(err === null, `showCornerLogo=${String(v)} did not compile: ${err}`);
   }
+});
+
+
+// ─── Interior-overfill shrink (Half 2's honest companion, task #114) ────────
+//
+// Witness 5 (2026-08-24): with the box contract on, an overfilled interior is
+// clipped and the clip AMPUTATES ink (stat chips and a headline cut mid-glyph).
+// These lock the repair: measured shrink instead of blind cut, ink-only
+// judgment, the floor below which we refuse, and structural immunity for
+// text / bleed / already-scaled wrappers.
+
+const overfillCode = [
+  `<div data-piece="s3.hero" data-kind="diegetic" style={{ position: "absolute", left: 160, top: 58, width: 684, height: 934, overflow: "hidden", zIndex: 1 }}>`,
+  `<div data-piece="s3.copy" data-kind="text" data-box-h={560} style={{ position: "absolute", left: 860, top: 220, width: 880, maxWidth: 880, maxHeight: 560, zIndex: 2 }}>`,
+  `<div data-piece="s3.bleeder" data-kind="diegetic" data-bleed="1" style={{ position: "absolute", left: 0, top: 0, width: 300, height: 300, zIndex: 1 }}>`,
+].join("\n");
+const inkAt = (piece: string, x: number, y: number, w: number, h: number, kind = "diegetic") =>
+  ({ piece, pieceKind: kind, text: "ink", x, y, w, h });
+
+await check("OVERFILL: ink past a clipped box plans a shrink that brings the union inside", () => {
+  // box 684 wide at left 160 → right edge 844; ink to 904 → needs 744 → fit 684/744 ≈ 0.919
+  const plan = planOverfillShrinks(overfillCode, [{ elements: [inkAt("s3.hero", 200, 100, 704, 300)] }]);
+  assert(plan.shrinks.length === 1 && plan.refused.length === 0, `one shrink expected: ${JSON.stringify(plan)}`);
+  const f = plan.shrinks[0].fitScale;
+  assert(f > 0.9 && f < 0.92, `fitScale ≈ 0.919, got ${f}`);
+  const sh = shrinkOverfilledPieces(overfillCode, plan.shrinks);
+  assert(sh.applied.length === 1, "patch must apply");
+  const tag = /<div data-piece="s3\.hero"[^>]*>/.exec(sh.code)?.[0] ?? "";
+  assert(new RegExp(`width: ${Math.round(684 / f)}, height: ${Math.round(934 / f)}, transform: "scale\\(${f}\\)", transformOrigin: "top left", overflow: "hidden"`).test(tag),
+    `inverse-widened + scaled + still clipped: ${tag}`);
+  // painted footprint stays the box: widened width × scale ≈ original width
+  assert(Math.abs(Math.round(684 / f) * f - 684) < 2, "painted footprint must remain ~684px");
+});
+
+await check("OVERFILL floor: content too oversized is REFUSED, not silently miniaturised", () => {
+  // ink to rel width 1100 → fit 684/1100 ≈ 0.62 < floor
+  const plan = planOverfillShrinks(overfillCode, [{ elements: [inkAt("s3.hero", 160, 100, 1100, 300)] }]);
+  assert(plan.shrinks.length === 0 && plan.refused.length === 1, `refusal expected: ${JSON.stringify(plan)}`);
+  assert(plan.refused[0].fitScale < OVERFILL_SHRINK_FLOOR, "refused below the floor");
+});
+
+await check("OVERFILL immunity: text, bleed, fitting, and already-scaled wrappers are untouched", () => {
+  const fits = planOverfillShrinks(overfillCode, [{ elements: [inkAt("s3.hero", 200, 100, 600, 300)] }]);
+  assert(fits.shrinks.length === 0 && fits.refused.length === 0, "in-box ink plans nothing");
+  const text = planOverfillShrinks(overfillCode, [{ elements: [inkAt("s3.copy", 860, 220, 2000, 300, "text")] }]);
+  assert(text.shrinks.length === 0, "text wrappers (maxHeight form) never match");
+  const bleed = planOverfillShrinks(overfillCode, [{ elements: [inkAt("s3.bleeder", 0, 0, 900, 300)] }]);
+  assert(bleed.shrinks.length === 0, "bleed wrappers (no overflow clip) never match");
+  const once = shrinkOverfilledPieces(overfillCode, [{ pieceId: "s3.hero", fitScale: 0.9 }]).code;
+  const twice = planOverfillShrinks(once, [{ elements: [inkAt("s3.hero", 200, 100, 704, 300)] }]);
+  assert(twice.shrinks.length === 0, "an already-scaled wrapper is never re-shrunk (convergence)");
+});
+
+await check("OVERFILL patcher refuses out-of-range scales and unknown pieces", () => {
+  const bad = shrinkOverfilledPieces(overfillCode, [
+    { pieceId: "s3.hero", fitScale: 1.2 },
+    { pieceId: "s9.ghost", fitScale: 0.9 },
+  ]);
+  assert(bad.applied.length === 0 && bad.skipped.length === 2, JSON.stringify(bad.skipped));
+});
+
+
+await check("BOX-CROP residual: offset-overflow past the painted box is found on BOTH wrapper forms", () => {
+  // plain wrapper: box right edge 160+684=844; ink to 904 → 60 over
+  const plain = findBoxCroppedInk(overfillCode, [{ scene: 3, elements: [inkAt("s3.hero", 220, 100, 684, 300)] }]);
+  assert(plain.length === 1 && plain[0].edge === "right" && plain[0].overflowPx === 60, JSON.stringify(plain));
+  // scaled wrapper: width 744 × scale 0.919 → painted 684 (edge ≈ 843.7); ink to 899 → ≈55 over
+  const scaledCode = shrinkOverfilledPieces(overfillCode, [{ pieceId: "s3.hero", fitScale: 0.919 }]).code;
+  const scaled = findBoxCroppedInk(scaledCode, [{ scene: 3, elements: [inkAt("s3.hero", 215, 100, 684, 300)] }]);
+  assert(scaled.length === 1 && scaled[0].edge === "right" && Math.abs(scaled[0].overflowPx - 55) <= 1, JSON.stringify(scaled));
+  // fitting ink → no finding; text wrappers → structurally immune
+  assert(findBoxCroppedInk(overfillCode, [{ scene: 3, elements: [inkAt("s3.hero", 200, 100, 600, 300)] }]).length === 0, "fits");
+  assert(findBoxCroppedInk(overfillCode, [{ scene: 3, elements: [inkAt("s3.copy", 860, 220, 2000, 300, "text")] }]).length === 0, "text immune");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

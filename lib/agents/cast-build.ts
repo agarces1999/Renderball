@@ -48,7 +48,7 @@ import { promptDigest } from "../llm/safe-truncate";
 import { composeSceneLayout, CANVAS, type Aspect, type ElementSlot, type ScenePlan } from "./layout-composer";
 import { selectThroughlineAnchor } from "./throughline-anchor";
 import { normalizeElementColors, assessAccentPresence, hexToRgb, rgbToHsl, isNeutral } from "./normalize-element";
-import { assembleComposition } from "./assemble";
+import { assembleComposition, boxContractEnabled } from "./assemble";
 import { applyChoreography } from "./choreograph";
 import { stripCodeFence, verifyCompilable } from "./code-extraction";
 import { pickElevatedSurface } from "../render/void-furnish";
@@ -2120,7 +2120,7 @@ export const heroPopulateReassert = (spec: ElementSpec | undefined): string => {
  * IS the throughline. Scene intent + register ride along for flavor; nothing
  * about any OTHER element leaks in (independence is the contract).
  */
-const elementBrief = (args: {
+export const elementBrief = (args: {
   theme: Theme;
   script: Script;
   sceneIndex: number;
@@ -2138,6 +2138,26 @@ const elementBrief = (args: {
   const spec = specForSlot(scene, slot.id);
   const owned = ownedCopyFields(scene, slot);
   const b = slot.bounds;
+  // ── Half 2 (task #114): the box CONTRACT, not just box data. ──────────────
+  // The witnessed C1 failure: this brief handed every element its CANVAS
+  // coordinates and said "Fill it", so models authored their own absolute
+  // geometry — canvas-scale left/top/width INSIDE a wrapper the assembler had
+  // already positioned — double-offsetting ink 138–1,295px outside the plan
+  // (witness deck 01M0T30VKCVP2TYASFSFAPVZ9N: plan (80,180,460w), interior
+  // authored left:120/top:140/width:680). insert-element's generate-piece
+  // proved the fix wording at 17/17 measured compliance: state ONLY the box
+  // size, forbid outer geometry, let the system own placement. Flag-gated
+  // (RB_BOX_CONTRACT, which also turns on the assembler's enforcement) with
+  // three exemptions: atmosphere is inset:0 full-bleed, connector already
+  // carries its own inset-0 contract, throughline coords are frozen by the
+  // anchor mechanism.
+  const contractExempt = slot.id === "atmosphere" || slot.id === "connector" || slot.id === "throughline";
+  const boundsLine =
+    boxContractEnabled() && !contractExempt
+      ? slot.kind === "text"
+        ? `BOX CONTRACT: your JSX is inlined inside a system-owned wrapper ALREADY absolutely positioned and sized for you — ${b.w}px wide (width is a MAX; height flows with your content, and overflowing ~${b.h}px triggers shrink-to-fit). Emit ONLY the interior. Do NOT set position:absolute, left, top, right, bottom, width, or height on your OUTERMOST element — the wrapper owns placement and size. Fill the box edge to edge; never write canvas coordinates into styles.`
+        : `BOX CONTRACT: your JSX is inlined inside a system-owned wrapper ALREADY absolutely positioned and sized to EXACTLY ${b.w}×${b.h}px; interior overflow is CLIPPED. Emit ONLY the interior (outermost element: width/height 100%). Do NOT set position:absolute, left, top, right, bottom, or px width/height on your OUTERMOST element — the wrapper owns placement and size. Fill the box edge to edge; never write canvas coordinates into styles.`
+      : `BOUNDS: your wrapper is ${b.w}×${b.h}px at canvas (${b.x},${b.y})${slot.kind === "text" ? " — width is a MAX, height flows" : ""}. Fill it.`;
   const lines: string[] = [
     `CREATE this element — scene ${sceneIndex} ("${scene.label}", register ${register}), piece id "${pieceId}", kind "${slot.kind}".`,
     `Scene intent: ${scene.description ?? scene.label}`,
@@ -2147,7 +2167,7 @@ const elementBrief = (args: {
     // lib/llm/safe-truncate.ts). The 37/56/66-minute builds in this repo's
     // history are this bug, not a speed problem.
     `Visual concept (this element's role within it): ${promptDigest(scene.visual_concept ?? "", 600)}`,
-    `BOUNDS: your wrapper is ${b.w}×${b.h}px at canvas (${b.x},${b.y})${slot.kind === "text" ? " — width is a MAX, height flows" : ""}. Fill it.`,
+    boundsLine,
     `PALETTE ROLES you may paint with: ${slot.paletteRoles.map((r) => `${r} → ${tokenForRole(theme, r)}`).join(", ")}.`,
   ];
 

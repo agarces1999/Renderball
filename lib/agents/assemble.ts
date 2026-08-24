@@ -165,6 +165,18 @@ const namespaceLocalKeyframes = (body: string, pieceId: string): string => {
 //     rather than growing into its neighbour.
 const enforceBoxEnabled = (): boolean => (process.env.RB_ENFORCE_BOX ?? "").toLowerCase() === "on";
 
+/**
+ * Half 2 (task #114): the box CONTRACT — generation is TOLD to fill a
+ * system-owned box (cast-build's elementBrief swaps its BOUNDS line for the
+ * insert-element contract wording, proven at 17/17 measured compliance), and
+ * this assembler makes the box real. One flag drives both halves, because a
+ * contract without enforcement re-creates the witnessed C1 escape (interiors
+ * authored canvas-scale geometry 138–1,295px outside plan slots), and
+ * enforcement without the contract amputates content the model was never told
+ * to fit (a model writing width:680 into a 460px box loses 220px to the clip).
+ */
+export const boxContractEnabled = (): boolean => (process.env.RB_BOX_CONTRACT ?? "").toLowerCase() === "on";
+
 /** Inline one piece (and its nested children) into a positioned wrapper. Text
  *  pieces flow-size (maxWidth, height auto) so a wrapped headline is never clipped;
  *  others use a fixed rect. Atmosphere is full-bleed. Chrome is emitted by the
@@ -207,7 +219,7 @@ const emitPiece = (piece: Piece, sceneIndex: number, resolve: PieceBodyResolver,
   }
 
   const isText = piece.kind === "text";
-  const enforce = enforceBoxEnabled();
+  const enforce = enforceBoxEnabled() || boxContractEnabled();
   // A piece may never be clipped out of existence: `bleed` is the explicit
   // opt-out, and a full-canvas treatment has no meaningful box to clip against.
   const exemptFromClip = piece.bleed === true;
@@ -327,6 +339,218 @@ export const clampPieceOffsets = (code: string, moves: PieceOffsetMove[]): Clamp
     result.applied.push({ pieceId: move.pieceId, from, to });
   }
   return result;
+};
+
+// ── interior-overfill shrink (Half 2's honest companion, task #114) ─────────
+//
+// Witnessed on the first box-contract build (2026-08-24, witness 5): with the
+// contract on, wrappers land exactly on their plan slots — but a model that
+// overfills its interior now gets CLIPPED instead of spilling, and the clip
+// amputates real content (scene 3 cut stat chips mid-glyph; scene 4 cut the
+// headline mid-word). Enforcement traded invisible misplacement for visible
+// truncation. The honest repair is the one text pieces already get: a measured
+// shrink — content complete at a slightly smaller size — never a blind cut.
+//
+// Zero tokens, fully deterministic, and it can only shrink (never grow, never
+// move), so repeated application converges. The scale uses the same
+// inverse-widening trick as the text fitScale: the box is widened to W/f and
+// scaled by f, so the PAINTED footprint stays exactly W×H at the same origin.
+//
+// The planner reads each wrapper's box from the CODE (not the plan), so pieces
+// the edge-crop clamp has already moved are measured against their true box.
+// Only the enforce-mode non-text wrapper shape is eligible — the literal
+// `left/top/width/height/overflow:"hidden"` signature — which structurally
+// excludes text (maxHeight, its own fitScale), bleed (no clip), atmosphere
+// (inset) and chrome (no wrapper). Overfill is judged on INK (text and images):
+// decoration that pokes past a clipped edge is harmless bleed, and shrinking a
+// whole piece to rescue a gradient would manufacture a defect to fix none.
+
+export interface OverfillShrink {
+  pieceId: string;
+  /** 0 < fitScale < 1 — the scale that brings the ink union inside the box. */
+  fitScale: number;
+}
+
+export interface OverfillPlan {
+  shrinks: OverfillShrink[];
+  /** Overfilled pieces the planner refuses to shrink (below the floor). */
+  refused: Array<{ pieceId: string; fitScale: number; reason: string }>;
+}
+
+/** Below this scale a silent shrink is its own defect — the content is so
+ *  oversized that tiny-but-complete reads as broken. Those stay clipped and
+ *  visible, for the gates and the regen ladder to judge. */
+export const OVERFILL_SHRINK_FLOOR = 0.75;
+
+interface MeasuredInkElement {
+  piece?: string;
+  pieceKind?: string;
+  text?: string;
+  isImg?: boolean;
+  x: number; y: number; w: number; h: number;
+}
+
+export const planOverfillShrinks = (
+  code: string,
+  measurements: Array<{ error?: string; elements?: MeasuredInkElement[] }>,
+  tolPx: number = 8,
+): OverfillPlan => {
+  const plan: OverfillPlan = { shrinks: [], refused: [] };
+  // Ink union per piece, canvas-space. Clipped children still report their full
+  // layout rect (getBoundingClientRect ignores paint clipping) — which is
+  // exactly what makes the amputation measurable.
+  const ink = new Map<string, { x2: number; y2: number }>();
+  for (const m of measurements) {
+    if (m.error) continue;
+    for (const r of m.elements ?? []) {
+      if (!r.piece || r.pieceKind === "atmosphere" || r.pieceKind === "chrome") continue;
+      if (!((r.text && r.text.trim()) || r.isImg) || r.w <= 2 || r.h <= 2) continue;
+      const c = ink.get(r.piece);
+      const x2 = r.x + r.w;
+      const y2 = r.y + r.h;
+      ink.set(r.piece, c ? { x2: Math.max(c.x2, x2), y2: Math.max(c.y2, y2) } : { x2, y2 });
+    }
+  }
+  for (const [pieceId, u] of ink) {
+    const rx = new RegExp(
+      `<div[^>]*data-piece=${escapeRegExp(JSON.stringify(pieceId))}[^>]*style=\\{\\{ position: "absolute", left: (-?\\d+(?:\\.\\d+)?), top: (-?\\d+(?:\\.\\d+)?), width: (\\d+(?:\\.\\d+)?), height: (\\d+(?:\\.\\d+)?), transform:`,
+    );
+    if (rx.test(code)) continue; // already scaled — converged, never re-shrink
+    const rx2 = new RegExp(
+      `<div[^>]*data-piece=${escapeRegExp(JSON.stringify(pieceId))}[^>]*style=\\{\\{ position: "absolute", left: (-?\\d+(?:\\.\\d+)?), top: (-?\\d+(?:\\.\\d+)?), width: (\\d+(?:\\.\\d+)?), height: (\\d+(?:\\.\\d+)?), overflow: "hidden"`,
+    );
+    const m = rx2.exec(code);
+    if (!m) continue; // not an enforce-mode clipped wrapper (text/bleed/atmosphere)
+    const left = Number(m[1]);
+    const top = Number(m[2]);
+    const w = Number(m[3]);
+    const h = Number(m[4]);
+    const needW = u.x2 - left;
+    const needH = u.y2 - top;
+    if (needW <= w + tolPx && needH <= h + tolPx) continue; // fits — nothing to do
+    const fit = Math.min(w / Math.max(needW, 1), h / Math.max(needH, 1));
+    // Round DOWN so the shrink never comes up short of the box.
+    const fitScale = Math.floor(fit * 1000) / 1000;
+    if (fitScale >= 1) continue;
+    if (fitScale < OVERFILL_SHRINK_FLOOR) {
+      plan.refused.push({
+        pieceId, fitScale,
+        reason: `needs scale ${fitScale} (< floor ${OVERFILL_SHRINK_FLOOR}) — content ~${Math.round((1 / fitScale - 1) * 100)}% oversize, stays clipped for the gates`,
+      });
+      continue;
+    }
+    plan.shrinks.push({ pieceId, fitScale });
+  }
+  return plan;
+};
+
+export interface ShrinkResult {
+  code: string;
+  applied: Array<{ pieceId: string; fitScale: number; from: { w: number; h: number } }>;
+  skipped: Array<{ pieceId: string; reason: string }>;
+}
+
+export const shrinkOverfilledPieces = (code: string, shrinks: OverfillShrink[]): ShrinkResult => {
+  const result: ShrinkResult = { code, applied: [], skipped: [] };
+  for (const s of shrinks) {
+    if (!(s.fitScale > 0 && s.fitScale < 1)) {
+      result.skipped.push({ pieceId: s.pieceId, reason: `fitScale ${s.fitScale} out of range` });
+      continue;
+    }
+    const rx = new RegExp(
+      `(<div[^>]*data-piece=${escapeRegExp(JSON.stringify(s.pieceId))}[^>]*style=\\{\\{ position: "absolute", left: -?\\d+(?:\\.\\d+)?, top: -?\\d+(?:\\.\\d+)?, width: )(\\d+(?:\\.\\d+)?)(, height: )(\\d+(?:\\.\\d+)?)(, overflow: "hidden")`,
+    );
+    const m = rx.exec(result.code);
+    if (!m) {
+      result.skipped.push({
+        pieceId: s.pieceId,
+        reason: "no clipped fixed-size wrapper found (text/bleed/atmosphere, already scaled, or id absent)",
+      });
+      continue;
+    }
+    const w = Number(m[2]);
+    const h = Number(m[4]);
+    const w2 = Math.round(w / s.fitScale);
+    const h2 = Math.round(h / s.fitScale);
+    result.code =
+      result.code.slice(0, m.index) +
+      `${m[1]}${w2}${m[3]}${h2}, transform: "scale(${s.fitScale})", transformOrigin: "top left"${m[5]}` +
+      result.code.slice(m.index + m[0].length);
+    result.applied.push({ pieceId: s.pieceId, fitScale: s.fitScale, from: { w, h } });
+  }
+  return result;
+};
+
+export interface BoxCropFinding {
+  scene: number;
+  pieceId: string;
+  edge: "bottom" | "right";
+  /** Ink extent past the piece's PAINTED box edge, px. */
+  overflowPx: number;
+  union: { x: number; y: number; w: number; h: number };
+}
+
+/**
+ * Ink that extends past its own piece's painted box — the residual the shrink
+ * cannot fix. Witnessed on witness 5: interiors that set width:100% AND an
+ * offset (padding-left, a row below the box, a decorative page counter at the
+ * box edge) overflow by the offset at ANY scale, because the 100% width
+ * re-expands as the shrink widens the box. Scaling only multiplies the offset
+ * by the scale (60px → 55px). These are CONTRACT violations, not size
+ * misjudgments, so they route to the regen ladder with the violation named —
+ * the same residual path the canvas edge-crop clamp uses.
+ *
+ * Both wrapper forms are parsed: plain (`width, height, overflow`) and
+ * already-shrunk (`width, height, transform: "scale(f)"`), with the painted
+ * box = width × scale. Ink-only, same doctrine as the planner.
+ */
+export const findBoxCroppedInk = (
+  code: string,
+  measurements: Array<{ scene?: number; error?: string; elements?: MeasuredInkElement[] }>,
+  tolPx: number = 8,
+): BoxCropFinding[] => {
+  const findings: BoxCropFinding[] = [];
+  for (const m of measurements) {
+    if (m.error) continue;
+    const union = new Map<string, { x1: number; y1: number; x2: number; y2: number }>();
+    for (const r of m.elements ?? []) {
+      if (!r.piece || r.pieceKind === "atmosphere" || r.pieceKind === "chrome") continue;
+      if (!((r.text && r.text.trim()) || r.isImg) || r.w <= 2 || r.h <= 2) continue;
+      const c = union.get(r.piece);
+      const b = { x1: r.x, y1: r.y, x2: r.x + r.w, y2: r.y + r.h };
+      union.set(r.piece, c ? { x1: Math.min(c.x1, b.x1), y1: Math.min(c.y1, b.y1), x2: Math.max(c.x2, b.x2), y2: Math.max(c.y2, b.y2) } : b);
+    }
+    for (const [pieceId, u] of union) {
+      const esc = escapeRegExp(JSON.stringify(pieceId));
+      const scaled = new RegExp(
+        `<div[^>]*data-piece=${esc}[^>]*style=\\{\\{ position: "absolute", left: (-?\\d+(?:\\.\\d+)?), top: (-?\\d+(?:\\.\\d+)?), width: (\\d+(?:\\.\\d+)?), height: (\\d+(?:\\.\\d+)?), transform: "scale\\((0\\.\\d+)\\)"`,
+      ).exec(code);
+      const plain = scaled
+        ? null
+        : new RegExp(
+            `<div[^>]*data-piece=${esc}[^>]*style=\\{\\{ position: "absolute", left: (-?\\d+(?:\\.\\d+)?), top: (-?\\d+(?:\\.\\d+)?), width: (\\d+(?:\\.\\d+)?), height: (\\d+(?:\\.\\d+)?), overflow: "hidden"`,
+          ).exec(code);
+      const mm = scaled ?? plain;
+      if (!mm) continue;
+      const scale = scaled ? Number(scaled[5]) : 1;
+      const left = Number(mm[1]);
+      const top = Number(mm[2]);
+      const paintedW = Number(mm[3]) * scale;
+      const paintedH = Number(mm[4]) * scale;
+      const overRight = u.x2 - (left + paintedW);
+      const overBottom = u.y2 - (top + paintedH);
+      const over = Math.max(overRight, overBottom);
+      if (over <= tolPx) continue;
+      findings.push({
+        scene: m.scene ?? 0,
+        pieceId,
+        edge: overRight >= overBottom ? "right" : "bottom",
+        overflowPx: Math.round(over),
+        union: { x: Math.round(u.x1), y: Math.round(u.y1), w: Math.round(u.x2 - u.x1), h: Math.round(u.y2 - u.y1) },
+      });
+    }
+  }
+  return findings;
 };
 
 /** Assemble the full Composition.tsx string from theme + manifests + piece bodies. */
