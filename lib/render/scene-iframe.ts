@@ -1,6 +1,7 @@
 import { promises as fs } from "fs";
 import path from "path";
 import { createHash } from "crypto";
+import { buildStatus } from "./build-jobs";
 import React from "react";
 import * as esbuild from "esbuild";
 import { renderSceneSandboxed } from "./sandbox/pool";
@@ -23,6 +24,32 @@ const { renderToStaticMarkup } = eval("require")("react-dom/server") as {
 export type SceneDocResult =
   | { ok: true; html: string; cacheKey?: string; cacheHit?: boolean }
   | { ok: false; status: number; message: string };
+
+/** The quiet "this page is on its way" document served while a RUNNING build
+ *  has designed a page whose Section is not assembled yet. Self-refreshes so
+ *  it resolves into the real page without user action. Chrome per DESIGN.md:
+ *  recessive surface, Geist Mono for the technical line. */
+const buildingSceneHtml = (sceneIndex: number): string => `<!doctype html>
+<html><head><meta charset="utf-8"><meta http-equiv="refresh" content="6">
+<style>
+  html,body{margin:0;height:100%}
+  .s{height:100%;background:#f4f5f7;color:#5b6472;
+    font-family:ui-sans-serif,system-ui,-apple-system,sans-serif;
+    display:flex;align-items:center;justify-content:center}
+  .w{text-align:center;max-width:420px;padding:24px}
+  .orb{width:34px;height:34px;margin:0 auto 14px;border-radius:50%;
+    background:radial-gradient(circle at 30% 30%,#cfd4dc,#6b7280);
+    animation:p 2.4s ease-in-out infinite}
+  @keyframes p{0%,100%{transform:scale(1);opacity:.85}50%{transform:scale(1.08);opacity:1}}
+  h1{font-size:14px;font-weight:600;margin:0 0 6px;color:#2c3340}
+  p{font-size:12.5px;line-height:1.5;margin:0}
+  .m{font-family:ui-monospace,monospace;font-size:10.5px;margin-top:14px;opacity:.6}
+</style></head><body><div class="s"><div class="w">
+  <div class="orb"></div>
+  <h1>This page is on its way</h1>
+  <p>It has been designed and is waiting for assembly — it will appear here by itself in a moment.</p>
+  <div class="m">page ${sceneIndex + 1} · assembling</div>
+</div></div></body></html>`;
 
 /**
  * SSR one Section{N} of a generated Composition into a self-contained HTML doc —
@@ -129,6 +156,17 @@ export async function renderSceneDoc(
   // finished HTML string crosses back, and the sandbox has a hard timeout.
   const rendered = await renderSceneSandboxed(compPath, sceneIndex, script);
   if (!rendered.ok) {
+    // MID-BUILD HONESTY (founder's Loma build, 2026-08-25): on the cast engine
+    // a page is DESIGNED (its ceremony row ticks) minutes before assembly
+    // exports its Section into the composition. Selecting such a page used to
+    // fill the canvas with the sandbox's raw internals ("No Section3 exported.
+    // Exports: Section0") — an error face on a healthy build. While a build is
+    // RUNNING, that one failure class renders as a quiet self-refreshing
+    // placeholder instead; with no build running it stays loud, because then
+    // it is a genuinely broken deck.
+    if (/No Section\d+ exported/.test(rendered.message) && buildStatus(scriptId).state === "running") {
+      return { ok: true, html: buildingSceneHtml(sceneIndex), cacheKey: "", cacheHit: false };
+    }
     return { ok: false, status: rendered.status, message: rendered.message };
   }
 
