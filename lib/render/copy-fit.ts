@@ -239,6 +239,19 @@ export interface CheckCopyOverflowArgs {
  * to a worst case. A false rejection costs a real re-emission; a missed overflow
  * costs only what the render-side gates already catch today.
  */
+/**
+ * How much overflow the RENDER-TIME autofit absorbs invisibly (founder lever
+ * #3, 2026-08-25). fit-text.ts runs on every page: line-spacing reduction
+ * first (capped 20% ⇒ ~1.25× height capacity) then font scale, so overflow up
+ * to ~1.4× fullness lands as tightened leading plus a barely-perceptible
+ * (≤~12%) size step — the same trade PowerPoint has made for twenty years,
+ * converging in 1-3 probes. Rejecting those cases cost a ~10s re-emission for
+ * copy the runtime would have fitted for free ("the PPT autofit should fix it
+ * already, no?" — it does, now the emission check knows it). Beyond the band
+ * the shrink turns visible, so the re-emission stays the right call.
+ */
+export const RUNTIME_ABSORB_FULLNESS = 1.4;
+
 export const checkCopyOverflow = (args: CheckCopyOverflowArgs): CopyFitReport => {
   const { body, entries, box, scale, metrics, inheritLargestForDisplay } = args;
   const usable = usableBox(box, metrics);
@@ -275,7 +288,7 @@ export const checkCopyOverflow = (args: CheckCopyOverflowArgs): CopyFitReport =>
   }
   if (out.length > 1) total += (out.length - 1) * STACK_GAP_EM * scale.bodyPx;
 
-  const overflows = out.length > 0 && total > usable.h;
+  const overflows = out.length > 0 && total > usable.h * RUNTIME_ABSORB_FULLNESS;
   const worst = overflows
     ? out.reduce((a, b) => (b.heightPx > a.heightPx ? b : a))
     : undefined;

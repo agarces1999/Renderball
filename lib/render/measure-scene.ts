@@ -644,6 +644,11 @@ export const measureScenes = async (
      *  pre-measure — pass false. Default true: every existing caller keeps
      *  its pixels. */
     screenshots?: boolean;
+    /** Fires the moment ONE scene's measurement lands (founder lever #1,
+     *  2026-08-25): scenes render serially, so a per-scene consumer — the
+     *  vision judge — can start on scene 0 while scene 1 is still rendering
+     *  instead of waiting for the whole batch. Failures don't fire. */
+    onSceneMeasured?: (m: SceneMeasurement) => void;
   } = {},
 ): Promise<SceneMeasurement[]> => {
   const wantShots = opts.screenshots !== false;
@@ -874,6 +879,11 @@ export const measureScenes = async (
           ...(fontFailures.length > 0 ? { fontFailures } : {}),
           fitSettled,
         });
+        try {
+          opts.onSceneMeasured?.(results[results.length - 1]);
+        } catch {
+          /* a consumer's throw must never fail the measure pass */
+        }
       } catch (err) {
         results.push({
           scene: i, width: dims.w, height: dims.h, elements: [],

@@ -227,7 +227,7 @@ const CONNECTOR_BODY = `<svg viewBox="0 0 1920 1080" style={{ position: "absolut
   <circle cx="200" cy="300" r="6" fill={ACCENT} />
   <circle cx="1700" cy="500" r="6" fill={ACCENT} />
 </svg>`;
-const DEFAULT_BODY = `<div style={{ width: "100%", height: "100%" }} />`;
+const DEFAULT_BODY = `<div style={{ width: "100%", height: "100%", background: PALETTE.panel }} />`;
 // The default HERO body for builds that don't test hero-specific defects —
 // rich enough to clear the pre-render density gate, no font bindings (so
 // root-injection expectations hold), no off-palette colors.

@@ -17,6 +17,7 @@ import {
 } from "./build-wrapper";
 import { decomposeGenDir, readManifest, writeManifest } from "../agents/lego-store";
 import { persistGenDir } from "./gen-store";
+import { createHash } from "crypto";
 import { liftWashedPaletteTokens, type InkSample } from "./palette-lift";
 import { assessTextNodeContrast } from "./text-contrast";
 import { commitGenDir } from "../edit/commit";
@@ -1298,8 +1299,59 @@ async function runCastPreviewBuild(args: {
     // ── per-scene vision (advisory driver of severe→regen targets) ──
     let visionUsage: Usage = { ...EMPTY_USAGE };
     let visionRan = false;
+    // ── Vision: PIPELINED + CACHED, still blocking (founder lever #1,
+    // 2026-08-25 — his design over the advisory-mode idea, which is shelved).
+    // Two waits used to be serial: all scenes render, THEN all screenshots go
+    // to the judge. Now (a) each scene's judgement STARTS the moment its own
+    // screenshot lands (onSceneVisionStart, fed by measure's per-scene
+    // callback), hiding vision latency inside the remaining scenes' render
+    // time; and (b) a screenshot-hash cache means rounds 2+ never re-judge a
+    // scene whose pixels did not change — repairs usually touch one scene,
+    // and the other four were being re-billed and re-waited every round.
+    // Verdicts stay BLOCKING: the batch point below awaits whatever is not
+    // already settled. Staleness is impossible by construction — a verdict is
+    // only used when its hash matches the CURRENT screenshot bytes.
+    const visionCache = new Map<number, { hash: string; verdict: SceneVisionVerdict }>();
+    const visionPending = new Map<number, Promise<{ hash: string; verdict: SceneVisionVerdict } | null>>();
+    const shotHash = (bytes: Buffer): string => createHash("sha1").update(bytes).digest("hex");
+    const judgeShot = async (
+      scene: number,
+      bytes: Buffer,
+      scr: LoopScript,
+      bt: BrandTruthLite,
+    ): Promise<SceneVisionVerdict> => {
+      visionRan = true;
+      const rubric = buildRubric(bt, scr.scenes[scene]?.visual_concept);
+      const { text, usage } = await callZaiVision(bytes.toString("base64"), rubric);
+      visionUsage = addUsage(visionUsage, usage);
+      const verdict = parseVerdict(text);
+      const actionable = verdict.issues.filter((issue) => !isSanctionedChromeFinding(issue));
+      return {
+        scene,
+        ok: verdict.ok || actionable.length === 0,
+        issues: verdict.issues,
+        actionable,
+        severe: actionable.filter((issue) => CAST_SEVERE_RX.test(issue)),
+      } satisfies SceneVisionVerdict;
+    };
+    const visionEnabled = process.env.RB_VISION_GATE !== "off";
+    const onSceneVisionStart = (m: { scene: number; screenshotPath?: string }, scr: LoopScript, bt: BrandTruthLite): void => {
+      if (!visionEnabled || VISION_ADVISORY || !m.screenshotPath) return;
+      const shot = m.screenshotPath;
+      visionPending.set(
+        m.scene,
+        (async () => {
+          const bytes = await fs.readFile(shot);
+          const hash = shotHash(bytes);
+          const hit = visionCache.get(m.scene);
+          if (hit && hit.hash === hash) return hit;
+          const verdict = await judgeShot(m.scene, bytes, scr, bt);
+          return { hash, verdict };
+        })().catch(() => null),
+      );
+    };
     const runPerSceneVision =
-      process.env.RB_VISION_GATE === "off"
+      !visionEnabled
         ? undefined
         : async (
             measurements: { scene: number; screenshotPath?: string }[],
@@ -1311,22 +1363,29 @@ async function runCastPreviewBuild(args: {
             );
             const judged = await Promise.allSettled(
               withShots.map(async (m) => {
-                visionRan = true;
-                const b64 = (await fs.readFile(m.screenshotPath)).toString("base64");
-                const rubric = buildRubric(bt, scr.scenes[m.scene]?.visual_concept);
-                const { text, usage } = await callZaiVision(b64, rubric);
-                visionUsage = addUsage(visionUsage, usage);
-                const verdict = parseVerdict(text);
-                const actionable = verdict.issues.filter((issue) => !isSanctionedChromeFinding(issue));
-                return {
-                  scene: m.scene,
-                  ok: verdict.ok || actionable.length === 0,
-                  issues: verdict.issues,
-                  actionable,
-                  severe: actionable.filter((issue) => CAST_SEVERE_RX.test(issue)),
-                } satisfies SceneVisionVerdict;
+                const bytes = await fs.readFile(m.screenshotPath);
+                const hash = shotHash(bytes);
+                const hit = visionCache.get(m.scene);
+                if (hit && hit.hash === hash) {
+                  console.log(`[vision] s${m.scene}: cached (pixels unchanged)`);
+                  return hit.verdict;
+                }
+                const pending = visionPending.get(m.scene);
+                if (pending) {
+                  const settled = await pending;
+                  if (settled && settled.hash === hash) {
+                    visionCache.set(m.scene, settled);
+                    console.log(`[vision] s${m.scene}: pipelined (judged during render)`);
+                    return settled.verdict;
+                  }
+                }
+                const verdict = await judgeShot(m.scene, bytes, scr, bt);
+                visionCache.set(m.scene, { hash, verdict });
+                console.log(`[vision] s${m.scene}: fresh`);
+                return verdict;
               }),
             );
+            visionPending.clear();
             const out: SceneVisionVerdict[] = [];
             for (const [k, r] of judged.entries()) {
               if (r.status === "fulfilled") out.push(r.value);
@@ -1374,6 +1433,7 @@ async function runCastPreviewBuild(args: {
         // Advisory mode withholds the judge from the loop entirely — that is where
         // the 44% lives. It runs once after the deck ships, below.
         runPerSceneVision: VISION_ADVISORY ? undefined : runPerSceneVision,
+        onSceneMeasured: (m) => onSceneVisionStart(m, composedScript as unknown as LoopScript, brandTruth),
         onCeremonyMark: (m) => timeline.mark(m),
         checkCancel: () => {
           if (buildCancelRequested(scriptId)) throw new BuildCancelledError();

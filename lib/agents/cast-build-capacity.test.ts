@@ -122,7 +122,7 @@ const RICH_HERO = `<div style={{ width: "100%", height: "100%", background: PANE
   </div>
   <div style={{ height: 6, width: "62%", background: ACCENT, borderRadius: 3 }} />
 </div>`;
-const PLAIN = `<div style={{ width: "100%", height: "100%" }} />`;
+const PLAIN = `<div style={{ width: "100%", height: "100%", background: PALETTE.panel }} />`;
 /** A headline set absurdly large — guaranteed to overflow any authored box. */
 const HUGE_COPY = `<div><h1 data-content-path="headline" style={{ fontFamily: FONT_DISPLAY, fontSize: 220, color: INK }}>{c.headline}</h1></div>`;
 /** The same copy at a sane size — fits. */

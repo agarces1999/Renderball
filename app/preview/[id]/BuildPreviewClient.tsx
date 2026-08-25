@@ -145,6 +145,15 @@ export function BuildPreviewClient({
   // poll). Empty on old containers — everything below falls back to pacing.
   const [progress, setProgress] = useState<ProgressEvent[]>([]);
   const phases = useMemo(() => progress.map((p) => p.phase), [progress]);
+  // HEARTBEAT (founder, 2026-08-25: at 3:49 inside the foundation step he
+  // suspected a hang — the longest step was the only one with zero visible
+  // motion). lastMarkAt tracks the newest REAL server mark; the foundation
+  // row shows a live clock plus an expectation, and past six quiet minutes it
+  // says "taking longer than usual" instead of silence.
+  const lastMarkAt = useRef(Date.now());
+  useEffect(() => {
+    if (progress.length > 0) lastMarkAt.current = Date.now();
+  }, [progress.length]);
   const seen = (prefix: string) => phases.some((ph) => ph.startsWith(prefix));
   const repairRounds = phases.filter((ph) => ph.startsWith("repair:")).length;
 
@@ -712,9 +721,16 @@ export function BuildPreviewClient({
               const composing = i === steps.length - 3;
               const repairing =
                 composing && seen("gates:structural:judged") && !seen("design:repairs:done");
+              const foundationAside =
+                i === 1 && status === "active"
+                  ? Date.now() - lastMarkAt.current > 6 * 60_000
+                    ? `${fmtClock(elapsed)} — taking longer than usual, still working`
+                    : `${fmtClock(elapsed)} · the big design pass, usually 1–4 min`
+                  : undefined;
               return (
                 <StepRow
                   key={i}
+                  aside={foundationAside}
                   label={
                     checking && repairRounds > 0
                       ? `${label} — fixing what failed (round ${repairRounds})`
@@ -787,7 +803,9 @@ export function BuildPreviewClient({
   );
 }
 
-function StepRow({ label, status }: { label: string; status: Status }) {
+const fmtClock = (s: number): string => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+
+function StepRow({ label, status, aside }: { label: string; status: Status; aside?: string }) {
   return (
     <li
       className={cn(
@@ -810,6 +828,9 @@ function StepRow({ label, status }: { label: string; status: Status }) {
         {label}
         {status === "active" && <span className="text-muted">…</span>}
       </span>
+      {status === "active" && aside ? (
+        <span className="ml-auto shrink-0 font-mono text-[10.5px] tabular-nums text-muted">{aside}</span>
+      ) : null}
     </li>
   );
 }

@@ -46,6 +46,7 @@ import type { Theme, SceneManifest, Piece } from "../edit/piece-model";
 import { castCall, isFireworksModel, type CastEffort } from "../llm/cast-provider";
 import { promptDigest } from "../llm/safe-truncate";
 import { composeSceneLayout, CANVAS, type Aspect, type ElementSlot, type ScenePlan } from "./layout-composer";
+import { findForeignImageSrcs, bodyPaintsInk, sceneImageAllowlist } from "./emission-guards";
 import { selectThroughlineAnchor } from "./throughline-anchor";
 import { normalizeElementColors, assessAccentPresence, hexToRgb, rgbToHsl, isNeutral } from "./normalize-element";
 import { assembleComposition, boxContractEnabled } from "./assemble";
@@ -2698,6 +2699,9 @@ export const flipCopyInkOverLightPlaceholder = (
 
 interface ElementJob {
   sceneIndex: number;
+  /** Every http(s) URL the scene's own JSON carries — the only image srcs an
+   *  emission may mount literally (emission-guards). */
+  allowedImageSrcs: ReadonlySet<string>;
   slot: ElementSlot;
   pieceId: string;
   brief: string;
@@ -2949,6 +2953,8 @@ export const castBuild = async (
   /** The shrink-to-fit factor for one text slot (see copy-fit.ts deriveFitScale).
    *  Best-effort: any arithmetic surprise degrades to 1 (no downscale), which is
    *  exactly today's behaviour. */
+  const scriptImageAllowlist = sceneImageAllowlist(script);
+
   const fitScaleForSlot = (slot: ElementSlot, i: number): number => {
     try {
       const entries = ownedCopyEntries(script.scenes[i]?.content, ownedCopyFields(script.scenes[i], slot));
@@ -3009,6 +3015,12 @@ export const castBuild = async (
         return {
           sceneIndex: i,
           slot,
+          // Script-WIDE, not per-scene: the zero-repair asset-id substitution
+          // resolves ids from the script-level manifest, and a per-scene set
+          // rejected the build's own legal substitution (caught by the
+          // asset-id test). Every URL the script carries is brief-provided by
+          // definition; external stays impossible.
+          allowedImageSrcs: scriptImageAllowlist,
           pieceId: `s${i}.${slot.id}`,
           brief: elementBrief({
             theme,
@@ -3245,6 +3257,36 @@ export const castBuild = async (
       // It carries `salvage`, so if the repair budget exhausts the element
       // ships this real (if tight) body rather than a placeholder: overflowing
       // copy is a design nit, a placeholdered copy column is a lost headline.
+      // ── EMISSION GUARDS (founder lever #2): string-time failures never
+      // reach a render round. External image URLs are unreachable at render
+      // time by construction; hollow decorations get blanked by the gates
+      // anyway — both are cheaper re-asked NOW (~10s) than discovered in a
+      // 40-60s measure round.
+      const foreignSrcs = findForeignImageSrcs(finalBody, job.allowedImageSrcs);
+      if (foreignSrcs.length > 0) {
+        console.warn(`[cast-build] ${job.pieceId}: references ${foreignSrcs.length} external image URL(s) — re-asking with the asset rule`);
+        return {
+          ok: false,
+          raw,
+          error:
+            `references external image URL(s): ${foreignSrcs.slice(0, 3).join(", ")}. ` +
+            `The render environment has NO open internet — external URLs decode to nothing. ` +
+            `Mount ONLY the assets named in your brief (their exact src values) or use no image at all; ` +
+            `for texture use gradients and shapes instead of remote images.`,
+        };
+      }
+      if ((job.slot.id === "throughline" || job.slot.id === "connector") && !bodyPaintsInk(finalBody)) {
+        console.warn(`[cast-build] ${job.pieceId}: decorative body paints nothing — re-asking`);
+        return {
+          ok: false,
+          raw,
+          error:
+            `this decorative element paints NOTHING — no shape fill, background, gradient, border or image anywhere in it. ` +
+            `Emit a visible motif (one clean accent beats an empty container). If nothing fits the scene, emit a single ` +
+            `subtle shape in the accent color rather than empty wrappers.`,
+        };
+      }
+
       if (job.copyEntries.length > 0) {
         const fit = checkCopyOverflow({
           body: finalBody,

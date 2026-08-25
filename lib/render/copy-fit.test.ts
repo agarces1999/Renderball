@@ -153,10 +153,30 @@ await check("UPPERCASE: identical copy overflows when the node transforms it, an
   const rMixed = checkCopyOverflow({ body: mixed, entries, box, scale: SCALE, metrics: MONO_CAPS });
   const rCaps = checkCopyOverflow({ body: caps, entries, box, scale: SCALE, metrics: MONO_CAPS });
   assert(!rMixed.overflows, `mixed case must fit: ${rMixed.totalPx}px vs ${rMixed.availablePx}px`);
-  assert(rCaps.overflows, `ALL CAPS must overflow: ${rCaps.totalPx}px vs ${rCaps.availablePx}px`);
+  // Band-aware (founder lever #3): 120px in a 115px box is 1.04 fullness — the
+  // render-time autofit absorbs that invisibly, so it must NOT cost a
+  // re-emission anymore. The uppercase HEIGHT COST is still proven below via
+  // lines and totalPx; the REJECTION now demands overflow beyond the band.
+  assert(!rCaps.overflows, `1.04 fullness is inside the autofit band — must not reject: ${rCaps.totalPx}px vs ${rCaps.availablePx}px`);
+  assert(rCaps.totalPx > rMixed.totalPx, "caps must still measure taller than mixed case");
   assert(rCaps.entries[0].lines > rMixed.entries[0].lines, "caps must cost more lines than mixed case");
   assert(rCaps.entries[0].rendered === HEADLINE_40.toUpperCase(), "caps text must be measured UPPERCASED");
   assert(rCaps.entries[0].uppercase, "the entry must report that it is uppercase");
+});
+
+await check("BEYOND THE BAND: overflow past what autofit absorbs still rejects", () => {
+  // Same box, tiny height: 120px needed vs 60px usable ⇒ fullness 2.0 — far
+  // past RUNTIME_ABSORB_FULLNESS; shrinking that far is visibly broken, so the
+  // ~10s re-emission remains the right spend.
+  const caps = `<p data-content-path="eyebrow" style={{ fontSize: 40, textTransform: "uppercase" }}>{c.eyebrow}</p>`;
+  const r = checkCopyOverflow({
+    body: caps,
+    entries: [{ path: "eyebrow", text: HEADLINE_40 }],
+    box: { w: 900, h: 62 },
+    scale: SCALE,
+    metrics: MONO_CAPS,
+  });
+  assert(r.overflows, `2.0 fullness must reject: ${r.totalPx}px vs ${r.availablePx}px`);
 });
 
 await check("UPPERCASE: a css-string `text-transform: uppercase` is honored too", () => {

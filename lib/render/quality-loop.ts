@@ -476,6 +476,12 @@ export interface QualityLoopHooks {
   onCeremonyMark?: (mark: string) => void;
   /** Cooperative cancel, threaded into castBuild's element waves — throws. */
   checkCancel?: () => void;
+  /** Per-scene measure completion (founder lever #1): lets the vision judge
+   *  start on scene 0's screenshot while scene 1 is still rendering. Threaded
+   *  only through each round's PRIMARY measure — repair re-measures change
+   *  pixels, and their staleness is the vision cache's problem, not this
+   *  callback's. */
+  onSceneMeasured?: (m: SceneMeasurement) => void;
   /** Advisory sequence notes threaded into every regen prompt; read fresh. */
   getSequenceNotes?: () => string[];
   /** Called after each round's gate battery — the spike pushes gateRounds,
@@ -1195,7 +1201,9 @@ export async function runQualityLoop(
     log(`  density: ${density.length} blocking finding(s) [${density.map((f) => f.kind).join(", ") || "clean"}] · distinct sigs ${profile.distinctSignatures} · depths [${profile.scenes.map((s) => s.depth).join(", ")}]`);
 
     // (b) measure, then the v10 piece-edge-crop arm.
-    let measurements = await phase(`measure-r${round}`, () => measureScenes(genDir, script, genDir));
+    let measurements = await phase(`measure-r${round}`, () =>
+      measureScenes(genDir, script, genDir, { onSceneMeasured: hooks.onSceneMeasured }),
+    );
 
     // Declared-box telemetry (Bug 2). Sizes the "a declared height does not
     // clip" problem with real numbers instead of inference: how many pieces
