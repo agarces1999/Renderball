@@ -1042,7 +1042,14 @@ async function runPreviewBuildInner(
     // exists: move/delete/insert find no piece, page-ops refuses with
     // "store/script scene mismatch", re-skin reports it would stop the later
     // pages rendering. Measured 2026-08-21 on 3 of 94 stored decks.
-    if (lego.ok) await persistGenDir(scriptId);
+    //
+    // Durability is NOT conditional on decompose (P0, 2026-08-25): a deck the
+    // user paid for must survive a redeploy even when piece-splitting failed —
+    // a cast deck whose decompose choked was served from container disk only
+    // and DIED at the next deploy (the founder's Anthropic deck). A failed
+    // decompose degrades per-piece editing and logs loudly; never durability.
+    await persistGenDir(scriptId);
+    if (!lego.ok) console.error(`[preview/build] decompose FAILED (${lego.reason}) — deck persisted whole; per-piece editing degraded for ${scriptId}`);
 
     // THE PORT (founder plan step 2, 2026-08-24): production runs THIS path, and
     // until now no render-measured contrast repair existed on it — the founder's
@@ -1642,8 +1649,10 @@ async function runCastPreviewBuild(args: {
     try {
       const lego = await decomposeGenDir(genDir);
       console.log(`[preview/build:cast] lego decompose: ${lego.ok ? `${lego.pieces} pieces` : `skipped (${lego.reason})`}`);
-      // Same re-persist as the main path — see the comment there.
-      if (lego.ok) await persistGenDir(scriptId);
+      // Same re-persist as the main path — and the same P0 rule: durability
+      // is never gated on decompose succeeding (see the comment there).
+      await persistGenDir(scriptId);
+      if (!lego.ok) console.error(`[preview/build:cast] decompose FAILED (${lego.reason}) — deck persisted whole; per-piece editing degraded for ${scriptId}`);
 
       // DETERMINISTIC PALETTE CONTRAST LIFT — deliberately HERE, after decompose
       // (review, 2026-08-24). As first wired it ran inside every gate round: the lego
