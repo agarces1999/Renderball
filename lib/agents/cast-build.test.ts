@@ -2084,5 +2084,36 @@ await check("subtle lift: dark canvas tints LIGHTER, still never the polar token
   assert(!!r.targetHex && r.targetHex.toLowerCase() !== "#ffffff", `tint is not the polar white: ${r.targetHex}`);
 });
 
+
+// ─── Ceremony milestones + cooperative cancel (founder's first prod build) ──
+
+await check("onSceneDesigned fires EXACTLY ONCE per scene, after its last piece", async () => {
+  const f = makeFakeCaller();
+  const designed: number[] = [];
+  await castBuild(input, {
+    caller: f.caller as never,
+    concurrency: 4,
+    onSceneDesigned: (i) => designed.push(i),
+  });
+  const scenes = input.script.scenes.length;
+  assert(designed.length === scenes, `expected ${scenes} scene marks, got ${designed.length}: [${designed}]`);
+  assert(new Set(designed).size === scenes, `each scene exactly once: [${designed}]`);
+});
+
+await check("checkCancel aborts the wave: not-yet-started elements never spend", async () => {
+  const f = makeFakeCaller();
+  let calls = 0;
+  const err = await castBuild(input, {
+    caller: (async (c: never) => { calls++; return (f.caller as never as (x: never) => unknown)(c); }) as never,
+    concurrency: 1, // serial, so the cancel point is deterministic
+    checkCancel: () => {
+      if (calls >= 2) throw new Error("CANCELLED-BY-TEST");
+    },
+  }).then(() => null).catch((e) => e as Error);
+  assert(err !== null && /CANCELLED-BY-TEST/.test(err.message), `must abort via checkCancel, got: ${err?.message}`);
+  const total = input.script.scenes.length * 4; // ballpark: several pieces per scene
+  assert(calls < total, `cancel must prevent the remaining wave (made ${calls} calls)`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exitCode = 1;

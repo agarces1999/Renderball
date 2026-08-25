@@ -2767,6 +2767,20 @@ export const castBuild = async (
     /** P4b: injectable font calibration (tests assert it runs ONCE per build,
      *  and run without Playwright/network). Production uses the real one. */
     calibrate?: typeof calibrateBuildFonts;
+    /**
+     * Fires when the LAST piece of a scene lands — the ceremony's per-page
+     * milestone. Founder's first prod build on the promoted engine (2026-08-25)
+     * sat on "Laying the foundation" for 10 minutes because the ceremony only
+     * understands the parallel path's mark names and cast emitted none of them.
+     */
+    onSceneDesigned?: (sceneIndex: number) => void;
+    /**
+     * Cooperative cancel, checked between element completions — throws to
+     * abort. Without this the whole piece wave (and every repair round's wave)
+     * is a single uncancellable stretch; the founder's Stop click kept
+     * building for ~3 minutes.
+     */
+    checkCancel?: () => void;
   },
 ): Promise<CastBuildResult> => {
   const t0 = Date.now();
@@ -3388,7 +3402,25 @@ export const castBuild = async (
     return { pieceId: job.pieceId, body: fallback, outputTokens: tokens, repaired: false, failed: true, colorRewrites: 0, fontRewrites: 0, heroSurfaceCorrected: false, metaTextStrips: 0, shippedBlueprintPlaceholder: shipsFillPanel, overflowRejections, overflowRepaired: false };
   };
 
-  const outcomes = await Promise.all(jobs.map((job) => limiter.with(() => runElement(job))));
+  // Per-scene completion tracking for the ceremony (see opts.onSceneDesigned),
+  // and the cancel checkpoint that makes Stop land in seconds instead of at
+  // the end of the whole wave. The check runs BEFORE each element starts, so a
+  // cancel skips every not-yet-started job while in-flight calls finish.
+  const remainingByScene = new Map<number, number>();
+  for (const j of jobs) remainingByScene.set(j.sceneIndex, (remainingByScene.get(j.sceneIndex) ?? 0) + 1);
+  const outcomes = await Promise.all(
+    jobs.map((job) =>
+      limiter.with(() => {
+        opts?.checkCancel?.();
+        return runElement(job).then((r) => {
+          const left = (remainingByScene.get(job.sceneIndex) ?? 1) - 1;
+          remainingByScene.set(job.sceneIndex, left);
+          if (left === 0) opts?.onSceneDesigned?.(job.sceneIndex);
+          return r;
+        });
+      }),
+    ),
+  );
   const bodies = new Map(outcomes.map((o) => [o.pieceId, o.body]));
 
   // P3-C5 (1a): anti-washout — a copy piece painted OVER a hero that shipped the

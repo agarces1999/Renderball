@@ -1247,6 +1247,10 @@ async function runCastPreviewBuild(args: {
       console.warn("[preview/build:cast] composition head failed — building with un-composed scenes:", err);
     }
     timeline.mark("cast:head:done");
+    // The ceremony's foundation step completes on THIS name (parallel-path
+    // vocabulary) — without it the build UI never advances past "Laying the
+    // foundation" on the cast engine.
+    timeline.mark("design:scaffold:done");
 
     const accentHexes = [
       ...new Set(
@@ -1370,6 +1374,10 @@ async function runCastPreviewBuild(args: {
         // Advisory mode withholds the judge from the loop entirely — that is where
         // the 44% lives. It runs once after the deck ships, below.
         runPerSceneVision: VISION_ADVISORY ? undefined : runPerSceneVision,
+        onCeremonyMark: (m) => timeline.mark(m),
+        checkCancel: () => {
+          if (buildCancelRequested(scriptId)) throw new BuildCancelledError();
+        },
         ensureGenDir: async () => {
           await fs.mkdir(genDir, { recursive: true });
           await fs.writeFile(path.join(genDir, "Img.tsx"), IMG_SHIM_SOURCE, "utf8");

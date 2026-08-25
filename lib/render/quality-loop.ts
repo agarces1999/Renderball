@@ -467,6 +467,15 @@ export interface QualityLoopHooks {
   writeComposition: (code: string) => Promise<void>;
   /** True → the loop stops spending and ships with residual findings (honest). */
   shouldStopForBudget: () => boolean;
+  /**
+   * Ceremony milestones in the PARALLEL path's vocabulary — the only names
+   * BuildPreviewClient advances on (design:scaffold:done / design:fill:scene:N:done
+   * / design:fills:done). The cast path must speak it or the build UI freezes
+   * on "foundation" for the whole build (founder's first prod build, 2026-08-25).
+   */
+  onCeremonyMark?: (mark: string) => void;
+  /** Cooperative cancel, threaded into castBuild's element waves — throws. */
+  checkCancel?: () => void;
   /** Advisory sequence notes threaded into every regen prompt; read fresh. */
   getSequenceNotes?: () => string[];
   /** Called after each round's gate battery — the spike pushes gateRounds,
@@ -1016,7 +1025,17 @@ export async function runQualityLoop(
   while (true) {
     castRoundLabel = `cast-r${round}`;
     try {
-      castResult = await phase(`cast-r${round}`, () => castBuild(castInput, { caller: cachingCaller }));
+      castResult = await phase(`cast-r${round}`, () =>
+        castBuild(castInput, {
+          caller: cachingCaller,
+          checkCancel: hooks.checkCancel,
+          // Page milestones only on the FIRST wave — repair rounds re-run
+          // cached pieces and would re-announce pages already ticked.
+          onSceneDesigned:
+            round === 0 ? (i) => hooks.onCeremonyMark?.(`design:fill:scene:${i}:done`) : undefined,
+        }),
+      );
+      if (round === 0) hooks.onCeremonyMark?.("design:fills:done");
     } catch (e) {
       warn(`  castBuild THREW on round ${round}: ${e instanceof Error ? e.message : e}`);
       castRoundError = { round, error: e instanceof Error ? e.message : String(e) };
