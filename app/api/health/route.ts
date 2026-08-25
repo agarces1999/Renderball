@@ -127,6 +127,12 @@ export async function GET() {
     status: healthy ? "ok" : "degraded",
     checks,
     uptimeSeconds: Math.round(process.uptime()),
+    // Which build engine this deploy runs, straight from the env the build
+    // path reads (engine promotion 2026-08-25) — so "which engine is prod on?"
+    // is a curl, not an archaeology project. boxContract rides along because
+    // the two flags are only meaningful together.
+    engine: process.env.RB_BUILD_MODE === "cast" ? "cast" : "parallel",
+    boxContract: (process.env.RB_BOX_CONTRACT ?? "").toLowerCase() === "on",
     // WHICH COMMIT is actually serving. Without this, "is it deployed?" can
     // only be answered by inference — comparing a restart time against a
     // commit time — which is right until the day a build fails and the old
