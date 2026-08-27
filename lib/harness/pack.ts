@@ -79,7 +79,7 @@ Deck tone: ${input.tone ?? "confident, premium, editorial"}.
 Original brief, for grounding: ${input.briefPrompt}
 
 FILE CONTRACT:
-- TypeScript React. Start with \`import React from "react";\` then \`import Piece from "./Piece";\` and nothing else imported. Then \`type Script = any;\`
+- TypeScript React. Start with \`import React from "react";\` then \`import { Piece } from "./Piece";\` and nothing else imported. Then \`type Script = any;\`
 - Export exactly ${n} components: \`export const Section0\` through \`export const Section${n - 1}\` (React.FC<{ script?: Script }>), one per page, in outline order.
 - Each section renders a full ${w}x${h} page: root div style {{ position: "absolute", inset: 0, width: "100%", height: "100%", overflow: "hidden" }} with an explicit background.
 - Inline styles only (React.CSSProperties objects). No CSS files, no Tailwind, no hooks, no state, no refs.
