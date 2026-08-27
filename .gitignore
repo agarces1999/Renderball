@@ -17,3 +17,6 @@ next-env.d.ts
 .data/qa/
 .data/qa-fixtures/
 .next-gate
+
+# harness measurement lab: 79MB of renders + a nested git repo — never in the product repo's history
+qa/harness-lab/

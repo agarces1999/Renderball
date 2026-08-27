@@ -83,6 +83,17 @@ the single vision transport (`callZaiVision`) on a wire where images
 verifiably arrive — an Anthropic-compat proxy that silently drops image
 blocks blinded the whole vision layer once already.
 
+## Harness program (2026-08-27) — read before any engine/architecture work
+`docs/HARNESS.md` is the record: the 5-arm blind gallery (one-call author +
+context pack beats the cast pipeline decisively; GLM-5.2-fast placed LAST
+inside the pipeline and SECOND as a one-call author — same model, same brief),
+the bet-on-models doctrine (two-class test: never again build architecture
+that substitutes for model judgment; feeds/frees/checks is fine), and the
+fully-measured harness spec (pack, thinking cap, calibrated comparative
+critic, truth validators, decompose-after-approval). Prod stays cast+box
+until the harness wins a flagged A/B. Evidence repo: `qa/harness-lab/`
+(gitignored, own git history — 79MB of sealed renders and verdicts).
+
 ## Spatial quality system
 Before touching layout, allocation, washout/contrast repairs, overlap gates, or
 type scaling, read `docs/SPATIAL_QUALITY.md` — the durable spec: principles
