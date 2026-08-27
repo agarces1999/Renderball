@@ -42,7 +42,12 @@ const stripLayout = (code: string): string => {
     i = j + 2; // past "}}" and the prop's closing brace
   }
   // numeric/expression props: width={960}, cx={330}, r={i % 3 ? 2 : 1} …
-  return out.replace(/\s[a-zA-Z-]+=\{[^{}]*\}/g, " ");
+  // AND string-valued attributes: d="M0,395 L80…", viewBox="0 0 1920 1080",
+  // stroke-dasharray="4 4" — attribute strings are geometry, not claims. The
+  // first witness build (2026-08-27) flooded 136 false violations from these.
+  return out
+    .replace(/\s[a-zA-Z-]+=\{[^{}]*\}/g, " ")
+    .replace(/\s[a-zA-Z-]+="[^"]*"/g, " ");
 };
 
 /** Numerals a viewer would read in the given source region. */

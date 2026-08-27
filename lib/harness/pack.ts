@@ -79,10 +79,11 @@ Deck tone: ${input.tone ?? "confident, premium, editorial"}.
 Original brief, for grounding: ${input.briefPrompt}
 
 FILE CONTRACT:
-- TypeScript React. Start with \`import React from "react";\` and nothing else imported. Then \`type Script = any;\`
+- TypeScript React. Start with \`import React from "react";\` then \`import Piece from "./Piece";\` and nothing else imported. Then \`type Script = any;\`
 - Export exactly ${n} components: \`export const Section0\` through \`export const Section${n - 1}\` (React.FC<{ script?: Script }>), one per page, in outline order.
 - Each section renders a full ${w}x${h} page: root div style {{ position: "absolute", inset: 0, width: "100%", height: "100%", overflow: "hidden" }} with an explicit background.
 - Inline styles only (React.CSSProperties objects). No CSS files, no Tailwind, no hooks, no state, no refs.
+- EDITABILITY GRAMMAR (hard): inside each section, wrap every visually distinct block in \`<Piece id="sN.pM" kind="...">\` ... \`</Piece>\` — N = page index, M = a per-page counter. The wrapper is transparent: the block inside it positions ITSELF (position: "absolute" with its own coordinates). Use kind="chrome" for the recurring page furniture (lockup, page number, footer rail — one chrome Piece per page, listed LAST in the section) and kind="diegetic" for everything else. One graphic device = ONE Piece (a whole SVG diagram is one Piece). Headline, supporting text, quote cards, stat rows: each its own Piece. Shared helper components and constants live at module top level, OUTSIDE the sections — never inside a Piece.
 - No external URLs except the allowed asset URLs listed above. System font stacks only (e.g. Helvetica Neue/Arial for display, SF Mono/Menlo/monospace for labels).
 - Deterministic: no Math.random, no Date. SVG is available and encouraged for graphic devices.
 

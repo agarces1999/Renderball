@@ -183,6 +183,13 @@ export const runHarnessPreviewBuild = async (args: HarnessBuildArgs): Promise<Ro
       await persistGenDir(scriptId);
     }
 
+    // Final warnings write — later writeGeneratedFiles calls (repair/loop) would
+    // otherwise clobber the flagged residuals recorded at the first write.
+    if (violations.length) {
+      await fsp
+        .writeFile(path.join(genDir, "warnings.json"), JSON.stringify({ harness_truth_residual: violations }, null, 2))
+        .catch(() => {});
+    }
     await fsp.writeFile(path.join(genDir, "build-timeline.json"), JSON.stringify(timeline.toJSON(), null, 2)).catch(() => {});
     return {
       status: 200,
