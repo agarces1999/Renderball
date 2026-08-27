@@ -57,6 +57,11 @@ export interface CastCall {
   /** Request timeout override (default 120s). The whole-composition build
    *  passes emit tens of k tokens and need more headroom. */
   timeoutMs?: number;
+  /** Per-model thinking budget override (Fireworks wire only). Trace review
+   *  2026-08-27: one global budget is wrong — GLM-5.2 was truncated MID-PLAN
+   *  at the effort-map's 8192 while Qwen used ~2k of it. When set, wins over
+   *  FIREWORKS_THINKING_BUDGETS; requires effort !== "none". */
+  thinkingBudget?: number;
   /**
    * Spend-ledger label ("outline" | "build.fill" | "gate.repair" | …).
    * Optional on purpose: the row is recorded either way, and an omitted label
@@ -149,7 +154,7 @@ const wireFor = (model: string): WireConfig =>
           ...(call.effort === "none"
             ? { thinking: { type: "disabled" } }
             : call.effort
-              ? { thinking: { type: "enabled", budget_tokens: FIREWORKS_THINKING_BUDGETS[call.effort] } }
+              ? { thinking: { type: "enabled", budget_tokens: call.thinkingBudget ?? FIREWORKS_THINKING_BUDGETS[call.effort] } }
               : {}),
           ...(call.json ? { response_format: { type: "json_object" } } : {}),
         }),
