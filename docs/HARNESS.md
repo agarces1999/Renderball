@@ -84,10 +84,15 @@ Two-class test for every proposed component:
 
 1. **Author = ONE strong call.** Whole deck as one self-contained TSX
    (Section0..N, 1920×1080, inline styles, deterministic, no external URLs).
-   ~14–25k output tokens with bounded thinking (`thinking: {enabled,
-   budget_tokens: 8000}` — smoke-verified on Fireworks). Authors ranked by
-   blind eval: Qwen3.8-Max, GLM-5.2-fast, DeepSeek-V4-Pro. Kimi K3 is OUT
-   (96KB unfenced output, distinct failure mode from thinking overflow).
+   ~14–25k output tokens with bounded thinking. **Budgets are PER-MODEL,
+   set by trace review, not one global constant:** Qwen 8k (trace shows it
+   uses ~2k — 4× headroom, calm completion); **GLM needs ≥16k** (at 8k the
+   serving layer truncated it MID-PLAN — garbled forced-transition marker in
+   the trace — and its #2 deck shipped on a chopped plan); DeepSeek provider
+   default. Kimi K3 is OUT with mechanism: it thinks in the CONTENT channel
+   (reasoning empty; 96KB of slide-planning prose, still planning page 5 at
+   char 40k) — an unbounded planner that never emits, not a weak designer.
+   Trace receipts: qa/harness-lab/m2-diag-*.raw.json.
 2. **Context pack (~11KB, the load-bearing artifact).** Brief verbatim +
    file contract + truth rules + **retrieved brand facts** (real logo bytes
    from the crawl, real hexes — brand is a fact to fetch, not a style to
@@ -145,3 +150,7 @@ wordmark) produced the pack's brand section.
 - **Replication** — same protocol on 1–2 more briefs during the build.
 - Harness build itself: pack assembly from crawl, author socket, loop runner,
   validators, decompose-on-approve, flag + A/B vs prod.
+- **Trace review is a standing protocol step** (2026-08-27, founder-prompted):
+  every author eval saves raw responses and READS the reasoning — checking the
+  pack is engaged, the budget has headroom, no truncation markers, no
+  fake-it planning. Outcome data alone missed that GLM was being squeezed.
