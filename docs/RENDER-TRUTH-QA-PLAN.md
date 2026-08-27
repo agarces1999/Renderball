@@ -1,5 +1,10 @@
 # Render-Truth Quality System — Plan
 
+> **SUPERSEDED — 2026-08-27 (docs/HARNESS.md).** Its core insight SURVIVES — judge the
+> rendered pixels, never the declared code — and lives on as the harness
+> loop (render → comparative critic → one revision) and mechanical
+> validators. The gate-ladder/retry implementation it plans is retired.
+
 Status: approved direction (2026-06-14), not yet implemented.
 Decisions: D1 = Hybrid (deterministic measure + vision). D2 = retry → rewrite-script → hard-fail, with a $10/build cost ceiling.
 

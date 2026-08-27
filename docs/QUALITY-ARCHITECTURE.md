@@ -1,5 +1,12 @@
 # Quality architecture: from gate-reliance to first-pass yield
 
+> **SUPERSEDED — 2026-08-27 (docs/HARNESS.md).** This proposal is the
+> judgment-substituting class the bet-on-models doctrine retired. Its
+> diagnosis ("the model designs blind") was answered differently: not better
+> gates, but not fragmenting the author at all — the 5-arm blind gallery put
+> the gate pipeline last. Keep as archaeology of why 27 gates existed. Do not
+> execute its roadmap.
+
 *2026-07-05. Status: proposal, red-teamed (3 adversarial reviews: feasibility vs
 codebase, creativity cost vs the corpus, migration risk). Owner: eng.*
 

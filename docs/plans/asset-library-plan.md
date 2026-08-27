@@ -1,5 +1,7 @@
 # Plan — Auxiliary asset library (images + Lottie + video), agent-queried
 
+> **VIDEO-ERA PLAN — not current direction.** Asset sourcing may return post-harness; 'design agent' architecture referenced here is retired (docs/HARNESS.md).
+
 **Goal:** give the design agent a real, free-to-use, commercial-safe asset library it
 **queries live** (icons already exist; add **photos, video, Lottie**) so non-tech scenes
 get real media instead of vague CSS shapes — the true ceiling on non-tech quality

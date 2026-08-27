@@ -1,5 +1,7 @@
 # Plan — Non-tech quality: foundation fixes
 
+> **VIDEO-ERA PLAN — retired (docs/HARNESS.md, 2026-08-27).** The quality gaps it targets are addressed architecturally by the one-call harness, not by these fixes.
+
 **Goal:** structurally fix the quality gaps the 5-brand non-tech pilot exposed
 (Falabella/Coniglio, Patagonia, Glossier, Oatly, Tony's), without adding new
 infrastructure. Real-imagery sourcing is explicitly deferred (see NOT in scope).

@@ -1,5 +1,9 @@
 # Renderball — Go-To-Market Playbook
 
+> **STALE (pre-pivot) — do not execute (founder call 2026-07-28).** The
+> locked GTM is: "editing is the moat" + full build-in-public. This playbook
+> predates the canvas pivot and is kept for reference only.
+
 A standalone GTM document. Anchors the customer development gate, the launch motion, and the acquisition channels for Days 1–90. Companion to PRODUCT.md (the product spec) and PROCESS.md (the original FUSE deck process).
 
 ---

@@ -1,5 +1,11 @@
 # Renderball — Code-Driven Video at AI Speed
 
+> **HISTORICAL (video era) — see docs/PIVOT.md (2026-07-23) and docs/HARNESS.md
+> (2026-08-27).** This is the pre-pivot video-first spec, kept because video
+> is shelved, not deleted. Nothing here is current product direction: the
+> product is decks-first; the engine is the harness (one-call author + pack
+> + loop). Do not implement from this document.
+
 A product brief for an AI-native video generation platform that uses LLM-written code (instead of diffusion models) to produce branded, animated video. The core flow is **script-first, render-second**: the user approves a detailed shot-by-shot script before any pixel is rendered, eliminating the "we burned compute on the wrong video" failure mode.
 
 > **Status:** Draft 2 — incorporating Alfonso's pricing, workflow, asset, and QA changes.

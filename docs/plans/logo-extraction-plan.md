@@ -1,5 +1,7 @@
 # Robust Logo Resolution — Eng Plan
 
+> **STILL RELEVANT — 2026-08-27:** honest logo resolution now feeds the harness CONTEXT PACK (docs/HARNESS.md): the real-wordmark-as-retrieved-fact finding made this pipeline load-bearing. 'Design agent' references are legacy-engine.
+
 **Goal:** return a *real* logo (or an honest wordmark — never a fabricated mark)
 for the vast majority of domains. Driven by the Fuse failure: the crawl resolved
 `logo_hd` to a Webflow `Screenshot….png`, the resolver correctly rejected it,

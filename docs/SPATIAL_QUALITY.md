@@ -1,5 +1,13 @@
 # Spatial Quality System — specification & state
 
+> **SUPERSEDED for future work — 2026-08-27 (docs/HARNESS.md).** The measurement
+> methods, calibration evidence, and killed-detector list remain valid
+> evidence (do not rebuild dead detectors). But ALL pending engine work here
+> (density floor, allocator tuning, new gates) is retired by the two-class
+> doctrine: spatial quality now comes from the one-call author's composition
+> + mechanical validators, not allocation/repair machinery. This doc remains
+> the reference for operating the legacy cast engine still serving prod.
+
 _Last updated: 2026-07-23. This is the durable record of the spatial-composition
 work: principles, mechanisms, calibration evidence, what is pending, and how to
 validate. A new session should be able to continue from this file alone (plus

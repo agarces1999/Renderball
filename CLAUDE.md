@@ -50,7 +50,7 @@ Core rules to internalize:
 - Display type (Cabinet Grotesk) is for story surfaces only. Geist for UI/body,
   Geist Mono for timings and technical text.
 
-## Model routing
+## Model routing (prod legacy engine; harness authors + dials live in docs/HARNESS.md)
 **FIREWORKS ONLY (founder call 2026-07-23) — z.ai is out of the stack.**
 Deck-code stages (build/regen coding agents, QA, logo discovery,
 design-language, tweak) run GLM-5.2 **served by Fireworks**
@@ -94,7 +94,7 @@ critic, truth validators, decompose-after-approval). Prod stays cast+box
 until the harness wins a flagged A/B. Evidence repo: `qa/harness-lab/`
 (gitignored, own git history — 79MB of sealed renders and verdicts).
 
-## Spatial quality system
+## Spatial quality system (legacy cast engine only — see Harness program above)
 Before touching layout, allocation, washout/contrast repairs, overlap gates, or
 type scaling, read `docs/SPATIAL_QUALITY.md` — the durable spec: principles
 (ink is the unit of account; occupy, don't redistribute; repairs must never

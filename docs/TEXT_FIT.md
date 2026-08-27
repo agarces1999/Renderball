@@ -1,5 +1,11 @@
 # Text fit — how generated pages stop being born overfull
 
+> **SPLIT BY THE HARNESS VERDICT — 2026-08-27 (docs/HARNESS.md).** The autofit RUNTIME
+> (fit-text.ts, the PowerPoint algorithm) survives — it is checks-class and
+> engine-agnostic. The emission-side machinery (char budgets in the
+> generation schema, shorten loops) was compensation for fragmented
+> authoring and retires with the cast engine.
+
 Adopted 2026-08-13 after a two-track research sweep (industry products +
 deterministic methods; sources at the bottom). This is the Layer-1 answer to
 the founder's question "why do builds fall into the repair loop": pages are

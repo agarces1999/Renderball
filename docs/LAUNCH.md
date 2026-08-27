@@ -1,5 +1,10 @@
 # Renderball — Launch Readiness & Critical Path
 
+> **ENGINE REFERENCES STALE — 2026-08-27.** Commercialization content here
+> stays live (auth/billing/domain state). Engine descriptions
+> (script/design/choreography agents → MP4) are two architectures old:
+> prod = cast engine (legacy, being replaced); target = the harness (docs/HARNESS.md).
+
 > Working doc started 2026-06-17. Companion to PRODUCT.md (spec) and PROGRESS.md
 > (build log). This is the honest gap between "the engine works" and "we can take
 > a paying customer," plus the ordered path to close it.

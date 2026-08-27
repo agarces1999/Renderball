@@ -1,5 +1,13 @@
 # Pivot: AI-Native Canvas (decided 2026-07-23)
 
+> **ENGINE HALF SUPERSEDED — 2026-08-27 (docs/HARNESS.md).** The PRODUCT decisions here
+> stay locked (decks wedge, video shelved not deleted, name, token pricing).
+> The ENGINE direction (parallel/choreographer, element machinery, gate
+> stack) is retired by the harness verdict: authoring becomes ONE strong call
+> + context pack + loop; editing keeps LEGO via decompose-after-approval.
+> Do not build new work on the old engine path — prod runs it only until the
+> harness wins its flagged A/B.
+
 Renderball pivots from "AI video generation" to an **AI-native design tool**
 (Canva-class): a brief becomes an on-brand, editable, multi-format design
 document. **Wedge format: presentation decks.** Video is shelved, not deleted.

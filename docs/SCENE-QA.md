@@ -1,5 +1,10 @@
 # SCENE-QA — the scene review constitution
 
+> **VIDEO-ERA — principles partially survive (docs/HARNESS.md, 2026-08-27).** Review
+> like a creative director, judge the render: both live on in the harness
+> critic (comparative, intent-anchored) and the founder blind-gallery
+> protocol. The scene/timeline mechanics are shelved with video.
+
 How to review a generated Renderball video, scene by scene, the way a human
 creative director would — distilled from the 2026-06-09 human+agent QA session
 (build `01KTQH4GC70VM6R4412Q729152`), which surfaced both systemic design

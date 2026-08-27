@@ -4,7 +4,18 @@ A rolling week-by-week record of what's shipped, what's been decided, what's bee
 
 ---
 
-## Where we are right now
+## Where we are right now (2026-08-27)
+
+| Field | Status |
+|---|---|
+| Phase | **Harness pivot** — measurement program closed (docs/HARNESS.md): 5-arm blind gallery; one-call author + context pack beats the cast pipeline; bet-on-models doctrine locked. Building the harness behind a flag (task #119). |
+| Product | Decks-first canvas (docs/PIVOT.md). Prod = cast+box-contract engine (legacy, serving until the harness A/B). renderball.com live. |
+| Last update | 2026-08-27 |
+
+Everything below this table is the historical log (the video-era "where we
+are" table included, unedited, as the 2026-05-28 snapshot it was).
+
+## Where we were (2026-05-28 snapshot — historical)
 
 | Field | Status |
 |---|---|
