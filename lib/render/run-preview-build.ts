@@ -55,6 +55,7 @@ import { recordMeteredUsage } from "../entitlement";
 import { recordTokenUsage } from "../metering";
 import { assertZaiAvailable, ZaiUnavailableError } from "../zai-breaker";
 import { BuildTimeline } from "../agents/build-timeline";
+import { runHarnessPreviewBuild } from "../harness/build";
 import {
   BuildCancelledError,
   buildCancelRequested,
@@ -278,6 +279,21 @@ async function runPreviewBuildInner(
   // production behavior UNCHANGED (the monolithic path stays default until the
   // cast path is validated). Task #205 (cycle 8) — the entire piece-level gate
   // battery the dogfood loop built lives ONLY in the cast path.
+  // ── RB_BUILD_MODE=harness: the one-author engine (docs/HARNESS.md). Flag
+  // off → nothing changes; cast stays prod until the harness wins its A/B.
+  if ((opts?.buildMode ?? process.env.RB_BUILD_MODE) === "harness") {
+    return runHarnessPreviewBuild({
+      script,
+      brief,
+      scriptId,
+      ownerId,
+      genDir: path.join(process.cwd(), "src", "generated", scriptId),
+      timeline,
+      buildT0,
+      brandTruthDegraded,
+    });
+  }
+
   if ((opts?.buildMode ?? process.env.RB_BUILD_MODE) === "cast") {
     return runCastPreviewBuild({
       script,
