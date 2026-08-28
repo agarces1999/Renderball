@@ -101,12 +101,17 @@ export default async function DocumentsPage({
 }: {
   // Set by /api/documents/new when creation fails. Without it that route's
   // only failure mode was the browser's own bare HTTP 500 page.
-  searchParams?: { error?: string };
+  searchParams?: { error?: string; brand?: string };
 }) {
   const user = await getCurrentUser();
   if (!user) redirect("/");
   const createFailed = searchParams?.error === "create_failed";
   const briefs = await listBriefsByOwner(user.id);
+  // Sidebar brand chips filter here (founder, 2026-08-29). Match on the
+  // normalized host of the brand the deck was built wearing.
+  const hostOf = (u?: string | null): string =>
+    (u ?? "").replace(/^https?:\/\//, "").replace(/\/.*$/, "").trim().toLowerCase();
+  const brandFilter = hostOf(searchParams?.brand);
 
   // Durable-render set: which projects have a completed Render row. This is the
   // source of truth for "a finished MP4 exists" — local disk is only a warm
@@ -195,9 +200,19 @@ export default async function DocumentsPage({
               Your documents
             </h1>
             <p className="mt-1.5 font-mono text-[12px] text-muted">
-              {briefs.length === 0
-                ? "Nothing here yet"
-                : `${briefs.length} ${briefs.length === 1 ? "document" : "documents"}`}
+              {brandFilter ? (
+                <>
+                  {`${cards.filter((c) => hostOf(c.brief.brand_kit_url) === brandFilter).length} wearing ${brandFilter}`}
+                  {" · "}
+                  <Link href="/documents" className="underline decoration-hairline underline-offset-2 transition-colors hover:text-ink">
+                    clear
+                  </Link>
+                </>
+              ) : briefs.length === 0 ? (
+                "Nothing here yet"
+              ) : (
+                `${briefs.length} ${briefs.length === 1 ? "document" : "documents"}`
+              )}
             </p>
           </div>
           <Link
@@ -228,6 +243,7 @@ export default async function DocumentsPage({
         ) : (
           <div className="grid grid-cols-1 items-start gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {[...cards]
+              .filter((c) => !brandFilter || hostOf(c.brief.brand_kit_url) === brandFilter)
               .sort((a, b) => Date.parse(b.brief.created_at) - Date.parse(a.brief.created_at))
               .map((c) => (
                 <DocumentCard key={c.brief.id} card={c} />

@@ -20,7 +20,7 @@ type SidebarDocument = {
   status: string;
 };
 
-export type SidebarBrand = { id: string; label: string; dots: string[] };
+export type SidebarBrand = { id: string; label: string; host: string; dots: string[] };
 
 export function AppShell({
   documents = [],
@@ -73,8 +73,8 @@ export function AppShell({
               brands.map((b) => (
                 <Link
                   key={b.id}
-                  href="/api/documents/new" prefetch={false}
-                  title={`New document as ${b.label}`}
+                  href={`/documents?brand=${encodeURIComponent(b.host)}`}
+                  title={`Documents wearing ${b.label}`}
                   className="flex items-center gap-2 rounded-full px-2.5 py-1.5 text-[13px] text-muted transition-colors hover:bg-surface-2 hover:text-ink"
                 >
                   <span className="flex shrink-0 items-center gap-0.5" aria-hidden>

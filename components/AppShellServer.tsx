@@ -18,6 +18,7 @@ export async function AppShellServer({ children }: { children: ReactNode }) {
   const brands = kits.slice(0, RAIL_LIMIT).map((k) => ({
     id: k.id,
     label: k.name?.trim() || k.host,
+    host: k.host,
     dots: (k.palette ?? []).slice(0, 3),
   }));
 
