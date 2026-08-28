@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "../../../../lib/auth";
 import { loadBriefByScriptId, loadScript, saveBrief, saveScript } from "../../../../lib/store";
-import { isBlankDocument } from "../../../../lib/documents/blank-document";
+import { isBlankDocument, isBlankScript } from "../../../../lib/documents/blank-document";
 import { documentDir } from "../../../../lib/render/gen-store";
 import { withDbRetry } from "../../../../lib/db";
 import { generateScript, fireworksScriptStreamTransport, DECK_SECONDS_PER_SLIDE } from "../../../../lib/agents/script-generator";
@@ -279,6 +279,22 @@ export async function GET(request: Request) {
   }
   if (job.state === "error") {
     return NextResponse.json({ status: "error", error: job.message });
+  }
+  // AMNESIA HEAL (founder's Fuse run, 2026-08-28): the job registry is an
+  // in-memory Map, so a deploy mid-outline forgets the job while the outline
+  // itself finishes and persists (spend ledger showed the run completing;
+  // ScriptDoc saved 231ms later; the founder's tab polled "unknown" for
+  // 8 minutes with no Build button). When the registry has forgotten, the
+  // STORE is the truth: a persisted non-blank outline IS a done outline.
+  if (job.state === "unknown") {
+    const script = await loadScript(scriptId, user.id).catch(() => null);
+    if (script && !isBlankScript(script)) {
+      return NextResponse.json({
+        status: "done",
+        result: { ok: true, scriptId, reviewUrl: `/review/${owned.id}` },
+        resultStatus: 200,
+      });
+    }
   }
   // startedAt rides along so a reattaching client anchors its clock and step
   // position to the truth — a reload mid-generation showed "Reading your
