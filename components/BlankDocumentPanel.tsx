@@ -447,7 +447,8 @@ export function BlankDocumentPanel({
     const t = window.setInterval(tick, 1000);
     return () => window.clearInterval(t);
   }, [resume]);
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(true);
+  void open; void setOpen; // the intermediate chooser is gone (founder, 2026-08-29)
   const [prompt, setPrompt] = useState("");
   const [url, setUrl] = useState("");
   const [pages, setPages] = useState(6);
@@ -953,89 +954,8 @@ export function BlankDocumentPanel({
   return (
     <div className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center p-6">
       <div className="pointer-events-auto w-full max-w-[520px] rounded-xl border border-hairline bg-surface p-6 shadow-[0_30px_80px_-40px_rgba(18,26,43,0.45)]">
-        {!open ? (
+        {(
           <>
-            <p className="font-mono text-[10.5px] uppercase tracking-[0.16em] text-muted">
-              New document
-            </p>
-            <h2 className="mt-1.5 font-display text-[22px] font-bold tracking-tight text-ink">
-              How do you want to start?
-            </h2>
-
-            {/* What you sketched on the home page.
-                This used to sit ABOVE both real choices, headed "from the
-                landing canvas", promising to "continue what you started" —
-                and the founder could not tell what it did. Fairly: it does
-                not restore anything. It describes your sketch in words and
-                pre-types that into the GENERATE form, which spends tokens.
-                So it now says where the sketch came from in ordinary words,
-                says exactly what the button will do, and sits with the
-                generate option it actually leads to rather than above
-                everything as a third headline choice. */}
-
-            {/* Generation leads (founder, 2026-08-29): making the whole deck
-                is the product's core move and the default path — the blank
-                canvas stays one quiet card away, allowed but never
-                incentivized. This inverts the metering-era hierarchy that
-                made generate "the secondary button, not the loud one". */}
-            <button
-              type="button"
-              onClick={() => setOpen(true)}
-              className="mt-5 w-full rounded-lg border border-accent-line bg-accent-soft p-4 text-left transition-colors hover:bg-surface-2"
-            >
-              <span className="block text-[14px] font-semibold text-ink">
-                Generate every page for me
-              </span>
-              <span className="mt-0.5 block text-[12.5px] leading-relaxed text-ink-soft">
-                Describe the document and Renderball writes and designs the whole
-                thing — on your brand, ready to edit. Takes a few minutes.
-              </span>
-            </button>
-
-            {/* Same quiet treatment as "Start without a brand →" one step
-                earlier (founder, 2026-08-29): scratch is allowed, never
-                incentivized — a mono whisper, not a card. */}
-            <button
-              type="button"
-              onClick={onDismiss}
-              className="mt-4 font-mono text-[10.5px] uppercase tracking-[0.14em] text-faint transition-colors hover:text-ink"
-            >
-              Start from a blank canvas →
-            </button>
-
-            {/* BOTH branches, deliberately. This ask used to live inside
-                "generate every page" only, so a user who chose to build it
-                themselves had no way to tell us their brand at all — which is
-                the actual gap behind the founder's "brand should always run".
-                It sits BELOW the two choices, not above them, because
-                DESIGN.md is explicit that config is refinement and never an
-                upfront wizard step: nothing here is required and neither
-                button waits for it. */}
-            {wearing ? (
-              <WearingLine wearing={wearing} />
-            ) : (
-              <BrandAsk
-                url={url}
-                onUrl={setUrl}
-                brand={brand}
-                deepBusy={deepBusy}
-                onLookDeeper={() => void lookDeeper()}
-              />
-            )}
-
-            <p className="mt-4 font-mono text-[10.5px] text-faint">
-              You can do both — generate a deck, then edit every element by hand.
-            </p>
-          </>
-        ) : (
-          <>
-            <button
-              type="button"
-              onClick={() => setOpen(false)}
-              className="font-mono text-[10.5px] uppercase tracking-[0.16em] text-muted transition-colors hover:text-ink"
-            >
-              ← back
-            </button>
             <h2 className="mt-2 font-display text-[20px] font-bold tracking-tight text-ink">
               What is this document about?
             </h2>
@@ -1150,9 +1070,16 @@ export function BlankDocumentPanel({
             <button
               type="button"
               onClick={() => void generate()}
-              className="mt-4 w-full rounded-full bg-accent px-4 py-2.5 text-[13.5px] font-semibold text-accent-ink transition-all hover:brightness-110"
+              className="mt-4 rounded-full bg-accent px-4 py-2.5 text-[13.5px] font-semibold text-accent-ink transition-all hover:brightness-110"
             >
               Generate the document
+            </button>
+            <button
+              type="button"
+              onClick={onDismiss}
+              className="mt-4 block font-mono text-[10.5px] uppercase tracking-[0.14em] text-faint transition-colors hover:text-ink"
+            >
+              Start from a blank canvas →
             </button>
             <p className="mt-2 text-center font-mono text-[10.5px] text-faint">
               You approve the outline before anything is designed.
@@ -1399,7 +1326,7 @@ function BrandCeremony({
           type="button"
           disabled={!looksLikeSite(url.trim())}
           onClick={onReadNow}
-          className="mt-2.5 w-full rounded-full bg-accent px-4 py-2.5 text-[13.5px] font-semibold text-accent-ink transition-all hover:brightness-110 disabled:opacity-40"
+          className="mt-2.5 rounded-full bg-accent px-4 py-2.5 text-[13.5px] font-semibold text-accent-ink transition-all hover:brightness-110 disabled:opacity-40"
         >
           Read my site — free, about two seconds
         </button>
@@ -1742,7 +1669,7 @@ function BrandCeremony({
             ...(uploaded ? { logoSource: "upload" as const } : {}),
           })
         }
-        className="mt-4 w-full rounded-full bg-accent px-4 py-2.5 text-[13.5px] font-semibold text-accent-ink transition-all hover:brightness-110 disabled:opacity-50"
+        className="mt-4 rounded-full bg-accent px-4 py-2.5 text-[13.5px] font-semibold text-accent-ink transition-all hover:brightness-110 disabled:opacity-50"
       >
         {confirmBusy ? "Saving…" : "This is my brand"}
       </button>
@@ -2098,7 +2025,7 @@ export function OutlineLive({
                 <a
                   href={approval.buildHref}
                   data-rb-outline-build
-                  className="block w-full rounded-full bg-accent px-4 py-2.5 text-center text-[13.5px] font-semibold text-accent-ink transition-all hover:brightness-110"
+                  className="inline-block rounded-full bg-accent px-5 py-2.5 text-[13.5px] font-semibold text-accent-ink transition-all hover:brightness-110"
                 >
                   Build the deck →
                 </a>

@@ -79,6 +79,7 @@ Green alternates explored, if the emerald ever needs swapping: `signal #25E06A`,
 padding (founder call 2026-08-29; reference: ChatGPT's nav buttons). The pill
 is the CLICK signal: cards, inputs, and panels keep soft corners
 (`rounded-md`/`rounded-lg`) so interactive-vs-container reads at a glance.
+Pills HUG THEIR LABEL — auto width from padding, never full-width blocks.
 Primary = `bg-accent` pill; secondary = bordered pill; tertiary/escape = the
 mono whisper (uppercase, tracking, `text-faint`), never a competing pill.
 

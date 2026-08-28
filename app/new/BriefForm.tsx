@@ -861,7 +861,7 @@ export function BriefForm({
         <button
           type="button"
           onClick={handleAutoGenerate}
-          className="mt-7 w-full rounded-full bg-accent px-6 py-3.5 text-[15px] font-semibold text-accent-ink shadow-[0_14px_32px_-12px_rgba(0,194,138,0.55)] transition-all hover:brightness-110"
+          className="mt-7 rounded-full bg-accent px-6 py-3.5 text-[15px] font-semibold text-accent-ink shadow-[0_14px_32px_-12px_rgba(0,194,138,0.55)] transition-all hover:brightness-110"
         >
           {kind === "deck" ? "See the outline →" : "See the story →"}
         </button>
