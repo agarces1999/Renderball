@@ -92,6 +92,7 @@ FILE CONTRACT:
 - EDITABILITY GRAMMAR (hard): inside each section, wrap every visually distinct block in \`<Piece id="sN.pM" kind="...">\` ... \`</Piece>\` — N = page index, M = a per-page counter. The wrapper is transparent: the block inside it positions ITSELF (position: "absolute" with its own coordinates). Use kind="chrome" for the recurring page furniture (lockup, page number, footer rail — one chrome Piece per page, listed LAST in the section) and kind="diegetic" for everything else. One graphic device = ONE Piece (a whole SVG diagram is one Piece). Headline, supporting text, quote cards, stat rows: each its own Piece. Shared helper components and constants live at module top level, OUTSIDE the sections — never inside a Piece.
 - No external URLs except the allowed asset URLs listed above. System font stacks only (e.g. Helvetica Neue/Arial for display, SF Mono/Menlo/monospace for labels).
 - Deterministic: no Math.random, no Date. SVG is available and encouraged for graphic devices.
+- Every text-bearing block declares a horizontal bound (explicit width, maxWidth, or a right: offset). Unbounded text cannot autofit and will clip at the canvas edge.
 
 TRUTH RULES (hard):
 - Every numeral on a page must come from the approved copy above. Invent NONE: no statistics, dollar figures, percentages, or years that are not in the outline. Page indices like "01 — 0${n}" are allowed.

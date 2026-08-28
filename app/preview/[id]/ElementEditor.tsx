@@ -1250,10 +1250,40 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
     let doc: Document | null = null;
     let lastHover = "";
 
+    // A click should land on the piece that PAINTED at that point — not on an
+    // invisible full-canvas positioning wrapper stacked above it (the Vercel
+    // ghost-layer finding, 2026-08-28: two transparent left:0/right:0 wrappers
+    // swallowed every canvas click on the page). Walk the element stack under
+    // the cursor and take the first piece with visible ink; when nothing under
+    // the point painted, fall back to the plain closest() behavior.
+    const paintsInkAt = (el: Element): boolean => {
+      const tag = el.tagName?.toLowerCase?.() ?? "";
+      if (["img", "svg", "path", "circle", "rect", "line", "polyline", "polygon", "ellipse", "text", "video", "canvas"].includes(tag)) return true;
+      for (const n of el.childNodes) {
+        if (n.nodeType === 3 && (n.textContent ?? "").trim()) return true;
+      }
+      const win = el.ownerDocument?.defaultView;
+      if (!win) return false;
+      const cs = win.getComputedStyle(el);
+      if (cs.backgroundColor && cs.backgroundColor !== "transparent" && !/rgba\(\s*\d+\s*,\s*\d+\s*,\s*\d+\s*,\s*0\s*\)/.test(cs.backgroundColor)) return true;
+      if (cs.backgroundImage && cs.backgroundImage !== "none") return true;
+      if (parseFloat(cs.borderTopWidth) > 0 || parseFloat(cs.borderLeftWidth) > 0) return true;
+      if (cs.boxShadow && cs.boxShadow !== "none") return true;
+      return false;
+    };
+    const inkedPieceAt = (me: MouseEvent): Element | null => {
+      const stack = (doc as Document | null)?.elementsFromPoint?.(me.clientX, me.clientY) ?? [];
+      for (const el of stack) {
+        const p = el.closest?.("[data-piece]") as Element | null;
+        if (p && paintsInkAt(el)) return p;
+      }
+      return null;
+    };
+
     const onClick = (e: Event) => {
       if (editingRef.current || busyRef.current || toolRef.current) return;
       const target = e.target as Element | null;
-      const piece = target?.closest?.("[data-piece]") as Element | null;
+      const piece = (inkedPieceAt(e as MouseEvent) ?? target?.closest?.("[data-piece]")) as Element | null;
       if (!piece || !piece.getAttribute("data-piece")) {
         setSelected(null);
         return;
@@ -1280,7 +1310,7 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
       // selection — starting a second session would orphan the first's listeners.
       if (editingRef.current || busyRef.current || toolRef.current) return;
       const target = e.target as Element | null;
-      const piece = target?.closest?.("[data-piece]") as Element | null;
+      const piece = (inkedPieceAt(e as MouseEvent) ?? target?.closest?.("[data-piece]")) as Element | null;
       if (!piece || !target) return;
       // Double-click opens the whole piece's text fields, focused on the one clicked.
       if (collectEditableFields(piece).length > 0) {
