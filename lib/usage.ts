@@ -86,6 +86,12 @@ const RATES: Record<
   // abstract "glm-5.2" row carries the FAST rate because that's what every
   // recorded stage actually runs on; castCall doesn't surface cached tokens
   // yet, so cache rows stay zero (ledger errs on overstating, never under).
+  // Qwen3.8-Max (fireworks.ai/models/fireworks/qwen3p8-max, read 2026-08-28):
+  // $2.00/$6.00 per M, $0.25 cached input. Founder directive same day: Qwen
+  // for ALL model calls. The glm rows below stay so historical spend records
+  // keep pricing correctly.
+  "qwen-3.8": { input: 2.0, output: 6.0, cacheRead: 0.25 / 2.0, cacheWrite: 1 },
+  "accounts/fireworks/models/qwen3p8-max": { input: 2.0, output: 6.0, cacheRead: 0.25 / 2.0, cacheWrite: 1 },
   "glm-5.2": { input: 2.1, output: 6.6, cacheRead: 0.21 / 2.1, cacheWrite: 1 }, // all text/build/QA stages (fast router)
   "accounts/fireworks/routers/glm-5p2-fast": { input: 2.1, output: 6.6, cacheRead: 0.21 / 2.1, cacheWrite: 1 }, // same, wire id
   // Script/outline stage since 2026-08-20 (founder call): DeepSeek-V4-Flash

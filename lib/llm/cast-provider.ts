@@ -97,7 +97,7 @@ const BASE_URL = () => process.env.RB_CAST_BASE_URL || "https://api.cerebras.ai/
 // FIREWORKS ONLY (2026-07-23): the cast default is the same GLM-5.2 fast
 // router the rest of the build runs on. RB_CAST_MODEL can still point at a
 // Cerebras-served model (the id selects the wire) for bake-off experiments.
-const MODEL = () => process.env.RB_CAST_MODEL || "accounts/fireworks/routers/glm-5p2-fast";
+const MODEL = () => process.env.RB_CAST_MODEL || "accounts/fireworks/models/qwen3p8-max";
 const KEY = () => process.env.RB_CAST_KEY || "";
 
 /** The cast path is available when the DEFAULT model's wire has a key. */

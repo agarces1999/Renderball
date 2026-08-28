@@ -130,17 +130,17 @@ export const getAnthropic = (): Anthropic => {
 // keys pricing off it (the fast router's real $2.10/$6.60 billing — the rate
 // lives in lib/usage.ts), and the transport
 // (lib/llm/build-client.ts) maps it to the Fireworks deployment
-// (accounts/fireworks/routers/glm-5p2-fast — override with RB_BUILD_MODEL).
+// (accounts/fireworks/models/qwen3p8-max — override with RB_BUILD_MODEL; founder directive 2026-08-28: Qwen for ALL model calls, incl. marquee-generate and element regen; thinking-disabled probe-verified on Qwen same day).
 // getAnthropic() below is DORMANT: no build path calls the Anthropic SDK
 // client anymore.
 export const MODELS = {
-  scriptGenerator: "glm-5.2",
-  codingAgentBuild: "glm-5.2",
-  codingAgent: "glm-5.2",
-  qaAgent: "glm-5.2",
-  logoAgent: "glm-5.2",
-  designLanguage: "glm-5.2",
-  tweakAgent: "glm-5.2",
+  scriptGenerator: "qwen-3.8",
+  codingAgentBuild: "qwen-3.8",
+  codingAgent: "qwen-3.8",
+  qaAgent: "qwen-3.8",
+  logoAgent: "qwen-3.8",
+  designLanguage: "qwen-3.8",
+  tweakAgent: "qwen-3.8",
 } as const;
 
 /**

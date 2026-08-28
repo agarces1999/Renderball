@@ -126,6 +126,13 @@ check("GLM-5.2 base rate (Fireworks fast router): 1M in = $2.1, 1M out = $6.6 (n
   ok(near(costUsd("glm-5.2", U(0, 1_000_000)), 6.6));
 });
 
+check("qwen-3.8 abstract and wire ids price at the published $2/$6 (+$0.25 cached)", () => {
+  ok(near(costUsd("qwen-3.8", U(1_000_000, 0)), 2.0));
+  ok(near(costUsd("qwen-3.8", U(0, 1_000_000)), 6.0));
+  ok(near(costUsd("accounts/fireworks/models/qwen3p8-max", U(1_000_000, 0)), 2.0));
+  ok(near(costUsd("accounts/fireworks/models/qwen3p8-max", U(0, 1_000_000)), 6.0));
+});
+
 check("fast-router wire id prices identically to the abstract glm-5.2 row", () => {
   ok(near(costUsd("accounts/fireworks/routers/glm-5p2-fast", U(1_000_000, 0)), 2.1));
   ok(near(costUsd("accounts/fireworks/routers/glm-5p2-fast", U(0, 1_000_000)), 6.6));

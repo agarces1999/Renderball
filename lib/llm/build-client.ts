@@ -30,7 +30,7 @@ import type { CastEffort } from "./cast-provider";
 
 /** The Fireworks deployment every abstract build-model name resolves to. */
 export const FIREWORKS_BUILD_MODEL = (): string =>
-  process.env.RB_BUILD_MODEL || "accounts/fireworks/routers/glm-5p2-fast";
+  process.env.RB_BUILD_MODEL || "accounts/fireworks/models/qwen3p8-max";
 
 type ContentBlock = { type: string; text?: string; [key: string]: unknown };
 type MessageContent = string | ContentBlock[];
