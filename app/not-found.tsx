@@ -26,7 +26,7 @@ export default function NotFound() {
       </p>
       <Link
         href="/"
-        className="mt-6 rounded-md bg-accent px-4 py-2 text-[12px] font-semibold text-accent-ink transition-all hover:brightness-110"
+        className="mt-6 rounded-full bg-accent px-4 py-2 text-[12px] font-semibold text-accent-ink transition-all hover:brightness-110"
       >
         Make a deck with Renderball
       </Link>

@@ -202,7 +202,7 @@ export default async function DocumentsPage({
           </div>
           <Link
             href="/api/documents/new" prefetch={false}
-            className="shrink-0 rounded-md bg-accent px-4 py-2.5 text-[14px] font-semibold text-accent-ink transition-all hover:brightness-110"
+            className="shrink-0 rounded-full bg-accent px-4 py-2.5 text-[14px] font-semibold text-accent-ink transition-all hover:brightness-110"
           >
             New document
           </Link>
@@ -226,10 +226,12 @@ export default async function DocumentsPage({
         {cards.length === 0 ? (
           <EmptyState />
         ) : (
-          <div className="columns-1 gap-3 sm:columns-2 lg:columns-3">
-            {cards.map((c) => (
-              <DocumentCard key={c.brief.id} card={c} />
-            ))}
+          <div className="grid grid-cols-1 items-start gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {[...cards]
+              .sort((a, b) => Date.parse(b.brief.created_at) - Date.parse(a.brief.created_at))
+              .map((c) => (
+                <DocumentCard key={c.brief.id} card={c} />
+              ))}
           </div>
         )}
       </div>
@@ -335,7 +337,7 @@ function EmptyState() {
       </p>
       <Link
         href="/api/documents/new" prefetch={false}
-        className="mt-6 inline-block rounded-md bg-accent px-5 py-2.5 text-[14px] font-semibold text-accent-ink transition-all hover:brightness-110"
+        className="mt-6 inline-block rounded-full bg-accent px-5 py-2.5 text-[14px] font-semibold text-accent-ink transition-all hover:brightness-110"
       >
         Make your first deck
       </Link>

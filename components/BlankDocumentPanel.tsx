@@ -1150,7 +1150,7 @@ export function BlankDocumentPanel({
             <button
               type="button"
               onClick={() => void generate()}
-              className="mt-4 w-full rounded-md bg-accent px-4 py-2.5 text-[13.5px] font-semibold text-accent-ink transition-all hover:brightness-110"
+              className="mt-4 w-full rounded-full bg-accent px-4 py-2.5 text-[13.5px] font-semibold text-accent-ink transition-all hover:brightness-110"
             >
               Generate the document
             </button>
@@ -1399,7 +1399,7 @@ function BrandCeremony({
           type="button"
           disabled={!looksLikeSite(url.trim())}
           onClick={onReadNow}
-          className="mt-2.5 w-full rounded-md bg-accent px-4 py-2.5 text-[13.5px] font-semibold text-accent-ink transition-all hover:brightness-110 disabled:opacity-40"
+          className="mt-2.5 w-full rounded-full bg-accent px-4 py-2.5 text-[13.5px] font-semibold text-accent-ink transition-all hover:brightness-110 disabled:opacity-40"
         >
           Read my site — free, about two seconds
         </button>
@@ -1481,7 +1481,7 @@ function BrandCeremony({
               <button
                 type="button"
                 onClick={onSkip}
-                className="rounded-md bg-accent px-3.5 py-1.5 text-[12px] font-semibold text-accent-ink transition-all hover:brightness-110"
+                className="rounded-full bg-accent px-3.5 py-1.5 text-[12px] font-semibold text-accent-ink transition-all hover:brightness-110"
               >
                 Set your brand yourself →
               </button>
@@ -1742,7 +1742,7 @@ function BrandCeremony({
             ...(uploaded ? { logoSource: "upload" as const } : {}),
           })
         }
-        className="mt-4 w-full rounded-md bg-accent px-4 py-2.5 text-[13.5px] font-semibold text-accent-ink transition-all hover:brightness-110 disabled:opacity-50"
+        className="mt-4 w-full rounded-full bg-accent px-4 py-2.5 text-[13.5px] font-semibold text-accent-ink transition-all hover:brightness-110 disabled:opacity-50"
       >
         {confirmBusy ? "Saving…" : "This is my brand"}
       </button>
@@ -2098,7 +2098,7 @@ export function OutlineLive({
                 <a
                   href={approval.buildHref}
                   data-rb-outline-build
-                  className="block w-full rounded-md bg-accent px-4 py-2.5 text-center text-[13.5px] font-semibold text-accent-ink transition-all hover:brightness-110"
+                  className="block w-full rounded-full bg-accent px-4 py-2.5 text-center text-[13.5px] font-semibold text-accent-ink transition-all hover:brightness-110"
                 >
                   Build the deck →
                 </a>

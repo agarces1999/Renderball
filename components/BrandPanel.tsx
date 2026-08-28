@@ -479,7 +479,7 @@ export function BrandPanel({
           type="button"
           onClick={() => save(brand, true, "apply", "apply")}
           disabled={!!busy}
-          className="w-full rounded-md bg-accent px-3 py-2 text-[12.5px] font-semibold text-accent-ink transition-all hover:brightness-110 disabled:opacity-50"
+          className="w-full rounded-full bg-accent px-3 py-2 text-[12.5px] font-semibold text-accent-ink transition-all hover:brightness-110 disabled:opacity-50"
         >
           {busy === "apply" ? "Applying…" : "Apply to this deck · free"}
         </button>

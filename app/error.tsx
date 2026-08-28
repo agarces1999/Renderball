@@ -24,7 +24,7 @@ export default function RootError({ reset }: { error: Error; reset: () => void }
         <button
           type="button"
           onClick={() => reset()}
-          className="rounded-md bg-accent px-4 py-2 text-[13.5px] font-semibold text-accent-ink transition-all hover:brightness-110"
+          className="rounded-full bg-accent px-4 py-2 text-[13.5px] font-semibold text-accent-ink transition-all hover:brightness-110"
         >
           Try again
         </button>

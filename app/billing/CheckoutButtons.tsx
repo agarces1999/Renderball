@@ -30,7 +30,7 @@ export function SubscribeButton() {
         type="button"
         onClick={go}
         disabled={busy}
-        className="inline-block rounded-md bg-accent px-4 py-2 text-[13.5px] font-semibold text-accent-ink transition-all hover:brightness-110 disabled:opacity-60"
+        className="inline-block rounded-full bg-accent px-4 py-2 text-[13.5px] font-semibold text-accent-ink transition-all hover:brightness-110 disabled:opacity-60"
       >
         {busy ? "Opening checkout…" : "Subscribe →"}
       </button>

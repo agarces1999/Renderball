@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { getCurrentUser } from "../lib/auth";
-import { listBriefsByOwner } from "../lib/store";
+import { listBrandKitSummaries } from "../lib/brand-kits";
 import { AppShell } from "./AppShell";
 
 const RAIL_LIMIT = 20;
@@ -13,19 +13,13 @@ const RAIL_LIMIT = 20;
  */
 export async function AppShellServer({ children }: { children: ReactNode }) {
   const user = await getCurrentUser();
-  const briefs = user ? await listBriefsByOwner(user.id) : [];
+  const kits = user ? await listBrandKitSummaries(user.id) : [];
 
-  const documents = briefs.slice(0, RAIL_LIMIT).map((b) => ({
-    id: b.id,
-    title:
-      b.purpose?.trim() ||
-      (b.kind === "deck" ? "Untitled deck" : "Untitled video"),
-    status: b.status,
+  const brands = kits.slice(0, RAIL_LIMIT).map((k) => ({
+    id: k.id,
+    label: k.name?.trim() || k.host,
+    dots: (k.palette ?? []).slice(0, 3),
   }));
 
-  return (
-    <AppShell documents={documents} hasMore={briefs.length > RAIL_LIMIT}>
-      {children}
-    </AppShell>
-  );
+  return <AppShell brands={brands}>{children}</AppShell>;
 }

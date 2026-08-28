@@ -3898,7 +3898,7 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
             </p>
             <a
               href={`/sign-in?redirect_url=${encodeURIComponent(typeof window !== "undefined" ? window.location.pathname : "/documents")}`}
-              className="mt-4 inline-block rounded-md bg-accent px-4 py-2 text-[13px] font-semibold text-accent-ink transition-all hover:brightness-110"
+              className="mt-4 inline-block rounded-full bg-accent px-4 py-2 text-[13px] font-semibold text-accent-ink transition-all hover:brightness-110"
             >
               Sign in
             </a>

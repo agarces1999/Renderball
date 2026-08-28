@@ -72,7 +72,7 @@ export function DeletableDocumentCard({
     // The delete control is a SIBLING of the card link, not a child: a
     // <button> inside an <a> is invalid markup, and the click would navigate
     // anyway.
-    <div className="group relative mb-3 break-inside-avoid">
+    <div className="group relative">
       {children}
       {state === "confirming" || state === "deleting" ? (
         <ConfirmOverlay

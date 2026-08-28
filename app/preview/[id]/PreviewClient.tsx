@@ -525,7 +525,7 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
                 type="button"
                 onClick={() => void handleExport("pdf")}
                 disabled={exporting !== null}
-                className="inline-flex items-center gap-2 rounded-md bg-accent px-4 py-1.5 text-[12px] font-semibold text-accent-ink transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
+                className="inline-flex items-center gap-2 rounded-full bg-accent px-4 py-1.5 text-[12px] font-semibold text-accent-ink transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {exporting === "pdf" ? (
                   <>
@@ -919,7 +919,7 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
             <button
               type="submit"
               disabled={!regenInstruction.trim()}
-              className="rounded-md bg-accent px-4 py-2 text-[13px] font-medium text-accent-ink transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+              className="rounded-full bg-accent px-4 py-2 text-[13px] font-medium text-accent-ink transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
             >
               Go
             </button>
@@ -943,7 +943,7 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
                 type="button"
                 onClick={() => void handleExport("pdf")}
                 disabled={exporting !== null}
-                className="inline-flex items-center gap-2 rounded-md bg-accent px-5 py-2 text-[13px] font-semibold text-accent-ink transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
+                className="inline-flex items-center gap-2 rounded-full bg-accent px-5 py-2 text-[13px] font-semibold text-accent-ink transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {exporting === "pdf" ? (
                   <>
@@ -960,7 +960,7 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
               href={mp4State.url}
               target="_blank"
               rel="noopener noreferrer"
-              className="inline-flex items-center gap-2 rounded-md bg-accent px-5 py-2 text-[13px] font-semibold text-accent-ink transition-all hover:brightness-110"
+              className="inline-flex items-center gap-2 rounded-full bg-accent px-5 py-2 text-[13px] font-semibold text-accent-ink transition-all hover:brightness-110"
             >
               View MP4 ↗
             </a>
@@ -969,7 +969,7 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
               type="button"
               onClick={handleRenderMp4}
               disabled={mp4State.kind === "rendering"}
-              className="inline-flex items-center gap-2 rounded-md bg-accent px-5 py-2 text-[13px] font-semibold text-accent-ink transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
+              className="inline-flex items-center gap-2 rounded-full bg-accent px-5 py-2 text-[13px] font-semibold text-accent-ink transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {mp4State.kind === "rendering" ? (
                 <>
@@ -1143,7 +1143,7 @@ function DeckBanner({
           <button
             type="submit"
             disabled={!regenInstruction.trim()}
-            className="shrink-0 rounded-md bg-accent px-4 py-1.5 text-[13px] font-medium text-accent-ink transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+            className="shrink-0 rounded-full bg-accent px-4 py-1.5 text-[13px] font-medium text-accent-ink transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
           >
             Go
           </button>
@@ -1275,7 +1275,7 @@ function LimitStrip({
       <span className="flex shrink-0 items-center gap-3">
         <Link
           href="/billing"
-          className="rounded-md bg-accent px-3 py-1.5 text-[12px] font-semibold text-accent-ink transition-all hover:brightness-110"
+          className="rounded-full bg-accent px-3 py-1.5 text-[12px] font-semibold text-accent-ink transition-all hover:brightness-110"
         >
           See plans →
         </Link>

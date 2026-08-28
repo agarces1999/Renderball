@@ -454,7 +454,7 @@ export function BuildPreviewClient({
         <p className="mt-3 max-w-[46ch] text-[14px] leading-relaxed text-muted">{phase.message}</p>
         <a
           href="/billing"
-          className="mt-6 rounded-md bg-accent px-5 py-2.5 text-[14px] font-semibold text-accent-ink transition-all hover:brightness-110"
+          className="mt-6 rounded-full bg-accent px-5 py-2.5 text-[14px] font-semibold text-accent-ink transition-all hover:brightness-110"
         >
           View usage →
         </a>
@@ -479,7 +479,7 @@ export function BuildPreviewClient({
         <button
           type="button"
           onClick={retry}
-          className="mt-6 rounded-md bg-accent px-5 py-2.5 text-[14px] font-semibold text-accent-ink transition-all hover:brightness-110"
+          className="mt-6 rounded-full bg-accent px-5 py-2.5 text-[14px] font-semibold text-accent-ink transition-all hover:brightness-110"
         >
           Check now
         </button>
@@ -505,7 +505,7 @@ export function BuildPreviewClient({
         <div className="mt-6 flex items-center gap-3">
           <a
             href={outlineHref}
-            className="rounded-md bg-accent px-5 py-2.5 text-[14px] font-semibold text-accent-ink transition-all hover:brightness-110"
+            className="rounded-full bg-accent px-5 py-2.5 text-[14px] font-semibold text-accent-ink transition-all hover:brightness-110"
           >
             Back to your {isDeck ? "outline" : "story"}
           </a>
@@ -540,7 +540,7 @@ export function BuildPreviewClient({
           <button
             type="button"
             onClick={retry}
-            className="rounded-md bg-accent px-5 py-2.5 text-[14px] font-semibold text-accent-ink transition-all hover:brightness-110"
+            className="rounded-full bg-accent px-5 py-2.5 text-[14px] font-semibold text-accent-ink transition-all hover:brightness-110"
           >
             Try the build again
           </button>

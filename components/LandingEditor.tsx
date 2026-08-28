@@ -365,7 +365,7 @@ function SlideRail({ active, onJump }: { active: number; onJump: (i: number) => 
         </Link>
         <Link
           href="/api/documents/new" prefetch={false}
-          className="rounded-md bg-accent px-3 py-1.5 text-center text-[12.5px] font-semibold text-accent-ink transition-all hover:brightness-110"
+          className="rounded-full bg-accent px-3 py-1.5 text-center text-[12.5px] font-semibold text-accent-ink transition-all hover:brightness-110"
         >
           Open the editor
         </Link>
@@ -1092,7 +1092,7 @@ function ClaimBar({
       </div>
       <Link
         href="/api/documents/new" prefetch={false}
-        className="mt-1 shrink-0 rounded-md bg-accent px-5 py-2.5 text-[13.5px] font-semibold text-accent-ink transition-all hover:brightness-110"
+        className="mt-1 shrink-0 rounded-full bg-accent px-5 py-2.5 text-[13.5px] font-semibold text-accent-ink transition-all hover:brightness-110"
       >
         Open the editor
       </Link>
@@ -1120,7 +1120,7 @@ function StaticEditor() {
       <div className="mt-6 flex flex-wrap items-center gap-3">
         <Link
           href="/api/documents/new" prefetch={false}
-          className="rounded-md bg-accent px-6 py-3 text-[14.5px] font-semibold text-accent-ink"
+          className="rounded-full bg-accent px-6 py-3 text-[14.5px] font-semibold text-accent-ink"
         >
           Open the editor
         </Link>

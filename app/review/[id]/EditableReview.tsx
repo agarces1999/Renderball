@@ -289,7 +289,7 @@ export function EditableReview({
           // paid build ONLY when it arrives with this param (its page
           // redirects unbuilt outlines back here otherwise).
           href={`/preview/${script.id}?build=1`}
-          className="rounded-md bg-accent px-5 py-2.5 text-[14px] font-semibold text-accent-ink transition-all hover:brightness-110"
+          className="rounded-full bg-accent px-5 py-2.5 text-[14px] font-semibold text-accent-ink transition-all hover:brightness-110"
         >
           Build the {script.config.kind === "deck" ? "deck" : "video"} →
         </a>
@@ -359,7 +359,7 @@ export function EditableReview({
                   type="button"
                   onClick={() => void rewriteOutline()}
                   disabled={rewriting || !briefText.trim()}
-                  className="rounded-md bg-accent px-4 py-2 text-[13px] font-semibold text-accent-ink transition-all hover:brightness-110 disabled:opacity-50"
+                  className="rounded-full bg-accent px-4 py-2 text-[13px] font-semibold text-accent-ink transition-all hover:brightness-110 disabled:opacity-50"
                 >
                   {rewriting ? "Rewriting your outline…" : "Rewrite the outline from this"}
                 </button>
@@ -549,7 +549,7 @@ function DecisionRow({
           <button
             type="submit"
             disabled={!otherText.trim()}
-            className="rounded-md bg-accent px-3 py-1.5 text-[12.5px] font-medium text-accent-ink transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+            className="rounded-full bg-accent px-3 py-1.5 text-[12.5px] font-medium text-accent-ink transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
           >
             Set
           </button>
@@ -712,7 +712,7 @@ function StoryScene({
                   type="button"
                   disabled={rewriteBusy || !instruction.trim()}
                   onClick={() => onRewrite(instruction.trim())}
-                  className="rounded-md bg-accent px-3 py-1.5 text-[12.5px] font-semibold text-accent-ink transition-all hover:brightness-110 disabled:opacity-50"
+                  className="rounded-full bg-accent px-3 py-1.5 text-[12.5px] font-semibold text-accent-ink transition-all hover:brightness-110 disabled:opacity-50"
                 >
                   {rewriteBusy ? "Rewriting this page…" : "Rewrite this page"}
                 </button>

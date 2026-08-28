@@ -20,15 +20,20 @@ type SidebarDocument = {
   status: string;
 };
 
+export type SidebarBrand = { id: string; label: string; dots: string[] };
+
 export function AppShell({
   documents = [],
   hasMore = false,
+  brands = [],
   children,
 }: {
   documents?: SidebarDocument[];
   hasMore?: boolean;
+  brands?: SidebarBrand[];
   children: ReactNode;
 }) {
+  void documents; void hasMore; // rail shows brands now; props kept for call-site compatibility
   const pathname = usePathname();
   const { user } = useUser();
 
@@ -45,52 +50,49 @@ export function AppShell({
           </Link>
           <Link
             href="/api/documents/new" prefetch={false}
-            className="block rounded-md bg-accent px-3.5 py-2 text-center text-[13.5px] font-semibold text-accent-ink transition-all hover:brightness-110"
+            className="block rounded-full bg-accent px-3.5 py-2 text-center text-[13.5px] font-semibold text-accent-ink transition-all hover:brightness-110"
           >
             New document
           </Link>
         </div>
 
-        {/* Documents — the rail's "recents". Scrolls; New document + account stay put. */}
+        {/* Saved brands — the rail shows the durable identities, the grid shows
+            the work (founder, 2026-08-29: the old per-document list duplicated
+            the cards exactly). Clicking a brand starts a new document — the
+            creation flow's brand step has these same kits ready to pick. */}
         <div className="mt-5 flex min-h-0 flex-1 flex-col px-3">
           <div className="mb-1.5 px-2 font-mono text-[10.5px] uppercase tracking-[0.14em] text-faint">
-            Documents
+            Saved brands
           </div>
           <nav className="min-h-0 flex-1 space-y-0.5 overflow-y-auto pb-2">
-            {documents.length === 0 ? (
+            {brands.length === 0 ? (
               <p className="px-2 py-2 text-[13px] leading-relaxed text-faint">
-                No documents yet. Make your first one.
+                Brands you read or upload will live here — every deck wears one.
               </p>
             ) : (
-              documents.map((v) => {
-                const active = pathname === `/review/${v.id}`;
-                return (
-                  <Link
-                    key={v.id}
-                    href={`/review/${v.id}`}
-                    title={v.title}
-                    className={cn(
-                      "flex items-center gap-2 rounded-md px-2 py-1.5 text-[13px] transition-colors",
-                      active
-                        ? "bg-accent-soft font-medium text-ink"
-                        : "text-muted hover:bg-surface-2 hover:text-ink",
-                    )}
-                  >
-                    <StatusDot status={v.status} />
-                    <span className="truncate">{v.title}</span>
-                  </Link>
-                );
-              })
-            )}
-            {hasMore && (
-              <Link
-                href="/documents"
-                className="block rounded-md px-2 py-1.5 text-[12.5px] text-accent-text transition-colors hover:bg-surface-2"
-              >
-                Show all documents
-              </Link>
+              brands.map((b) => (
+                <Link
+                  key={b.id}
+                  href="/api/documents/new" prefetch={false}
+                  title={`New document as ${b.label}`}
+                  className="flex items-center gap-2 rounded-full px-2.5 py-1.5 text-[13px] text-muted transition-colors hover:bg-surface-2 hover:text-ink"
+                >
+                  <span className="flex shrink-0 items-center gap-0.5" aria-hidden>
+                    {b.dots.map((hex, i) => (
+                      <span key={i} className="h-2 w-2 rounded-full" style={{ backgroundColor: hex }} />
+                    ))}
+                  </span>
+                  <span className="truncate">{b.label}</span>
+                </Link>
+              ))
             )}
           </nav>
+          <Link
+            href="/documents"
+            className="mb-2 block px-2.5 py-1 font-mono text-[10.5px] uppercase tracking-[0.14em] text-faint transition-colors hover:text-ink"
+          >
+            All documents →
+          </Link>
         </div>
 
         {/* Account + user, pinned to the bottom. */}
@@ -131,7 +133,7 @@ export function AppShell({
             </Link>
             <Link
               href="/api/documents/new" prefetch={false}
-              className="rounded-md bg-accent px-3 py-1.5 text-[12.5px] font-semibold text-accent-ink"
+              className="rounded-full bg-accent px-3 py-1.5 text-[12.5px] font-semibold text-accent-ink"
             >
               New document
             </Link>

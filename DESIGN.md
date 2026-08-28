@@ -73,6 +73,15 @@ Green alternates explored, if the emerald ever needs swapping: `signal #25E06A`,
 - **Approach:** restrained. The emerald accent appears rarely (primary action, active state, the "turn" scene, role labels). Color is meaningful, not decorative. The rest is greyscale.
 - **The crystal/prism** is the only place spectral color is allowed, and only on the orb's edge. The orb stays neutral glass; it does NOT take the green accent.
 
+## Buttons
+
+**Buttons are pills** — fully rounded (`rounded-full`), generous horizontal
+padding (founder call 2026-08-29; reference: ChatGPT's nav buttons). The pill
+is the CLICK signal: cards, inputs, and panels keep soft corners
+(`rounded-md`/`rounded-lg`) so interactive-vs-container reads at a glance.
+Primary = `bg-accent` pill; secondary = bordered pill; tertiary/escape = the
+mono whisper (uppercase, tracking, `text-faint`), never a competing pill.
+
 ## Typography
 The split is the point: a precise display face for the story, a neutral grotesque for the interface.
 
