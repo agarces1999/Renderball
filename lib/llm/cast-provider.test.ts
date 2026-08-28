@@ -37,7 +37,7 @@ console.log("cast-provider (OpenAI-wire transport: Fireworks default + Cerebras 
 // The default model is the Fireworks fast router; Cerebras is reached only by
 // pinning a non-namespaced model. Tests that exercise Cerebras-wire params pin
 // CEREBRAS_MODEL explicitly instead of relying on a default that moved.
-const FW_DEFAULT = "accounts/fireworks/routers/glm-5p2-fast";
+const FW_DEFAULT = "accounts/fireworks/models/qwen3p8-max";
 const CEREBRAS_MODEL = "gpt-oss-120b";
 
 // The runner imports every test file into one process — restore what we touch.
