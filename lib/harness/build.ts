@@ -118,6 +118,9 @@ export const runHarnessPreviewBuild = async (args: HarnessBuildArgs): Promise<Ro
     let code = authored.code;
     timeline.mark("design:scaffold:done");
     // Trace review is protocol: persist the author's reasoning next to the deck.
+    // mkdir first — this runs BEFORE writeGeneratedFiles creates the genDir, and
+    // the verification build proved the silent .catch was eating the ENOENT.
+    await fsp.mkdir(genDir, { recursive: true }).catch(() => {});
     await fsp
       .writeFile(
         path.join(genDir, "harness-trace.json"),
