@@ -28,7 +28,7 @@ import { callZaiVision, extractJsonFromReasoning } from "../render/zai-vision";
 import { castCall } from "../llm/cast-provider";
 
 import { assemblePack, packAssetAllowlist, type PackInput } from "./pack";
-import { authorDeck } from "./author";
+import { authorDeck, authorContinuation, mergeChapters, missingSections, type AuthorAttempt } from "./author";
 import { validateDeck, type TruthViolation } from "./validators";
 
 interface HarnessBuildArgs {
@@ -110,12 +110,27 @@ export const runHarnessPreviewBuild = async (args: HarnessBuildArgs): Promise<Ro
     const approvedText = [packInput.briefPrompt, ...scenes.map((s) => `${s.label} ${s.description} ${s.content}`)].join("\n");
     const allowedUrls = packAssetAllowlist(packInput);
 
-    // ── Author: one call, whole deck, one mind. ──
+    // ── Author: one mind, one file — in ONE breath up to 8 pages, in
+    // continuing chapters beyond (founder directive 2026-08-28: every deck
+    // length runs the harness; longer decks honestly take longer). ──
     timeline.mark("harness:author:start");
-    const authored = await authorDeck(pack, n, {
-      onAttempt: (a) => timeline.mark(`harness:author:${a.model.split("/").pop()}:${a.ok ? "ok" : "failed"} (${a.seconds}s, ${a.outputTokens}tok)`),
-    });
+    const CHAPTER = 6;
+    const onAttempt = (a: AuthorAttempt) => timeline.mark(`harness:author:${a.model.split("/").pop()}:${a.ok ? "ok" : "failed"} (${a.seconds}s, ${a.outputTokens}tok)`);
+    const firstEnd = n <= 8 ? n : CHAPTER;
+    const basePack = n <= 8 ? pack : assemblePack({ ...packInput, chapterEmitEnd: firstEnd });
+    const authored = await authorDeck(basePack, firstEnd, { onAttempt });
     let code = authored.code;
+    const chapterThinking: string[] = [authored.thinking];
+    for (let start = firstEnd; start < n; start += CHAPTER) {
+      const end = Math.min(start + CHAPTER, n);
+      timeline.mark(`harness:chapter:${start + 1}-${end}:start`);
+      const cont = await authorContinuation(pack, code, start, end, authored.model, { onAttempt });
+      code = mergeChapters(code, [cont.code]);
+      chapterThinking.push(cont.thinking);
+      timeline.mark(`harness:chapter:${start + 1}-${end}:done`);
+    }
+    const missingAfterMerge = n > 8 ? missingSections(code, n) : [];
+    if (missingAfterMerge.length) throw new Error(`chapter merge left gaps: ${missingAfterMerge.join(", ")}`);
     timeline.mark("design:scaffold:done");
     // Trace review is protocol: persist the author's reasoning next to the deck.
     // mkdir first — this runs BEFORE writeGeneratedFiles creates the genDir, and
@@ -124,7 +139,7 @@ export const runHarnessPreviewBuild = async (args: HarnessBuildArgs): Promise<Ro
     await fsp
       .writeFile(
         path.join(genDir, "harness-trace.json"),
-        JSON.stringify({ model: authored.model, attempts: authored.attempts, thinking: authored.thinking }, null, 2),
+        JSON.stringify({ model: authored.model, attempts: authored.attempts, thinking: chapterThinking.join("\n\n─── next chapter ───\n\n") }, null, 2),
       )
       .catch(() => {});
 

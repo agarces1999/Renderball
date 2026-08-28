@@ -29,6 +29,10 @@ export interface PackScene {
 }
 
 export interface PackInput {
+  /** Long decks (>8 pages) are authored in chapters: the first call emits only
+   *  Section0..emitEnd-1 but sees the WHOLE outline so the identity is designed
+   *  for every page. Omit for single-breath decks. */
+  chapterEmitEnd?: number;
   briefPrompt: string;
   tone: string | undefined;
   aspect: "16:9" | "9:16" | "1:1";
@@ -80,7 +84,9 @@ Original brief, for grounding: ${input.briefPrompt}
 
 FILE CONTRACT:
 - TypeScript React. Start with \`import React from "react";\` then \`import { Piece } from "./Piece";\` and nothing else imported. Then \`type Script = any;\`
-- Export exactly ${n} components: \`export const Section0\` through \`export const Section${n - 1}\` (React.FC<{ script?: Script }>), one per page, in outline order.
+- ${input.chapterEmitEnd && input.chapterEmitEnd < n
+    ? `This ${n}-page deck is authored in chapters. THIS call: export ONLY \`Section0\` through \`Section${input.chapterEmitEnd - 1}\` (pages 1-${input.chapterEmitEnd}). Later chapters continue the SAME file — so declare every shared constant, helper, and chrome component at module top level now, and design the identity to carry all ${n} pages.`
+    : `Export exactly ${n} components: \`export const Section0\` through \`export const Section${n - 1}\` (React.FC<{ script?: Script }>), one per page, in outline order.`}
 - Each section renders a full ${w}x${h} page: root div style {{ position: "absolute", inset: 0, width: "100%", height: "100%", overflow: "hidden" }} with an explicit background.
 - Inline styles only (React.CSSProperties objects). No CSS files, no Tailwind, no hooks, no state, no refs.
 - EDITABILITY GRAMMAR (hard): inside each section, wrap every visually distinct block in \`<Piece id="sN.pM" kind="...">\` ... \`</Piece>\` — N = page index, M = a per-page counter. The wrapper is transparent: the block inside it positions ITSELF (position: "absolute" with its own coordinates). Use kind="chrome" for the recurring page furniture (lockup, page number, footer rail — one chrome Piece per page, listed LAST in the section) and kind="diegetic" for everything else. One graphic device = ONE Piece (a whole SVG diagram is one Piece). Headline, supporting text, quote cards, stat rows: each its own Piece. Shared helper components and constants live at module top level, OUTSIDE the sections — never inside a Piece.

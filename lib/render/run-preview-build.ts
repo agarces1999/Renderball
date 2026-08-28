@@ -281,9 +281,7 @@ async function runPreviewBuildInner(
   // battery the dogfood loop built lives ONLY in the cast path.
   // ── RB_BUILD_MODE=harness: the one-author engine (docs/HARNESS.md). Flag
   // off → nothing changes; cast stays prod until the harness wins its A/B.
-  if ((opts?.buildMode ?? process.env.RB_BUILD_MODE) === "harness" && script.scenes.length <= 8) {
-    // >8 pages falls through to the engine below: the one-call author's output
-    // budget is sized for ≤8; the chapter-split extension ships later.
+  if ((opts?.buildMode ?? process.env.RB_BUILD_MODE) === "harness") {
     return runHarnessPreviewBuild({
       script,
       brief,

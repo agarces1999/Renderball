@@ -37,10 +37,24 @@ export const extractDeckFile = (raw: string): string | null => {
   return blocks.reduce((a, b) => (b.length > a.length ? b : a));
 };
 
-export const missingSections = (code: string, sceneCount: number): string[] =>
-  Array.from({ length: sceneCount }, (_, i) => `Section${i}`).filter(
+export const missingSections = (code: string, sceneCount: number, start = 0): string[] =>
+  Array.from({ length: sceneCount - start }, (_, i) => `Section${start + i}`).filter(
     (name) => !new RegExp(`export const ${name}\\b`).test(code),
   );
+
+/** Append continuation chapters to the base file. The base carries the module
+ *  preamble (imports, palette, helpers) and the first sections; additions are
+ *  section-only blocks. Throws on duplicate Section exports — a continuation
+ *  that re-declared an earlier page would shadow it silently at runtime. */
+export const mergeChapters = (base: string, additions: string[]): string => {
+  const merged = [base, ...additions].join("\n\n");
+  const seen = new Set<string>();
+  for (const m of merged.matchAll(/export const (Section\d+)\b/g)) {
+    if (seen.has(m[1])) throw new Error(`chapter merge: duplicate export ${m[1]}`);
+    seen.add(m[1]);
+  }
+  return merged;
+};
 
 export interface AuthorAttempt {
   model: string;
@@ -120,5 +134,87 @@ export const authorDeck = async (
   }
   throw new Error(
     `harness author: every socket model failed — ${attempts.map((a) => `${a.model.split("/").pop()}: ${a.failure}`).join(" · ")}`,
+  );
+};
+
+/** Author pages [start, end) as a CONTINUATION of an existing file. The model
+ *  sees the full pack (whole-outline context) plus the complete prior code, and
+ *  emits ONLY its sections — no imports, no re-declared helpers. The chapter
+ *  author is pinned to the model that wrote the base so the identity stays one
+ *  mind's; on repeated failure the socket falls through (any model can continue
+ *  given the code). */
+export const authorContinuation = async (
+  basePack: string,
+  priorCode: string,
+  start: number,
+  end: number,
+  pinnedModel: string,
+  opts?: { onAttempt?: (a: AuthorAttempt) => void },
+): Promise<{ code: string; model: string; attempts: AuthorAttempt[]; thinking: string }> => {
+  const prompt = `${basePack}
+
+You have ALREADY authored the beginning of this deck — the complete file so far is below. Continue THE SAME file for pages ${start + 1} through ${end}:
+- Emit ONLY \`export const Section${start}\` through \`export const Section${end - 1}\` (React.FC<{ script?: Script }>), in order.
+- NO import lines, NO re-declared constants, helpers, or components — reuse everything the existing file already defines, verbatim by name.
+- Same identity, same chrome, same Piece grammar (ids continue as "s${start}.p0" onward).
+- Do not repeat or modify any earlier section.
+
+\`\`\`tsx
+${priorCode}
+\`\`\`
+
+Reply with ONLY the new sections in a single \`\`\`tsx block.`;
+  const chain = [
+    ...socketOrder().filter((a) => a.model === pinnedModel),
+    ...socketOrder().filter((a) => a.model !== pinnedModel),
+  ];
+  const attempts: AuthorAttempt[] = [];
+  for (const author of chain) {
+    for (let tryN = 0; tryN < 2; tryN++) {
+      const t0 = Date.now();
+      try {
+        const r = await castCall({
+          system: "",
+          user: prompt,
+          maxTokens: AUTHOR_MAX_TOKENS,
+          model: author.model,
+          timeoutMs: AUTHOR_TIMEOUT_MS,
+          ...(author.thinkingBudget ? { effort: "high" as const, thinkingBudget: author.thinkingBudget } : {}),
+        });
+        const code = extractDeckFile(r.text ?? "");
+        const missing = code ? missingSections(code, end, start) : null;
+        const redeclares = code ? /(^|\n)\s*import\s/.test(code) || missingSections(code, start).length < start : false;
+        const failure = !code
+          ? "no closed code fence"
+          : missing && missing.length
+            ? `missing exports: ${missing.join(", ")}`
+            : redeclares
+              ? "continuation re-declared imports or earlier sections"
+              : undefined;
+        const attempt: AuthorAttempt = {
+          model: author.model,
+          seconds: Math.round((Date.now() - t0) / 100) / 10,
+          outputTokens: r.outputTokens,
+          ok: !failure,
+          failure,
+        };
+        attempts.push(attempt);
+        opts?.onAttempt?.(attempt);
+        if (!failure && code) return { code, model: author.model, attempts, thinking: r.thinking ?? "" };
+      } catch (err) {
+        const attempt: AuthorAttempt = {
+          model: author.model,
+          seconds: Math.round((Date.now() - t0) / 100) / 10,
+          outputTokens: 0,
+          ok: false,
+          failure: String(err).slice(0, 200),
+        };
+        attempts.push(attempt);
+        opts?.onAttempt?.(attempt);
+      }
+    }
+  }
+  throw new Error(
+    `harness continuation (pages ${start + 1}-${end}): every socket model failed — ${attempts.map((a) => `${a.model.split("/").pop()}: ${a.failure}`).join(" · ")}`,
   );
 };
