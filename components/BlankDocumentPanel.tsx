@@ -992,18 +992,15 @@ export function BlankDocumentPanel({
               </span>
             </button>
 
+            {/* Same quiet treatment as "Start without a brand →" one step
+                earlier (founder, 2026-08-29): scratch is allowed, never
+                incentivized — a mono whisper, not a card. */}
             <button
               type="button"
               onClick={onDismiss}
-              className="mt-2.5 w-full rounded-lg border border-hairline bg-surface p-4 text-left transition-colors hover:bg-surface-2"
+              className="mt-4 font-mono text-[10.5px] uppercase tracking-[0.14em] text-faint transition-colors hover:text-ink"
             >
-              <span className="block text-[14px] font-semibold text-ink">
-                Start from a blank canvas
-              </span>
-              <span className="mt-0.5 block text-[12.5px] leading-relaxed text-ink-soft">
-                Draw a box anywhere and say what belongs inside it. Add text and
-                images. Always free — you only pay when Renderball generates.
-              </span>
+              Start from a blank canvas →
             </button>
 
             {/* BOTH branches, deliberately. This ask used to live inside
