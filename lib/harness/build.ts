@@ -127,7 +127,14 @@ export const runHarnessPreviewBuild = async (args: HarnessBuildArgs): Promise<Ro
 
     // ── Truth validators → one targeted patch, then ship FLAGGED if needed. ──
     let violations = validateDeck({ code, approvedText, sceneCount: n, allowedUrls, logoSrc: packInput.brand.logoSrc });
-    if (violations.length) {
+    // Instrument-distrust ceiling (timing autopsy, 2026-08-27): the A/B batch
+    // burned 116-142s per build patching 28-55 PHANTOM violations from validator
+    // bugs. A deck does not invent dozens of numerals; an instrument does.
+    // Untrusted measurements can't block — and they can't SPEND either.
+    const SANITY_CEILING = 12;
+    if (violations.length > SANITY_CEILING) {
+      timeline.mark(`harness:validate:INSTRUMENT-SUSPECT (${violations.length} > ${SANITY_CEILING}) — no patch spent, shipping flagged for review`);
+    } else if (violations.length) {
       timeline.mark(`harness:validate:${violations.length} violation(s) — patching`);
       const patched = await surgicalPatch(code, violations, authored.model);
       if (patched) {
@@ -250,23 +257,29 @@ const lookAndReviseOnce = async (args: {
   let { code } = args;
   timeline.mark("harness:critic:start");
   const before = await measureScenes(genDir, script, measureOutDir(genDir));
-  const notes: { page: number; weakness: string }[] = [];
-  for (let i = 0; i < n; i++) {
-    const shot = await shotBase64(before[i]?.screenshotPath, genDir, i);
-    if (!shot) continue;
-    const r = await callZaiVision(
-      shot,
-      `This slide was authored for the intent: "${sceneIntent(scenes[i], i)}". Judge it against that intent for an executive audience. Reply ONLY JSON: {"ship": true|false, "weakness": "<the ONE decisive weakness, or empty if ship>"}`,
-      { timeoutMs: 120_000, maxTokens: CRITIC_TOKENS, stage: "harness-critic" },
-    );
-    const raw = (r.text ?? "").match(/\{[\s\S]*\}/)?.[0] ?? extractJsonFromReasoning(r.text ?? "");
-    try {
-      const v = raw ? JSON.parse(raw) : null;
-      if (v && v.ship === false && v.weakness) notes.push({ page: i, weakness: String(v.weakness).slice(0, 300) });
-    } catch {
-      /* an unparseable verdict never blocks — decks always ship */
-    }
-  }
+  // All pages judged CONCURRENTLY — the A/B batch spent 161-242s here running
+  // them one-at-a-time (timing autopsy, 2026-08-27). Parallelism changes the
+  // plumbing around the judgments, never the judgments.
+  const pageNotes = await Promise.all(
+    Array.from({ length: n }, (_, i) => (async (): Promise<{ page: number; weakness: string } | null> => {
+      const shot = await shotBase64(before[i]?.screenshotPath, genDir, i);
+      if (!shot) return null;
+      const r = await callZaiVision(
+        shot,
+        `This slide was authored for the intent: "${sceneIntent(scenes[i], i)}". Judge it against that intent for an executive audience. Reply ONLY JSON: {"ship": true|false, "weakness": "<the ONE decisive weakness, or empty if ship>"}`,
+        { timeoutMs: 120_000, maxTokens: CRITIC_TOKENS, stage: "harness-critic" },
+      );
+      const raw = (r.text ?? "").match(/\{[\s\S]*\}/)?.[0] ?? extractJsonFromReasoning(r.text ?? "");
+      try {
+        const v = raw ? JSON.parse(raw) : null;
+        if (v && v.ship === false && v.weakness) return { page: i, weakness: String(v.weakness).slice(0, 300) };
+      } catch {
+        /* an unparseable verdict never blocks — decks always ship */
+      }
+      return null;
+    })().catch(() => null)),
+  );
+  const notes = pageNotes.filter((x): x is { page: number; weakness: string } => x !== null);
   timeline.mark(`harness:critic:done (${notes.length} page(s) flagged)`);
   if (!notes.length) return code;
   // Snapshot the flagged pages' pixels now — the revision re-measure
@@ -300,21 +313,25 @@ const lookAndReviseOnce = async (args: {
     return code;
   }
   const after = await measureScenes(genDir, script, measureOutDir(genDir));
-  let wins = 0;
-  for (const f of notes) {
-    const a = beforeShots.get(f.page) ?? null;
-    const b = await shotBase64(after[f.page]?.screenshotPath, genDir, f.page);
-    if (!a || !b) continue;
-    const r2 = await callZaiVision(
-      [a, b],
-      `Two versions of one slide (FIRST then SECOND), intent: "${sceneIntent(scenes[f.page], f.page)}". Which better achieves the intent? Reply ONLY JSON: {"winner":"FIRST"|"SECOND"}`,
-      { timeoutMs: 120_000, maxTokens: CRITIC_TOKENS, stage: "harness-pairwise" },
-    );
-    const raw = (r2.text ?? "").match(/\{[\s\S]*\}/)?.[0] ?? extractJsonFromReasoning(r2.text ?? "");
-    try {
-      if (raw && JSON.parse(raw).winner === "SECOND") wins++;
-    } catch { /* undecided counts against the revision */ }
-  }
+  const pairVerdicts = await Promise.all(
+    notes.map((f) => (async (): Promise<boolean> => {
+      const a = beforeShots.get(f.page) ?? null;
+      const b = await shotBase64(after[f.page]?.screenshotPath, genDir, f.page);
+      if (!a || !b) return false;
+      const r2 = await callZaiVision(
+        [a, b],
+        `Two versions of one slide (FIRST then SECOND), intent: "${sceneIntent(scenes[f.page], f.page)}". Which better achieves the intent? Reply ONLY JSON: {"winner":"FIRST"|"SECOND"}`,
+        { timeoutMs: 120_000, maxTokens: CRITIC_TOKENS, stage: "harness-pairwise" },
+      );
+      const raw = (r2.text ?? "").match(/\{[\s\S]*\}/)?.[0] ?? extractJsonFromReasoning(r2.text ?? "");
+      try {
+        return !!raw && JSON.parse(raw).winner === "SECOND";
+      } catch {
+        return false; /* undecided counts against the revision */
+      }
+    })().catch(() => false)),
+  );
+  const wins = pairVerdicts.filter(Boolean).length;
   if (wins * 2 > notes.length) {
     timeline.mark(`harness:revise:kept (${wins}/${notes.length} pages improved)`);
     return revised;
