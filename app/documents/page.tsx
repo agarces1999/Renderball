@@ -286,7 +286,7 @@ function DocumentCard({ card }: { card: Card }) {
           </span>
           <span>{fmtDate(brief.created_at)}</span>
         </div>
-        <p className="line-clamp-3 text-[14px] leading-snug text-ink">{title}</p>
+        <p className="truncate text-[14px] leading-snug text-ink" title={title}>{title}</p>
         <div className="mt-3 flex items-center gap-2">
           <StatusChip tone={status.tone} label={status.label} />
           {brief.brand_kit_url && (
