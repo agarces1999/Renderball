@@ -416,7 +416,7 @@ export const resolveScriptProvider = (): ScriptProvider => "fireworks";
  * Kill switch: RB_SCRIPT_MODEL=accounts/fireworks/routers/glm-5p2-fast.
  */
 const fireworksScriptModel = (): string =>
-  process.env.RB_SCRIPT_MODEL || "accounts/fireworks/models/deepseek-v4-flash-0731";
+  process.env.RB_SCRIPT_MODEL || "accounts/fireworks/models/qwen3p8-max"; // founder 2026-08-28: Qwen for ALL calls (supersedes the 08-20 deepseek-for-briefs call); RB_SCRIPT_MODEL still overrides
 
 /**
  * Flatten the repair loop's multi-turn history into castCall's single user
