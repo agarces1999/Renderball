@@ -44,7 +44,7 @@ export default function AcceptableUsePage() {
         </p>
         <p>
           Optionally, and only when the customer supplies their own website
-          address, we read that page to extract their brand&rsquo;s colours, fonts
+          address, we read that page to extract their brand&rsquo;s colors, fonts
           and logo so the document matches their brand.
         </p>
       </Clause>

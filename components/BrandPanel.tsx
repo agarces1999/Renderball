@@ -406,14 +406,14 @@ export function BrandPanel({
       <div>
         <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-muted">Brand</p>
         <p className="mt-1 text-[12px] leading-relaxed text-ink-soft">
-          Colours, type and logo apply instantly and cost nothing. Guidelines and
+          Colors, type and logo apply instantly and cost nothing. Guidelines and
           materials steer what gets generated next.
         </p>
       </div>
 
       {/* ── colours ─────────────────────────────────────────────────── */}
       <section>
-        <h3 className="mb-2 text-[12.5px] font-semibold text-ink">Colours</h3>
+        <h3 className="mb-2 text-[12.5px] font-semibold text-ink">Colors</h3>
         <div className="flex flex-col gap-2">
           {ROLES.map(({ key, label }) => {
             const current = brand.palette[key] ?? inUse?.palette?.[key] ?? "";
@@ -573,7 +573,7 @@ export function BrandPanel({
           onChange={(e) => setBrand({ ...brand, guidelines: e.target.value })}
           rows={6}
           placeholder={
-            "Sentence case for headlines.\nNever put the logo on the accent colour.\nWe say “members”, not “users”."
+            "Sentence case for headlines.\nNever put the logo on the accent color.\nWe say “members”, not “users”."
           }
           className="w-full resize-y rounded-md border border-hairline bg-surface px-2 py-1.5 text-[11.5px] leading-relaxed text-ink outline-none focus:border-accent-line"
         />

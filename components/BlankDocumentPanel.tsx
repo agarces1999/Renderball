@@ -1265,7 +1265,7 @@ function BrandCeremony({
           Whose document is this?
         </h2>
         <p className="mt-1 text-[12.5px] leading-relaxed text-ink-soft">
-          Renderball designs in your brand — your colours, your type, your logo.
+          Renderball designs in your brand — your colors, your type, your logo.
         </p>
 
         {kits.length > 0 && (
@@ -1510,7 +1510,7 @@ function BrandCeremony({
 
       {/* colours — with the black-&-white question when nothing chromatic was seen */}
       <div className="mt-4" style={rowAnim(1)}>
-        <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-faint">Colours</p>
+        <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-faint">Colors</p>
         {c?.no_colour ? (
           <div className="mt-1.5">
             <p className="text-[12.5px] leading-relaxed text-ink-soft">
@@ -1532,7 +1532,7 @@ function BrandCeremony({
                 Yes — keep it black &amp; white
               </button>
               <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-hairline px-3 py-1.5 text-[12px] text-muted transition-colors hover:border-accent-line hover:text-ink">
-                No — pick our colour
+                No — pick our color
                 <input
                   type="color"
                   value={accent ?? "#0f62fe"}
@@ -1575,10 +1575,10 @@ function BrandCeremony({
                 "Black & white"
               ) : accent ? (
                 <>
-                  Lead colour <span className="font-mono text-ink">{accent}</span>
+                  Lead color <span className="font-mono text-ink">{accent}</span>
                 </>
               ) : (
-                "Pick your lead colour"
+                "Pick your lead color"
               )}
             </span>
             {/* The escape for the brands the crawler measurably gets wrong:
@@ -1603,7 +1603,7 @@ function BrandCeremony({
                   : "border-hairline text-muted hover:border-accent-line hover:text-ink"
               }`}
             >
-              {monochrome ? "No — we have a colour" : "We're actually black & white"}
+              {monochrome ? "No — we have a color" : "We're actually black & white"}
             </button>
           </div>
         )}

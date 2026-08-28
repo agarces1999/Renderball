@@ -3787,8 +3787,8 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
                 <div className="relative" data-rb-colorpop>
                   <button
                     type="button"
-                    title="Text colour"
-                    aria-label="Text colour"
+                    title="Text color"
+                    aria-label="Text color"
                     aria-expanded={colorOpen}
                     onClick={() => setColorOpen((o) => !o)}
                     disabled={!!busy}
