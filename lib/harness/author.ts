@@ -54,6 +54,9 @@ export interface AuthorResult {
   code: string;
   model: string;
   attempts: AuthorAttempt[];
+  /** The winning call's reasoning stream — persisted for trace review
+   *  (docs/HARNESS.md: outcome data alone missed GLM being squeezed). */
+  thinking: string;
 }
 
 /** Socket order, honoring RB_HARNESS_MODEL as a pin (exact id or substring). */
@@ -101,7 +104,7 @@ export const authorDeck = async (
         };
         attempts.push(attempt);
         opts?.onAttempt?.(attempt);
-        if (!failure && code) return { code, model: author.model, attempts };
+        if (!failure && code) return { code, model: author.model, attempts, thinking: r.thinking ?? "" };
       } catch (err) {
         const attempt: AuthorAttempt = {
           model: author.model,

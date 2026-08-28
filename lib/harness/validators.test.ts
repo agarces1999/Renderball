@@ -44,6 +44,32 @@ await check("allows numerals present in the approved copy and page indices", () 
   assert(v.length === 0, `expected 0, got ${JSON.stringify(v.map((x) => x.detail))}`);
 });
 
+await check("apostrophes in prose never create phantom string literals (Atlas regression)", () => {
+  const code = `
+    <p>the quarter's growth. It steadied the whole network.</p>
+    <div style={{ left: 96, top: 620 }} />
+    <p>that's the right call.</p>`;
+  const v = findInventedNumerals(code, "no numbers", 6);
+  assert(v.length === 0, `expected 0, got ${JSON.stringify(v.map((x) => x.detail))}`);
+});
+
+await check("hex colors, rgba strings, and coordinate constants are geometry, not claims (Disney regression)", () => {
+  const code = `const NAVY = "#050D1F"; const MUTE = "rgba(255,255,255,0.64)"; const PTS = "1150 780"; const ARC = "M0,395 L80,392";
+    <div><p>Reliability over volume.</p></div>`;
+  const v = findInventedNumerals(code, "no numbers", 6);
+  assert(v.length === 0, `expected 0, got ${JSON.stringify(v.map((x) => x.detail))}`);
+});
+
+await check("generic type annotations never turn data arrays into phantom JSX text (Disney regression)", () => {
+  const code = `const BARS: Array<[string, number]> = [
+      ["Retention", 600],
+      ["Engagement", 545],
+    ];
+    <div><p>Winning now depends on retention.</p></div>`;
+  const v = findInventedNumerals(code, "no numbers", 6);
+  assert(v.length === 0, `expected 0, got ${JSON.stringify(v.map((x) => x.detail))}`);
+});
+
 await check("flags a missing logo only when a logo exists", () => {
   assert(findLogoViolation("<div/>", "https://cdn.example.com/logo.png").length === 1, "missing logo not flagged");
   assert(findLogoViolation('<img src="https://cdn.example.com/logo.png"/>', "https://cdn.example.com/logo.png").length === 0, "present logo flagged");

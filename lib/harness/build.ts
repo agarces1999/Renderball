@@ -117,6 +117,13 @@ export const runHarnessPreviewBuild = async (args: HarnessBuildArgs): Promise<Ro
     });
     let code = authored.code;
     timeline.mark("design:scaffold:done");
+    // Trace review is protocol: persist the author's reasoning next to the deck.
+    await fsp
+      .writeFile(
+        path.join(genDir, "harness-trace.json"),
+        JSON.stringify({ model: authored.model, attempts: authored.attempts, thinking: authored.thinking }, null, 2),
+      )
+      .catch(() => {});
 
     // ── Truth validators → one targeted patch, then ship FLAGGED if needed. ──
     let violations = validateDeck({ code, approvedText, sceneCount: n, allowedUrls, logoSrc: packInput.brand.logoSrc });

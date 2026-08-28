@@ -50,10 +50,38 @@ const stripLayout = (code: string): string => {
     .replace(/\s[a-zA-Z-]+="[^"]*"/g, " ");
 };
 
+/** A string literal that is a style/geometry VALUE, not viewer-readable text:
+ *  hex colors ("#050D1F" → "050" flooded the Disney batch build with 55 false
+ *  violations), rgba()/hsl() strings, pure point/coordinate data ("1150 780"),
+ *  and SVG path constants ("M0,395 L80…"). A claim-bearing string contains a
+ *  real word; these never do. */
+const isStyleValueChunk = (chunk: string): boolean => {
+  const t = chunk.trim();
+  if (t.startsWith("#")) return true;
+  if (/^(rgba?|hsla?|calc|url|linear-gradient|radial-gradient)\(/i.test(t)) return true;
+  if (/^[Mm]\s*-?\d/.test(t)) return true; // SVG path data
+  const words = t.match(/[A-Za-z]{3,}/g) ?? [];
+  const nonUnit = words.filter((w) => !/^(px|rem|deg|rgba?|hsla?|solid|dashed|dotted|calc|var|auto|none|deg|vh|vw)$/i.test(w));
+  return nonUnit.length === 0; // pure numbers/coords/units → geometry
+};
+
 /** Numerals a viewer would read in the given source region. */
 const readableNumerals = (text: string): string[] => {
-  const literals = [...text.matchAll(/(["'`])((?:(?!\1)[\s\S])*)\1/g)].map((m) => m[2]);
-  const jsxText = [...text.matchAll(/>([^<>{}]+)</g)].map((m) => m[1]);
+  // Double-quote + backtick literals only. Single quotes are NOT scanned: an
+  // apostrophe in prose ("the quarter's growth") pairs with the next one and
+  // swallows real code between them — the Atlas batch build flooded 40 false
+  // numerals from exactly that phantom. Template chunks with ${} are code.
+  const literals = [...text.matchAll(/(["`])((?:(?!\1)[\s\S])*)\1/g)]
+    .map((m) => m[2])
+    .filter((c) => !c.includes("${"))
+    .filter((c) => !isStyleValueChunk(c));
+  // A ">…<" span is only PROSE if it doesn't read as code: TypeScript generics
+  // (Array<[string, number]> = [ ["Retention", 600], … ) end with ">" and turn
+  // the data array AFTER them into phantom "JSX text" — the Disney batch
+  // build's last 26 false numerals were exactly this.
+  const jsxText = [...text.matchAll(/>([^<>{}]+)</g)]
+    .map((m) => m[1])
+    .filter((c) => !/(=>|=\s*\[|\];|\bconst\b|\breturn\b|\],)/.test(c));
   const tokens = new Set<string>();
   for (const chunk of [...literals, ...jsxText]) {
     for (const m of chunk.matchAll(/\d[\d,.]*/g)) {
@@ -72,6 +100,7 @@ const pageIndexAllowance = (sceneCount: number): Set<string> => {
     ok.add(String(i).padStart(2, "0"));
   }
   ok.add(String(sceneCount));
+  ok.add("0"); // a bare zero is never a fabricated statistic
   return ok;
 };
 
