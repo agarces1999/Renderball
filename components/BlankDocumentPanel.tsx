@@ -973,31 +973,36 @@ export function BlankDocumentPanel({
                 generate option it actually leads to rather than above
                 everything as a third headline choice. */}
 
-            <button
-              type="button"
-              onClick={onDismiss}
-              className="mt-5 w-full rounded-lg border border-accent-line bg-accent-soft p-4 text-left transition-colors hover:bg-surface-2"
-            >
-              <span className="block text-[14px] font-semibold text-ink">
-                Build it yourself
-              </span>
-              <span className="mt-0.5 block text-[12.5px] leading-relaxed text-ink-soft">
-                Draw a box anywhere and say what belongs inside it. Add text and
-                images. Always free — you only pay when Renderball generates.
-              </span>
-            </button>
-
+            {/* Generation leads (founder, 2026-08-29): making the whole deck
+                is the product's core move and the default path — the blank
+                canvas stays one quiet card away, allowed but never
+                incentivized. This inverts the metering-era hierarchy that
+                made generate "the secondary button, not the loud one". */}
             <button
               type="button"
               onClick={() => setOpen(true)}
-              className="mt-2.5 w-full rounded-lg border border-hairline bg-surface p-4 text-left transition-colors hover:bg-surface-2"
+              className="mt-5 w-full rounded-lg border border-accent-line bg-accent-soft p-4 text-left transition-colors hover:bg-surface-2"
             >
               <span className="block text-[14px] font-semibold text-ink">
                 Generate every page for me
               </span>
               <span className="mt-0.5 block text-[12.5px] leading-relaxed text-ink-soft">
                 Describe the document and Renderball writes and designs the whole
-                thing. Takes a few minutes and uses tokens.
+                thing — on your brand, ready to edit. Takes a few minutes.
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={onDismiss}
+              className="mt-2.5 w-full rounded-lg border border-hairline bg-surface p-4 text-left transition-colors hover:bg-surface-2"
+            >
+              <span className="block text-[14px] font-semibold text-ink">
+                Start from a blank canvas
+              </span>
+              <span className="mt-0.5 block text-[12.5px] leading-relaxed text-ink-soft">
+                Draw a box anywhere and say what belongs inside it. Add text and
+                images. Always free — you only pay when Renderball generates.
               </span>
             </button>
 
