@@ -200,20 +200,12 @@ export default async function DocumentsPage({
                 : `${briefs.length} ${briefs.length === 1 ? "document" : "documents"}`}
             </p>
           </div>
-          <div className="flex shrink-0 items-center gap-4">
-            <Link
-              href="/api/documents/new" prefetch={false}
-              className="font-mono text-[12px] text-muted transition-colors hover:text-ink"
-            >
-              blank canvas
-            </Link>
-            <Link
-              href="/new"
-              className="rounded-md bg-accent px-4 py-2.5 text-[14px] font-semibold text-accent-ink transition-all hover:brightness-110"
-            >
-              New document
-            </Link>
-          </div>
+          <Link
+            href="/api/documents/new" prefetch={false}
+            className="shrink-0 rounded-md bg-accent px-4 py-2.5 text-[14px] font-semibold text-accent-ink transition-all hover:brightness-110"
+          >
+            New document
+          </Link>
         </div>
 
         {createFailed && (
@@ -342,17 +334,11 @@ function EmptyState() {
         shape before anything builds.
       </p>
       <Link
-        href="/new"
+        href="/api/documents/new" prefetch={false}
         className="mt-6 inline-block rounded-md bg-accent px-5 py-2.5 text-[14px] font-semibold text-accent-ink transition-all hover:brightness-110"
       >
         Make your first deck
       </Link>
-      <p className="mt-4 font-mono text-[11px] text-faint">
-        or{" "}
-        <Link href="/api/documents/new" prefetch={false} className="underline decoration-hairline underline-offset-2 transition-colors hover:text-muted">
-          start from a blank canvas
-        </Link>
-      </p>
     </div>
   );
 }

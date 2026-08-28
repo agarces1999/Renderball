@@ -44,7 +44,7 @@ export function AppShell({
             </span>
           </Link>
           <Link
-            href="/new"
+            href="/api/documents/new" prefetch={false}
             className="block rounded-md bg-accent px-3.5 py-2 text-center text-[13.5px] font-semibold text-accent-ink transition-all hover:brightness-110"
           >
             New document
@@ -130,7 +130,7 @@ export function AppShell({
               Documents
             </Link>
             <Link
-              href="/new"
+              href="/api/documents/new" prefetch={false}
               className="rounded-md bg-accent px-3 py-1.5 text-[12.5px] font-semibold text-accent-ink"
             >
               New document
