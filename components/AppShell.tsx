@@ -48,12 +48,6 @@ export function AppShell({
               Renderball
             </span>
           </Link>
-          <Link
-            href="/api/documents/new" prefetch={false}
-            className="block rounded-full bg-accent px-3.5 py-2 text-center text-[13.5px] font-semibold text-accent-ink transition-all hover:brightness-110"
-          >
-            New document
-          </Link>
         </div>
 
         {/* Saved brands — the rail shows the durable identities, the grid shows
