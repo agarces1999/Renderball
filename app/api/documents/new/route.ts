@@ -76,9 +76,15 @@ export async function GET(request: Request) {
     await withDbRetry(() => saveScript(script, user.id));
     await withDbRetry(() => saveBrief(blankBrief(briefId, user.id, scriptId)));
 
-    // Publish immediately so the document survives a redeploy from creation,
-    // not just from its first edit.
-    await persistGenDir(scriptId);
+    // Publish so the document survives a redeploy from creation — but in the
+    // BACKGROUND (founder, 2026-08-29: "why does it take so long"). Awaiting
+    // this R2 upload put a full storage round-trip between the click and the
+    // canvas, buying insurance against a redeploy landing in the few seconds
+    // before the upload completes anyway. Fire, log on failure, don't bill
+    // the user's patience for it. First-edit persistence is unchanged.
+    void persistGenDir(scriptId).catch((e) =>
+      console.error(`[documents/new] background persist failed for ${scriptId}:`, e),
+    );
   } catch (err) {
     // This is the front door — every "New document" button in the app points
     // here. A bare throw renders the browser's own 500 page, which tells the
