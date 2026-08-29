@@ -424,7 +424,7 @@ export const fontStackFor = (font: {
 }): string => `"${font.family}", ${font.generic || genericFor(font.family)}`;
 
 // Relative luminance (0=black, 1=white) of a #rrggbb color.
-const luminanceOf = (hex: string): number | null => {
+export const luminanceOf = (hex: string): number | null => {
   const m = /^#?([0-9a-fA-F]{6})$/.exec(hex.trim());
   if (!m) return null;
   const n = parseInt(m[1], 16);

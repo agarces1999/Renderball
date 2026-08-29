@@ -79,6 +79,19 @@ check("monochrome keeps the fonts — killing the colour must not kill the type"
   assert(!!b.fonts.display, "display font survives the monochrome override");
 });
 
+check("a user-picked background dresses the canvas role (ceremony 2026-08-29)", () => {
+  const b = brandFromExtractWithRoles(chromaticExtract(), { background: "#10141c" });
+  assert(b.palette.canvas === "#10141c", `got ${b.palette.canvas}`);
+});
+
+check("a hostile 'background' is ignored like a hostile accent", () => {
+  const before = brandFromExtractWithRoles(chromaticExtract()).palette.canvas;
+  const b = brandFromExtractWithRoles(chromaticExtract(), {
+    background: 'url(x)";//' as string,
+  });
+  assert(b.palette.canvas === before, "non-hex background must leave the canvas untouched");
+});
+
 check("merge keeps the document's uploaded logo and materials", () => {
   const existing: DocumentBrand = {
     v: 1,

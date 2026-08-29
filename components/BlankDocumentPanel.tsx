@@ -704,6 +704,7 @@ export function BlankDocumentPanel({
   const confirmCeremony = async (payload: {
     name: string;
     accent?: string;
+    background?: string;
     monochrome?: boolean;
     logoSource?: "upload";
   }) => {
@@ -1192,7 +1193,7 @@ function BrandCeremony({
   deepBusy: boolean;
   onLookDeeper: () => void;
   confirmBusy: boolean;
-  onConfirm: (p: { name: string; accent?: string; monochrome?: boolean; logoSource?: "upload" }) => void;
+  onConfirm: (p: { name: string; accent?: string; background?: string; monochrome?: boolean; logoSource?: "upload" }) => void;
   onRetry: () => void;
   onSkip: () => void;
   error: string | null;
@@ -1203,6 +1204,8 @@ function BrandCeremony({
   // ── beat-3 working state ────────────────────────────────────────────────
   const [name, setName] = useState("");
   const [accent, setAccent] = useState<string | undefined>(undefined);
+  // undefined = the site's own canvas (crawl default) — only a click locks one.
+  const [background, setBackground] = useState<string | undefined>(undefined);
   const [monochrome, setMonochrome] = useState(false);
   const [uploaded, setUploaded] = useState<string | null>(null);
   const [uploadBusy, setUploadBusy] = useState(false);
@@ -1224,6 +1227,7 @@ function BrandCeremony({
       setUploadError(null);
     }
     setAccent(ceremony.signature);
+    setBackground(undefined);
     setMonochrome(false);
   }, [ceremony]);
 
@@ -1609,6 +1613,39 @@ function BrandCeremony({
         )}
       </div>
 
+      {/* background — the page canvas. Crawl-defaulted (founder call
+          2026-08-29): no pick means the site's own canvas plan; one click
+          locks a canvas, clicking it again returns to the site default. */}
+      <div className="mt-4" style={rowAnim(1)}>
+        <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-faint">Background</p>
+        <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+          {[...new Set(["#ffffff", "#10141c", ...(c?.palette ?? []).map((h) => h.toLowerCase())])].map(
+            (hex) => (
+              <button
+                key={hex}
+                type="button"
+                title={hex}
+                onClick={() => setBackground(background === hex ? undefined : hex)}
+                className={`h-6 w-6 rounded-full border transition-transform hover:scale-110 ${
+                  background === hex ? "border-ink ring-2 ring-accent-line" : "border-hairline"
+                }`}
+                style={{ background: hex }}
+                aria-label={`Use ${hex} as the page background`}
+              />
+            ),
+          )}
+          <span className="ml-1 text-[11.5px] text-muted">
+            {background ? (
+              <>
+                Page background <span className="font-mono text-ink">{background}</span>
+              </>
+            ) : (
+              "Site default"
+            )}
+          </span>
+        </div>
+      </div>
+
       {/* type */}
       {(c?.display_font || c?.body_font) && (
         <div className="mt-4" style={rowAnim(2)}>
@@ -1666,6 +1703,7 @@ function BrandCeremony({
           onConfirm({
             name: name.trim(),
             ...(monochrome ? { monochrome: true } : accent ? { accent } : {}),
+            ...(background ? { background } : {}),
             ...(uploaded ? { logoSource: "upload" as const } : {}),
           })
         }

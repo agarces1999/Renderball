@@ -48,6 +48,9 @@ export const brandFromExtractWithRoles = (
   } else if (roles?.monochrome === true) {
     delete base.palette.accent;
   }
+  if (isHex(roles?.background)) {
+    base.palette.canvas = roles.background;
+  }
   return base;
 };
 

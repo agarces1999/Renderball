@@ -45,7 +45,7 @@ import type { BrandExtract } from "../../../app/new/schema";
  *     same protect-their-work rule the crawl obeys — and persists the extract
  *     onto the brief so generation sees the brand.
  *
- *   { scriptId, name, accent? | monochrome? }
+ *   { scriptId, name, accent? | monochrome?, background? }
  *     Ceremony confirmation. The extract to confirm is the one the crawl
  *     already persisted onto the brief — the client never sends brand bytes,
  *     so a hostile client cannot inject a "crawl result" we never performed.
@@ -69,6 +69,7 @@ interface ConfirmBody {
   kitId?: string;
   name?: string;
   accent?: string;
+  background?: string;
   monochrome?: unknown;
   /** "upload" when the user replaced the crawled logo during the ceremony. */
   logoSource?: string;
@@ -144,6 +145,7 @@ export async function POST(request: Request) {
 
   const answered = sanitizePaletteRoles({
     accent: body.accent,
+    background: body.background,
     monochrome: body.monochrome,
   });
   // SILENCE PRESERVES, AN ANSWER REPLACES. A user who confirmed "black &

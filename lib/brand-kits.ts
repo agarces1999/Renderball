@@ -40,6 +40,12 @@ export interface PaletteRoles {
   light?: string;
   dark?: string;
   /**
+   * Ceremony answer (founder call 2026-08-29): the page canvas the user chose
+   * while looking at the crawl. Overrides the crawl's canvas plan at build
+   * time and dresses the document's `canvas` role.
+   */
+  background?: string;
+  /**
    * Ceremony answer (2026-08-11): the user confirmed the brand IS black &
    * white. Wins over `accent` when both are somehow present. This is the human
    * answer to the question the crawler measurably cannot answer from bytes
@@ -107,7 +113,7 @@ export const normalizeBrandHost = (raw: string): string | null => {
 };
 
 const HEX_RE = /^#[0-9a-fA-F]{3,8}$/;
-const ROLE_KEYS = ["primary", "accent", "light", "dark"] as const satisfies ReadonlyArray<keyof PaletteRoles>;
+const ROLE_KEYS = ["primary", "accent", "light", "dark", "background"] as const satisfies ReadonlyArray<keyof PaletteRoles>;
 
 /**
  * Keep only known role keys carrying hex values. Roles arrive from client

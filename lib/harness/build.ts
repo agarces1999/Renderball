@@ -17,7 +17,7 @@ import path from "path";
 import { BuildTimeline } from "../agents/build-timeline";
 import { decomposeGenDir } from "../agents/lego-store";
 import { resolveCornerBrandMark } from "../agents/logo-inject";
-import { resolveCanvasPlan, signatureWithLogoFallback, brandShortName } from "../crawl/brand-identity";
+import { resolveCanvasPlan, signatureWithLogoFallback, brandShortName, luminanceOf } from "../crawl/brand-identity";
 import { deriveCrawlTheme } from "../render/crawl-theme";
 import { persistGenDir } from "../render/gen-store";
 import { measureScenes } from "../render/measure-scene";
@@ -72,6 +72,22 @@ export const runHarnessPreviewBuild = async (args: HarnessBuildArgs): Promise<Ro
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const be: any = brief?.brand_extract?.ok ? brief.brand_extract : undefined;
     const canvasPlan = resolveCanvasPlan(be);
+    // User-locked roles from the ceremony (brief.palette_roles) — decisions,
+    // not crawl guesses. A locked background overrides the crawl's canvas
+    // plan wholesale, mode included; a locked accent is handed to the author
+    // labeled as THE accent (pack.ts renders the wording).
+    const HEX6 = /^#[0-9a-fA-F]{6}$/;
+    const rawRoles = (brief?.palette_roles ?? {}) as {
+      accent?: string;
+      background?: string;
+      monochrome?: boolean;
+    };
+    const lockedAccent = HEX6.test(rawRoles.accent ?? "") ? rawRoles.accent : undefined;
+    const lockedBackground = HEX6.test(rawRoles.background ?? "") ? rawRoles.background : undefined;
+    if (lockedBackground) {
+      canvasPlan.background = lockedBackground;
+      canvasPlan.mode = (luminanceOf(lockedBackground) ?? 1) < 0.5 ? "dark" : "light";
+    }
     const signature =
       signatureWithLogoFallback(be?.palette ?? [], be?.theme_color, be?.logo_color, be?.named) ??
       be?.theme_color ??
@@ -101,6 +117,11 @@ export const runHarnessPreviewBuild = async (args: HarnessBuildArgs): Promise<Ro
         logoSrc: logoSrc ?? null,
         mode: canvasPlan.mode === "light" ? "light" : "dark",
         background: canvasPlan.background,
+        roles: {
+          ...(lockedAccent ? { accent: lockedAccent } : {}),
+          ...(lockedBackground ? { background: lockedBackground } : {}),
+          ...(rawRoles.monochrome === true ? { monochrome: true } : {}),
+        },
       },
       assetUrls: (brief?.brand_files ?? [])
         .map((f: { url?: string }) => f.url)

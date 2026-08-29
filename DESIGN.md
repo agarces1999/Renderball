@@ -262,6 +262,13 @@ The old 5-step upfront wizard (site → format → colors → shape → prompt, 
     observed, which is the human answer to the judgement bytes measurably
     cannot make (docs/BRAND_ACCURACY.md) — the type, and a NAME. Confirming
     saves the kit to the account (BrandKit.name) and dresses the document.
+    A BACKGROUND row sits under the colors (Alfonso, 2026-08-29): white,
+    near-black, and the crawl palette as chips, defaulting to "Site default"
+    (the crawl's canvas plan) — a pick locks `palette_roles.background`,
+    clicking it again unlocks. Still refinement, never a gate. Locked roles
+    are DECISIONS: the build pack renders them with authority (accent leads,
+    background is the canvas, mode follows its luminance) so the author can
+    never again cast a locked accent as a supporting color.
   The three hard rules below survive unchanged inside the ceremony: never a
   gate (skip works from every beat; a thin or failed read still opens a
   working editor), never a lie (yield-derived copy only), never spends by

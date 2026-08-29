@@ -19,6 +19,11 @@ export interface PackBrandFacts {
   mode: "dark" | "light";
   /** Canvas background from the resolved canvas plan. */
   background: string;
+  /** Roles the USER locked in the ceremony — decisions, not crawl guesses.
+   *  The pack renders them with authority so the author cannot mistake the
+   *  locked accent for one anonymous swatch among eight (the founder's Fuse
+   *  deck did exactly that: the locked maroon became the villain color). */
+  roles?: { accent?: string; background?: string; monochrome?: boolean };
 }
 
 export interface PackScene {
@@ -62,16 +67,31 @@ export const assemblePack = (input: PackInput): string => {
     .join("\n\n");
 
   const assets = packAssetAllowlist(input);
+  const roles = input.brand.roles ?? {};
+  const roleLines = [
+    roles.accent
+      ? `- Accent: ${roles.accent} — THE brand accent. It leads: the color of emphasis, key devices, and what the deck is remembered by. Every other palette color is supporting cast.`
+      : null,
+    roles.background
+      ? `- Page background: ${roles.background} — every page's canvas. Non-negotiable.`
+      : null,
+    roles.monochrome
+      ? `- The user confirmed this brand is BLACK & WHITE: no chromatic accent anywhere. Craft comes from type, spacing, and neutral tone.`
+      : null,
+  ].filter((l): l is string => !!l);
   const brandLines = [
     `Brand: ${input.brand.brandName}. Canvas mode: ${input.brand.mode}. Canvas background: ${input.brand.background}.`,
     input.brand.palette.length
       ? `Brand palette (retrieved from the real site — stay inside this family plus neutrals): ${input.brand.palette.join(" ")}`
       : `No palette retrieved — choose ONE disciplined scheme and commit to it on every page.`,
+    roleLines.length
+      ? `USER-LOCKED COLOR ROLES (the user chose these while looking at the palette — obey them, they are decisions, not suggestions):\n${roleLines.join("\n")}`
+      : null,
     input.brand.logoSrc
       ? `The REAL brand logo is provided as an asset URL below. Use it as the lockup in every page's chrome (an <img> at natural aspect, height 24-36px) and larger where the story calls for it. Do not draw your own logo and do not write the brand name as plain text where the logo should be.`
       : `No logo asset was retrieved. Use a restrained text wordmark ("${input.brand.brandName}") in the chrome — do NOT invent a logo mark.`,
     assets.length ? `Allowed asset URLs (the ONLY external URLs permitted anywhere in the file):\n${assets.map((u) => `  - ${u}`).join("\n")}` : `No asset URLs — the file must reference no external URLs at all.`,
-  ].join("\n");
+  ].filter((l): l is string => !!l).join("\n");
 
   return `You are the design engine of a premium presentation studio. Author a complete ${n}-page deck as ONE self-contained React file. This is your only pass: no revisions follow, so compose at full ambition now.
 
@@ -93,6 +113,7 @@ FILE CONTRACT:
 - No external URLs except the allowed asset URLs listed above. System font stacks only (e.g. Helvetica Neue/Arial for display, SF Mono/Menlo/monospace for labels).
 - Deterministic: no Math.random, no Date. SVG is available and encouraged for graphic devices.
 - Every text-bearing block declares a horizontal bound (explicit width, maxWidth, or a right: offset). Unbounded text cannot autofit and will clip at the canvas edge.
+- Declare your color system at module top level as \`const PALETTE = { accent, canvas, ink, muted, surface, line }\` — accent = the lead brand color, canvas = the page background, ink = primary text, muted = secondary text, surface = card/panel fills, line = hairlines. Add as many extra keys as you like (never rename these six), and reference PALETTE keys instead of scattering raw hex literals. This exact const name is what lets the user re-color the deck instantly afterwards.
 
 TRUTH RULES (hard):
 - Every numeral on a page must come from the approved copy above. Invent NONE: no statistics, dollar figures, percentages, or years that are not in the outline. Page indices like "01 — 0${n}" are allowed.

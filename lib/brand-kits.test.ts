@@ -101,6 +101,14 @@ check("empty / non-object roles → undefined", () => {
   assert(sanitizePaletteRoles({ primary: "red" }) === undefined, "named color dropped");
 });
 
+check("background role (ceremony 2026-08-29) is a first-class hex role", () => {
+  const roles = sanitizePaletteRoles({ background: "#10141c" });
+  assert(roles?.background === "#10141c", "hex background kept");
+  assert(sanitizePaletteRoles({ background: "white" }) === undefined, "named background dropped");
+  const both = sanitizePaletteRoles({ accent: "#440c12", background: "#ffffff" });
+  assert(both?.accent === "#440c12" && both?.background === "#ffffff", "accent+background coexist");
+});
+
 // ── kitUpsertArgs: the override-preservation contract ────────────────────────
 
 check("upserts by (ownerId, host) composite key", () => {
