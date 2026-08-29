@@ -818,19 +818,26 @@ function StepRow({ label, status, aside }: { label: string; status: Status; asid
       )}
     >
       <StatusDot status={status} />
-      <span
-        className={cn(
-          "text-[13.5px]",
-          status === "pending" ? "text-muted" : "text-ink",
-          status === "active" && "font-medium",
-        )}
-      >
-        {label}
-        {status === "active" && <span className="text-muted">…</span>}
+      {/* The aside stacks BELOW the label — beside it, its no-shrink mono
+          text crushed the label into a one-word-per-line sliver in the rail
+          (founder screenshot, 2026-08-29). */}
+      <span className="min-w-0 flex-1">
+        <span
+          className={cn(
+            "block text-[13.5px]",
+            status === "pending" ? "text-muted" : "text-ink",
+            status === "active" && "font-medium",
+          )}
+        >
+          {label}
+          {status === "active" && <span className="text-muted">…</span>}
+        </span>
+        {status === "active" && aside ? (
+          <span className="mt-1 block font-mono text-[10.5px] tabular-nums leading-relaxed text-muted">
+            {aside}
+          </span>
+        ) : null}
       </span>
-      {status === "active" && aside ? (
-        <span className="ml-auto shrink-0 font-mono text-[10.5px] tabular-nums text-muted">{aside}</span>
-      ) : null}
     </li>
   );
 }
