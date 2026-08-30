@@ -46,6 +46,14 @@ export interface EditorShellProps {
    *  reorder control — the Move left/right buttons are gone). Absent = the
    *  rail is select-only. */
   onReorder?: (from: number, to: number) => void;
+  /** Row context menu + keyboard (founder call 2026-08-29 second pass: the
+   *  Page-panel buttons are gone — right-click a row for Duplicate / Delete /
+   *  Export, press Delete on a focused row to remove the page). Each item
+   *  renders only when its callback is provided. */
+  onDuplicateSlide?: (i: number) => void;
+  onDeleteSlide?: (i: number) => void;
+  onExportSlidePng?: (i: number) => void;
+  onExportPdf?: () => void;
   /** Optional "＋" affordance under the slide list. */
   onAddSlide?: () => void;
   /** Canvas dimensions, shown in the toolbar and driving the frame's aspect. */
@@ -72,6 +80,10 @@ export function EditorShell({
   active,
   onSelect,
   onReorder,
+  onDuplicateSlide,
+  onDeleteSlide,
+  onExportSlidePng,
+  onExportPdf,
   onAddSlide,
   width,
   height,
@@ -92,7 +104,17 @@ export function EditorShell({
           rather than in a second column beside it — which read as two separate
           pieces of chrome competing for the same attention. */}
       <div className="flex w-[288px] shrink-0 flex-col gap-3">
-        <EditorRail slides={slides} active={active} onSelect={onSelect} onReorder={onReorder} onAddSlide={onAddSlide} />
+        <EditorRail
+          slides={slides}
+          active={active}
+          onSelect={onSelect}
+          onReorder={onReorder}
+          onDuplicateSlide={onDuplicateSlide}
+          onDeleteSlide={onDeleteSlide}
+          onExportSlidePng={onExportSlidePng}
+          onExportPdf={onExportPdf}
+          onAddSlide={onAddSlide}
+        />
 
         {sidePanel && (
           <div className="hidden min-h-0 flex-1 overflow-y-auto lg:block">{sidePanel}</div>
@@ -166,14 +188,24 @@ function EditorRail({
   active,
   onSelect,
   onReorder,
+  onDuplicateSlide,
+  onDeleteSlide,
+  onExportSlidePng,
+  onExportPdf,
   onAddSlide,
 }: {
   slides: EditorSlide[];
   active: number;
   onSelect: (i: number) => void;
   onReorder?: (from: number, to: number) => void;
+  onDuplicateSlide?: (i: number) => void;
+  onDeleteSlide?: (i: number) => void;
+  onExportSlidePng?: (i: number) => void;
+  onExportPdf?: () => void;
   onAddSlide?: () => void;
 }) {
+  /** Right-click menu on a row — page coordinates, clamped when rendered. */
+  const [menu, setMenu] = useState<{ x: number; y: number; index: number } | null>(null);
   /* Drag-to-reorder (founder call 2026-08-29): press a row, travel past a
    * small threshold, and an accent insertion line tracks the drop slot; on
    * release the row moves there. Under the threshold it is a plain click —
@@ -300,6 +332,22 @@ function EditorRail({
                   // decided what happened; a plain click still selects.
                   if (!travelledRef.current) onSelect(i);
                 }}
+                onContextMenu={(e) => {
+                  if (!onDuplicateSlide && !onDeleteSlide && !onExportSlidePng && !onExportPdf) return;
+                  e.preventDefault();
+                  setMenu({ x: e.clientX, y: e.clientY, index: i });
+                }}
+                onKeyDown={(e) => {
+                  // Delete on a FOCUSED row removes the page (founder call
+                  // 2026-08-29: this replaces the Delete-page button). Scoped
+                  // to the row's own keydown and stopped here, so the canvas's
+                  // window-level element-delete never also fires.
+                  if ((e.key === "Delete" || e.key === "Backspace") && onDeleteSlide && slides.length > 1) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    onDeleteSlide(i);
+                  }
+                }}
                 className={cn(
                   "group relative flex w-full items-center gap-2 rounded-md border p-1.5 text-left transition-colors",
                   onReorder && slides.length > 1 && "cursor-grab active:cursor-grabbing",
@@ -321,7 +369,109 @@ function EditorRail({
           <span aria-hidden className="mx-1 block h-[2px] rounded-full bg-accent" />
         )}
       </div>
+
+      {/* Row context menu — same dark-card grammar as the canvas's element
+          menu, fixed to the click point. Items render only when wired. */}
+      {menu && (
+        <>
+          <div
+            className="fixed inset-0 z-[44]"
+            onMouseDown={() => setMenu(null)}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              setMenu(null);
+            }}
+          />
+          <div
+            role="menu"
+            style={{
+              position: "fixed",
+              left: Math.max(4, Math.min(menu.x, (typeof window !== "undefined" ? window.innerWidth : 9999) - 190)),
+              top: Math.max(4, Math.min(menu.y, (typeof window !== "undefined" ? window.innerHeight : 9999) - 190)),
+              width: 184,
+              zIndex: 45,
+            }}
+            className="overflow-hidden rounded-md border border-white/10 bg-[#11141b] py-1 shadow-2xl"
+          >
+            <div className="px-3 pb-1.5 pt-1 font-mono text-[9.5px] uppercase tracking-[0.14em] text-white/35">
+              Page {menu.index + 1}
+            </div>
+            {onDuplicateSlide && (
+              <RailMenuItem
+                onClick={() => {
+                  const i = menu.index;
+                  setMenu(null);
+                  onDuplicateSlide(i);
+                }}
+              >
+                Duplicate
+              </RailMenuItem>
+            )}
+            {onExportSlidePng && (
+              <RailMenuItem
+                onClick={() => {
+                  const i = menu.index;
+                  setMenu(null);
+                  onExportSlidePng(i);
+                }}
+              >
+                Export page PNG
+              </RailMenuItem>
+            )}
+            {onExportPdf && (
+              <RailMenuItem
+                onClick={() => {
+                  setMenu(null);
+                  onExportPdf();
+                }}
+              >
+                Export deck PDF
+              </RailMenuItem>
+            )}
+            {onDeleteSlide && (
+              <RailMenuItem
+                danger
+                disabled={slides.length <= 1}
+                onClick={() => {
+                  const i = menu.index;
+                  setMenu(null);
+                  onDeleteSlide(i);
+                }}
+              >
+                Delete page
+              </RailMenuItem>
+            )}
+          </div>
+        </>
+      )}
     </aside>
+  );
+}
+
+function RailMenuItem({
+  children,
+  onClick,
+  danger,
+  disabled,
+}: {
+  children: ReactNode;
+  onClick: () => void;
+  danger?: boolean;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      role="menuitem"
+      disabled={disabled}
+      onClick={onClick}
+      className={cn(
+        "block w-full px-3 py-1.5 text-left text-[12.5px] transition-colors disabled:cursor-not-allowed disabled:opacity-40",
+        danger ? "text-red-300 hover:bg-red-500/15" : "text-white/85 hover:bg-white/10",
+      )}
+    >
+      {children}
+    </button>
   );
 }
 

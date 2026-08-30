@@ -194,6 +194,18 @@ export function DevEditClient({
         onReorder={(from, to) => {
           if (!pageBusy) void pageOp({ op: "move", page: from, to });
         }}
+        onDuplicateSlide={(i) => {
+          if (!pageBusy) void pageOp({ op: "duplicate", page: i });
+        }}
+        onDeleteSlide={(i) => {
+          if (!pageBusy) void pageOp({ op: "remove", page: i });
+        }}
+        onExportSlidePng={(i) => {
+          window.open(`/api/dev/export?scriptId=${scriptId}&format=png&scene=${i}`, "_blank");
+        }}
+        onExportPdf={() => {
+          window.open(`/api/dev/export?scriptId=${scriptId}&format=pdf`, "_blank");
+        }}
         active={sceneIndex}
         onSelect={goTo}
         width={width}
@@ -259,8 +271,6 @@ export function DevEditClient({
                   index={sceneIndex}
                   total={scenes.length}
                   description={scene?.description ?? null}
-                  busy={pageBusy}
-                  onOp={(op) => void pageOp(op)}
                 />
               ) : (
                 <ScriptPanel

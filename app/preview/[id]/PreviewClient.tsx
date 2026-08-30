@@ -318,13 +318,13 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
   // a bare <a> would navigate the editor away to that body. Fetching keeps
   // the user in place: a busy label while it renders, a dismissible message
   // if it fails, a normal download if it succeeds.
-  const handleExport = async (format: "pdf" | "png") => {
+  const handleExport = async (format: "pdf" | "png", scene = sceneIndex) => {
     if (exporting) return;
     setExportError(null);
     setExporting(format);
     try {
       const qs =
-        format === "png" ? `format=png&scene=${sceneIndex}` : "format=pdf";
+        format === "png" ? `format=png&scene=${scene}` : "format=pdf";
       const res = await fetch(`/api/preview/${scriptId}/export?${qs}`);
       if (!res.ok) {
         setExportError(friendlyApiError(await res.text(), res.status, "export"));
@@ -505,6 +505,14 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
           onAddSlide={() => {
             if (!shellBusy) void pageOp({ op: "add", after: sceneIndex });
           }}
+          onDuplicateSlide={(i) => {
+            if (!shellBusy) void pageOp({ op: "duplicate", page: i });
+          }}
+          onDeleteSlide={(i) => {
+            if (!shellBusy) void pageOp({ op: "remove", page: i });
+          }}
+          onExportSlidePng={(i) => void handleExport("png", i)}
+          onExportPdf={() => void handleExport("pdf")}
           width={dims.width}
           height={dims.height}
           status={shellBusy ? "saving" : "saved"}
@@ -672,8 +680,6 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
                     index={sceneIndex}
                     total={doc.scenes.length}
                     description={currentScene?.description ?? null}
-                    busy={shellBusy}
-                    onOp={(op) => void pageOp(op)}
                   />
                 )}
               </div>
@@ -1341,18 +1347,18 @@ function LimitStrip({
 }
 
 /** The deck's per-page inspector — structural ops on the active page. */
+/** Description-only since 2026-08-29 (founder): every page ACTION is direct
+ *  now — drag the rail row to reorder, right-click it for duplicate/delete/
+ *  export, press Delete on a focused row, "+" in the rail header for a blank
+ *  page. The panel's job is context, not controls. */
 export function DeckPagePanel({
   index,
   total,
   description,
-  busy,
-  onOp,
 }: {
   index: number;
   total: number;
   description: string | null;
-  busy: boolean;
-  onOp: (op: PageOp) => void;
 }) {
   return (
     <div className="rounded-xl border border-hairline bg-surface px-4 py-3.5">
@@ -1360,55 +1366,9 @@ export function DeckPagePanel({
         Page {index + 1} of {total}
       </div>
       {description && (
-        <p className="mb-3 text-[13px] leading-relaxed text-ink-soft">{description}</p>
+        <p className="text-[13px] leading-relaxed text-ink-soft">{description}</p>
       )}
-      <div className="border-t border-hairline pt-3">
-        <div className="mb-2 font-mono text-[10.5px] uppercase tracking-[0.14em] text-faint">
-          Page actions
-        </div>
-        {/* Reordering is DIRECT: drag the row in the rail (founder call
-            2026-08-29) — the Move left/right buttons were indirection for a
-            thing the list itself should do. */}
-        <div className="grid grid-cols-2 gap-1.5">
-          <PageOpBtn onClick={() => onOp({ op: "duplicate", page: index })} disabled={busy}>
-            Duplicate
-          </PageOpBtn>
-          <PageOpBtn onClick={() => onOp({ op: "add", after: index })} disabled={busy}>
-            + Blank page
-          </PageOpBtn>
-          <PageOpBtn onClick={() => onOp({ op: "remove", page: index })} disabled={busy || total <= 1} danger>
-            Delete page
-          </PageOpBtn>
-        </div>
-        {busy && <div className="mt-2 text-[12px] text-faint">Applying…</div>}
-      </div>
     </div>
-  );
-}
-
-function PageOpBtn({
-  onClick,
-  disabled,
-  danger,
-  children,
-}: {
-  onClick: () => void;
-  disabled?: boolean;
-  danger?: boolean;
-  children: React.ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      className={cn(
-        "rounded-md border border-hairline-strong bg-surface px-2.5 py-1.5 text-[12px] text-muted transition-colors disabled:opacity-40",
-        danger ? "hover:text-red-500" : "hover:text-ink",
-      )}
-    >
-      {children}
-    </button>
   );
 }
 
