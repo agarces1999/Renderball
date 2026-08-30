@@ -797,6 +797,11 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
   };
 
   const [dragDelta, setDragDelta] = useState<{ dx: number; dy: number } | null>(null);
+  /** One-shot: the commit right after a drop repositions the frame via rect —
+   *  its 100ms left/top transition would read as a wobble (the frame is
+   *  ALREADY there visually via the gesture transform), so that one commit
+   *  renders transition-free. */
+  const justDroppedRef = useRef(false);
 
   // A piece's wrapper is display:contents (no box), so its own rect is all-zero.
   // Measure its extent as the union of its rendered descendants' non-zero rects —
@@ -1831,6 +1836,17 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
         ? `translate3d(${n.dx}px, ${n.dy}px, 0) ${node.base}`
         : `translate3d(${n.dx}px, ${n.dy}px, 0)`;
     }
+    // The overlay follows each press: rect is the frame/handles' source of
+    // truth, and before this it simply never moved on nudges — the border
+    // and grips sat at the pre-nudge spot while the element walked away
+    // (same family as the drag-drop stale-handles bug, 2026-08-29). The
+    // 100ms left/top transition turns per-press jumps into a glide.
+    const overlayScale = canvasScale();
+    setSelected((s) =>
+      s && s.pieceId === selected.pieceId
+        ? { ...s, rect: { ...s.rect, left: s.rect.left + dx * overlayScale, top: s.rect.top + dy * overlayScale } }
+        : s,
+    );
     if (n.timer !== null) window.clearTimeout(n.timer);
     n.timer = window.setTimeout(() => {
       const { dx: tx, dy: ty } = nudgeRef.current;
@@ -2350,9 +2366,33 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
        * a per-piece in-flight guard and reconcile-on-failure — which is
        * exactly the old reload path, now demoted to the ERROR path.
        */
+      const committedPieceId = selected.pieceId;
+      // THE OVERLAY'S TRUTH ADVANCES WITH THE ELEMENT (founder screenshot,
+      // 2026-08-29: handles orphaned at the pre-drag spot). The iframe nodes
+      // keep their transform — the next reload bakes it into SSR truth — but
+      // selected.rect, which the frame, the resize handles, and the bounds
+      // panel all derive from, must move by the committed delta. Three
+      // imperative cleanups ride along: the frame's gesture transform is
+      // retired (React never clears a style it didn't write — the border
+      // looked right while the handles didn't, which is what made this bug
+      // invisible for so long), willChange is dropped, and the node capture
+      // is discarded so the NEXT gesture re-reads bases that INCLUDE this
+      // move — reusing this capture made the first nudge after a drag snap
+      // the element back by the drag's own distance.
+      if (frameRef.current) frameRef.current.style.transform = "";
+      for (const n of liveNodesRef.current) n.el.style.willChange = "";
+      liveNodesRef.current = [];
+      justDroppedRef.current = true;
+      requestAnimationFrame(() => {
+        justDroppedRef.current = false;
+      });
+      setSelected((s) =>
+        s && s.pieceId === committedPieceId
+          ? { ...s, rect: { ...s.rect, left: s.rect.left + dx * scale, top: s.rect.top + dy * scale } }
+          : s,
+      );
       setDragDelta(null);
       setBusy(null);
-      const committedPieceId = selected.pieceId;
       void post(`${apiBase}/edit-layout`, { scriptId, sceneIndex, pieceId: committedPieceId, op: "move", dx, dy })
         .then((ok) => {
           if (ok) {
@@ -3615,7 +3655,7 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
               // styling (qa/editor.ts). getBoundingClientRect includes the
               // drag transform, so geometry assertions keep working.
               data-rb-selection={selected.pieceId}
-            style={{ position: "absolute", left: box.left, top: box.top, width: box.width, height: box.height, border: "2px solid var(--accent, #00c28a)", borderRadius: 8, boxShadow: "0 0 0 9999px rgba(10,12,20,0.28)", pointerEvents: "none", transition: dragDelta || resizeBox ? "none" : "left 100ms, top 100ms" }}
+            style={{ position: "absolute", left: box.left, top: box.top, width: box.width, height: box.height, border: "2px solid var(--accent, #00c28a)", borderRadius: 8, boxShadow: "0 0 0 9999px rgba(10,12,20,0.28)", pointerEvents: "none", transition: dragDelta || resizeBox || justDroppedRef.current ? "none" : "left 100ms, top 100ms" }}
           />
           <div
             onMouseDown={onDragStart}
