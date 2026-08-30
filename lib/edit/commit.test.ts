@@ -57,6 +57,23 @@ if (!exists) {
     );
     console.log(`  ${rolledBack ? "✓" : "✗"} the previous render is put back`);
     if (!refused || !rolledBack) process.exitCode = 1;
+
+    // 3. The refusal carries EVIDENCE (founder, 2026-08-29): the gate must
+    //    hand back which stage refused and the actual per-page error — this
+    //    is what the error-fed retry feeds the model and the forensic log
+    //    records. Discarding it made "why did my chart fail?" unanswerable.
+    const hasStage = bad.stage === "render";
+    const detail = bad.refusal?.[0];
+    const hasDetail = detail?.scene === 0 && typeof detail?.error === "string" && detail.error.length > 0;
+    console.log(
+      `  ${hasStage ? "✓" : "✗"} the refusal names its stage (render)` +
+        (hasStage ? "" : ` — got ${bad.stage}`),
+    );
+    console.log(
+      `  ${hasDetail ? "✓" : "✗"} the refusal carries the page's actual error` +
+        (hasDetail ? "" : ` — got ${JSON.stringify(bad.refusal)}`),
+    );
+    if (!hasStage || !hasDetail) process.exitCode = 1;
   } finally {
     await fs.rm(work, { recursive: true, force: true });
   }

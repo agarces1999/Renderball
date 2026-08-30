@@ -31,6 +31,7 @@ import {
 import { generatePiece } from "../agents/generate-piece";
 import { lucideIconNameSet } from "../agents/finalize-refs";
 import { commitGenDir } from "./commit";
+import { recordRefused } from "./refused-log";
 import { highestZIndex } from "./z-index";
 import { withGenDirLock } from "./gendir-lock";
 import { emitFreetextSpan, DEFAULT_FORMAT } from "./freetext";
@@ -231,6 +232,8 @@ export const insertElement = async (input: InsertElementInput): Promise<InsertEl
     let usage: Usage | undefined;
     let imageModel: string | undefined;
     let imageMeta: InsertImageMeta | undefined;
+    /** Set by generate mode — everything an error-fed repair call needs. */
+    let repairCtx: { preamble: string; siblings: Parameters<typeof generatePiece>[0]["siblings"] } | null = null;
     if (spec.mode === "generate-image") {
       try {
         // A concrete seed even when unmatched: it is what a LATER "match"
@@ -287,6 +290,7 @@ export const insertElement = async (input: InsertElementInput): Promise<InsertEl
     } else if (spec.mode === "generate") {
       const d = await readDecomposed(genDir);
       const scene = d.scenes.find((s) => s.sceneIndex === sceneIndex)!;
+      repairCtx = { preamble: d.preamble, siblings: scene.pieces };
       const gen = await generatePiece({
         preamble: d.preamble,
         siblings: scene.pieces,
@@ -310,7 +314,6 @@ export const insertElement = async (input: InsertElementInput): Promise<InsertEl
     const id = await nextPieceId(genDir, sceneIndex);
     const z = (await maxContentZ(genDir, sceneIndex)) + 1;
     const openTag = `<Piece id=${JSON.stringify(id)} kind=${JSON.stringify(kind)}>`;
-    const body = wrap(kind, bounds, z, inner);
 
     // A post-generation failure still spent the tokens / billed the image.
     const logGenFail = () => {
@@ -320,24 +323,73 @@ export const insertElement = async (input: InsertElementInput): Promise<InsertEl
 
     const undo = await captureUndo(genDir);
     try {
-      const inserted = await insertPiece(genDir, { sceneIndex, id, kind, openTag, body });
-      if (!inserted) {
-        logGenFail();
-        return { ok: false, usage, error: "insert failed — scene missing or id collision" };
-      }
-      const res = await commit(genDir);
-      // The slot must have landed in the template — otherwise reassemble silently
-      // dropped the piece. Assert the marker is present; roll back if not.
-      if (!res.ok || !res.code || !res.code.includes(openTag)) {
+      // Model-written code gets ONE error-fed repair attempt before the user
+      // sees a refusal (founder, 2026-08-29: a blind manual retry had already
+      // failed twice in a row — the gate KNOWS the exact error, so feed it
+      // back instead of re-rolling the dice). Deterministic and image inserts
+      // never loop: their bodies are not model-written JSX.
+      for (let attempt = 0; ; attempt++) {
+        const inserted = await insertPiece(genDir, { sceneIndex, id, kind, openTag, body: wrap(kind, bounds, z, inner) });
+        if (!inserted) {
+          logGenFail();
+          return { ok: false, usage, error: "insert failed — scene missing or id collision" };
+        }
+        const res = await commit(genDir);
+        // The slot must have landed in the template — otherwise reassemble silently
+        // dropped the piece. Assert the marker is present; roll back if not.
+        if (res.ok && res.code && res.code.includes(openTag)) {
+          if (usage) void recordUsage({ op: "insert-element", model: MODELS.codingAgentBuild, scriptId, usage });
+          if (imageModel) void recordUsage({ op: "generate-image", model: imageModel, scriptId, usage: EMPTY_USAGE, images: 1 });
+          await commitUndo(genDir, undo, spec.mode === "primitive" ? "add" : spec.mode);
+          return { ok: true, pieceId: id, code: res.code, usage, ...(imageMeta ? { imageMeta } : {}) };
+        }
         await writeManifest(genDir, snapshot);
         await fs.rm(path.join(genDir, "lego", "pieces", `${id}.tsx`), { force: true });
+
+        const codeFault = res.stage === "render" || res.stage === "compile";
+        const gateError =
+          res.refusal?.map((r) => `page ${r.scene + 1}: ${r.error}`).join("; ") ?? res.error ?? "commit failed";
+        if (spec.mode === "generate" && codeFault) {
+          void recordRefused(genDir, {
+            op: "insert-element",
+            sceneIndex,
+            prompt: spec.prompt,
+            body: inner,
+            error: gateError,
+            model: MODELS.codingAgentBuild,
+            attempt,
+          });
+        }
+
+        if (spec.mode === "generate" && codeFault && attempt === 0 && repairCtx) {
+          // The refused attempt's tokens were spent; record them as such now —
+          // the final outcome row will belong to the repair attempt.
+          if (usage) void recordUsage({ op: "insert-element", model: MODELS.codingAgentBuild, scriptId, usage, failed: true });
+          const regen = await generatePiece({
+            preamble: repairCtx.preamble,
+            siblings: repairCtx.siblings,
+            sceneIndex,
+            bounds,
+            prompt: spec.prompt,
+            repair: { previousBody: inner, renderError: gateError },
+          });
+          if (regen.ok && regen.body) {
+            inner = regen.body;
+            usage = regen.usage;
+            continue;
+          }
+        }
+
         logGenFail();
-        return { ok: false, usage, error: res.error || "inserted element did not materialize in the composition" };
+        return {
+          ok: false,
+          usage,
+          error:
+            spec.mode === "generate" && codeFault
+              ? `The generated element kept breaking page ${sceneIndex + 1}, so nothing was applied. Try rewording the prompt.`
+              : res.error || "inserted element did not materialize in the composition",
+        };
       }
-      if (usage) void recordUsage({ op: "insert-element", model: MODELS.codingAgentBuild, scriptId, usage });
-      if (imageModel) void recordUsage({ op: "generate-image", model: imageModel, scriptId, usage: EMPTY_USAGE, images: 1 });
-      await commitUndo(genDir, undo, spec.mode === "primitive" ? "add" : spec.mode);
-      return { ok: true, pieceId: id, code: res.code, usage, ...(imageMeta ? { imageMeta } : {}) };
     } catch (e) {
       await writeManifest(genDir, snapshot).catch(() => {});
       await fs.rm(path.join(genDir, "lego", "pieces", `${id}.tsx`), { force: true }).catch(() => {});

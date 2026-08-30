@@ -34,6 +34,11 @@ export interface CommitResult {
   ok: boolean;
   code?: string;
   error?: string;
+  /** Which gate refused — lets callers decide if a model-repair retry makes sense. */
+  stage?: "compile" | "render";
+  /** The render check's ACTUAL per-page errors. Discarding these is why a
+   *  refused insert used to leave zero evidence (founder, 2026-08-29). */
+  refusal?: { scene: number; error: string }[];
 }
 
 /**
@@ -44,14 +49,14 @@ export interface CommitResult {
  * this gate exists to stop an edit making things WORSE, and it cannot judge
  * that without a baseline.
  */
-const failingScenes = async (genDir: string): Promise<Set<number> | null> => {
+const failingScenes = async (genDir: string): Promise<Map<number, string> | null> => {
   try {
     const raw = await fs.readFile(path.join(genDir, "script.json"), "utf8");
     const script = JSON.parse(raw) as { scenes?: unknown[] };
     const count = script.scenes?.length ?? 0;
     if (!count) return null;
     const check = await verifyScenesRender(genDir, count, script);
-    return new Set(check.errors.map((e) => e.scene));
+    return new Map(check.errors.map((e) => [e.scene, e.error]));
   } catch {
     return null;
   }
@@ -79,7 +84,7 @@ export const commitGenDir = async (
   const reassembled = await reassembleFromDisk(genDir);
   const { code } = await finalizeUndefinedRefs(reassembled);
   const compileError = await verifyCompilable(code);
-  if (compileError) return { ok: false, error: `${what} does not compile: ${compileError}` };
+  if (compileError) return { ok: false, stage: "compile", error: `${what} does not compile: ${compileError}` };
 
   const compPath = path.join(genDir, "Composition.tsx");
   const previous = await fs.readFile(compPath, "utf8").catch(() => null);
@@ -97,15 +102,22 @@ export const commitGenDir = async (
     // A deck that already has a broken scene must stay editable — otherwise one
     // bad slide would freeze the document and the user could not even delete
     // the thing that broke it. Only a NEW failure is refused.
-    const introduced = [...after].filter((s) => !before.has(s));
+    const introduced = [...after.keys()].filter((s) => !before.has(s));
     if (introduced.length === 0) {
       await fs.writeFile(compPath, code, "utf8"); // no worse than it was — let it through
     } else {
       // The old render stays on disk. The caller rolls its own store mutation
       // back on !ok, so the manifest and Composition.tsx stay in agreement.
+      const refusal = introduced.map((s) => ({ scene: s, error: after.get(s) ?? "render failed" }));
+      console.error(
+        `[commit] ${what} refused for ${path.basename(genDir)}: ` +
+          refusal.map((r) => `page ${r.scene + 1}: ${r.error}`).join(" | "),
+      );
       const scenes = introduced.map((s) => `page ${s + 1}`).join(", ");
       return {
         ok: false,
+        stage: "render",
+        refusal,
         error:
           `${what} would stop ${scenes} rendering, so it was not applied. ` +
           `Nothing changed — try again, or regenerate that element.`,

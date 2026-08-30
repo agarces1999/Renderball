@@ -53,6 +53,10 @@ export interface GenPieceInput {
    *  the user's box follows their brand, not just the old design system. */
   brandBlock?: string | null;
   model?: string;
+  /** Error-fed retry (founder, 2026-08-29): the previous attempt's code and
+   *  the ACTUAL render error, so the second attempt targets the defect
+   *  instead of re-rolling the dice. */
+  repair?: { previousBody: string; renderError: string };
 }
 export interface GenPieceResult {
   ok: boolean;
@@ -76,6 +80,18 @@ export const generatePiece = async (input: GenPieceInput): Promise<GenPieceResul
     "",
     `WHAT TO CREATE: ${prompt.trim()}`,
     "",
+    ...(input.repair
+      ? [
+          "A PREVIOUS ATTEMPT at this element was REFUSED because it crashed the page when rendered.",
+          `Render error: ${input.repair.renderError}`,
+          "The refused code:",
+          "```tsx",
+          input.repair.previousBody,
+          "```",
+          "Emit a CORRECTED replacement that cannot fail this way — reference ONLY names that exist in the shared design system above, no hooks, no imports.",
+          "",
+        ]
+      : []),
     "Emit ONLY the inner JSX for this new element — it fills the box; do not position or size the outermost element.",
   ].join("\n");
 
