@@ -57,6 +57,15 @@ export function DevEditClient({
 }) {
   const [sceneIndex, setSceneIndex] = useState(0);
   const [reloadKey, setReloadKey] = useState(0);
+  // Per-scene rail-thumb revisions — mirrors PreviewClient (2026-08-29).
+  const [thumbRevs, setThumbRevs] = useState<Record<number, number>>({});
+  const bumpThumb = (i: number) => setThumbRevs((r) => ({ ...r, [i]: (r[i] ?? 0) + 1 }));
+  const bumpAllThumbs = (count: number) =>
+    setThumbRevs((r) => {
+      const next: Record<number, number> = {};
+      for (let i = 0; i < count; i++) next[i] = (r[i] ?? 0) + 1;
+      return next;
+    });
   const [playMotion, setPlayMotion] = useState(false);
   const router = useRouter();
   const [panelTab, setPanelTab] = useState<"copy" | "page" | "brand">("copy");
@@ -93,6 +102,7 @@ export function DevEditClient({
         // updates on a refresh; the reload key repaints the canvas.
         router.refresh();
         setReloadKey((k) => k + 1);
+        bumpAllThumbs(typeof json.total === "number" ? json.total : scenes.length);
       }
     } finally {
       setPageBusy(false);
@@ -177,7 +187,13 @@ export function DevEditClient({
         </div>
       )}
       <EditorShell
-        slides={scenes.map((s) => ({ label: s.label }))}
+        slides={scenes.map((s, i) => ({
+          label: s.label,
+          thumbSrc: `/api/dev/${scriptId}/thumbnail?scene=${i}&r=${thumbRevs[i] ?? 0}`,
+        }))}
+        onReorder={(from, to) => {
+          if (!pageBusy) void pageOp({ op: "move", page: from, to });
+        }}
         active={sceneIndex}
         onSelect={goTo}
         width={width}
@@ -276,7 +292,11 @@ export function DevEditClient({
             sceneIndex={sceneIndex}
             reloadKey={reloadKey}
             canvasWidth={width}
-            onChanged={() => setReloadKey((k) => k + 1)}
+            onChanged={() => {
+              setReloadKey((k) => k + 1);
+              bumpThumb(sceneIndex);
+            }}
+            onCommitted={() => bumpThumb(sceneIndex)}
             apiBase="/api/dev"
             hideToolbar
             onState={setEd}

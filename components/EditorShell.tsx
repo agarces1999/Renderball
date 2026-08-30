@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import type { ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { cn } from "../lib/cn";
 
 /**
@@ -33,12 +33,19 @@ export interface EditorSlide {
   bg?: string;
   ink?: string;
   accent?: string;
+  /** Real page preview (the per-scene thumbnail route, version-stamped by the
+   *  caller). Absent or failed-to-load falls back to the drawn glyph. */
+  thumbSrc?: string;
 }
 
 export interface EditorShellProps {
   slides: EditorSlide[];
   active: number;
   onSelect: (i: number) => void;
+  /** Drag-to-reorder (founder call 2026-08-29: dragging the rail rows IS the
+   *  reorder control — the Move left/right buttons are gone). Absent = the
+   *  rail is select-only. */
+  onReorder?: (from: number, to: number) => void;
   /** Optional "＋" affordance under the slide list. */
   onAddSlide?: () => void;
   /** Canvas dimensions, shown in the toolbar and driving the frame's aspect. */
@@ -64,6 +71,7 @@ export function EditorShell({
   slides,
   active,
   onSelect,
+  onReorder,
   onAddSlide,
   width,
   height,
@@ -84,7 +92,7 @@ export function EditorShell({
           rather than in a second column beside it — which read as two separate
           pieces of chrome competing for the same attention. */}
       <div className="flex w-[288px] shrink-0 flex-col gap-3">
-        <EditorRail slides={slides} active={active} onSelect={onSelect} onAddSlide={onAddSlide} />
+        <EditorRail slides={slides} active={active} onSelect={onSelect} onReorder={onReorder} onAddSlide={onAddSlide} />
 
         {sidePanel && (
           <div className="hidden min-h-0 flex-1 overflow-y-auto lg:block">{sidePanel}</div>
@@ -157,13 +165,69 @@ function EditorRail({
   slides,
   active,
   onSelect,
+  onReorder,
   onAddSlide,
 }: {
   slides: EditorSlide[];
   active: number;
   onSelect: (i: number) => void;
+  onReorder?: (from: number, to: number) => void;
   onAddSlide?: () => void;
 }) {
+  /* Drag-to-reorder (founder call 2026-08-29): press a row, travel past a
+   * small threshold, and an accent insertion line tracks the drop slot; on
+   * release the row moves there. Under the threshold it is a plain click —
+   * selection must never be lost to a twitchy hand. Rects are cached at
+   * gesture start (rows don't move mid-drag), and the row list is the drag
+   * surface — no handles, the whole row is grabbable, exactly like gslides. */
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const dragRef = useRef<{ from: number; startY: number; rects: { top: number; bottom: number }[] } | null>(null);
+  /** Synchronous "this gesture travelled" — the click that follows mouseup
+   *  must know immediately, and the drop handler must not depend on async
+   *  state (the first cut read dragRef AFTER nulling it: every drop computed
+   *  slot 0 and silently no-op'd). */
+  const travelledRef = useRef(false);
+  const [dragging, setDragging] = useState<{ from: number; slot: number } | null>(null);
+
+  const slotForY = (rects: { top: number; bottom: number }[], clientY: number): number => {
+    for (let i = 0; i < rects.length; i++) {
+      if (clientY < (rects[i].top + rects[i].bottom) / 2) return i;
+    }
+    return rects.length;
+  };
+
+  const onRowMouseDown = (e: React.MouseEvent, i: number) => {
+    if (!onReorder || e.button !== 0 || slides.length < 2) return;
+    const rects = Array.from(listRef.current?.querySelectorAll("[data-rail-row]") ?? []).map((el) => {
+      const r = (el as HTMLElement).getBoundingClientRect();
+      return { top: r.top, bottom: r.bottom };
+    });
+    dragRef.current = { from: i, startY: e.clientY, rects };
+    travelledRef.current = false;
+    const move = (ev: MouseEvent) => {
+      const d = dragRef.current;
+      if (!d) return;
+      if (!travelledRef.current && Math.abs(ev.clientY - d.startY) < 5) return;
+      travelledRef.current = true;
+      setDragging({ from: d.from, slot: slotForY(d.rects, ev.clientY) });
+    };
+    const up = (ev: MouseEvent) => {
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+      const d = dragRef.current;
+      dragRef.current = null;
+      setDragging(null);
+      if (d && travelledRef.current) {
+        const slot = slotForY(d.rects, ev.clientY);
+        // Dropping into its own slot (or the gap just after itself) is a no-op.
+        const to = slot > d.from ? slot - 1 : slot;
+        if (to !== d.from) onReorder(d.from, to);
+      }
+    };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+  };
+
   return (
     // Full width of the left column, and only as tall as it needs to be: the
     // page inspector sits underneath, so the slide list caps itself and scrolls
@@ -192,64 +256,100 @@ function EditorRail({
         )}
       </div>
 
-      <div className="flex max-h-[42vh] min-h-0 flex-col gap-1.5 overflow-y-auto">
+      <div ref={listRef} className="flex max-h-[42vh] min-h-0 flex-col gap-1.5 overflow-y-auto">
         {slides.map((s, i) => {
           const on = i === active;
+          const lifted = dragging?.from === i;
           return (
-            <button
-              key={i}
-              type="button"
-              onClick={() => onSelect(i)}
-              className={cn(
-                "group flex items-center gap-2 rounded-md border p-1.5 text-left transition-all",
-                on
-                  ? "border-accent-line bg-accent-soft"
-                  : "border-hairline bg-surface hover:border-hairline-strong",
+            <div key={i} className="relative">
+              {dragging && dragging.slot === i && dragging.from !== i && (
+                <span aria-hidden className="absolute -top-[4px] left-1 right-1 z-10 block h-[2px] rounded-full bg-accent" />
               )}
-            >
-              <span className="font-mono text-[9px] tabular-nums text-faint">
-                {String(i + 1).padStart(2, "0")}
-              </span>
-              <RailThumb slide={s} on={on} />
-              <span
+              <button
+                type="button"
+                data-rail-row
+                onMouseDown={(e) => onRowMouseDown(e, i)}
+                onClick={() => {
+                  // A completed drag must not also select — the mouseup already
+                  // decided what happened; a plain click still selects.
+                  if (!travelledRef.current) onSelect(i);
+                }}
                 className={cn(
-                  "flex-1 truncate text-[11.5px]",
-                  on ? "text-ink" : "text-muted",
+                  "group flex w-full items-center gap-2 rounded-md border p-1.5 text-left transition-all",
+                  onReorder && slides.length > 1 && "cursor-grab active:cursor-grabbing",
+                  lifted && "opacity-50",
+                  on
+                    ? "border-accent-line bg-accent-soft"
+                    : "border-hairline bg-surface hover:border-hairline-strong",
                 )}
               >
-                {s.label}
-              </span>
-            </button>
+                <span className="font-mono text-[9px] tabular-nums text-faint">
+                  {String(i + 1).padStart(2, "0")}
+                </span>
+                <RailThumb slide={s} on={on} />
+                <span
+                  className={cn(
+                    "flex-1 truncate text-[11.5px]",
+                    on ? "text-ink" : "text-muted",
+                  )}
+                >
+                  {s.label}
+                </span>
+              </button>
+            </div>
           );
         })}
+        {dragging && dragging.slot === slides.length && (
+          <span aria-hidden className="mx-1 block h-[2px] rounded-full bg-accent" />
+        )}
       </div>
     </aside>
   );
 }
 
-/** A generated mini of the slide — same treatment as the landing's rail. */
+/** The REAL page in miniature (founder call 2026-08-29, gslides-style): the
+ *  per-scene thumbnail when one exists, the drawn glyph otherwise — a page
+ *  that has never rendered (mid-build, capture failure) degrades to the same
+ *  mini the landing rail draws, never to a broken-image icon. */
 function RailThumb({ slide, on }: { slide: EditorSlide; on: boolean }) {
+  const [broken, setBroken] = useState(false);
+  const showImage = !!slide.thumbSrc && !broken;
   return (
     <span
       className={cn(
-        "block aspect-video w-9 shrink-0 overflow-hidden rounded-[3px] border",
+        "block aspect-video shrink-0 overflow-hidden rounded-[3px] border",
+        showImage ? "w-16" : "w-9",
         on ? "border-accent-line" : "border-hairline",
       )}
-      style={{ background: slide.bg ?? "var(--surface-2)" }}
+      style={showImage ? undefined : { background: slide.bg ?? "var(--surface-2)" }}
       aria-hidden
     >
-      <span
-        className="block h-[3px] w-2/3 rounded-full"
-        style={{ margin: "4px 0 0 3px", background: slide.ink ?? "var(--muted)", opacity: 0.9 }}
-      />
-      <span
-        className="block h-[1.5px] w-1/2 rounded-full"
-        style={{ margin: "2px 0 0 3px", background: slide.ink ?? "var(--faint)", opacity: 0.35 }}
-      />
-      <span
-        className="block h-[4px] w-1/4 rounded-[1px]"
-        style={{ margin: "3px 0 0 3px", background: slide.accent ?? "var(--accent)" }}
-      />
+      {showImage ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={slide.thumbSrc}
+          alt=""
+          loading="lazy"
+          draggable={false}
+          onError={() => setBroken(true)}
+          className="h-full w-full object-cover"
+        />
+      ) : (
+        <>
+          <span
+            className="block h-[3px] w-2/3 rounded-full"
+            style={{ margin: "4px 0 0 3px", background: slide.ink ?? "var(--muted)", opacity: 0.9 }}
+          />
+          <span
+            className="block h-[1.5px] w-1/2 rounded-full"
+            style={{ margin: "2px 0 0 3px", background: slide.ink ?? "var(--faint)", opacity: 0.35 }}
+          />
+          <span
+            className="block h-[4px] w-1/4 rounded-[1px]"
+            style={{ margin: "3px 0 0 3px", background: slide.accent ?? "var(--accent)" }}
+          />
+        </>
+      )}
     </span>
   );
 }

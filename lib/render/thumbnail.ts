@@ -24,8 +24,13 @@ export type ThumbnailResult =
   | { ok: true; data: Buffer; etag: string }
   | { ok: false; status: number; message: string };
 
-const thumbPath = (scriptId: string): string =>
-  path.join(process.cwd(), ".data", "thumbs", `${scriptId}.png`);
+/** Scene 0 keeps the historical un-suffixed name — the gallery card, the OG
+ *  image, and every R2 object already in the bucket stay valid. Scenes 1+
+ *  (the editor rail, 2026-08-29) get a suffix. */
+const sceneSuffix = (scene: number): string => (scene > 0 ? `-s${scene}` : "");
+
+const thumbPath = (scriptId: string, scene = 0): string =>
+  path.join(process.cwd(), ".data", "thumbs", `${scriptId}${sceneSuffix(scene)}.png`);
 
 /** Newest mtime (ms) of any file under dir, or null if the dir is unreadable. */
 const newestMtimeMs = async (dir: string): Promise<number | null> => {
@@ -73,15 +78,17 @@ export const thumbnailVersion = async (scriptId: string): Promise<number | null>
 };
 
 /** The thumbnail's durable home. Local disk dies with every deploy; R2 does not. */
-export const thumbKey = (scriptId: string): string => `thumbs/${scriptId}.png`;
+export const thumbKey = (scriptId: string, scene = 0): string =>
+  `thumbs/${scriptId}${sceneSuffix(scene)}.png`;
 
-const refreshThumb = (scriptId: string, script: Script): Promise<{ ok: boolean; message?: string }> => {
-  const running = inflight.get(scriptId);
+const refreshThumb = (scriptId: string, script: Script, scene = 0): Promise<{ ok: boolean; message?: string }> => {
+  const flightKey = `${scriptId}:${scene}`;
+  const running = inflight.get(flightKey);
   if (running) return running;
   const job = (async () => {
-    const result = await exportPagePng(scriptId, script, 0);
+    const result = await exportPagePng(scriptId, script, scene);
     if (!result.ok) return { ok: false, message: result.message };
-    const file = thumbPath(scriptId);
+    const file = thumbPath(scriptId, scene);
     await fs.mkdir(path.dirname(file), { recursive: true });
     await fs.writeFile(file, result.data);
     // WRITE-THROUGH: every fresh capture also lands in R2, fire-and-forget —
@@ -89,11 +96,11 @@ const refreshThumb = (scriptId: string, script: Script): Promise<{ ok: boolean; 
     // deploy. Without this, deploys wiped the only copy (12 deploys today =
     // 12 stampedes of full re-captures on first gallery view).
     if (isStorageConfigured()) {
-      void putObject(thumbKey(scriptId), result.data, "image/png").catch(() => {});
+      void putObject(thumbKey(scriptId, scene), result.data, "image/png").catch(() => {});
     }
     return { ok: true };
-  })().finally(() => inflight.delete(scriptId));
-  inflight.set(scriptId, job);
+  })().finally(() => inflight.delete(flightKey));
+  inflight.set(flightKey, job);
   return job;
 };
 
@@ -104,8 +111,8 @@ const refreshThumb = (scriptId: string, script: Script): Promise<{ ok: boolean; 
  * thumbnail beats a broken card, and beats a link preview that silently
  * disappears from a chat message someone already sent.
  */
-export const cachedThumbnail = async (scriptId: string, script: Script): Promise<ThumbnailResult> => {
-  const file = thumbPath(scriptId);
+export const cachedThumbnail = async (scriptId: string, script: Script, scene = 0): Promise<ThumbnailResult> => {
+  const file = thumbPath(scriptId, scene);
 
   /**
    * ORDER IS THE FIX (measured 2026-08-18). The old shape called
@@ -130,7 +137,7 @@ export const cachedThumbnail = async (scriptId: string, script: Script): Promise
   }
 
   if (!cached && isStorageConfigured()) {
-    const remote = await getObjectBytes(thumbKey(scriptId)).catch(() => null);
+    const remote = await getObjectBytes(thumbKey(scriptId, scene)).catch(() => null);
     if (remote && remote.length > 0) {
       await fs.mkdir(path.dirname(file), { recursive: true }).catch(() => {});
       await fs.writeFile(file, remote).catch(() => {});
@@ -144,7 +151,7 @@ export const cachedThumbnail = async (scriptId: string, script: Script): Promise
   const sourceMtime = await newestMtimeMs(await documentDir(scriptId));
   if (sourceMtime === null) return { ok: false, status: 404, message: "document not built yet" };
   if (!cached || cached.mtimeMs <= sourceMtime) {
-    const refreshed = await refreshThumb(scriptId, script);
+    const refreshed = await refreshThumb(scriptId, script, scene);
     if (!refreshed.ok && !cached) {
       return { ok: false, status: 503, message: `thumbnail capture failed: ${refreshed.message}` };
     }
@@ -165,10 +172,11 @@ export const cachedThumbnail = async (scriptId: string, script: Script): Promise
 export const webpVariant = async (
   scriptId: string,
   png: { data: Buffer; etag: string },
+  scene = 0,
 ): Promise<{ data: Buffer; etag: string } | null> => {
   try {
-    const file = path.join(process.cwd(), ".data", "thumbs", `${scriptId}.webp`);
-    const pngFile = thumbPath(scriptId);
+    const file = path.join(process.cwd(), ".data", "thumbs", `${scriptId}${sceneSuffix(scene)}.webp`);
+    const pngFile = thumbPath(scriptId, scene);
     const [wStat, pStat] = await Promise.all([
       fs.stat(file).catch(() => null),
       fs.stat(pngFile).catch(() => null),

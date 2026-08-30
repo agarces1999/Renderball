@@ -22,14 +22,21 @@ export async function GET(request: Request, { params }: { params: { id: string }
   const script = await loadScript(scriptId, user.id);
   if (!script) return new NextResponse(`script not found: ${scriptId}`, { status: 404 });
 
-  const thumb = await cachedThumbnail(scriptId, script);
+  // ?scene=N — the editor rail's per-page previews (2026-08-29). Absent or
+  // invalid falls back to page 1, the gallery-card contract.
+  const rawScene = new URL(request.url).searchParams.get("scene");
+  const parsed = rawScene === null ? 0 : Number.parseInt(rawScene, 10);
+  const sceneCount = script.scenes?.length ?? 0;
+  const scene = Number.isInteger(parsed) && parsed >= 0 && parsed < Math.max(1, sceneCount) ? parsed : 0;
+
+  const thumb = await cachedThumbnail(scriptId, script, scene);
   if (!thumb.ok) return new NextResponse(thumb.message, { status: thumb.status });
 
   // Content negotiation: browsers that accept webp get the smaller variant
   // (derived from the canonical PNG, fail-open). ETag differs per format so
   // 304 revalidation can never hand a webp to a png request or vice versa.
   const wantsWebp = (request.headers.get("accept") ?? "").includes("image/webp");
-  const webp = wantsWebp ? await webpVariant(scriptId, thumb) : null;
+  const webp = wantsWebp ? await webpVariant(scriptId, thumb, scene) : null;
   const body = webp ?? thumb;
   const contentType = webp ? "image/webp" : "image/png";
 

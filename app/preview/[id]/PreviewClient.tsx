@@ -150,6 +150,18 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
   const [pageError, setPageError] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
+  // Per-scene rail-thumbnail revisions (founder call 2026-08-29): bumping a
+  // rev re-requests that ONE page's mini. Element edits bump the edited scene
+  // only — bumping all would recapture the whole deck through Playwright on
+  // every keystroke; structural page ops bump everything (order changed).
+  const [thumbRevs, setThumbRevs] = useState<Record<number, number>>({});
+  const bumpThumb = (i: number) => setThumbRevs((r) => ({ ...r, [i]: (r[i] ?? 0) + 1 }));
+  const bumpAllThumbs = (count: number) =>
+    setThumbRevs((r) => {
+      const next: Record<number, number> = {};
+      for (let i = 0; i < count; i++) next[i] = (r[i] ?? 0) + 1;
+      return next;
+    });
   const [regenerating, setRegenerating] = useState(false);
   const [regenError, setRegenError] = useState<string | null>(null);
   // Instructed regen (DESIGN.md flow step 6: "say what to change, it regenerates").
@@ -372,6 +384,7 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
       setDoc(json.script);
       setSceneIndex(Math.min(json.focus ?? 0, json.script.scenes.length - 1));
       setReloadKey((k) => k + 1);
+      bumpAllThumbs(json.script.scenes.length);
     } catch (e) {
       setPageError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -459,9 +472,15 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
     return (
       <div className="min-h-screen bg-canvas">
         <EditorShell
-          slides={doc.scenes.map((s) => ({ label: s.label ?? "Slide" }))}
+          slides={doc.scenes.map((s, i) => ({
+            label: s.label ?? "Slide",
+            thumbSrc: `/api/preview/${scriptId}/thumbnail?scene=${i}&r=${thumbRevs[i] ?? 0}`,
+          }))}
           active={sceneIndex}
           onSelect={selectScene}
+          onReorder={(from, to) => {
+            if (!shellBusy) void pageOp({ op: "move", page: from, to });
+          }}
           onAddSlide={() => {
             if (!shellBusy) void pageOp({ op: "add", after: sceneIndex });
           }}
@@ -665,7 +684,11 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
             sceneIndex={sceneIndex}
             reloadKey={reloadKey}
             canvasWidth={dims.width}
-            onChanged={() => setReloadKey((k) => k + 1)}
+            onChanged={() => {
+              setReloadKey((k) => k + 1);
+              bumpThumb(sceneIndex);
+            }}
+            onCommitted={() => bumpThumb(sceneIndex)}
             hideToolbar
             onState={setEd}
           />
@@ -765,7 +788,11 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
             sceneIndex={sceneIndex}
             reloadKey={reloadKey}
             canvasWidth={dims.width}
-            onChanged={() => setReloadKey((k) => k + 1)}
+            onChanged={() => {
+              setReloadKey((k) => k + 1);
+              bumpThumb(sceneIndex);
+            }}
+            onCommitted={() => bumpThumb(sceneIndex)}
           />
         )}
       </div>
@@ -1318,13 +1345,10 @@ export function DeckPagePanel({
         <div className="mb-2 font-mono text-[10.5px] uppercase tracking-[0.14em] text-faint">
           Page actions
         </div>
+        {/* Reordering is DIRECT: drag the row in the rail (founder call
+            2026-08-29) — the Move left/right buttons were indirection for a
+            thing the list itself should do. */}
         <div className="grid grid-cols-2 gap-1.5">
-          <PageOpBtn onClick={() => onOp({ op: "move", page: index, to: index - 1 })} disabled={busy || index === 0}>
-            ← Move left
-          </PageOpBtn>
-          <PageOpBtn onClick={() => onOp({ op: "move", page: index, to: index + 1 })} disabled={busy || index >= total - 1}>
-            Move right →
-          </PageOpBtn>
           <PageOpBtn onClick={() => onOp({ op: "duplicate", page: index })} disabled={busy}>
             Duplicate
           </PageOpBtn>
