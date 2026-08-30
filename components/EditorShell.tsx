@@ -198,24 +198,45 @@ function EditorRail({
 
   const onRowMouseDown = (e: React.MouseEvent, i: number) => {
     if (!onReorder || e.button !== 0 || slides.length < 2) return;
-    const rects = Array.from(listRef.current?.querySelectorAll("[data-rail-row]") ?? []).map((el) => {
-      const r = (el as HTMLElement).getBoundingClientRect();
+    const rowEls = Array.from(listRef.current?.querySelectorAll("[data-rail-row]") ?? []) as HTMLElement[];
+    const rects = rowEls.map((el) => {
+      const r = el.getBoundingClientRect();
       return { top: r.top, bottom: r.bottom };
     });
+    const rowEl = rowEls[i];
     dragRef.current = { from: i, startY: e.clientY, rects };
     travelledRef.current = false;
+    let lastSlot = -1;
     const move = (ev: MouseEvent) => {
       const d = dragRef.current;
       if (!d) return;
       if (!travelledRef.current && Math.abs(ev.clientY - d.startY) < 5) return;
       travelledRef.current = true;
-      setDragging({ from: d.from, slot: slotForY(d.rects, ev.clientY) });
+      // The ROW rides the cursor — imperative transform, zero React work per
+      // move (a setState per mousemove re-rendered the whole rail at pointer
+      // rate and read as lag; founder: "the drag feels a little slow"). React
+      // hears only slot CHANGES, which is what the insertion line needs.
+      if (rowEl) {
+        rowEl.style.transform = `translateY(${ev.clientY - d.startY}px)`;
+        rowEl.style.zIndex = "20";
+        rowEl.style.pointerEvents = "none";
+      }
+      const slot = slotForY(d.rects, ev.clientY);
+      if (slot !== lastSlot) {
+        lastSlot = slot;
+        setDragging({ from: d.from, slot });
+      }
     };
     const up = (ev: MouseEvent) => {
       window.removeEventListener("mousemove", move);
       window.removeEventListener("mouseup", up);
       const d = dragRef.current;
       dragRef.current = null;
+      if (rowEl) {
+        rowEl.style.transform = "";
+        rowEl.style.zIndex = "";
+        rowEl.style.pointerEvents = "";
+      }
       setDragging(null);
       if (d && travelledRef.current) {
         const slot = slotForY(d.rects, ev.clientY);
@@ -265,9 +286,14 @@ function EditorRail({
               {dragging && dragging.slot === i && dragging.from !== i && (
                 <span aria-hidden className="absolute -top-[4px] left-1 right-1 z-10 block h-[2px] rounded-full bg-accent" />
               )}
+              {/* Preview-only rows (founder, 2026-08-29 second pass): the mini
+                  IS the row — no label beside it. The name lives on as the
+                  tooltip and the accessible name. */}
               <button
                 type="button"
                 data-rail-row
+                title={s.label}
+                aria-label={`Page ${i + 1} — ${s.label}`}
                 onMouseDown={(e) => onRowMouseDown(e, i)}
                 onClick={() => {
                   // A completed drag must not also select — the mouseup already
@@ -275,9 +301,9 @@ function EditorRail({
                   if (!travelledRef.current) onSelect(i);
                 }}
                 className={cn(
-                  "group flex w-full items-center gap-2 rounded-md border p-1.5 text-left transition-all",
+                  "group relative flex w-full items-center gap-2 rounded-md border p-1.5 text-left transition-colors",
                   onReorder && slides.length > 1 && "cursor-grab active:cursor-grabbing",
-                  lifted && "opacity-50",
+                  lifted && "shadow-lg",
                   on
                     ? "border-accent-line bg-accent-soft"
                     : "border-hairline bg-surface hover:border-hairline-strong",
@@ -287,14 +313,6 @@ function EditorRail({
                   {String(i + 1).padStart(2, "0")}
                 </span>
                 <RailThumb slide={s} on={on} />
-                <span
-                  className={cn(
-                    "flex-1 truncate text-[11.5px]",
-                    on ? "text-ink" : "text-muted",
-                  )}
-                >
-                  {s.label}
-                </span>
               </button>
             </div>
           );
@@ -317,8 +335,7 @@ function RailThumb({ slide, on }: { slide: EditorSlide; on: boolean }) {
   return (
     <span
       className={cn(
-        "block aspect-video shrink-0 overflow-hidden rounded-[3px] border",
-        showImage ? "w-16" : "w-9",
+        "block aspect-video min-w-0 flex-1 overflow-hidden rounded-[3px] border",
         on ? "border-accent-line" : "border-hairline",
       )}
       style={showImage ? undefined : { background: slide.bg ?? "var(--surface-2)" }}

@@ -358,7 +358,7 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
       | { op: "remove"; page: number }
       | { op: "move"; page: number; to: number }
       | { op: "add"; after: number },
-  ) => {
+  ): Promise<boolean> => {
     setPageBusy(true);
     setPageError(null);
     try {
@@ -385,8 +385,10 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
       setSceneIndex(Math.min(json.focus ?? 0, json.script.scenes.length - 1));
       setReloadKey((k) => k + 1);
       bumpAllThumbs(json.script.scenes.length);
+      return true;
     } catch (e) {
       setPageError(e instanceof Error ? e.message : String(e));
+      return false;
     } finally {
       setPageBusy(false);
     }
@@ -479,7 +481,26 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
           active={sceneIndex}
           onSelect={selectScene}
           onReorder={(from, to) => {
-            if (!shellBusy) void pageOp({ op: "move", page: from, to });
+            if (shellBusy) return;
+            // OPTIMISTIC: the rail reorders the instant the row drops —
+            // holding the old order through the server round-trip was a third
+            // of the founder's "the drag feels a little slow". Server truth
+            // overwrites on success (thumbs re-request then too — the minis
+            // are index-addressed, so they trade places a beat after the
+            // rows); a refused move puts the old order back.
+            const prevDoc = doc;
+            const prevIndex = sceneIndex;
+            const scenes = [...doc.scenes];
+            const [moved] = scenes.splice(from, 1);
+            scenes.splice(to, 0, moved);
+            setDoc({ ...doc, scenes });
+            setSceneIndex(to);
+            void pageOp({ op: "move", page: from, to }).then((ok) => {
+              if (!ok) {
+                setDoc(prevDoc);
+                setSceneIndex(prevIndex);
+              }
+            });
           }}
           onAddSlide={() => {
             if (!shellBusy) void pageOp({ op: "add", after: sceneIndex });
