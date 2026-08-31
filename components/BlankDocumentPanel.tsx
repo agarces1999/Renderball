@@ -1340,7 +1340,7 @@ function BrandCeremony({
         <button
           type="button"
           onClick={onSkip}
-          className="mt-4 font-mono text-[10.5px] uppercase tracking-[0.14em] text-faint transition-colors hover:text-ink"
+          className="ml-5 mt-4 font-mono text-[10.5px] uppercase tracking-[0.14em] text-faint transition-colors hover:text-ink"
         >
           Start without a brand →
         </button>
@@ -1447,7 +1447,7 @@ function BrandCeremony({
         <button
           type="button"
           onClick={onSkip}
-          className="mt-4 font-mono text-[10.5px] uppercase tracking-[0.14em] text-faint transition-colors hover:text-ink"
+          className="ml-5 mt-4 font-mono text-[10.5px] uppercase tracking-[0.14em] text-faint transition-colors hover:text-ink"
         >
           Start without a brand →
         </button>
