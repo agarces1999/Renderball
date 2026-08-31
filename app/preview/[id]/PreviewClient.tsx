@@ -164,6 +164,23 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
       for (let i = 0; i < count; i++) next[i] = (r[i] ?? 0) + 1;
       return next;
     });
+  // Stable per-scene identities (founder, 2026-08-29: "should be instant and
+  // perfect"). Rail rows are keyed by these, so on a reorder React MOVES the
+  // row DOM nodes — each keeps its already-decoded mini — and the refetch
+  // behind it is a content-addressed cache hit returning the same bytes.
+  // Reconciled through every page op; move is reconciled at the optimistic
+  // drop (reconciling it again on the server reply would double-move).
+  const freshSceneKey = () => `sk-${Math.random().toString(36).slice(2, 10)}`;
+  const [sceneKeys, setSceneKeys] = useState<string[]>(() => doc.scenes.map(() => freshSceneKey()));
+  useEffect(() => {
+    setSceneKeys((k) =>
+      k.length === doc.scenes.length ? k : doc.scenes.map((_: unknown, i: number) => k[i] ?? freshSceneKey()),
+    );
+  }, [doc.scenes.length]);
+  // While an optimistic reorder is in flight, the CANVAS keeps rendering the
+  // moved page by its OLD index — the server still has the old order, so
+  // asking for the new index would flash the wrong page for the round-trip.
+  const [heldScene, setHeldScene] = useState<number | null>(null);
   const [regenerating, setRegenerating] = useState(false);
   const [regenError, setRegenError] = useState<string | null>(null);
   // Instructed regen (DESIGN.md flow step 6: "say what to change, it regenerates").
@@ -387,6 +404,17 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
       setSceneIndex(Math.min(json.focus ?? 0, json.script.scenes.length - 1));
       setReloadKey((k) => k + 1);
       bumpAllThumbs(json.script.scenes.length);
+      const settledScenes = json.script.scenes;
+      setSceneKeys((k) => {
+        const next = [...k];
+        if (op.op === "duplicate") next.splice(op.page + 1, 0, freshSceneKey());
+        else if (op.op === "remove") next.splice(op.page, 1);
+        else if (op.op === "add") next.splice(op.after + 1, 0, freshSceneKey());
+        // move: reconciled at the optimistic drop, not here.
+        return next.length === settledScenes.length
+          ? next
+          : settledScenes.map((_: unknown, i: number) => next[i] ?? freshSceneKey());
+      });
       return true;
     } catch (e) {
       setPageError(e instanceof Error ? e.message : String(e));
@@ -398,7 +426,7 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
   // Edit mode renders SETTLED (entry animations at their end state): interactions are
   // instant and rects are stable — you edit a static scene, you WATCH motion in play
   // mode. Toggling edit changes the src, so the browser swaps modes naturally.
-  const iframeSrc = `/api/preview/${scriptId}/iframe?scene=${sceneIndex}&v=${reloadKey}${editing || isDeck ? "&settle=1" : ""}`;
+  const iframeSrc = `/api/preview/${scriptId}/iframe?scene=${heldScene ?? sceneIndex}&v=${reloadKey}${editing || isDeck ? "&settle=1" : ""}`;
 
   // Quality NOTES (the collapsible panel's content) vs anything the banner
   // must surface. thin_brief is not a quality note — it is a statement about
@@ -477,6 +505,7 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
       <div className="min-h-screen bg-canvas">
         <EditorShell
           slides={doc.scenes.map((s, i) => ({
+            id: sceneKeys[i],
             label: s.label ?? "Slide",
             thumbSrc: `/api/preview/${scriptId}/thumbnail?scene=${i}&r=${thumbRevs[i] ?? 0}`,
           }))}
@@ -484,23 +513,33 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
           onSelect={selectScene}
           onReorder={(from, to) => {
             if (shellBusy) return;
-            // OPTIMISTIC: the rail reorders the instant the row drops —
-            // holding the old order through the server round-trip was a third
-            // of the founder's "the drag feels a little slow". Server truth
-            // overwrites on success (thumbs re-request then too — the minis
-            // are index-addressed, so they trade places a beat after the
-            // rows); a refused move puts the old order back.
+            // OPTIMISTIC AND IDENTITY-TRUE: rows, their keys, and the moved
+            // page's canvas all advance the instant the row drops. The keys
+            // make React move the row DOM nodes (minis travel with their
+            // page); heldScene keeps the canvas on the old index until the
+            // server confirms the new order; the refetches behind it are
+            // content-addressed cache hits. A refused move restores all of it.
             const prevDoc = doc;
             const prevIndex = sceneIndex;
+            const prevKeys = sceneKeys;
             const scenes = [...doc.scenes];
             const [moved] = scenes.splice(from, 1);
             scenes.splice(to, 0, moved);
             setDoc({ ...doc, scenes });
             setSceneIndex(to);
+            setSceneKeys((k) => {
+              const next = [...k];
+              const [mk] = next.splice(from, 1);
+              next.splice(to, 0, mk);
+              return next;
+            });
+            setHeldScene(from);
             void pageOp({ op: "move", page: from, to }).then((ok) => {
+              setHeldScene(null);
               if (!ok) {
                 setDoc(prevDoc);
                 setSceneIndex(prevIndex);
+                setSceneKeys(prevKeys);
               }
             });
           }}

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { loadScript } from "../../../../../lib/store";
 import { DEV_OWNER_ID } from "../../../../../lib/auth";
-import { cachedThumbnail, webpVariant } from "../../../../../lib/render/thumbnail";
+import { cachedSceneThumbnail, cachedThumbnail, webpVariant } from "../../../../../lib/render/thumbnail";
 
 /**
  * Dev-harness mirror of /api/preview/<id>/thumbnail (NODE_ENV-gated, no
@@ -24,7 +24,10 @@ export async function GET(request: Request, { params }: { params: { id: string }
   const sceneCount = script.scenes?.length ?? 0;
   const scene = Number.isInteger(parsed) && parsed >= 0 && parsed < Math.max(1, sceneCount) ? parsed : 0;
 
-  const thumb = await cachedThumbnail(scriptId, script, scene);
+  const thumb =
+    rawScene !== null
+      ? await cachedSceneThumbnail(scriptId, script, scene)
+      : await cachedThumbnail(scriptId, script, scene);
   if (!thumb.ok) return new NextResponse(thumb.message, { status: thumb.status });
 
   const wantsWebp = (request.headers.get("accept") ?? "").includes("image/webp");

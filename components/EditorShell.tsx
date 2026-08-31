@@ -29,6 +29,10 @@ export interface EditorToolController {
 }
 
 export interface EditorSlide {
+  /** Stable identity across reorders — rows are keyed by it, so a reorder
+   *  MOVES the row nodes (each keeps its decoded mini) instead of re-deriving
+   *  every slot by position. Falls back to the index when absent. */
+  id?: string;
   label: string;
   bg?: string;
   ink?: string;
@@ -314,7 +318,7 @@ function EditorRail({
           const on = i === active;
           const lifted = dragging?.from === i;
           return (
-            <div key={i} className="relative">
+            <div key={s.id ?? i} className="relative">
               {dragging && dragging.slot === i && dragging.from !== i && (
                 <span aria-hidden className="absolute -top-[4px] left-1 right-1 z-10 block h-[2px] rounded-full bg-accent" />
               )}

@@ -14,10 +14,12 @@
 // exactly the right question and needs no bookkeeping.
 //
 import { promises as fs } from "fs";
+import crypto from "crypto";
 import path from "path";
 import type { Script } from "../../src/schema";
 import { documentDir, genDirOf } from "./gen-store";
 import { exportPagePng } from "./export-static";
+import { readDecomposed } from "../agents/lego-store";
 import { getObjectBytes, isStorageConfigured, putObject } from "../storage/r2";
 
 export type ThumbnailResult =
@@ -161,6 +163,118 @@ export const cachedThumbnail = async (scriptId: string, script: Script, scene = 
   if (!st) return { ok: false, status: 503, message: "thumbnail unavailable" };
   const data = await fs.readFile(file);
   return { ok: true, data, etag: `"${Math.round(st.mtimeMs)}-${st.size}"` };
+};
+
+/**
+ * CONTENT-ADDRESSED per-scene thumbnails (founder, 2026-08-29: reordering
+ * pages made every rail mini churn for seconds — index-addressed caches
+ * recaptured pages whose CONTENT never changed).
+ *
+ * The cache key is a hash of what actually renders: the module preamble (so a
+ * brand re-skin invalidates every page, correctly) plus the scene's own piece
+ * sources. A reorder maps old scene j to new scene i with the SAME signature,
+ * so the "new" thumbnail is a cache hit — served in milliseconds, no
+ * Playwright. Local + R2, both under the sig key; immutable by construction.
+ *
+ * Falls back to the legacy mtime path when a document has no lego store
+ * (video-era docs, mid-build states) — stale-beats-broken still applies.
+ */
+const sceneSig = async (genDir: string, scene: number): Promise<string | null> => {
+  try {
+    const d = await readDecomposed(genDir);
+    const s = d.scenes.find((x) => x.sceneIndex === scene);
+    if (!s) return null;
+    const h = crypto.createHash("sha1");
+    h.update(d.preamble);
+    h.update(" ");
+    for (const p of s.pieces) {
+      h.update(p.openTag);
+      h.update(p.body);
+      h.update(" ");
+    }
+    h.update(s.template ?? "");
+    return h.digest("hex").slice(0, 12);
+  } catch {
+    return null;
+  }
+};
+
+const sigPath = (scriptId: string, sig: string): string =>
+  path.join(process.cwd(), ".data", "thumbs", `${scriptId}-h${sig}.png`);
+const sigKey = (scriptId: string, sig: string): string => `thumbs/${scriptId}-h${sig}.png`;
+
+/** Sig-addressed PNGs accumulate as pages are edited — keep the newest per
+ *  document bounded so .data/thumbs and hydrates stay lean. */
+const pruneSigThumbs = async (scriptId: string, keep: number): Promise<void> => {
+  try {
+    const dir = path.join(process.cwd(), ".data", "thumbs");
+    const mine = (await fs.readdir(dir)).filter(
+      (f) => f.startsWith(`${scriptId}-h`) && (f.endsWith(".png") || f.endsWith(".webp")),
+    );
+    if (mine.length <= keep) return;
+    const stats = await Promise.all(
+      mine.map(async (f) => ({ f, m: (await fs.stat(path.join(dir, f)).catch(() => null))?.mtimeMs ?? 0 })),
+    );
+    stats.sort((a, b) => b.m - a.m);
+    for (const { f } of stats.slice(keep)) {
+      await fs.rm(path.join(dir, f), { force: true }).catch(() => {});
+    }
+  } catch {
+    /* pruning is best-effort */
+  }
+};
+
+export const cachedSceneThumbnail = async (
+  scriptId: string,
+  script: Script,
+  scene: number,
+): Promise<ThumbnailResult> => {
+  // documentDir hydrates when this dyno has never seen the doc — the sig
+  // needs the piece sources. One download post-deploy, then every reorder
+  // is served from the sig cache.
+  const dir = await documentDir(scriptId);
+  const sig = await sceneSig(dir, scene);
+  if (!sig) return cachedThumbnail(scriptId, script, scene);
+
+  const file = sigPath(scriptId, sig);
+  const cached = await fs.stat(file).catch(() => null);
+  if (cached) {
+    const data = await fs.readFile(file);
+    return { ok: true, data, etag: `"h${sig}"` };
+  }
+
+  if (isStorageConfigured()) {
+    const remote = await getObjectBytes(sigKey(scriptId, sig)).catch(() => null);
+    if (remote && remote.length > 0) {
+      await fs.mkdir(path.dirname(file), { recursive: true }).catch(() => {});
+      await fs.writeFile(file, remote).catch(() => {});
+      return { ok: true, data: remote, etag: `"h${sig}"` };
+    }
+  }
+
+  const flightKey = `${scriptId}:h${sig}`;
+  const running = inflight.get(flightKey);
+  const job =
+    running ??
+    (async () => {
+      const result = await exportPagePng(scriptId, script, scene);
+      if (!result.ok) return { ok: false, message: result.message };
+      await fs.mkdir(path.dirname(file), { recursive: true });
+      await fs.writeFile(file, result.data);
+      if (isStorageConfigured()) {
+        void putObject(sigKey(scriptId, sig), result.data, "image/png").catch(() => {});
+      }
+      const sceneCount = script.scenes?.length ?? 1;
+      void pruneSigThumbs(scriptId, Math.max(8, sceneCount * 3));
+      return { ok: true };
+    })().finally(() => inflight.delete(flightKey));
+  if (!running) inflight.set(flightKey, job);
+  const done = await job;
+  if (!done.ok) return { ok: false, status: 503, message: `thumbnail capture failed: ${done.message}` };
+
+  const data = await fs.readFile(file).catch(() => null);
+  if (!data) return { ok: false, status: 503, message: "thumbnail unavailable" };
+  return { ok: true, data, etag: `"h${sig}"` };
 };
 
 /**

@@ -58,6 +58,14 @@ export function DevEditClient({
   const [reloadKey, setReloadKey] = useState(0);
   // Per-scene rail-thumb revisions — mirrors PreviewClient (2026-08-29).
   const [thumbRevs, setThumbRevs] = useState<Record<number, number>>({});
+  // Stable row identities — mirrors PreviewClient: rows move with their page.
+  const freshSceneKey = () => `sk-${Math.random().toString(36).slice(2, 10)}`;
+  const [sceneKeys, setSceneKeys] = useState<string[]>(() => scenes.map(() => freshSceneKey()));
+  useEffect(() => {
+    setSceneKeys((k) =>
+      k.length === scenes.length ? k : scenes.map((_, i) => k[i] ?? freshSceneKey()),
+    );
+  }, [scenes.length]);
   const bumpThumb = (i: number) => setThumbRevs((r) => ({ ...r, [i]: (r[i] ?? 0) + 1 }));
   const bumpAllThumbs = (count: number) =>
     setThumbRevs((r) => {
@@ -102,6 +110,17 @@ export function DevEditClient({
         router.refresh();
         setReloadKey((k) => k + 1);
         bumpAllThumbs(typeof json.total === "number" ? json.total : scenes.length);
+        setSceneKeys((k) => {
+          const next = [...k];
+          if (op.op === "duplicate") next.splice(op.page + 1, 0, freshSceneKey());
+          else if (op.op === "remove") next.splice(op.page, 1);
+          else if (op.op === "add") next.splice(op.after + 1, 0, freshSceneKey());
+          else if (op.op === "move") {
+            const [m] = next.splice(op.page, 1);
+            next.splice(op.to, 0, m);
+          }
+          return next;
+        });
       }
     } finally {
       setPageBusy(false);
@@ -187,6 +206,7 @@ export function DevEditClient({
       )}
       <EditorShell
         slides={scenes.map((s, i) => ({
+          id: sceneKeys[i],
           label: s.label,
           thumbSrc: `/api/dev/${scriptId}/thumbnail?scene=${i}&r=${thumbRevs[i] ?? 0}`,
         }))}

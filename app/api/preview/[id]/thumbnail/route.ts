@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { loadScript } from "../../../../../lib/store";
 import { getCurrentUser } from "../../../../../lib/auth";
-import { cachedThumbnail, webpVariant } from "../../../../../lib/render/thumbnail";
+import { cachedSceneThumbnail, cachedThumbnail, webpVariant } from "../../../../../lib/render/thumbnail";
 
 /**
  * Cached page-1 thumbnail of a built document (the gallery's deck cards).
@@ -29,7 +29,13 @@ export async function GET(request: Request, { params }: { params: { id: string }
   const sceneCount = script.scenes?.length ?? 0;
   const scene = Number.isInteger(parsed) && parsed >= 0 && parsed < Math.max(1, sceneCount) ? parsed : 0;
 
-  const thumb = await cachedThumbnail(scriptId, script, scene);
+  // An explicit ?scene= (the editor rail) is served content-addressed: a
+  // reorder maps to existing signatures, so no page is ever recaptured just
+  // for changing position. The bare URL keeps the gallery's mtime contract.
+  const thumb =
+    rawScene !== null
+      ? await cachedSceneThumbnail(scriptId, script, scene)
+      : await cachedThumbnail(scriptId, script, scene);
   if (!thumb.ok) return new NextResponse(thumb.message, { status: thumb.status });
 
   // Content negotiation: browsers that accept webp get the smaller variant
