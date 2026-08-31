@@ -3429,15 +3429,23 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
         </div>
       )}
 
-      {/* Frozen generate box + its prompt controls, inside the box wherever the
-          box can hold them (row when wide, stacked when narrow). */}
+      {/* THE DRAWN BOX IS THE FIELD (founder, 2026-08-29: "drawing a box and
+          typing inside the box what you want is magical... maybe the box
+          itself is the field?"). On release the rect becomes a dark-glass
+          pane with the caret already blinking inside it — same material as
+          the app's command menus, so it reads as the canvas asking, not a
+          form appearing. The kind switch and actions shrink to a whisper
+          strip at the box's edge. Enter generates, Shift+Enter breaks a
+          line, Esc cancels. */}
       {genBox && (() => {
-        const gp = genBarPosition(
-          genBox,
-          overlayRef.current?.clientWidth ?? 9999,
-          overlayRef.current?.clientHeight ?? 0,
-        );
-        const stacked = gp.layout === "stack";
+        const overlayW = overlayRef.current?.clientWidth ?? 9999;
+        const overlayH = overlayRef.current?.clientHeight ?? 0;
+        const stripBelow = genBox.top + genBox.height + 44 <= overlayH;
+        const stripTop = stripBelow
+          ? genBox.top + genBox.height + 6
+          : Math.max(4, genBox.top - 36);
+        const stripLeft = Math.max(4, Math.min(genBox.left, overlayW - 420));
+        const pad = Math.min(16, Math.max(8, Math.round(genBox.height * 0.08)));
         return (
         <>
           <div
@@ -3448,64 +3456,24 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
               width: genBox.width,
               height: genBox.height,
               border: "2px solid var(--accent, #00c28a)",
-              background: "rgba(0,194,138,0.08)",
-              borderRadius: 4,
-              pointerEvents: "none",
-            }}
-          />
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              void submitGenerate();
-            }}
-            style={{
-              position: "absolute",
-              left: gp.left,
-              top: gp.top,
-              width: stacked ? gp.width : undefined,
+              background: "rgba(10, 13, 22, 0.62)",
+              backdropFilter: "blur(6px)",
+              WebkitBackdropFilter: "blur(6px)",
+              borderRadius: 6,
+              boxShadow: "0 8px 32px rgba(5, 8, 16, 0.35)",
               pointerEvents: "auto",
             }}
-            className={
-              `${R_MD} border border-white/10 bg-[#11141b] shadow-xl ` +
-              (stacked
-                ? "flex flex-col gap-1 px-1.5 py-1.5"
-                : "flex items-center gap-1 px-1.5 py-1")
-            }
           >
-            {/* What to put in the box — an explicit switch, never inferred from
-                the prompt. Element = LLM JSX; Image = diffusion photo/art;
-                Icon = diffusion mark with its background removed (transparent). */}
-            <div
-              role="group"
-              aria-label="What to generate"
-              className={`flex items-center gap-0.5 ${R_SM} bg-white/10 p-0.5 ${stacked ? "self-stretch" : ""}`}
-            >
-              {(["element", "image", "icon"] as const).map((k) => (
-                <button
-                  key={k}
-                  type="button"
-                  aria-pressed={genKind === k}
-                  onClick={() => setGenKind(k)}
-                  disabled={!!busy}
-                  className={
-                    `${HIT} rounded-[6px] px-2 text-[11px] font-medium capitalize disabled:opacity-50 ` +
-                    (stacked ? "flex-1 justify-center " : "") +
-                    (genKind === k ? ACTIVE : "text-white/70 hover:bg-white/10")
-                  }
-                >
-                  {k}
-                </button>
-              ))}
-            </div>
-            <input
+            <textarea
               autoFocus
               value={genPrompt}
               onChange={(e) => setGenPrompt(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === "Escape") {
-                  setGenBox(null);
-                  setGenPrompt("");
-                  setTool(null);
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  if (genPrompt.trim() && !busy) void submitGenerate();
+                } else if (e.key === "Escape") {
+                  cancelGenerate();
                 }
               }}
               disabled={!!busy}
@@ -3518,17 +3486,49 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
               }
               placeholder={
                 genKind === "image"
-                  ? "Describe the image, e.g. aerial photo of a harbor at dusk"
+                  ? "Describe the image\u2026 e.g. aerial photo of a harbor at dusk"
                   : genKind === "icon"
-                    ? "Name the icon, e.g. a shield with a checkmark"
+                    ? "Name the icon\u2026 e.g. a shield with a checkmark"
                     : "What goes here? e.g. a KPI tile showing 3.2x"
               }
-              className={
-                `h-[28px] ${R_SM} bg-white/10 px-2 text-[11px] text-white placeholder-white/45 outline-none focus:bg-white/15 disabled:opacity-50 ` +
-                (stacked ? "w-full" : "w-72")
-              }
+              className="h-full w-full resize-none bg-transparent outline-none placeholder:text-white/40 disabled:opacity-60"
+              style={{
+                padding: pad,
+                color: "#f5f7fa",
+                caretColor: "var(--accent, #00c28a)",
+                fontSize: genBox.height < 70 ? 13 : 15,
+                lineHeight: 1.45,
+              }}
             />
-            <div className={stacked ? "flex items-center gap-1 self-stretch" : "contents"}>
+          </div>
+          <div
+            style={{ position: "absolute", left: stripLeft, top: stripTop, pointerEvents: "auto", zIndex: 30 }}
+            className="flex items-center gap-1.5"
+          >
+            {/* What to put in the box — an explicit switch, never inferred
+                from the prompt. Element = LLM JSX; Image = diffusion photo;
+                Icon = diffusion mark, background removed. */}
+            <div
+              role="group"
+              aria-label="What to generate"
+              className="flex items-center gap-0.5 rounded-full border border-white/10 bg-[#11141b]/95 p-0.5 shadow-lg"
+            >
+              {(["element", "image", "icon"] as const).map((k) => (
+                <button
+                  key={k}
+                  type="button"
+                  aria-pressed={genKind === k}
+                  onClick={() => setGenKind(k)}
+                  disabled={!!busy}
+                  className={
+                    "h-6 rounded-full px-2.5 text-[11px] font-medium capitalize transition-colors disabled:opacity-50 " +
+                    (genKind === k ? "bg-accent text-accent-ink" : "text-white/70 hover:bg-white/10")
+                  }
+                >
+                  {k}
+                </button>
+              ))}
+            </div>
             {genKind !== "element" && (
               <button
                 type="button"
@@ -3539,27 +3539,25 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
                 disabled={!!busy}
                 title="New generations resemble the last one of this kind — same model, same seed, same look"
                 className={
-                  `${HIT} rounded-[6px] px-2 text-[11px] font-medium whitespace-nowrap disabled:opacity-50 ` +
-                  (matchStyle ? ACTIVE : "text-white/70 hover:bg-white/10")
+                  "h-7 whitespace-nowrap rounded-full border border-white/10 px-2.5 text-[11px] font-medium shadow-lg transition-colors disabled:opacity-50 " +
+                  (matchStyle ? "bg-accent text-accent-ink" : "bg-[#11141b]/95 text-white/70 hover:bg-white/10")
                 }
               >
                 Match style
               </button>
             )}
             <button
-              type="submit"
+              type="button"
+              onClick={() => void submitGenerate()}
               disabled={!!busy || !genPrompt.trim()}
-              className={
-                `${HIT} ${R_SM} ${ACTIVE} gap-1.5 px-2.5 text-[11px] font-semibold disabled:opacity-50 ` +
-                (stacked ? "flex-1 justify-center" : "")
-              }
+              className="flex h-7 items-center gap-1.5 rounded-full bg-accent px-3 text-[11.5px] font-semibold text-accent-ink shadow-lg transition-all hover:brightness-110 disabled:opacity-50"
             >
               {busy === "insert" ? (
                 <>
                   <CrystalOrb /> Generating…
                 </>
               ) : (
-                "Generate"
+                <>Generate {"\u21B5"}</>
               )}
             </button>
             <button
@@ -3568,12 +3566,11 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
               // NOT disabled while busy. Cancel is the one control that has to
               // work when everything else is stuck — disabling it during a
               // generate left a stalled request with no way out but a reload.
-              className={`${HIT} ${R_SM} px-2 text-[11px] font-medium text-white/70 hover:bg-white/10`}
+              className="h-7 rounded-full border border-white/10 bg-[#11141b]/95 px-2.5 text-[11px] font-medium text-white/70 shadow-lg hover:bg-white/10"
             >
               {busy === "insert" ? "Stop" : "Cancel"}
             </button>
-            </div>
-          </form>
+          </div>
         </>
         );
       })()}
