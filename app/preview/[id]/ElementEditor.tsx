@@ -3456,11 +3456,14 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
               width: genBox.width,
               height: genBox.height,
               border: "2px solid var(--accent, #00c28a)",
-              background: "rgba(10, 13, 22, 0.62)",
+              // A light wash of the accent, not dark glass (founder: "that
+              // grey looks a little sad — use like a light version of the
+              // green"). Near-opaque so ink stays legible over any page.
+              background: "rgba(228, 247, 239, 0.94)",
               backdropFilter: "blur(6px)",
               WebkitBackdropFilter: "blur(6px)",
               borderRadius: 6,
-              boxShadow: "0 8px 32px rgba(5, 8, 16, 0.35)",
+              boxShadow: "0 8px 32px rgba(5, 8, 16, 0.18)",
               pointerEvents: "auto",
             }}
           >
@@ -3491,10 +3494,10 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
                     ? "Name the icon\u2026 e.g. a shield with a checkmark"
                     : "What goes here? e.g. a KPI tile showing 3.2x"
               }
-              className="h-full w-full resize-none bg-transparent outline-none placeholder:text-white/40 disabled:opacity-60"
+              className="h-full w-full resize-none bg-transparent outline-none placeholder:text-[#10141c]/40 disabled:opacity-60"
               style={{
                 padding: pad,
-                color: "#f5f7fa",
+                color: "#10141c",
                 caretColor: "var(--accent, #00c28a)",
                 fontSize: genBox.height < 70 ? 13 : 15,
                 lineHeight: 1.45,
