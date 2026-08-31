@@ -351,6 +351,18 @@ function EditorRail({
                     e.stopPropagation();
                     onDeleteSlide(i);
                   }
+                  // ⌘/Ctrl+↑↓ reorders the focused row — the keyboard path the
+                  // Move buttons' removal dropped (a11y pass, 2026-08-29).
+                  // Identity-keyed rows mean the focused node MOVES with the
+                  // page, so focus rides along and repeat presses keep walking.
+                  if ((e.metaKey || e.ctrlKey) && (e.key === "ArrowUp" || e.key === "ArrowDown") && onReorder) {
+                    const to = e.key === "ArrowUp" ? i - 1 : i + 1;
+                    if (to >= 0 && to < slides.length) {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      onReorder(i, to);
+                    }
+                  }
                 }}
                 className={cn(
                   "group relative flex w-full items-center gap-2 rounded-md border p-1.5 text-left transition-colors",

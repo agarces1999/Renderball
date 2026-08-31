@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { EditorCta } from "./EditorCta";
 import {
   CaptureRegion,
   DotGrid,
@@ -329,7 +330,7 @@ function ColdOpen({ progress }: { progress: number }) {
           className="mt-11 flex flex-col items-center gap-1.5"
           style={{ animation: "rb-fade 640ms ease-out both", animationDelay: "560ms" }}
         >
-          <span className="font-mono text-[10.5px] tracking-[0.18em] text-faint">
+          <span className="font-mono text-[10.5px] tracking-[0.18em] text-muted">
             SCROLL TO BEGIN
           </span>
           <span
@@ -1090,12 +1091,17 @@ function ClaimBar({
           {section.body}
         </p>
       </div>
-      <Link
-        href="/api/documents/new" prefetch={false}
-        className="mt-1 shrink-0 rounded-full bg-accent px-5 py-2.5 text-[13.5px] font-semibold text-accent-ink transition-all hover:brightness-110"
-      >
-        Open the editor
-      </Link>
+      <div className="mt-1 flex shrink-0 flex-col items-start gap-2">
+        <Link
+          href="/api/documents/new" prefetch={false}
+          className="rounded-full bg-accent px-5 py-2.5 text-[13.5px] font-semibold text-accent-ink transition-all hover:brightness-110"
+        >
+          Open the editor
+        </Link>
+        {/* The risk-reversal rides WITH the ask (a11y/conversion pass,
+            2026-08-29) — mobile always had it; desktop now matches. */}
+        <span className="font-mono text-[11px] text-muted">first 1M tokens free · no card</span>
+      </div>
     </div>
   );
 }
@@ -1118,13 +1124,10 @@ function StaticEditor() {
       </h1>
       <p className="mt-5 text-[15px] leading-relaxed text-ink-soft">{hero.body}</p>
       <div className="mt-6 flex flex-wrap items-center gap-3">
-        <Link
-          href="/api/documents/new" prefetch={false}
-          className="rounded-full bg-accent px-6 py-3 text-[14.5px] font-semibold text-accent-ink"
-        >
+        <EditorCta className="rounded-full bg-accent px-6 py-3 text-[14.5px] font-semibold text-accent-ink">
           Open the editor
-        </Link>
-        <span className="font-mono text-[11px] text-faint">
+        </EditorCta>
+        <span className="font-mono text-[11px] text-muted">
           first 1M tokens free · no card
         </span>
       </div>

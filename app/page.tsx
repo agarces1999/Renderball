@@ -2,6 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { auth } from "@clerk/nextjs/server";
 import { LandingEditor } from "../components/LandingEditor";
+import { EditorCta } from "../components/EditorCta";
 
 /**
  * Public landing (the only fully public surface) — per DESIGN.md
@@ -201,12 +202,12 @@ function FooterCta() {
           Sign-in drops you onto a canvas, not a dashboard. First million
           tokens on us.
         </p>
-        <Link
-          href="/api/documents/new" prefetch={false}
+        <EditorCta
+          centerCard
           className="mt-10 inline-block rounded-full bg-accent px-8 py-3.5 text-[15px] font-semibold text-accent-ink shadow-[0_20px_50px_-20px_rgba(0,194,138,0.7)] transition-all hover:brightness-110"
         >
           Open the editor →
-        </Link>
+        </EditorCta>
         <p className="mt-5 font-mono text-[11px] text-faint">
           no card · editing always free
         </p>

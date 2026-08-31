@@ -25,7 +25,10 @@
     --hairline-strong: rgba(18, 26, 43, 0.16);
     --ink: #10141c; /* near-black, cool */
     --ink-soft: #39424f;
-    --muted: #69707e;
+    /* #69707e measured 4.24:1 on --canvas — just under AA for small text.
+       One step deeper clears 4.5:1 everywhere muted is used at 11-13px
+       (footer links, whispers) without changing the grey's temperature. */
+    --muted: #5f6774;
     --faint: #99a0ad;
 
     /* emerald signal — the only chroma */
@@ -71,6 +74,16 @@
   ::selection {
     background-color: var(--accent);
     color: var(--accent-ink);
+  }
+
+  /* Keyboard focus is always visible (a11y pass, 2026-08-29). :focus-visible
+     only — mouse clicks stay ringless, so the quiet chrome survives. Rows,
+     pills, and links all inherit this; the Delete-the-focused-slide feature
+     depends on the user being able to SEE focus. */
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: 2px;
   }
 }
 
