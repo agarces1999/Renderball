@@ -20,6 +20,7 @@ import { resolveCornerBrandMark } from "../agents/logo-inject";
 import { resolveCanvasPlan, signatureWithLogoFallback, brandShortName, luminanceOf } from "../crawl/brand-identity";
 import { deriveCrawlTheme } from "../render/crawl-theme";
 import { persistGenDir } from "../render/gen-store";
+import { warmSceneThumbs } from "../render/thumbnail";
 import { measureScenes } from "../render/measure-scene";
 import { measureOutDir } from "../render/render-truth-gates";
 import { verifyScenesRender } from "../render/ssr-render";
@@ -235,6 +236,11 @@ export const runHarnessPreviewBuild = async (args: HarnessBuildArgs): Promise<Ro
     } finally {
       await persistGenDir(scriptId);
     }
+
+    // Warm every page's rail mini in the background (founder, 2026-08-29:
+    // fresh decks must never show the capture wait). Fire-and-forget — the
+    // build's response does not wait on Playwright.
+    warmSceneThumbs(scriptId, script);
 
     // Final warnings write — later writeGeneratedFiles calls (repair/loop) would
     // otherwise clobber the flagged residuals recorded at the first write.

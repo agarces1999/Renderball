@@ -278,6 +278,24 @@ export const cachedSceneThumbnail = async (
 };
 
 /**
+ * Fire-and-forget warm of every scene's content-addressed thumbnail — called
+ * when a build lands (founder, 2026-08-29: fresh decks must never show the
+ * capture wait; old decks stay lazy). Sequential on purpose: one Playwright
+ * page at a time on a container that just finished a build, and the inflight
+ * map dedups against any rail request that races it. Errors are swallowed —
+ * a failed warm just means that page captures on first view, the old path.
+ */
+export const warmSceneThumbs = (scriptId: string, script: Script): void => {
+  const n = script.scenes?.length ?? 0;
+  if (!n) return;
+  void (async () => {
+    for (let i = 0; i < n; i++) {
+      await cachedSceneThumbnail(scriptId, script, i).catch(() => {});
+    }
+  })();
+};
+
+/**
  * WebP variant of the page-1 thumbnail, derived from the canonical PNG and
  * cached beside it. R2 keeps ONLY the PNG (one canonical object); the webp
  * regenerates locally in ~15ms per dyno on first Accept: image/webp request.
