@@ -15,7 +15,6 @@ import { cn } from "../../../../lib/cn";
 import { SceneFrame } from "../../../../components/SceneFrame";
 import { BrandPanel } from "../../../../components/BrandPanel";
 import { StructuralPanel } from "../../../../components/StructuralPanel";
-import { DeckPagePanel } from "../../../preview/[id]/PreviewClient";
 
 /**
  * Dev editing harness (no Clerk session; NODE_ENV-gated route). Renders the
@@ -68,7 +67,7 @@ export function DevEditClient({
     });
   const [playMotion, setPlayMotion] = useState(false);
   const router = useRouter();
-  const [panelTab, setPanelTab] = useState<"copy" | "page" | "brand">("copy");
+  const [panelTab, setPanelTab] = useState<"copy" | "brand">("copy");
   const [pageBusy, setPageBusy] = useState(false);
 
   /**
@@ -246,7 +245,7 @@ export function DevEditClient({
           // largest surfaces.
           <div className="flex h-full flex-col">
             <div className="flex shrink-0 gap-1 border-b border-hairline px-3 pt-2.5">
-              {(["copy", "page", "brand"] as const).map((t) => (
+              {(["copy", "brand"] as const).map((t) => (
                 <button
                   key={t}
                   type="button"
@@ -266,12 +265,6 @@ export function DevEditClient({
             <div className="min-h-0 flex-1 overflow-y-auto">
               {panelTab === "brand" ? (
                 <BrandPanel scriptId={scriptId} apiBase="/api/dev" />
-              ) : panelTab === "page" ? (
-                <DeckPagePanel
-                  index={sceneIndex}
-                  total={scenes.length}
-                  description={scene?.description ?? null}
-                />
               ) : (
                 <ScriptPanel
                   logline={logline}

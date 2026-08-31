@@ -142,7 +142,9 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
   // `doc` is the live document; the server-loaded `script` prop is its seed.
   const [doc, setDoc] = useState(script);
   const [sceneIndex, setSceneIndex] = useState(0);
-  const [panelTab, setPanelTab] = useState<"page" | "brand" | "element">("page");
+  // "page" retired 2026-08-29 (founder: "it is not doing much") — once its
+  // actions dissolved into the rail, the tab was a paragraph. Brand is home.
+  const [panelTab, setPanelTab] = useState<"brand" | "element">("brand");
   // Only while the document is untouched — an empty state, not a mode.
   const [showBlankPanel, setShowBlankPanel] = useState(isBlank);
   const [playing, setPlaying] = useState(!isDeck);
@@ -443,11 +445,11 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
     return () => clearTimeout(t);
   }, [ed.selected, ed.busy]);
   // The Element tab exists only while something is selected — it appears on
-  // select, and a deselect returns to the page tab rather than stranding an
+  // select, and a deselect returns to the brand tab rather than stranding an
   // empty panel.
   useEffect(() => {
     if (panelPiece) setPanelTab("element");
-    else setPanelTab((t) => (t === "element" ? "page" : t));
+    else setPanelTab("brand");
   }, [panelPiece]);
   // One busy flag for the whole shell: element edits, regen, and page ops all
   // rewrite state under the canvas, so every structural control gates on it —
@@ -637,7 +639,7 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
             // than buried in a per-element menu.
             <div className="flex h-full flex-col">
               <div className="flex shrink-0 gap-1 border-b border-hairline px-3 pt-2.5">
-                {([...(panelPiece ? (["element"] as const) : []), "page", "brand"] as const).map((t) => (
+                {([...(panelPiece ? (["element"] as const) : []), "brand"] as const).map((t) => (
                   <button
                     key={t}
                     type="button"
@@ -663,7 +665,7 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
                     busy={ed.busy}
                     onRegenerate={(instruction) => editorRef.current?.regenerateSelected(instruction)}
                   />
-                ) : panelTab === "brand" ? (
+                ) : (
                   <BrandPanel
                     scriptId={scriptId}
                     onApplied={() => {
@@ -674,12 +676,6 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
                         if (!ok) setReloadKey((k) => k + 1);
                       });
                     }}
-                  />
-                ) : (
-                  <DeckPagePanel
-                    index={sceneIndex}
-                    total={doc.scenes.length}
-                    description={currentScene?.description ?? null}
                   />
                 )}
               </div>
@@ -1347,31 +1343,6 @@ function LimitStrip({
 }
 
 /** The deck's per-page inspector — structural ops on the active page. */
-/** Description-only since 2026-08-29 (founder): every page ACTION is direct
- *  now — drag the rail row to reorder, right-click it for duplicate/delete/
- *  export, press Delete on a focused row, "+" in the rail header for a blank
- *  page. The panel's job is context, not controls. */
-export function DeckPagePanel({
-  index,
-  total,
-  description,
-}: {
-  index: number;
-  total: number;
-  description: string | null;
-}) {
-  return (
-    <div className="rounded-xl border border-hairline bg-surface px-4 py-3.5">
-      <div className="mb-1.5 font-mono text-[10.5px] uppercase tracking-[0.14em] text-faint">
-        Page {index + 1} of {total}
-      </div>
-      {description && (
-        <p className="text-[13px] leading-relaxed text-ink-soft">{description}</p>
-      )}
-    </div>
-  );
-}
-
 /**
  * The LOUD tier — structural gate failures that survived every retry. Unlike
  * the quiet notes below, these are shipped-broken-class defects (a scene that
