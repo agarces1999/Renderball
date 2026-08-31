@@ -481,7 +481,7 @@ export function BrandPanel({
           disabled={!!busy}
           className="rounded-full bg-accent px-3 py-2 text-[12.5px] font-semibold text-accent-ink transition-all hover:brightness-110 disabled:opacity-50"
         >
-          {busy === "apply" ? "Applying…" : "Apply to this deck · free"}
+          {busy === "apply" ? "Applying…" : "Apply brand"}
         </button>
         {feedbackAt("apply")}
       </div>

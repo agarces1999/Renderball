@@ -1332,7 +1332,7 @@ function BrandCeremony({
           onClick={onReadNow}
           className="mt-2.5 rounded-full bg-accent px-4 py-2.5 text-[13.5px] font-semibold text-accent-ink transition-all hover:brightness-110 disabled:opacity-40"
         >
-          Read my site — free, about two seconds
+          Read my site
         </button>
 
         {error && <p className="mt-3 text-[12px] leading-relaxed text-ink">{error}</p>}
