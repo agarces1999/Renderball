@@ -766,6 +766,13 @@ export interface GeneratedFiles {
 export const writeGeneratedFiles = async (
   genDir: string,
   files: GeneratedFiles,
+  opts: {
+    /** false = write the dir but do NOT publish it to durable storage.
+     *  For scratch render dirs (stream critics' early renders, 2026-09-01)
+     *  that must never reach the store customers hydrate from. Default true —
+     *  every existing caller keeps its durability. */
+    persist?: boolean;
+  } = {},
 ): Promise<void> => {
   // The two LLM-authored files are checked BEFORE anything touches disk: this
   // process later executes them with a real `new Function(...)`, so unsafe
@@ -813,5 +820,5 @@ export const writeGeneratedFiles = async (
   // deploy, so without this the document the user just paid for exists only
   // until the next push. Best-effort: a storage outage must not fail a
   // finished build (see gen-store.ts).
-  await persistGenDir(path.basename(genDir));
+  if (opts.persist !== false) await persistGenDir(path.basename(genDir));
 };

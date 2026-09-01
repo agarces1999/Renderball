@@ -34,6 +34,7 @@ import { castCall } from "../llm/cast-provider";
 import { assemblePack, packAssetAllowlist, type PackInput } from "./pack";
 import { authorDeck, authorContinuation, mergeChapters, missingSections, type AuthorAttempt } from "./author";
 import { validateDeck, type TruthViolation } from "./validators";
+import { EarlyCriticRunner, streamCriticsEnabled, critiquePageShot, sceneIntent, type EarlyVerdict } from "./stream-critics";
 
 interface HarnessBuildArgs {
   // Loose on purpose: LoadedScript/LoadedBrief stay owned by run-preview-build.
@@ -55,13 +56,13 @@ interface RouteResult {
 }
 
 const CRITIC_TOKENS = 8192; // judgment thinking ate 2048 in M5 — never lower.
-
-const sceneIntent = (s: { label?: string; description?: string }, i: number): string =>
-  `Page ${i + 1} — ${s.label ?? "untitled"}: ${s.description ?? ""}`;
+// sceneIntent moved to stream-critics.ts (2026-09-01) so the early path and
+// the join path share ONE prompt definition — imported above.
 
 export const runHarnessPreviewBuild = async (args: HarnessBuildArgs): Promise<RouteResult> => {
   const { script, brief, scriptId, genDir, timeline, buildT0 } = args;
   const abortSignal = buildAbortSignal(scriptId);
+  let earlyRunner: EarlyCriticRunner | null = null;
   const scenes: PackInput["scenes"] = (script.scenes ?? []).map(
     (s: { label?: string; description?: string; content?: unknown }) => ({
       label: s.label ?? "",
@@ -172,7 +173,20 @@ export const runHarnessPreviewBuild = async (args: HarnessBuildArgs): Promise<Ro
     const onAttempt = (a: AuthorAttempt) => timeline.mark(`harness:author:${a.model.split("/").pop()}:${a.ok ? "ok" : "failed"} (${a.seconds}s, ${a.outputTokens}tok)`);
     const firstEnd = n <= 8 ? n : CHAPTER;
     const basePack = n <= 8 ? pack : assemblePack({ ...packInput, chapterEmitEnd: firstEnd });
-    const authored = await authorDeck(basePack, firstEnd, { onAttempt, signal: abortSignal });
+    // ── Early critics (RB_STREAM_CRITICS, flag-gated OFF): critique each page
+    // the moment its section closes in the author stream. Single-breath decks
+    // only (n ≤ 8 = no chapters) and only when the look-and-revise loop that
+    // consumes the verdicts is on. Off = this block is inert and the author
+    // call below is byte-identical to before.
+    if (streamCriticsEnabled() && n <= 8 && (process.env.RB_HARNESS_LOOP ?? "on") !== "off") {
+      earlyRunner = new EarlyCriticRunner({ genDir, script, scenes, n, log: (l) => timeline.mark(l) });
+      timeline.mark("harness:stream-critics:armed");
+    }
+    const authored = await authorDeck(basePack, firstEnd, {
+      onAttempt,
+      signal: abortSignal,
+      ...(earlyRunner ? { stream: earlyRunner.authorHooks() } : {}),
+    });
     let code = authored.code;
     const chapterThinking: string[] = [authored.thinking];
     for (let start = firstEnd; start < n; start += CHAPTER) {
@@ -255,7 +269,13 @@ export const runHarnessPreviewBuild = async (args: HarnessBuildArgs): Promise<Ro
     // ── Loop: render → comparative critic → ONE revision, strict-improvement. ──
     if ((process.env.RB_HARNESS_LOOP ?? "on") !== "off") {
       try {
-        code = await lookAndReviseOnce({ genDir, script, scenes, code, pack, model: authored.model, timeline, n, signal: abortSignal });
+        // The join: collect verdicts that arrived during authoring. Only pages
+        // whose FINAL render inputs hash-match what was critiqued are reused —
+        // an author retry or surgical patch silently demotes its pages to the
+        // ordinary critic path below. Never worse than today by construction.
+        const early = earlyRunner ? await earlyRunner.finish(code) : undefined;
+        if (early?.size) timeline.mark(`harness:stream-critics:${early.size}/${n} verdicts arrived during authoring`);
+        code = await lookAndReviseOnce({ genDir, script, scenes, code, pack, model: authored.model, timeline, n, signal: abortSignal, early });
       } catch (err) {
         timeline.mark(`harness:loop:skipped (${String(err).slice(0, 80)})`);
       }
@@ -311,6 +331,8 @@ export const runHarnessPreviewBuild = async (args: HarnessBuildArgs): Promise<Ro
       throw new BuildCancelledError();
     }
     return { status: 500, body: { error: String(err).slice(0, 500), stage: "harness" } };
+  } finally {
+    await earlyRunner?.cleanup();
   }
 };
 
@@ -345,8 +367,12 @@ const lookAndReviseOnce = async (args: {
   timeline: BuildTimeline;
   n: number;
   signal?: AbortSignal;
+  /** Verdicts critiqued DURING authoring (stream critics), sig-verified
+   *  against this exact code by the caller. A present page skips its critic
+   *  call — the verdict already judged pixel-identical render inputs. */
+  early?: Map<number, EarlyVerdict>;
 }): Promise<string> => {
-  const { genDir, script, scenes, pack, model, timeline, n, signal } = args;
+  const { genDir, script, scenes, pack, model, timeline, n, signal, early } = args;
   let { code } = args;
   timeline.mark("harness:critic:start");
   const before = await measureScenes(genDir, script, measureOutDir(genDir));
@@ -355,21 +381,15 @@ const lookAndReviseOnce = async (args: {
   // plumbing around the judgments, never the judgments.
   const pageNotes = await Promise.all(
     Array.from({ length: n }, (_, i) => (async (): Promise<{ page: number; weakness: string } | null> => {
+      const reused = early?.get(i);
+      if (reused) {
+        timeline.mark(`harness:critic:page ${i + 1} reused early verdict (${reused.weakness ? "flagged" : "ship"})`);
+        return reused.weakness ? { page: i, weakness: reused.weakness } : null;
+      }
       const shot = await shotBase64(before[i]?.screenshotPath, genDir, i);
       if (!shot) return null;
-      const r = await callZaiVision(
-        shot,
-        `This slide was authored for the intent: "${sceneIntent(scenes[i], i)}". Judge it against that intent for an executive audience. Reply ONLY JSON: {"ship": true|false, "weakness": "<the ONE decisive weakness, or empty if ship>"}`,
-        { timeoutMs: 120_000, maxTokens: CRITIC_TOKENS, stage: "harness-critic" },
-      );
-      const raw = (r.text ?? "").match(/\{[\s\S]*\}/)?.[0] ?? extractJsonFromReasoning(r.text ?? "");
-      try {
-        const v = raw ? JSON.parse(raw) : null;
-        if (v && v.ship === false && v.weakness) return { page: i, weakness: String(v.weakness).slice(0, 300) };
-      } catch {
-        /* an unparseable verdict never blocks — decks always ship */
-      }
-      return null;
+      const v = await critiquePageShot(shot, sceneIntent(scenes[i], i));
+      return v.weakness ? { page: i, weakness: v.weakness } : null;
     })().catch(() => null)),
   );
   const notes = pageNotes.filter((x): x is { page: number; weakness: string } => x !== null);

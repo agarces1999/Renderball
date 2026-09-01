@@ -649,6 +649,12 @@ export const measureScenes = async (
      *  vision judge — can start on scene 0 while scene 1 is still rendering
      *  instead of waiting for the whole batch. Failures don't fire. */
     onSceneMeasured?: (m: SceneMeasurement) => void;
+    /** Measure ONLY these scene indices (stream critics, 2026-09-01: the
+     *  early path re-measures one just-completed page per call and must not
+     *  pay for its predecessors again). Others return an explicit
+     *  "skipped (onlyScenes)" row so positional indexing stays intact.
+     *  Absent = every scene, exactly the old behavior. */
+    onlyScenes?: number[];
   } = {},
 ): Promise<SceneMeasurement[]> => {
   const wantShots = opts.screenshots !== false;
@@ -698,6 +704,10 @@ export const measureScenes = async (
   // ── render each Section to HTML up front (Node side) ───────────────────────
   const htmls: (string | null)[] = [];
   for (let i = 0; i < sceneCount; i++) {
+    if (opts.onlyScenes && !opts.onlyScenes.includes(i)) {
+      htmls.push(null);
+      continue;
+    }
     const Section = [`Section${i}`, `Scene${i}Slide`, `Scene${i}`, `Slide${i}`]
       .map((n) => mod[n])
       .find((f) => typeof f === "function") as
@@ -779,6 +789,10 @@ export const measureScenes = async (
     });
     for (let i = 0; i < sceneCount; i++) {
       const bodyHtml = htmls[i];
+      if (opts.onlyScenes && !opts.onlyScenes.includes(i)) {
+        results.push({ scene: i, width: dims.w, height: dims.h, elements: [], error: "skipped (onlyScenes)" });
+        continue;
+      }
       if (bodyHtml == null) {
         results.push({ scene: i, width: dims.w, height: dims.h, elements: [], error: `no Section${i} / render failed` });
         continue;

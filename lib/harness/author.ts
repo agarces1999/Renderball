@@ -12,7 +12,42 @@
  * model, then fall through the socket — failure modes are model-specific, so
  * diversity beats persistence.
  */
-import { castCall } from "../llm/cast-provider";
+import { castCall, castStream, type CastResult } from "../llm/cast-provider";
+
+/** Live hooks for the streamed author (RB_STREAM_CRITICS, 2026-09-01).
+ *  onText receives the FULL accumulated content after each delta — the
+ *  stream-critics watcher wants cumulative text, and re-slicing here keeps
+ *  the consumer trivially stateless about transport chunking. onAttemptStart
+ *  fires before every attempt so a failed try's partial text can never leak
+ *  into the next attempt's view. */
+export interface AuthorStreamHooks {
+  onAttemptStart: () => void;
+  onText: (accumulated: string) => void;
+}
+
+/** One author attempt over the wire: streamed when hooks are given (thinking
+ *  accumulated back into the result so harness-trace parity survives — trace
+ *  review is protocol), plain castCall otherwise. */
+const authorWire = async (
+  call: Parameters<typeof castCall>[0],
+  stream?: AuthorStreamHooks,
+): Promise<CastResult> => {
+  if (!stream) return castCall(call);
+  stream.onAttemptStart();
+  let acc = "";
+  let thinking = "";
+  const r = await castStream(
+    call,
+    (delta) => {
+      acc += delta;
+      stream.onText(acc);
+    },
+    (t) => {
+      thinking += t;
+    },
+  );
+  return { ...r, thinking };
+};
 
 export interface HarnessAuthor {
   model: string;
@@ -87,14 +122,14 @@ export const socketOrder = (): HarnessAuthor[] => {
 export const authorDeck = async (
   pack: string,
   sceneCount: number,
-  opts?: { onAttempt?: (a: AuthorAttempt) => void; signal?: AbortSignal },
+  opts?: { onAttempt?: (a: AuthorAttempt) => void; signal?: AbortSignal; stream?: AuthorStreamHooks },
 ): Promise<AuthorResult> => {
   const attempts: AuthorAttempt[] = [];
   for (const author of socketOrder()) {
     for (let tryN = 0; tryN < 2; tryN++) {
       const t0 = Date.now();
       try {
-        const r = await castCall({
+        const r = await authorWire({
           system: "",
           user: pack,
           maxTokens: AUTHOR_MAX_TOKENS,
@@ -102,7 +137,7 @@ export const authorDeck = async (
           model: author.model,
           timeoutMs: AUTHOR_TIMEOUT_MS,
           ...(author.thinkingBudget ? { effort: "high" as const, thinkingBudget: author.thinkingBudget } : {}),
-        });
+        }, opts?.stream);
         const code = extractDeckFile(r.text ?? "");
         const missing = code ? missingSections(code, sceneCount) : null;
         const failure = !code
