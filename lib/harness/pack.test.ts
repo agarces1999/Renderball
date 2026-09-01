@@ -66,5 +66,13 @@ check("file contract demands the canonical PALETTE const", () => {
   assert(pack.includes("never rename these six"), "role keys are non-negotiable");
 });
 
+check("file contract demands the canonical font consts (founder's Zoom deck: fonts had no slot to swap)", () => {
+  const pack = assemblePack(baseInput());
+  for (const name of ["FONT_DISPLAY", "FONT_BODY", "FONT_MONO"]) {
+    assert(pack.includes(`\`const ${name}\``), `${name} named in the contract`);
+  }
+  assert(pack.includes("never inline a stack"), "inlining is banned — inlined stacks are what made fonts unswappable");
+});
+
 console.log(`${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

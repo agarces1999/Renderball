@@ -114,6 +114,7 @@ FILE CONTRACT:
 - Deterministic: no Math.random, no Date. SVG is available and encouraged for graphic devices.
 - Every text-bearing block declares a horizontal bound (explicit width, maxWidth, or a right: offset). Unbounded text cannot autofit and will clip at the canvas edge.
 - Declare your color system at module top level as \`const PALETTE = { accent, canvas, ink, muted, surface, line }\` — accent = the lead brand color, canvas = the page background, ink = primary text, muted = secondary text, surface = card/panel fills, line = hairlines. Add as many extra keys as you like (never rename these six), and reference PALETTE keys instead of scattering raw hex literals. This exact const name is what lets the user re-color the deck instantly afterwards.
+- Declare your type system the same way: \`const FONT_DISPLAY\`, \`const FONT_BODY\`, and \`const FONT_MONO\` at module top level (full font-stack strings), referenced by every fontFamily — never inline a stack in a style. These exact names are what let the user re-type the deck instantly afterwards.
 
 TRUTH RULES (hard):
 - Every numeral on a page must come from the approved copy above. Invent NONE: no statistics, dollar figures, percentages, or years that are not in the outline. Page indices like "01 — 0${n}" are allowed.

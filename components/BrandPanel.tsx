@@ -221,10 +221,44 @@ export function BrandPanel({
     void load();
   }, [load]);
 
+  /** The user has touched something — auto-refresh must never clobber it. */
+  const touchedRef = useRef(false);
+
+  /**
+   * WATCH FOR THE CRAWL WHILE UNDRESSED (founder screenshot, 2026-08-31: the
+   * Zoom build showed Renderball's defaults in this panel). Brand became the
+   * DEFAULT tab, so the panel now mounts seconds BEFORE the auto-crawl
+   * writes the document's identity — and a single load() froze that
+   * pre-crawl snapshot on screen. While the loaded brand carries no identity
+   * at all (no accent, no fonts — the undressed state), re-check every few
+   * seconds, bounded; stop the moment identity arrives, the user touches
+   * anything, or the window closes. A dressed document never polls.
+   */
+  const pollCountRef = useRef(0);
+  useEffect(() => {
+    if (!brand || touchedRef.current) return;
+    const undressed =
+      !brand.palette?.accent && !brand.fonts?.display && !brand.fonts?.body && !brand.logo;
+    if (!undressed) return;
+    const timer = window.setInterval(() => {
+      // The counter lives in a ref: every poll's setBrand re-arms this
+      // effect, and a local counter reset with it — an undressed document
+      // would have polled forever (probe-caught before ship).
+      pollCountRef.current += 1;
+      if (pollCountRef.current > 30 || touchedRef.current) {
+        window.clearInterval(timer);
+        return;
+      }
+      void load();
+    }, 4000);
+    return () => window.clearInterval(timer);
+  }, [brand, load]);
+
   /** Save + apply. `apply:false` stores guidance that only affects future
    *  generation, so it costs nothing and changes nothing on canvas. */
   const save = useCallback(
     async (next: DocumentBrand, apply: boolean, label: string, scope: FeedbackScope, savedText?: string) => {
+      touchedRef.current = true;
       setBusy(label);
       setFeedback(null);
       // A cleared font field means "unset that slot", not an invalid value —
@@ -282,7 +316,11 @@ export function BrandPanel({
             setFeedback({
               scope,
               kind: "ok",
-              text: "Saved — nothing on the pages needed to change.",
+              // Honest about WHY zero (founder hit this changing three fonts,
+              // 2026-08-31): decks built before a slot became re-skinnable
+              // simply have nothing to swap — that's a property of the deck's
+              // code, not a failed save.
+              text: "Saved. These pages carry no swappable slot for that change — decks built from now on will, and regenerated pages pick it up.",
             });
           }
         } else {
@@ -379,8 +417,10 @@ export function BrandPanel({
     );
   }
 
-  const setRole = (role: Role, hex: string) =>
+  const setRole = (role: Role, hex: string) => {
+    touchedRef.current = true;
     setBrand({ ...brand, palette: { ...brand.palette, [role]: hex } });
+  };
 
   // Setting the logo persists AND applies in one step — the swap is
   // deterministic and free, so the panel's "applies instantly" promise holds.
@@ -466,9 +506,10 @@ export function BrandPanel({
             <FontSelect
               slot={slot}
               value={brand.fonts[slot] ?? inUse?.fonts?.[slot] ?? ""}
-              onChange={(stack) =>
-                setBrand({ ...brand, fonts: { ...brand.fonts, [slot]: stack } })
-              }
+              onChange={(stack) => {
+                touchedRef.current = true;
+                setBrand({ ...brand, fonts: { ...brand.fonts, [slot]: stack } });
+              }}
             />
           </div>
         ))}
@@ -570,7 +611,10 @@ export function BrandPanel({
         </p>
         <textarea
           value={brand.guidelines ?? ""}
-          onChange={(e) => setBrand({ ...brand, guidelines: e.target.value })}
+          onChange={(e) => {
+            touchedRef.current = true;
+            setBrand({ ...brand, guidelines: e.target.value });
+          }}
           rows={6}
           placeholder={
             "Sentence case for headlines.\nNever put the logo on the accent color.\nWe say “members”, not “users”."
