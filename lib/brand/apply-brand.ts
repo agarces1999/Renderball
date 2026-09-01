@@ -146,7 +146,17 @@ export const applyBrandToDocument = async (
     //    compile-verifies before writing and republishes to durable storage.
     const committed = await commitGenDir(genDir, "brand", { checkRender: true });
     if (!committed.ok) {
-      await commitUndo(genDir, undo, "brand-failed");
+      // RESTORE the store, don't merely record it (founder's Deel doc,
+      // 2026-08-31): a refused apply left the mutated manifest and pieces on
+      // disk, divergent from the rolled-back composition — the next
+      // successful reassembly would have resurrected the refused change.
+      if (undo) {
+        await writeManifest(genDir, undo.manifest).catch(() => {});
+        const legoDir = path.join(genDir, "lego", "pieces");
+        for (const [name, body] of Object.entries(undo.pieces)) {
+          await fs.writeFile(path.join(legoDir, name), body, "utf8").catch(() => {});
+        }
+      }
       return { ok: false, changes: [], error: committed.error };
     }
 

@@ -118,9 +118,11 @@ export const commitGenDir = async (
         ok: false,
         stage: "render",
         refusal,
+        // "would break … stop displaying", not "stop rendering" — the founder
+        // read the old wording as being about the GENERATION (2026-08-31).
         error:
-          `${what} would stop ${scenes} rendering, so it was not applied. ` +
-          `Nothing changed — try again, or regenerate that element.`,
+          `${what} would break ${scenes} — the page would stop displaying — so it was not applied. ` +
+          `Nothing changed.`,
       };
     }
   }

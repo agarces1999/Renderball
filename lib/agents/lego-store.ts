@@ -190,6 +190,29 @@ export const readDecomposed = async (genDir: string): Promise<Decomposed> => {
  * when the round trip is byte-identical, so it can never corrupt the render source.
  * Returns a small report for logging.
  */
+/**
+ * Ids the FILE layer can hold one-to-one: literal and unique per document.
+ * A computed id (`id={...}`) decomposes under a counter-assigned name that
+ * can COLLIDE with a real one — two pieces, one filename, the second write
+ * wins, and every from-disk reassembly stitches the wrong body into the
+ * wrong slot (founder's Deel deck, 2026-08-31: pages 2 and 4 died with
+ * "i is not defined", and a check-free op like move would have committed the
+ * corruption silently). The in-memory round-trip guard cannot see this —
+ * both pieces exist as separate objects there — so it is checked here,
+ * before anything touches disk.
+ */
+const pieceIdProblem = (d: Decomposed): string | null => {
+  const seen = new Set<string>();
+  for (const scene of d.scenes) {
+    for (const p of scene.pieces) {
+      if (p.openTag.includes("id={")) return `computed piece id (${p.id})`;
+      if (seen.has(p.id)) return `duplicate piece id (${p.id})`;
+      seen.add(p.id);
+    }
+  }
+  return null;
+};
+
 export const decomposeGenDir = async (
   genDir: string,
 ): Promise<{ ok: boolean; pieces: number; reason?: string }> => {
@@ -202,6 +225,8 @@ export const decomposeGenDir = async (
   const d = decompose(code);
   if (pieceCount(d) === 0) return { ok: false, pieces: 0, reason: "no <Piece> markers" };
   if (reassemble(d) !== code) return { ok: false, pieces: 0, reason: "round-trip mismatch — not decomposed" };
+  const bad = pieceIdProblem(d);
+  if (bad) return { ok: false, pieces: 0, reason: `${bad} — not decomposed` };
   await writeDecomposed(genDir, d);
   return { ok: true, pieces: pieceCount(d) };
 };
@@ -251,6 +276,8 @@ export const healStaleStore = async (
   if (currentScenes === fresh.scenes.length) return { healed: false };
 
   if (reassemble(fresh) !== code) return { healed: false, reason: "round-trip mismatch" };
+  const freshBad = pieceIdProblem(fresh);
+  if (freshBad) return { healed: false, reason: freshBad };
   await writeDecomposed(genDir, fresh);
   // Republish, or the repair lives only on this container and the next deploy
   // restores the same broken snapshot — which is the bug, not the fix. Not

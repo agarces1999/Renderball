@@ -114,6 +114,34 @@ await check("removePieceFromDisk on a missing id → false, no mutation", async 
   assert(JSON.stringify(await readManifest(dir)) === before, "manifest mutated on a no-op delete");
 });
 
+await check("computed Piece ids REFUSE decomposition (Deel corruption class, 2026-08-31)", async () => {
+  // A <Piece> rendered inside a .map with a computed id decomposes under a
+  // counter name that can collide with a real piece — two pieces, one file,
+  // and every from-disk reassembly stitches the wrong body. The guard must
+  // refuse BEFORE anything touches disk; the deck stays whole and editable
+  // at page granularity instead of silently corruptible.
+  const computed = `import React from "react";
+import { Piece } from "./Piece";
+export const Section0: React.FC<{ script: any }> = () => (
+  <div>
+    {["a", "b"].map((b, i) => (
+      <Piece key={b} id={\`s0.p\${1 + i}\`} kind="diegetic"><p>{b}</p></Piece>
+    ))}
+    <Piece id="s0.p1" kind="text"><h1>collides</h1></Piece>
+  </div>
+);
+export const Generated: React.FC<{ script: any }> = () => <Section0 script={null} />;
+`;
+  await fs.rm(dir, { recursive: true, force: true });
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(path.join(dir, "Composition.tsx"), computed, "utf8");
+  const rep = await decomposeGenDir(dir);
+  assert(rep.ok === false, `must refuse, got ${JSON.stringify(rep)}`);
+  assert(/computed piece id|duplicate piece id/.test(rep.reason ?? ""), `reason names the id problem: ${rep.reason}`);
+  const legoWritten = await fs.stat(path.join(dir, "lego", "manifest.json")).then(() => true).catch(() => false);
+  assert(legoWritten === false, "nothing may touch disk on refusal");
+});
+
 await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
 
 console.log(`\n${passed} passed, ${failed} failed`);
