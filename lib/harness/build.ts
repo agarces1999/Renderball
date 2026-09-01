@@ -261,7 +261,13 @@ export const runHarnessPreviewBuild = async (args: HarnessBuildArgs): Promise<Ro
     // ── Decompose for the editor; durability is unconditional. ──
     try {
       const lego = await decomposeGenDir(genDir);
-      timeline.mark(`harness:decompose:${lego.ok ? `${lego.pieces} pieces` : `skipped (${lego.reason})`}`);
+      timeline.mark(
+        `harness:decompose:${
+          lego.ok
+            ? `${lego.pieces} pieces${lego.degraded?.length ? ` (pages ${lego.degraded.map((s) => s + 1).join(",")} collapsed — unstable piece ids survived the patch)` : ""}`
+            : `skipped (${lego.reason})`
+        }`,
+      );
       if (!lego.ok) console.error(`[preview/build:harness] decompose FAILED (${lego.reason}) — deck persisted whole; per-piece editing degraded for ${scriptId}`);
     } finally {
       await persistGenDir(scriptId);

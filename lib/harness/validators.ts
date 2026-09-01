@@ -13,7 +13,7 @@
 import { findForeignImageSrcs } from "../agents/emission-guards";
 
 export interface TruthViolation {
-  kind: "invented-numeral" | "foreign-image" | "missing-logo";
+  kind: "invented-numeral" | "foreign-image" | "missing-logo" | "unstable-piece-id";
   detail: string;
   /** One-line patch instruction for the surgical fix call. */
   patch: string;
@@ -142,6 +142,44 @@ export const findLogoViolation = (code: string, logoSrc: string | null): TruthVi
       ]
     : [];
 
+/**
+ * Piece ids the LEGO store can hold one-to-one: literal and unique. A
+ * computed id (a <Piece> rendered inside a .map) decomposes under a counter
+ * name that can collide with a real one — the corruption that killed pages
+ * 2/4 of the founder's Deel deck (2026-08-31). Caught HERE, the surgical
+ * patch fixes it before the deck ships, so decks arrive fully editable
+ * instead of degrading at decompose time.
+ */
+export const findUnstablePieceIds = (code: string): TruthViolation[] => {
+  const out: TruthViolation[] = [];
+  const seen = new Set<string>();
+  for (const m of code.matchAll(/<Piece\b[^>]*>/g)) {
+    const tag = m[0];
+    const lit = /\bid="([^"]+)"/.exec(tag);
+    if (!lit) {
+      if (/\bid=\{/.test(tag)) {
+        out.push({
+          kind: "unstable-piece-id",
+          detail: tag.slice(0, 80),
+          patch:
+            `A <Piece> has a computed id (${tag.slice(0, 60)}…). Piece ids must be LITERAL strings — ` +
+            `never render <Piece> inside a loop: move the .map INSIDE one Piece wrapper with a literal id, keeping the output identical.`,
+        });
+      }
+      continue;
+    }
+    if (seen.has(lit[1])) {
+      out.push({
+        kind: "unstable-piece-id",
+        detail: lit[1],
+        patch: `Two <Piece> tags share id "${lit[1]}". Rename one so every piece id is unique in the file, changing nothing else.`,
+      });
+    }
+    seen.add(lit[1]);
+  }
+  return out;
+};
+
 export const validateDeck = (args: {
   code: string;
   approvedText: string;
@@ -152,4 +190,5 @@ export const validateDeck = (args: {
   ...findInventedNumerals(args.code, args.approvedText, args.sceneCount),
   ...findImageViolations(args.code, args.allowedUrls),
   ...findLogoViolation(args.code, args.logoSrc),
+  ...findUnstablePieceIds(args.code),
 ];

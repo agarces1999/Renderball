@@ -16,7 +16,7 @@
 //
 import { promises as fs } from "fs";
 import path from "path";
-import { decompose, reassemble, pieceCount, pieceSlot, type Decomposed, type DecomposedPiece } from "./lego-decompose";
+import { decompose, reassemble, pieceCount, pieceSlot, CLOSE_TAG, type Decomposed, type DecomposedPiece, type DecomposedScene } from "./lego-decompose";
 import { persistGenDir } from "../render/gen-store";
 
 const LEGO_DIR = "lego";
@@ -198,37 +198,64 @@ export const readDecomposed = async (genDir: string): Promise<Decomposed> => {
  * wrong slot (founder's Deel deck, 2026-08-31: pages 2 and 4 died with
  * "i is not defined", and a check-free op like move would have committed the
  * corruption silently). The in-memory round-trip guard cannot see this —
- * both pieces exist as separate objects there — so it is checked here,
- * before anything touches disk.
+ * both pieces exist as separate objects there — so offending scenes are
+ * found here, before anything touches disk.
  */
-const pieceIdProblem = (d: Decomposed): string | null => {
-  const seen = new Set<string>();
+const unstableScenes = (d: Decomposed): Set<number> => {
+  const owner = new Map<string, number[]>();
+  const bad = new Set<number>();
   for (const scene of d.scenes) {
     for (const p of scene.pieces) {
-      if (p.openTag.includes("id={")) return `computed piece id (${p.id})`;
-      if (seen.has(p.id)) return `duplicate piece id (${p.id})`;
-      seen.add(p.id);
+      if (p.openTag.includes("id={")) bad.add(scene.sceneIndex);
+      const list = owner.get(p.id) ?? [];
+      list.push(scene.sceneIndex);
+      owner.set(p.id, list);
     }
   }
-  return null;
+  for (const scenes of owner.values()) {
+    if (scenes.length > 1) for (const s of scenes) bad.add(s);
+  }
+  return bad;
+};
+
+/**
+ * Collapse a scene to a piece-less verbatim template. The file layer can
+ * always hold that, reassembly stays byte-exact by construction, and — the
+ * point (founder: "we need a snappy, reliable, quick editor") — only the
+ * offending PAGE loses per-piece editing; every other page keeps its store.
+ * The build-time validator (findUnstablePieceIds) patches the class at the
+ * source, so this is the belt behind that suspender.
+ */
+const collapseScene = (scene: DecomposedScene): DecomposedScene => {
+  let template = scene.template;
+  for (const p of scene.pieces) {
+    template = template.replace(pieceSlot(p.id), () => p.openTag + p.body + CLOSE_TAG);
+  }
+  return { sceneIndex: scene.sceneIndex, template, pieces: [] };
 };
 
 export const decomposeGenDir = async (
   genDir: string,
-): Promise<{ ok: boolean; pieces: number; reason?: string }> => {
+): Promise<{ ok: boolean; pieces: number; reason?: string; degraded?: number[] }> => {
   let code: string;
   try {
     code = await fs.readFile(path.join(genDir, "Composition.tsx"), "utf8");
   } catch {
     return { ok: false, pieces: 0, reason: "no Composition.tsx" };
   }
-  const d = decompose(code);
+  let d = decompose(code);
   if (pieceCount(d) === 0) return { ok: false, pieces: 0, reason: "no <Piece> markers" };
+  const bad = unstableScenes(d);
+  if (bad.size) {
+    d = { ...d, scenes: d.scenes.map((s) => (bad.has(s.sceneIndex) ? collapseScene(s) : s)) };
+  }
   if (reassemble(d) !== code) return { ok: false, pieces: 0, reason: "round-trip mismatch — not decomposed" };
-  const bad = pieceIdProblem(d);
-  if (bad) return { ok: false, pieces: 0, reason: `${bad} — not decomposed` };
   await writeDecomposed(genDir, d);
-  return { ok: true, pieces: pieceCount(d) };
+  return {
+    ok: true,
+    pieces: pieceCount(d),
+    ...(bad.size ? { degraded: [...bad].sort((a, b) => a - b) } : {}),
+  };
 };
 
 /**
@@ -275,10 +302,12 @@ export const healStaleStore = async (
   if (currentScenes === null) return { healed: false, reason: "no store" };
   if (currentScenes === fresh.scenes.length) return { healed: false };
 
-  if (reassemble(fresh) !== code) return { healed: false, reason: "round-trip mismatch" };
-  const freshBad = pieceIdProblem(fresh);
-  if (freshBad) return { healed: false, reason: freshBad };
-  await writeDecomposed(genDir, fresh);
+  const freshBad = unstableScenes(fresh);
+  const healedD = freshBad.size
+    ? { ...fresh, scenes: fresh.scenes.map((s) => (freshBad.has(s.sceneIndex) ? collapseScene(s) : s)) }
+    : fresh;
+  if (reassemble(healedD) !== code) return { healed: false, reason: "round-trip mismatch" };
+  await writeDecomposed(genDir, healedD);
   // Republish, or the repair lives only on this container and the next deploy
   // restores the same broken snapshot — which is the bug, not the fix. Not
   // awaited: the heal runs in front of a user's edit, and the edit is already

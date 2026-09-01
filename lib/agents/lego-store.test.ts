@@ -114,12 +114,13 @@ await check("removePieceFromDisk on a missing id → false, no mutation", async 
   assert(JSON.stringify(await readManifest(dir)) === before, "manifest mutated on a no-op delete");
 });
 
-await check("computed Piece ids REFUSE decomposition (Deel corruption class, 2026-08-31)", async () => {
+await check("computed Piece ids collapse ONLY their scene (Deel corruption class, 2026-08-31)", async () => {
   // A <Piece> rendered inside a .map with a computed id decomposes under a
   // counter name that can collide with a real piece — two pieces, one file,
-  // and every from-disk reassembly stitches the wrong body. The guard must
-  // refuse BEFORE anything touches disk; the deck stays whole and editable
-  // at page granularity instead of silently corruptible.
+  // and every from-disk reassembly stitches the wrong body. The offending
+  // SCENE collapses to a piece-less verbatim template (safe by construction);
+  // the healthy scene keeps its store — the editor stays snappy everywhere
+  // the author didn't break the grammar.
   const computed = `import React from "react";
 import { Piece } from "./Piece";
 export const Section0: React.FC<{ script: any }> = () => (
@@ -130,16 +131,22 @@ export const Section0: React.FC<{ script: any }> = () => (
     <Piece id="s0.p1" kind="text"><h1>collides</h1></Piece>
   </div>
 );
-export const Generated: React.FC<{ script: any }> = () => <Section0 script={null} />;
+export const Section1: React.FC<{ script: any }> = () => (
+  <div><Piece id="s1.p1" kind="text"><h1>healthy</h1></Piece></div>
+);
+export const Generated: React.FC<{ script: any }> = () => <><Section0 script={null} /><Section1 script={null} /></>;
 `;
   await fs.rm(dir, { recursive: true, force: true });
   await fs.mkdir(dir, { recursive: true });
   await fs.writeFile(path.join(dir, "Composition.tsx"), computed, "utf8");
   const rep = await decomposeGenDir(dir);
-  assert(rep.ok === false, `must refuse, got ${JSON.stringify(rep)}`);
-  assert(/computed piece id|duplicate piece id/.test(rep.reason ?? ""), `reason names the id problem: ${rep.reason}`);
-  const legoWritten = await fs.stat(path.join(dir, "lego", "manifest.json")).then(() => true).catch(() => false);
-  assert(legoWritten === false, "nothing may touch disk on refusal");
+  assert(rep.ok === true, `must decompose, got ${JSON.stringify(rep)}`);
+  assert(JSON.stringify(rep.degraded) === "[0]", `scene 0 collapsed: ${JSON.stringify(rep.degraded)}`);
+  const m = JSON.parse(await fs.readFile(path.join(dir, "lego", "manifest.json"), "utf8"));
+  assert(m.scenes[0].pieces.length === 0, "offending scene carries no pieces");
+  assert(m.scenes[1].pieces.length === 1, "healthy scene keeps its store");
+  const re = await reassembleFromDisk(dir);
+  assert(re === computed, "collapsed store reassembles to the original bytes");
 });
 
 await fs.rm(dir, { recursive: true, force: true }).catch(() => {});

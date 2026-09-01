@@ -3,7 +3,7 @@
  * SVG attribute strings flooded 136 false violations. Geometry is never a
  * claim; only viewer-readable text is.
  */
-import { findInventedNumerals, findLogoViolation } from "./validators";
+import { findInventedNumerals, findLogoViolation, findUnstablePieceIds } from "./validators";
 
 let passed = 0;
 let failed = 0;
@@ -74,6 +74,20 @@ await check("flags a missing logo only when a logo exists", () => {
   assert(findLogoViolation("<div/>", "https://cdn.example.com/logo.png").length === 1, "missing logo not flagged");
   assert(findLogoViolation('<img src="https://cdn.example.com/logo.png"/>', "https://cdn.example.com/logo.png").length === 0, "present logo flagged");
   assert(findLogoViolation("<div/>", null).length === 0, "null logo flagged");
+});
+
+await check("computed and duplicate Piece ids are violations the patch pass fixes (Deel class)", () => {
+  const computed = '{rows.map((r, i) => (<Piece key={r} id={`s1.p${4 + i}`} kind="diegetic"><p/></Piece>))}';
+  const v1 = findUnstablePieceIds(computed);
+  assert(v1.length === 1 && v1[0].kind === "unstable-piece-id", `computed id flagged: ${JSON.stringify(v1)}`);
+  assert(/literal/i.test(v1[0].patch) && /inside one Piece/i.test(v1[0].patch), "patch teaches the fix");
+
+  const dup = '<Piece id="s1.p3" kind="text"><h1/></Piece><Piece id="s1.p3" kind="diegetic"><p/></Piece>';
+  const v2 = findUnstablePieceIds(dup);
+  assert(v2.length === 1 && v2[0].detail === "s1.p3", `duplicate flagged once: ${JSON.stringify(v2)}`);
+
+  const clean = '<Piece id="s0.p1" kind="text"><h1/></Piece><Piece id="s0.p2" kind="chrome"><div/></Piece>';
+  assert(findUnstablePieceIds(clean).length === 0, "literal unique ids pass");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);
