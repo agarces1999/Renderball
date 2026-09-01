@@ -263,9 +263,17 @@ export const castCall = async (call: CastCall): Promise<CastResult> => {
         // window could not have completed most of them. An attempt that timed
         // out because the work is genuinely long was then given LESS time,
         // making each retry strictly less likely to land than the one before.
-        signal: call.signal ?? AbortSignal.timeout(call.timeoutMs ?? 120_000),
+        signal: call.signal
+          ? AbortSignal.any([call.signal, AbortSignal.timeout(call.timeoutMs ?? 120_000)])
+          : AbortSignal.timeout(call.timeoutMs ?? 120_000),
       });
     } catch (err) {
+      // A CALLER abort (the user stopped the build) is not a transport
+      // failure — retrying the request the user just killed would spend
+      // their tokens against their explicit wish. Non-retryable, instantly.
+      if (call.signal?.aborted) {
+        throw new CastProviderError("aborted by caller", null, false);
+      }
       // Network-level failure (reset, DNS, timeout): retryable within budget.
       const isTimeout =
         err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError");
@@ -460,7 +468,9 @@ export const castStream = async (
             ...(call.messages ?? [{ role: "user", content: call.user ?? "" }]),
           ],
         }),
-        signal: call.signal ?? AbortSignal.timeout(call.timeoutMs ?? 300_000),
+        signal: call.signal
+          ? AbortSignal.any([call.signal, AbortSignal.timeout(call.timeoutMs ?? 300_000)])
+          : AbortSignal.timeout(call.timeoutMs ?? 300_000),
       });
       if (!res.ok || !res.body) {
         const bodyText = await res.text().catch(() => "");

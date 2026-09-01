@@ -282,7 +282,7 @@ async function runPreviewBuildInner(
   // ── RB_BUILD_MODE=harness: the one-author engine (docs/HARNESS.md). Flag
   // off → nothing changes; cast stays prod until the harness wins its A/B.
   if ((opts?.buildMode ?? process.env.RB_BUILD_MODE) === "harness") {
-    return runHarnessPreviewBuild({
+    const r = await runHarnessPreviewBuild({
       script,
       brief,
       scriptId,
@@ -292,6 +292,11 @@ async function runPreviewBuildInner(
       buildT0,
       brandTruthDegraded,
     });
+    // Belt: a 500 produced while a stop was pending IS the stop (an aborted
+    // stream surfaces as a transport error inside the harness) — surface it
+    // as the cancel the user asked for, never as a failure.
+    if (r.status >= 500 && buildCancelRequested(scriptId)) throw new BuildCancelledError();
+    return r;
   }
 
   if ((opts?.buildMode ?? process.env.RB_BUILD_MODE) === "cast") {

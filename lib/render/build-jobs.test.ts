@@ -6,6 +6,7 @@ import {
   BuildCancelledError,
   GATE_GRACE_MS,
   __resetBuildJobs,
+  buildAbortSignal,
   buildCancelRequested,
   buildStatus,
   reportBuildProgress,
@@ -144,6 +145,26 @@ test("a stop lands as CANCELLED, not error — stopping is not breaking", async 
   assert.equal(requestBuildCancel("stopme"), true, "a running build accepts the stop");
   await sleep(120);
   assert.equal(buildStatus("stopme").state, "cancelled");
+});
+
+test("stop ABORTS the in-flight call — hard stop, not wait-for-the-step (founder, 2026-09-01)", async () => {
+  __resetBuildJobs();
+  void startBuild("hardstop", async () => {
+    // Simulate a multi-minute model stream that only ends when its signal
+    // aborts — the exact thing the cooperative flag could never interrupt.
+    const signal = buildAbortSignal("hardstop");
+    assert.ok(signal, "a running build registers an abort signal");
+    assert.equal(signal!.aborted, false, "not aborted before the user asks");
+    await new Promise<void>((_, reject) => {
+      signal!.addEventListener("abort", () => reject(new BuildCancelledError()), { once: true });
+    });
+    return { status: 200, body: {} };
+  });
+  await sleep(20);
+  assert.equal(requestBuildCancel("hardstop"), true);
+  assert.equal(buildAbortSignal("hardstop")?.aborted, true, "stop aborts the signal immediately");
+  await sleep(60);
+  assert.equal(buildStatus("hardstop").state, "cancelled", "the cut stream lands as a clean cancel");
 });
 
 test("a WRAPPED cancellation still reads as cancelled (substring, not instanceof)", async () => {

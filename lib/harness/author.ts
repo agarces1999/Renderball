@@ -87,7 +87,7 @@ export const socketOrder = (): HarnessAuthor[] => {
 export const authorDeck = async (
   pack: string,
   sceneCount: number,
-  opts?: { onAttempt?: (a: AuthorAttempt) => void },
+  opts?: { onAttempt?: (a: AuthorAttempt) => void; signal?: AbortSignal },
 ): Promise<AuthorResult> => {
   const attempts: AuthorAttempt[] = [];
   for (const author of socketOrder()) {
@@ -98,6 +98,7 @@ export const authorDeck = async (
           system: "",
           user: pack,
           maxTokens: AUTHOR_MAX_TOKENS,
+          signal: opts?.signal,
           model: author.model,
           timeoutMs: AUTHOR_TIMEOUT_MS,
           ...(author.thinkingBudget ? { effort: "high" as const, thinkingBudget: author.thinkingBudget } : {}),
@@ -149,7 +150,7 @@ export const authorContinuation = async (
   start: number,
   end: number,
   pinnedModel: string,
-  opts?: { onAttempt?: (a: AuthorAttempt) => void },
+  opts?: { onAttempt?: (a: AuthorAttempt) => void; signal?: AbortSignal },
 ): Promise<{ code: string; model: string; attempts: AuthorAttempt[]; thinking: string }> => {
   const prompt = `${basePack}
 
@@ -177,6 +178,7 @@ Reply with ONLY the new sections in a single \`\`\`tsx block.`;
           system: "",
           user: prompt,
           maxTokens: AUTHOR_MAX_TOKENS,
+          signal: opts?.signal,
           model: author.model,
           timeoutMs: AUTHOR_TIMEOUT_MS,
           ...(author.thinkingBudget ? { effort: "high" as const, thinkingBudget: author.thinkingBudget } : {}),

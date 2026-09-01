@@ -20,6 +20,7 @@ import { resolveCornerBrandMark } from "../agents/logo-inject";
 import { resolveCanvasPlan, signatureWithLogoFallback, brandShortName, luminanceOf } from "../crawl/brand-identity";
 import { deriveCrawlTheme } from "../render/crawl-theme";
 import { persistGenDir } from "../render/gen-store";
+import { BuildCancelledError, buildCancelRequested, buildAbortSignal } from "../render/build-jobs";
 import { warmSceneThumbs } from "../render/thumbnail";
 import { readDocumentBrand } from "../brand/document-brand";
 import { documentBrandFromExtract } from "../documents/brand-crawl";
@@ -60,6 +61,7 @@ const sceneIntent = (s: { label?: string; description?: string }, i: number): st
 
 export const runHarnessPreviewBuild = async (args: HarnessBuildArgs): Promise<RouteResult> => {
   const { script, brief, scriptId, genDir, timeline, buildT0 } = args;
+  const abortSignal = buildAbortSignal(scriptId);
   const scenes: PackInput["scenes"] = (script.scenes ?? []).map(
     (s: { label?: string; description?: string; content?: unknown }) => ({
       label: s.label ?? "",
@@ -170,13 +172,13 @@ export const runHarnessPreviewBuild = async (args: HarnessBuildArgs): Promise<Ro
     const onAttempt = (a: AuthorAttempt) => timeline.mark(`harness:author:${a.model.split("/").pop()}:${a.ok ? "ok" : "failed"} (${a.seconds}s, ${a.outputTokens}tok)`);
     const firstEnd = n <= 8 ? n : CHAPTER;
     const basePack = n <= 8 ? pack : assemblePack({ ...packInput, chapterEmitEnd: firstEnd });
-    const authored = await authorDeck(basePack, firstEnd, { onAttempt });
+    const authored = await authorDeck(basePack, firstEnd, { onAttempt, signal: abortSignal });
     let code = authored.code;
     const chapterThinking: string[] = [authored.thinking];
     for (let start = firstEnd; start < n; start += CHAPTER) {
       const end = Math.min(start + CHAPTER, n);
       timeline.mark(`harness:chapter:${start + 1}-${end}:start`);
-      const cont = await authorContinuation(pack, code, start, end, authored.model, { onAttempt });
+      const cont = await authorContinuation(pack, code, start, end, authored.model, { onAttempt, signal: abortSignal });
       code = mergeChapters(code, [cont.code]);
       chapterThinking.push(cont.thinking);
       timeline.mark(`harness:chapter:${start + 1}-${end}:done`);
@@ -206,7 +208,7 @@ export const runHarnessPreviewBuild = async (args: HarnessBuildArgs): Promise<Ro
       timeline.mark(`harness:validate:INSTRUMENT-SUSPECT (${violations.length} > ${SANITY_CEILING}) — no patch spent, shipping flagged for review`);
     } else if (violations.length) {
       timeline.mark(`harness:validate:${violations.length} violation(s) — patching`);
-      const patched = await surgicalPatch(code, violations, authored.model);
+      const patched = await surgicalPatch(code, violations, authored.model, abortSignal);
       if (patched) {
         code = patched;
         violations = validateDeck({ code, approvedText, sceneCount: n, allowedUrls, logoSrc: packInput.brand.logoSrc });
@@ -234,6 +236,7 @@ export const runHarnessPreviewBuild = async (args: HarnessBuildArgs): Promise<Ro
           patch: `Fix this render error without changing the design: ${String(e).slice(0, 300)}`,
         })),
         authored.model,
+        abortSignal,
       );
       if (repaired) {
         code = repaired;
@@ -252,7 +255,7 @@ export const runHarnessPreviewBuild = async (args: HarnessBuildArgs): Promise<Ro
     // ── Loop: render → comparative critic → ONE revision, strict-improvement. ──
     if ((process.env.RB_HARNESS_LOOP ?? "on") !== "off") {
       try {
-        code = await lookAndReviseOnce({ genDir, script, scenes, code, pack, model: authored.model, timeline, n });
+        code = await lookAndReviseOnce({ genDir, script, scenes, code, pack, model: authored.model, timeline, n, signal: abortSignal });
       } catch (err) {
         timeline.mark(`harness:loop:skipped (${String(err).slice(0, 80)})`);
       }
@@ -300,16 +303,24 @@ export const runHarnessPreviewBuild = async (args: HarnessBuildArgs): Promise<Ro
     };
   } catch (err) {
     await fsp.writeFile(path.join(genDir, "build-timeline.json"), JSON.stringify(timeline.toJSON(), null, 2)).catch(() => {});
+    // A user stop must SURFACE as a stop (founder, 2026-09-01: the swallowed
+    // cancel shipped a 500 to the client and the ceremony crashed instead of
+    // showing "You stopped this build"). Rethrown, the job runner's sentinel
+    // maps it to the cancelled state the client renders gracefully.
+    if (err instanceof BuildCancelledError || buildCancelRequested(scriptId)) {
+      throw new BuildCancelledError();
+    }
     return { status: 500, body: { error: String(err).slice(0, 500), stage: "harness" } };
   }
 };
 
 /** Full-file targeted patch: name the exact defects, demand minimal edits. */
-const surgicalPatch = async (code: string, violations: TruthViolation[], model: string): Promise<string | null> => {
+const surgicalPatch = async (code: string, violations: TruthViolation[], model: string, signal?: AbortSignal): Promise<string | null> => {
   const r = await castCall({
     system: "",
     user: `Below is a complete React deck file, followed by specific defects. Apply the SMALLEST possible edits that fix every defect. Change nothing else — no restyling, no rewrites. Reply with ONLY the corrected complete file in one \`\`\`tsx block.\n\n\`\`\`tsx\n${code}\n\`\`\`\n\nDEFECTS:\n${violations.map((v, i) => `${i + 1}. ${v.patch}`).join("\n")}`,
     maxTokens: 30_000,
+    signal,
     model,
     timeoutMs: 300_000,
     effort: "high",
@@ -333,8 +344,9 @@ const lookAndReviseOnce = async (args: {
   model: string;
   timeline: BuildTimeline;
   n: number;
+  signal?: AbortSignal;
 }): Promise<string> => {
-  const { genDir, script, scenes, pack, model, timeline, n } = args;
+  const { genDir, script, scenes, pack, model, timeline, n, signal } = args;
   let { code } = args;
   timeline.mark("harness:critic:start");
   const before = await measureScenes(genDir, script, measureOutDir(genDir));
@@ -375,6 +387,7 @@ const lookAndReviseOnce = async (args: {
     system: "",
     user: `${pack}\n\nYou already authored the file below. A design review flagged specific pages. Revise ONLY the flagged pages' sections — a surgical pass (M1-measured: healthy revisions touch ≤15% of the file). Keep the identity, chrome, and all other pages byte-identical. Reply with ONLY the complete revised file in one \`\`\`tsx block.\n\n\`\`\`tsx\n${code}\n\`\`\`\n\nFLAGGED:\n${notes.map((f) => `Page ${f.page + 1}: ${f.weakness}`).join("\n")}`,
     maxTokens: 30_000,
+    signal,
     model,
     timeoutMs: 300_000,
     effort: "high",

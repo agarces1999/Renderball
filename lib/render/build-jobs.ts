@@ -96,10 +96,23 @@ export const reportBuildProgress = (scriptId: string, phase: string): void => {
   jobs.set(scriptId, { ...job, progress });
 };
 
+/** Per-build abort controllers — the HARD half of stop (founder, 2026-09-01:
+ *  "it said it had to finish the current step, should not be the case"). The
+ *  flag lands at phase edges; the abort cuts the in-flight model stream, so a
+ *  stop takes seconds instead of waiting out a multi-minute author call. */
+const aborters = new Map<string, AbortController>();
+export const registerBuildAborter = (scriptId: string): void => {
+  aborters.get(scriptId)?.abort();
+  aborters.set(scriptId, new AbortController());
+};
+export const buildAbortSignal = (scriptId: string): AbortSignal | undefined =>
+  aborters.get(scriptId)?.signal;
+
 /** Ask the running build to stop. True = there was a running build to ask. */
 export const requestBuildCancel = (scriptId: string): boolean => {
   if (jobs.get(scriptId)?.state !== "running") return false;
   cancels.add(scriptId);
+  aborters.get(scriptId)?.abort();
   return true;
 };
 
@@ -168,6 +181,7 @@ export const startBuild = async (
 
   // A cancel aimed at a PREVIOUS build must not kill this fresh one.
   cancels.delete(scriptId);
+  registerBuildAborter(scriptId);
   jobs.set(scriptId, { state: "running", startedAt: Date.now() });
 
   const run = work()
