@@ -6,6 +6,7 @@ import React from "react";
 import * as esbuild from "esbuild";
 import { renderSceneSandboxed } from "./sandbox/pool";
 import { hydrateGenDir } from "./gen-store";
+import { readDocumentBrand } from "../brand/document-brand";
 import { hostScaleEnabled, hostScaleDisagreement } from "../edit/frame-scale";
 
 /** Once per process: a half-configured host-scale flag must be loud, not a mystery. */
@@ -126,6 +127,23 @@ export async function renderSceneDoc(
     };
   }
 
+  // BRAND FACES, injected at the DOCUMENT level (founder's Deel deck,
+  // 2026-08-31: the author declared BagossCondensedFont but never emitted an
+  // @font-face, so every surface rendered a fallback whose wider metrics made
+  // the tight headline collide worse than designed). brand.json is the truth
+  // the panel edits; injecting from it here means a declared face loads
+  // wherever the deck renders — editor canvas, exports, per-page thumbnails —
+  // for every deck, past and future, with no author cooperation. `<` is
+  // banned outright: CSS quoting cannot stop </style> from ending the block.
+  const brandDoc = await readDocumentBrand(path.dirname(compPath)).catch(() => null);
+  const faceCss = (brandDoc?.fonts?.faces ?? [])
+    .filter((f) => !!f.family && /^https:\/\//.test(f.src ?? "") && !`${f.family}${f.src}`.includes("<"))
+    .map(
+      (f) =>
+        `@font-face{font-family:${JSON.stringify(f.family)};src:url(${JSON.stringify(f.src)});font-display:swap;}`,
+    )
+    .join("");
+
   // The host-scale flag CHANGES THE EMITTED DOCUMENT (which fit script it carries),
   // so it belongs in the key. Found by flipping the flag for real: the server kept
   // serving the cached host-scaled HTML after the flag went back off, because every
@@ -137,7 +155,7 @@ export async function renderSceneDoc(
     .update(compBytes)
     .update("\u0000")
     .update(JSON.stringify(script))
-    .update(`\u0000${sceneIndex}\u0000${opts.settle ? 1 : 0}\u0000${opts.hydrate ? `h:${opts.hydrate.bundleUrl}` : ""}\u0000hs:${hostScaleEnabled() ? 1 : 0}\u0000v4`)
+    .update(`\u0000${sceneIndex}\u0000${opts.settle ? 1 : 0}\u0000${opts.hydrate ? `h:${opts.hydrate.bundleUrl}` : ""}\u0000hs:${hostScaleEnabled() ? 1 : 0}\u0000faces:${faceCss}\u0000v5`)
     .digest("hex");
   const cached = renderCache.get(cacheKey);
   if (cached) {
@@ -445,6 +463,7 @@ export async function renderSceneDoc(
     transform-origin: top left;
   }
 </style>
+${faceCss ? `<style>${faceCss}</style>` : ""}
 ${fitScript}
 </head>
 <body>
