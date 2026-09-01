@@ -428,6 +428,55 @@ export const reskinComposition = (
     changes.push({ kind: "font", role: slot, from, to: target, occurrences: 1 });
   }
 
+  // ── INLINE STACKS — the const-less fallback ───────────────────────────
+  // Root cause of the founder's "no changes in the deck fonts" (Zoom deck,
+  // 2026-08-31): decks authored before the font-const contract inline every
+  // stack, so the const rewrite above finds nothing and a font apply was a
+  // silent no-op. Two substitutions are mechanical enough to be edits, not
+  // judgment:
+  //   - every MONO inline stack (monospace/Menlo/Consolas/Courier marker)
+  //     becomes the brand mono;
+  //   - when the document has exactly ONE distinct non-mono inline stack it
+  //     is playing display and body both, and becomes the brand body (or
+  //     display when no body is set). Two or more distinct sans stacks mean
+  //     roles we cannot tell apart — substitute nothing rather than guess.
+  // Replacements are emitted as backtick literals for the same quoting
+  // reason as the const path above.
+  {
+    const monoTarget = brand.fonts?.mono;
+    const sansTarget = brand.fonts?.body ?? brand.fonts?.display;
+    const wantMonoInline = !!monoTarget && !fonts.mono;
+    const wantSansInline = !!sansTarget && !fonts.display && !fonts.body;
+    if (wantMonoInline || wantSansInline) {
+      const litRe = /fontFamily:\s*("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')/g;
+      const distinct = new Map<string, string>(); // literal (with quotes) → bare stack
+      for (const m of code.matchAll(litRe)) {
+        const lit = m[1];
+        distinct.set(lit, lit.slice(1, -1));
+      }
+      const isMono = (stack: string) => /mono|menlo|consolas|courier/i.test(stack);
+      const sansLits = [...distinct.entries()].filter(([, s]) => !isMono(s));
+      const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const swapAll = (lit: string, bare: string, target: string, role: string) => {
+        if (bare === target) return;
+        const re = new RegExp(`fontFamily:\\s*${escapeRe(lit)}`, "g");
+        const occurrences = (code.match(re) ?? []).length;
+        if (occurrences === 0) return;
+        code = code.replace(re, `fontFamily: \`${target}\``);
+        changes.push({ kind: "font", role, from: bare, to: target, occurrences });
+      };
+      if (wantMonoInline) {
+        for (const [lit, bare] of distinct) {
+          if (isMono(bare)) swapAll(lit, bare, monoTarget!, "mono");
+        }
+      }
+      if (wantSansInline && sansLits.length === 1) {
+        const [lit, bare] = sansLits[0];
+        swapAll(lit, bare, sansTarget!, brand.fonts?.body ? "body" : "display");
+      }
+    }
+  }
+
   // ── @font-face ────────────────────────────────────────────────────────
   // Replacing the family name alone would reference a face that never loads,
   // so custom faces are appended to the existing BRAND_FONTS_CSS block.

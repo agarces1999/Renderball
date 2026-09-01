@@ -225,6 +225,51 @@ export const S = () => (
 
 let pass = 0;
 let fail = 0;
+/* ── const-less decks: the inline-stack fallback (founder's Zoom deck) ── */
+
+test("const-less deck: mono and the single sans stack both swap inline", () => {
+  // Verbatim shape from the founder's Zoom deck (2026-08-31): no FONT_*
+  // consts at all, every stack inlined — a font apply was a silent no-op.
+  const src = `
+export const Section0 = () => (
+  <div style={{ fontFamily: "'Helvetica Neue', Helvetica, Arial, sans-serif" }}>
+    <span style={{ fontFamily: "'SF Mono', Menlo, Consolas, monospace" }}>01</span>
+  </div>
+);`;
+  const r = reskinComposition(
+    src,
+    brandOf({ fonts: { body: '"Courier New", Courier, monospace', mono: '"Courier New", Courier, monospace' } }),
+  );
+  assert.equal(r.changes.length, 2, `expected 2 swaps, got ${JSON.stringify(r.changes)}`);
+  assert.match(r.code, /fontFamily: `"Courier New", Courier, monospace`/);
+  assert.doesNotMatch(r.code, /Helvetica Neue/);
+  assert.doesNotMatch(r.code, /SF Mono/);
+});
+
+test("const-less deck with TWO distinct sans stacks: ambiguous roles swap nothing (mono still swaps)", () => {
+  const src = `
+const A = () => <p style={{ fontFamily: "Georgia, serif" }} />;
+const B = () => <p style={{ fontFamily: "Arial, sans-serif" }} />;
+const C = () => <p style={{ fontFamily: "Menlo, monospace" }} />;`;
+  const r = reskinComposition(
+    src,
+    brandOf({ fonts: { body: '"Courier New", monospace', mono: '"Courier New", monospace' } }),
+  );
+  assert.equal(r.changes.length, 1, "only the mono stack may swap");
+  assert.equal(r.changes[0].role, "mono");
+  assert.match(r.code, /Georgia, serif/);
+  assert.match(r.code, /Arial, sans-serif/);
+});
+
+test("const-ful deck: the const path owns fonts, the inline fallback stays off", () => {
+  const src = `const FONT_DISPLAY = "Inter, sans-serif";
+const D = () => <p style={{ fontFamily: "Inter, sans-serif" }} />;`;
+  const r = reskinComposition(src, brandOf({ fonts: { display: '"Georgia", serif' } }));
+  assert.equal(r.changes.length, 1, "one const rewrite only");
+  assert.match(r.code, /const FONT_DISPLAY = `"Georgia", serif`/);
+  assert.match(r.code, /fontFamily: "Inter, sans-serif"/, "inline literal untouched when consts exist");
+});
+
 for (const [name, fn] of tests) {
   try {
     fn();
