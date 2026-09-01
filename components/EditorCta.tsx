@@ -22,6 +22,7 @@ export function EditorCta({
   centerCard?: boolean;
 }) {
   const [gate, setGate] = useState(false);
+  const [copied, setCopied] = useState(false);
   return (
     <>
       <Link
@@ -49,11 +50,26 @@ export function EditorCta({
             want a mouse and a big screen.
           </p>
           <div className="mt-3 flex flex-wrap items-center gap-2">
-            <a
-              href="mailto:?subject=Renderball&body=Open%20Renderball%20on%20your%20computer%3A%20https%3A%2F%2Frenderball.com"
+            {/* Clipboard first (reliability pass, 2026-08-31): mailto: is
+                flaky inside mobile in-app browsers; copying never is. The
+                mailto stays as the second door. */}
+            <button
+              type="button"
+              onClick={() => {
+                navigator.clipboard
+                  ?.writeText("https://renderball.com")
+                  .then(() => setCopied(true))
+                  .catch(() => {});
+              }}
               className="rounded-full bg-accent px-4 py-2 text-[12.5px] font-semibold text-accent-ink"
             >
-              Email myself the link
+              {copied ? "Copied ✓" : "Copy the link"}
+            </button>
+            <a
+              href="mailto:?subject=Renderball&body=Open%20Renderball%20on%20your%20computer%3A%20https%3A%2F%2Frenderball.com"
+              className="rounded-full border border-hairline px-4 py-2 text-[12.5px] text-muted transition-colors hover:text-ink"
+            >
+              Email it to me
             </a>
             <Link
               href="/api/documents/new"

@@ -1,6 +1,23 @@
 import type { Metadata } from "next";
 import { ClerkProvider } from "@clerk/nextjs";
+import { GeistSans } from "geist/font/sans";
+import { GeistMono } from "geist/font/mono";
+import localFont from "next/font/local";
 import "./globals.css";
+
+/* Cabinet Grotesk (display, story surfaces — DESIGN.md) self-hosted from
+   app/fonts (Fontshare's ITF Free Font License permits it). Self-hosting all
+   three families removes two render-blocking third-party stylesheets and the
+   Google-Fonts GDPR wrinkle (perf pass, 2026-08-31). */
+const cabinet = localFont({
+  src: [
+    { path: "./fonts/cabinet-grotesk-500.woff2", weight: "500" },
+    { path: "./fonts/cabinet-grotesk-700.woff2", weight: "700" },
+    { path: "./fonts/cabinet-grotesk-800.woff2", weight: "800" },
+  ],
+  variable: "--font-cabinet",
+  display: "swap",
+});
 
 export const metadata: Metadata = {
   metadataBase: new URL(process.env.NEXT_PUBLIC_APP_URL || "https://renderball.com"),
@@ -26,6 +43,9 @@ export const metadata: Metadata = {
     description:
       "Draw a box, say what goes there, and a real element appears. On your brand, in minutes.",
   },
+  // Relative canonical: resolves per-route against metadataBase, so every
+  // page names its own URL (SEO pass, 2026-08-31).
+  alternates: { canonical: "./" },
 };
 
 export default function RootLayout({
@@ -60,24 +80,23 @@ export default function RootLayout({
         },
       }}
     >
-      <html lang="en">
+      <html
+        lang="en"
+        suppressHydrationWarning
+        className={`${GeistSans.variable} ${GeistMono.variable} ${cabinet.variable}`}
+      >
         <head>
-          {/* Per DESIGN.md: Cabinet Grotesk (display, story surfaces),
-              Geist (UI/body), Geist Mono (timings/technical). Loaded via CDN
-              for v1; self-host before GA. */}
-          <link rel="preconnect" href="https://fonts.googleapis.com" />
-          <link
-            rel="preconnect"
-            href="https://fonts.gstatic.com"
-            crossOrigin="anonymous"
-          />
-          <link
-            href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap"
-            rel="stylesheet"
-          />
-          <link
-            href="https://api.fontshare.com/v2/css?f[]=cabinet-grotesk@500,700,800&display=swap"
-            rel="stylesheet"
+          {/* The chrome follows the OS (dark-mode decision, 2026-08-31): the
+              [data-theme=dark] token palette existed unused since the design
+              system landed — this wires it to prefers-color-scheme before
+              first paint (no flash) and tracks live OS changes. Deck CANVASES
+              are unaffected: compositions render in iframes with their own
+              authored backgrounds — paper stays paper, the chrome dims. */}
+          <script
+            dangerouslySetInnerHTML={{
+              __html:
+                'try{var m=matchMedia("(prefers-color-scheme: dark)"),s=function(){document.documentElement.dataset.theme=m.matches?"dark":"light"};s();m.addEventListener("change",s)}catch(e){}',
+            }}
           />
         </head>
         <body>

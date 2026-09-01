@@ -43,17 +43,47 @@ const nextConfig = {
         destination: "/documents",
         permanent: true,
       },
+      {
+        // People type /pricing; the pricing lives on the landing as a
+        // section. A typed URL must not 404 (SEO pass, 2026-08-31).
+        source: "/pricing",
+        destination: "/#pricing",
+        permanent: false,
+      },
     ];
   },
   async headers() {
+    const isDev = process.env.NODE_ENV !== "production";
+    // The app-document CSP (security pass, 2026-08-31). Scoped to PAGE routes
+    // only — /api/** is excluded on purpose, so the generated compositions
+    // (served as same-origin iframes under /api/preview and /api/dev) keep
+    // their by-design freedom to inline styles/fonts and load brand assets.
+    // 'unsafe-inline' for scripts is the deliberate v1 compromise: Next 14
+    // hydration + the pre-paint theme script are inline; the nonce pipeline
+    // is a follow-up. Everything else is tight: no eval (prod), no objects,
+    // no foreign frames beyond Clerk's Turnstile, connect locked to self +
+    // Clerk. img-src stays broad (https:) because crawled brand logos render
+    // in the ceremony and Brand panel from their own hosts.
+    const csp = [
+      "default-src 'self'",
+      `script-src 'self' 'unsafe-inline'${isDev ? " 'unsafe-eval'" : ""} https://clerk.renderball.com https://*.clerk.accounts.dev`,
+      "style-src 'self' 'unsafe-inline'",
+      "img-src 'self' data: blob: https:",
+      "font-src 'self' data:",
+      "connect-src 'self' https://clerk.renderball.com https://*.clerk.accounts.dev https://clerk-telemetry.com",
+      "frame-src 'self' https://challenges.cloudflare.com",
+      "worker-src 'self' blob:",
+      "object-src 'none'",
+      "base-uri 'self'",
+      "form-action 'self'",
+      "frame-ancestors 'self'",
+    ].join("; ");
     return [
       {
         // Global security baseline (launch audit): HSTS, no referrer leakage,
         // clickjacking protection, no MIME sniffing — app-wide.
         // frame-ancestors 'self' still allows the preview/editor's same-origin
-        // scene iframes. A full CSP is deferred deliberately: the generated
-        // compositions inline styles/fonts/images by design, so a strict
-        // policy needs its own allowlist pass.
+        // scene iframes.
         source: "/:path*",
         headers: [
           { key: "Strict-Transport-Security", value: "max-age=63072000; includeSubDomains" },
@@ -61,6 +91,11 @@ const nextConfig = {
           { key: "X-Content-Type-Options", value: "nosniff" },
           { key: "Content-Security-Policy", value: "frame-ancestors 'self'" },
         ],
+      },
+      {
+        // Full CSP for app DOCUMENTS (everything except /api/**).
+        source: "/((?!api/).*)",
+        headers: [{ key: "Content-Security-Policy", value: csp }],
       },
       {
         // User-uploaded brand assets are served straight from public/uploads.

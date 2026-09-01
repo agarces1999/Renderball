@@ -39,9 +39,9 @@
     --accent-line: rgba(0, 194, 138, 0.42);
 
     /* type roles */
-    --font-display: "Cabinet Grotesk", "Geist", system-ui, sans-serif;
-    --font-sans: "Geist", system-ui, sans-serif;
-    --font-mono: "Geist Mono", ui-monospace, monospace;
+    --font-display: var(--font-cabinet, "Cabinet Grotesk"), var(--font-geist-sans, "Geist"), system-ui, sans-serif;
+    --font-sans: var(--font-geist-sans, "Geist"), system-ui, sans-serif;
+    --font-mono: var(--font-geist-mono, "Geist Mono"), ui-monospace, monospace;
   }
 
   [data-theme="dark"] {
