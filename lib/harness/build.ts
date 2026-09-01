@@ -21,6 +21,8 @@ import { resolveCanvasPlan, signatureWithLogoFallback, brandShortName, luminance
 import { deriveCrawlTheme } from "../render/crawl-theme";
 import { persistGenDir } from "../render/gen-store";
 import { warmSceneThumbs } from "../render/thumbnail";
+import { readDocumentBrand } from "../brand/document-brand";
+import { documentBrandFromExtract } from "../documents/brand-crawl";
 import { measureScenes } from "../render/measure-scene";
 import { measureOutDir } from "../render/render-truth-gates";
 import { verifyScenesRender } from "../render/ssr-render";
@@ -89,6 +91,33 @@ export const runHarnessPreviewBuild = async (args: HarnessBuildArgs): Promise<Ro
       canvasPlan.background = lockedBackground;
       canvasPlan.mode = (luminanceOf(lockedBackground) ?? 1) < 0.5 ? "dark" : "light";
     }
+
+    // ── Brand type reaches the author (root-cause fix, 2026-08-31: fonts
+    // were crawled and stored but never fed forward — every harness deck was
+    // typeset in Helvetica regardless of brand). The user's panel picks
+    // (document brand) beat the crawl's identity; a face URL rides along
+    // only when its family actually appears in the chosen stack, so the
+    // author never @font-faces a file the stack won't use.
+    const docBrand = await readDocumentBrand(genDir).catch(() => null);
+    const crawlBrand = be ? documentBrandFromExtract(be) : null;
+    const faces = [...(docBrand?.fonts?.faces ?? []), ...(crawlBrand?.fonts?.faces ?? [])];
+    const faceFor = (stack?: string): string | undefined => {
+      if (!stack) return undefined;
+      const hit = faces.find((f) => f.family && stack.includes(f.family) && f.src?.startsWith("https://"));
+      return hit?.src;
+    };
+    const fontSlot = (slot: "display" | "body"): { stack: string; faceSrc?: string } | undefined => {
+      const stack = docBrand?.fonts?.[slot] ?? crawlBrand?.fonts?.[slot];
+      if (!stack) return undefined;
+      const faceSrc = faceFor(stack);
+      return { stack, ...(faceSrc ? { faceSrc } : {}) };
+    };
+    const monoStack = docBrand?.fonts?.mono;
+    const brandFonts = {
+      ...(fontSlot("display") ? { display: fontSlot("display")! } : {}),
+      ...(fontSlot("body") ? { body: fontSlot("body")! } : {}),
+      ...(monoStack ? { mono: { stack: monoStack } } : {}),
+    };
     const signature =
       signatureWithLogoFallback(be?.palette ?? [], be?.theme_color, be?.logo_color, be?.named) ??
       be?.theme_color ??
@@ -123,6 +152,7 @@ export const runHarnessPreviewBuild = async (args: HarnessBuildArgs): Promise<Ro
           ...(lockedBackground ? { background: lockedBackground } : {}),
           ...(rawRoles.monochrome === true ? { monochrome: true } : {}),
         },
+        ...(Object.keys(brandFonts).length ? { fonts: brandFonts } : {}),
       },
       assetUrls: (brief?.brand_files ?? [])
         .map((f: { url?: string }) => f.url)

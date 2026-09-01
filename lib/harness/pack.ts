@@ -24,6 +24,18 @@ export interface PackBrandFacts {
    *  locked accent for one anonymous swatch among eight (the founder's Fuse
    *  deck did exactly that: the locked maroon became the villain color). */
   roles?: { accent?: string; background?: string; monochrome?: boolean };
+  /** The brand's type, resolved by the build (user picks beat the crawl).
+   *  `stack` is a full font-family stack ending in a system family; `faceSrc`
+   *  is the brand's own woff2/woff URL when the crawl captured one — it joins
+   *  the asset allowlist and the author @font-faces it. Absent slots fall
+   *  back to the system-stacks rule. Root-cause fix, 2026-08-31: fonts were
+   *  crawled and stored but NEVER fed to the author — every harness deck was
+   *  typeset in Helvetica regardless of brand. */
+  fonts?: {
+    display?: { stack: string; faceSrc?: string };
+    body?: { stack: string; faceSrc?: string };
+    mono?: { stack: string };
+  };
 }
 
 export interface PackScene {
@@ -53,9 +65,15 @@ export const CANVAS_BY_ASPECT: Record<PackInput["aspect"], { w: number; h: numbe
   "1:1": { w: 1080, h: 1080 },
 };
 
-/** Every asset URL the emitted file is allowed to reference (logo + brand files). */
+/** Every asset URL the emitted file is allowed to reference (logo + brand
+ *  files + the brand's own font faces). */
 export const packAssetAllowlist = (input: PackInput): string[] =>
-  [input.brand.logoSrc, ...input.assetUrls].filter((u): u is string => !!u);
+  [
+    input.brand.logoSrc,
+    input.brand.fonts?.display?.faceSrc,
+    input.brand.fonts?.body?.faceSrc,
+    ...input.assetUrls,
+  ].filter((u): u is string => !!u);
 
 export const assemblePack = (input: PackInput): string => {
   const { w, h } = CANVAS_BY_ASPECT[input.aspect];
@@ -87,6 +105,19 @@ export const assemblePack = (input: PackInput): string => {
     roleLines.length
       ? `USER-LOCKED COLOR ROLES (the user chose these while looking at the palette — obey them, they are decisions, not suggestions):\n${roleLines.join("\n")}`
       : null,
+    input.brand.fonts?.display || input.brand.fonts?.body
+      ? `BRAND TYPE (the brand's own faces — the deck is typeset in them, not in defaults):\n${[
+          input.brand.fonts.display
+            ? `- Display: ${input.brand.fonts.display.stack}${input.brand.fonts.display.faceSrc ? ` — face file: ${input.brand.fonts.display.faceSrc}` : ""}`
+            : null,
+          input.brand.fonts.body
+            ? `- Body: ${input.brand.fonts.body.stack}${input.brand.fonts.body.faceSrc ? ` — face file: ${input.brand.fonts.body.faceSrc}` : ""}`
+            : null,
+          input.brand.fonts.mono ? `- Mono: ${input.brand.fonts.mono.stack}` : null,
+        ]
+          .filter(Boolean)
+          .join("\n")}`
+      : null,
     input.brand.logoSrc
       ? `The REAL brand logo is provided as an asset URL below. Use it as the lockup in every page's chrome (an <img> at natural aspect, height 24-36px) and larger where the story calls for it. Do not draw your own logo and do not write the brand name as plain text where the logo should be.`
       : `No logo asset was retrieved. Use a restrained text wordmark ("${input.brand.brandName}") in the chrome — do NOT invent a logo mark.`,
@@ -110,7 +141,10 @@ FILE CONTRACT:
 - Each section renders a full ${w}x${h} page: root div style {{ position: "absolute", inset: 0, width: "100%", height: "100%", overflow: "hidden" }} with an explicit background.
 - Inline styles only (React.CSSProperties objects). No CSS files, no Tailwind, no hooks, no state, no refs.
 - EDITABILITY GRAMMAR (hard): inside each section, wrap every visually distinct block in \`<Piece id="sN.pM" kind="...">\` ... \`</Piece>\` — N = page index, M = a per-page counter. The wrapper is transparent: the block inside it positions ITSELF (position: "absolute" with its own coordinates). Use kind="chrome" for the recurring page furniture (lockup, page number, footer rail — one chrome Piece per page, listed LAST in the section) and kind="diegetic" for everything else. One graphic device = ONE Piece (a whole SVG diagram is one Piece). Headline, supporting text, quote cards, stat rows: each its own Piece. Shared helper components and constants live at module top level, OUTSIDE the sections — never inside a Piece.
-- No external URLs except the allowed asset URLs listed above. System font stacks only (e.g. Helvetica Neue/Arial for display, SF Mono/Menlo/monospace for labels).
+- No external URLs except the allowed asset URLs listed above.
+- ${input.brand.fonts?.display || input.brand.fonts?.body
+    ? `Typography: set FONT_DISPLAY and FONT_BODY to the BRAND TYPE stacks given below (FONT_MONO: ${input.brand.fonts?.mono ? "the brand mono stack below" : "a system mono stack — SF Mono/Menlo/monospace"}). For each face file URL provided, emit ONE @font-face rule (font-family exactly as named in the stack, src: url(<that URL>), font-display: swap) inside a single <style> tag rendered once in your chrome component. Every stack ends in a system family, so a failed load degrades gracefully.`
+    : `System font stacks only (e.g. Helvetica Neue/Arial for display, SF Mono/Menlo/monospace for labels).`}
 - Deterministic: no Math.random, no Date. SVG is available and encouraged for graphic devices.
 - Every text-bearing block declares a horizontal bound (explicit width, maxWidth, or a right: offset). Unbounded text cannot autofit and will clip at the canvas edge.
 - Declare your color system at module top level as \`const PALETTE = { accent, canvas, ink, muted, surface, line }\` — accent = the lead brand color, canvas = the page background, ink = primary text, muted = secondary text, surface = card/panel fills, line = hairlines. Add as many extra keys as you like (never rename these six), and reference PALETTE keys instead of scattering raw hex literals. This exact const name is what lets the user re-color the deck instantly afterwards.

@@ -66,6 +66,27 @@ check("file contract demands the canonical PALETTE const", () => {
   assert(pack.includes("never rename these six"), "role keys are non-negotiable");
 });
 
+check("brand fonts reach the pack: stacks named, faces allowlisted, @font-face instructed", () => {
+  const input = baseInput();
+  input.brand.fonts = {
+    display: { stack: '"Happy Face Semi Bold", sans-serif', faceSrc: "https://st1.zoom.us/happy.woff2" },
+    body: { stack: '"Almaden Sans", sans-serif' },
+  };
+  const pack = assemblePack(input);
+  assert(pack.includes("BRAND TYPE"), "brand type section renders");
+  assert(pack.includes("Happy Face Semi Bold"), "display family named");
+  assert(pack.includes("face file: https://st1.zoom.us/happy.woff2"), "face URL handed to the author");
+  assert(pack.includes("@font-face"), "author instructed to load the face");
+  assert(!pack.includes("System font stacks only"), "system-only rule replaced when brand type exists");
+  assert(pack.includes("  - https://st1.zoom.us/happy.woff2"), "face URL joins the asset allowlist");
+});
+
+check("no brand fonts → the system-stacks rule stands unchanged", () => {
+  const pack = assemblePack(baseInput());
+  assert(pack.includes("System font stacks only"), "system rule intact");
+  assert(!pack.includes("BRAND TYPE"), "no phantom type section");
+});
+
 check("file contract demands the canonical font consts (founder's Zoom deck: fonts had no slot to swap)", () => {
   const pack = assemblePack(baseInput());
   for (const name of ["FONT_DISPLAY", "FONT_BODY", "FONT_MONO"]) {
