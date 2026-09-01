@@ -35,7 +35,7 @@ import { extractBrand } from "../crawl/extract-brand";
 import { brandExtractYield, fontStackFor, resolveBrandIdentity, type BrandYield } from "../crawl/brand-identity";
 import {
   type DocumentBrand,
-  mergeBrandIdentity,
+  fillBrandIdentity,
   readDocumentBrand,
   validateBrandInput,
   writeDocumentBrand,
@@ -319,13 +319,15 @@ const defaultDeps = (): BrandCrawlDeps => ({
   // protect. If we cannot tell whether there is work here, we do not touch it
   // — the brand is still saved and the Brand panel applies it in one click.
   isBlank: (genDir) => isBlankComposition(genDir, "not-blank"),
-  // MERGE, not overwrite. The ceremony's logo upload writes brand.json the
-  // moment it lands, and "look harder" (or any re-read) used to plain-write
-  // the crawl's identity with `assets: []` over it — the user watched their
-  // own upload vanish. Identity comes from the read; materials stay.
+  // FILL, never overwrite (founder's Deel doc, 2026-08-31: this path used
+  // replace-merge and the background crawl clobbered a handpicked palette
+  // and type). The crawl claims only slots the user hasn't: existing palette
+  // entries and font slots win, faces append, materials stay. The ceremony's
+  // explicit confirm keeps replace semantics — it goes through kit-apply,
+  // not here.
   writeBrand: async (genDir, brand) => {
     const existing = await readDocumentBrand(genDir);
-    await writeDocumentBrand(genDir, mergeBrandIdentity(existing, brand));
+    await writeDocumentBrand(genDir, fillBrandIdentity(existing, brand));
   },
   applyBrand: applyBrandToDocument,
   loadBrief: loadBriefByScriptId,

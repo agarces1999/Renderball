@@ -10,7 +10,7 @@
  */
 import type { BrandExtract } from "../../app/new/schema";
 import { brandFromExtractWithRoles, mergeOntoDocumentBrand } from "./kit-apply";
-import type { DocumentBrand } from "./document-brand";
+import { fillBrandIdentity, type DocumentBrand } from "./document-brand";
 
 let passed = 0;
 let failed = 0;
@@ -77,6 +77,29 @@ check("a hostile 'accent' is ignored, not written into composition source", () =
 check("monochrome keeps the fonts — killing the colour must not kill the type", () => {
   const b = brandFromExtractWithRoles(chromaticExtract(), { monochrome: true });
   assert(!!b.fonts.display, "display font survives the monochrome override");
+});
+
+check("background crawl FILLS, never clobbers, a handpicked identity (founder's Deel doc)", () => {
+  const existing: DocumentBrand = {
+    v: 1,
+    palette: { accent: "#123456" },
+    fonts: { display: '"Courier New", monospace', faces: [{ family: "UserFace", src: "https://u.example/f.woff2" }] },
+    assets: [],
+    guidelines: "we say members",
+  };
+  const crawl: DocumentBrand = {
+    v: 1,
+    palette: { accent: "#ffcf25", canvas: "#ffffff" },
+    fonts: { display: '"BagossCondensedFont", sans-serif', body: '"Inter", sans-serif', faces: [{ family: "BagossCondensedFont", src: "https://deel.example/b.woff2" }] },
+    assets: [],
+  };
+  const out = fillBrandIdentity(existing, crawl);
+  assert(out.palette.accent === "#123456", "handpicked accent survives the crawl");
+  assert(out.palette.canvas === "#ffffff", "empty slots fill from the crawl");
+  assert(out.fonts.display === '"Courier New", monospace', "handpicked display survives");
+  assert(out.fonts.body === '"Inter", sans-serif', "unclaimed body fills from the crawl");
+  assert(out.fonts.faces?.length === 2 && out.fonts.faces[0].family === "UserFace", "faces union, user's first");
+  assert(out.guidelines === "we say members", "materials untouched");
 });
 
 check("a user-picked background dresses the canvas role (ceremony 2026-08-29)", () => {

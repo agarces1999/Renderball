@@ -125,6 +125,39 @@ export const mergeBrandIdentity = (
   guidelines: existing.guidelines,
 });
 
+/**
+ * Crawl-vs-user precedence (founder's Deel doc, 2026-08-31: the background
+ * crawl overwrote a handpicked palette and type). A BACKGROUND read may only
+ * FILL identity slots the user hasn't claimed: existing palette entries and
+ * font slots win, crawl faces append (deduped by family, user's first), and
+ * materials stay untouched. The ceremony's explicit confirm keeps
+ * `mergeBrandIdentity`'s replace semantics — a human clicking "This is my
+ * brand" IS the authority; a debounced fetch is not.
+ */
+export const fillBrandIdentity = (
+  existing: DocumentBrand,
+  incoming: DocumentBrand,
+): DocumentBrand => {
+  const fonts: DocumentBrand["fonts"] = { ...incoming.fonts };
+  for (const slot of ["display", "body", "mono"] as const) {
+    if (existing.fonts?.[slot]) fonts[slot] = existing.fonts[slot];
+  }
+  const seen = new Set<string>();
+  const faces = [...(existing.fonts?.faces ?? []), ...(incoming.fonts?.faces ?? [])].filter(
+    (f) => !!f.family && !seen.has(f.family) && (seen.add(f.family), true),
+  );
+  if (faces.length) fonts.faces = faces;
+  else delete fonts.faces;
+  return {
+    v: 1,
+    palette: { ...incoming.palette, ...existing.palette },
+    fonts,
+    logo: existing.logo,
+    assets: existing.assets,
+    guidelines: existing.guidelines,
+  };
+};
+
 export const writeDocumentBrand = async (
   genDir: string,
   brand: DocumentBrand,
