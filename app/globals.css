@@ -325,3 +325,10 @@
   from { opacity: 0; }
   to { opacity: 1; }
 }
+
+/* The build ceremony's live thinking line re-mounts per snippet (keyed) and
+   fades in — quiet, no motion beyond opacity (BuildPreviewClient). */
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}

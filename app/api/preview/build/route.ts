@@ -151,7 +151,12 @@ export async function GET(request: Request) {
     // reportBuildProgress) — what lets the ceremony tick pages when they are
     // actually done instead of pacing a 48-second animation while the repair
     // ladder grinds invisibly.
-    return NextResponse.json({ status: "running", progress: job.progress ?? [] });
+    return NextResponse.json({
+      status: "running",
+      progress: job.progress ?? [],
+      // Live author reasoning, curated server-side (ceremony voice-over).
+      thinking: job.thinking?.text ?? null,
+    });
   }
   // "unknown" after a container restart is not a failure — the client reloads
   // and the page decides from whether the document actually exists.

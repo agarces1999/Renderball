@@ -20,7 +20,7 @@ import { resolveCornerBrandMark } from "../agents/logo-inject";
 import { resolveCanvasPlan, signatureWithLogoFallback, brandShortName, luminanceOf } from "../crawl/brand-identity";
 import { deriveCrawlTheme } from "../render/crawl-theme";
 import { persistGenDir } from "../render/gen-store";
-import { BuildCancelledError, buildCancelRequested, buildAbortSignal } from "../render/build-jobs";
+import { BuildCancelledError, buildCancelRequested, buildAbortSignal, reportBuildThinking } from "../render/build-jobs";
 import { warmSceneThumbs } from "../render/thumbnail";
 import { readDocumentBrand } from "../brand/document-brand";
 import { documentBrandFromExtract } from "../documents/brand-crawl";
@@ -32,9 +32,10 @@ import { callZaiVision, extractJsonFromReasoning } from "../render/zai-vision";
 import { castCall } from "../llm/cast-provider";
 
 import { assemblePack, packAssetAllowlist, type PackInput } from "./pack";
-import { authorDeck, authorContinuation, mergeChapters, missingSections, type AuthorAttempt } from "./author";
+import { authorDeck, authorContinuation, mergeChapters, missingSections, authorStreamEnabled, type AuthorAttempt, type AuthorStreamHooks } from "./author";
 import { validateDeck, type TruthViolation } from "./validators";
 import { EarlyCriticRunner, streamCriticsEnabled, critiquePageShot, sceneIntent, type EarlyVerdict } from "./stream-critics";
+import { SectionWatcher } from "./stream-sections";
 
 interface HarnessBuildArgs {
   // Loose on purpose: LoadedScript/LoadedBrief stay owned by run-preview-build.
@@ -182,10 +183,50 @@ export const runHarnessPreviewBuild = async (args: HarnessBuildArgs): Promise<Ro
       earlyRunner = new EarlyCriticRunner({ genDir, script, scenes, n, log: (l) => timeline.mark(l) });
       timeline.mark("harness:stream-critics:armed");
     }
+    // ── Live ceremony feed (founder #3, 2026-09-01): whenever the author is
+    // streamed — critics armed OR RB_AUTHOR_STREAM=on — surface (a) a curated
+    // line of its reasoning (voice-over) and (b) a mark the moment each page's
+    // section closes, so the per-page rows tick while the file is being
+    // written. Sinks are FEATHER-LIGHT and throttled: the 2026-09-01 probe
+    // measured heavy per-delta work correlating with longer completions.
+    const runnerHooks = earlyRunner?.authorHooks();
+    const displayWatcher = new SectionWatcher();
+    let lastThinkAt = 0;
+    let lastScanLen = 0;
+    const curate = (acc: string): string => {
+      const tail = acc.slice(-400).replace(/\s+/g, " ").trim();
+      const end = Math.max(tail.lastIndexOf(". "), tail.lastIndexOf("! "), tail.lastIndexOf("? "));
+      const cut = end > 120 ? tail.slice(0, end + 1) : tail;
+      return cut.length > 180 ? `…${cut.slice(-180)}` : cut;
+    };
+    const streamHooks: AuthorStreamHooks | undefined =
+      runnerHooks || authorStreamEnabled()
+        ? {
+            onAttemptStart: () => {
+              runnerHooks?.onAttemptStart();
+              displayWatcher.reset();
+              lastScanLen = 0;
+            },
+            onText: (acc) => {
+              runnerHooks?.onText(acc);
+              if (acc.length - lastScanLen < 800) return; // throttle the scan
+              lastScanLen = acc.length;
+              for (const s of displayWatcher.feed(acc)) {
+                if (s.index < n) timeline.mark(`harness:author:page:${s.index + 1}:written`);
+              }
+            },
+            onThinking: (acc) => {
+              const now = Date.now();
+              if (now - lastThinkAt < 2000) return;
+              lastThinkAt = now;
+              reportBuildThinking(scriptId, curate(acc));
+            },
+          }
+        : undefined;
     const authored = await authorDeck(basePack, firstEnd, {
       onAttempt,
       signal: abortSignal,
-      ...(earlyRunner ? { stream: earlyRunner.authorHooks() } : {}),
+      ...(streamHooks ? { stream: streamHooks } : {}),
     });
     let code = authored.code;
     const chapterThinking: string[] = [authored.thinking];

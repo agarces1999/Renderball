@@ -10,6 +10,7 @@ import {
   buildCancelRequested,
   buildStatus,
   reportBuildProgress,
+  reportBuildThinking,
   requestBuildCancel,
   startBuild,
 } from "./build-jobs";
@@ -118,6 +119,27 @@ test("progress marks accumulate on the running job and ride buildStatus", async 
   );
   release();
   await sleep(20);
+});
+
+test("thinking rides the running job, latest-only, and never after settle", async () => {
+  __resetBuildJobs();
+  let release: () => void = () => {};
+  const gate = new Promise<void>((r) => (release = r));
+  void startBuild("think", async () => {
+    await gate;
+    return { status: 200, body: {} };
+  });
+  reportBuildThinking("think", "planning the chrome rail");
+  reportBuildThinking("think", "placing the meridian arcs");
+  const job = buildStatus("think") as { state: string; thinking?: { text: string } };
+  assert.equal(job.state, "running");
+  assert.equal(job.thinking?.text, "placing the meridian arcs", "latest line wins");
+  release();
+  await sleep(20);
+  reportBuildThinking("think", "ghost");
+  const settled = buildStatus("think") as { state: string; thinking?: { text: string } };
+  assert.equal(settled.state, "done");
+  assert.equal((settled as { thinking?: unknown }).thinking, undefined, "no resurrection after settle");
 });
 
 test("progress after settle is dropped — a late mark must not resurrect state", async () => {

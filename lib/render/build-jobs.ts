@@ -33,7 +33,16 @@ export interface BuildProgressEvent {
 }
 
 export type BuildJob =
-  | { state: "running"; startedAt: number; progress?: BuildProgressEvent[] }
+  | {
+      state: "running";
+      startedAt: number;
+      progress?: BuildProgressEvent[];
+      /** Latest curated line of the author's live reasoning (ceremony
+       *  voice-over, founder #3 2026-09-01). Latest-only on purpose: thinking
+       *  is high-volume and must never evict the phase boundaries the step
+       *  list is built from. */
+      thinking?: { text: string; at: number };
+    }
   | { state: "done"; finishedAt: number; status: number; body: unknown }
   | { state: "error"; finishedAt: number; message: string }
   /** The user pressed stop. Distinct from error: nothing is wrong, and the
@@ -94,6 +103,13 @@ export const reportBuildProgress = (scriptId: string, phase: string): void => {
   progress.push({ phase, at: Date.now() });
   if (progress.length > MAX_PROGRESS_EVENTS) progress.shift();
   jobs.set(scriptId, { ...job, progress });
+};
+
+/** Latest thinking line on the running job — see BuildJob.thinking. */
+export const reportBuildThinking = (scriptId: string, text: string): void => {
+  const job = jobs.get(scriptId);
+  if (job?.state !== "running") return;
+  jobs.set(scriptId, { ...job, thinking: { text: text.slice(0, 220), at: Date.now() } });
 };
 
 /** Per-build abort controllers — the HARD half of stop (founder, 2026-09-01:

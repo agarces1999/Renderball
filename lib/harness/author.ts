@@ -23,7 +23,15 @@ import { castCall, castStream, type CastResult } from "../llm/cast-provider";
 export interface AuthorStreamHooks {
   onAttemptStart: () => void;
   onText: (accumulated: string) => void;
+  /** Accumulated reasoning after each thinking delta — the ceremony's live
+   *  voice-over drinks from this. Optional; keep the sink FEATHER-LIGHT
+   *  (probe 2026-09-01: heavy per-delta work correlates with longer
+   *  completions). */
+  onThinking?: (accumulated: string) => void;
 }
+
+/** True when authors go over SSE in this process (either flag or hooks). */
+export const authorStreamEnabled = (): boolean => streamAlways();
 
 /** RB_AUTHOR_STREAM=on: author over SSE even with no consumer (no-op hooks).
  *  Exists because the 2026-09-01 probe measured Fireworks serving qwen
@@ -53,6 +61,11 @@ const authorWire = async (
     },
     (t) => {
       thinking += t;
+      try {
+        stream.onThinking?.(thinking);
+      } catch {
+        /* the voice-over must never kill the paid stream */
+      }
     },
   );
   return { ...r, thinking };

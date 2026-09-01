@@ -40,7 +40,7 @@ export type ProgressEvent = { phase: string; at: number };
 
 async function pollUntilSettled(
   scriptId: string,
-  onProgress?: (events: ProgressEvent[]) => void,
+  onProgress?: (events: ProgressEvent[], thinking: string | null) => void,
 ): Promise<Response> {
   for (;;) {
     await new Promise((r) => setTimeout(r, POLL_MS));
@@ -60,6 +60,7 @@ async function pollUntilSettled(
       resultStatus?: number;
       error?: string;
       progress?: ProgressEvent[];
+      thinking?: string | null;
     } | null;
     if (!data) continue;
 
@@ -86,7 +87,7 @@ async function pollUntilSettled(
       return new Response("{}", { status: 202 });
     }
     // "running" — hand the ceremony the REAL phase boundaries and keep waiting.
-    if (Array.isArray(data.progress)) onProgress?.(data.progress);
+    if (Array.isArray(data.progress)) onProgress?.(data.progress, data.thinking ?? null);
   }
 }
 
@@ -144,6 +145,10 @@ export function BuildPreviewClient({
   // REAL phase boundaries from the server (BuildTimeline → build-jobs → the
   // poll). Empty on old containers — everything below falls back to pacing.
   const [progress, setProgress] = useState<ProgressEvent[]>([]);
+  // The author's live reasoning, one curated line at a time (only present
+  // when the server streams the author). Verbatim from the model — honest
+  // narration, not theater.
+  const [thinking, setThinking] = useState<string | null>(null);
   const phases = useMemo(() => progress.map((p) => p.phase), [progress]);
   // HEARTBEAT (founder, 2026-08-25: at 3:49 inside the foundation step he
   // suspected a hang — the longest step was the only one with zero visible
@@ -193,13 +198,20 @@ export function BuildPreviewClient({
       return "done";
     }
     if (i === 1) {
-      // The foundation call (design:scaffold) — the big serial step.
-      return seen("design:scaffold:done") || fillsDone ? "done" : "active";
+      // The foundation call (design:scaffold) — the big serial step. When the
+      // author streams, page 1 closing in the stream proves the foundation
+      // (preamble: palette, type, chrome) is already written.
+      return seen("design:scaffold:done") || seen("harness:author:page:1:written") || fillsDone
+        ? "done"
+        : "active";
     }
     if (i >= 2 && i <= pageCount + 1) {
       const scene = i - 2;
-      if (seen(`design:fill:scene:${scene}:done`) || fillsDone) return "done";
-      return seen("design:scaffold:done") ? "active" : "pending";
+      // Streamed authors announce each page the moment its section closes —
+      // rows tick live, minutes before the whole file lands.
+      if (seen(`design:fill:scene:${scene}:done`) || seen(`harness:author:page:${scene + 1}:written`) || fillsDone)
+        return "done";
+      return seen("design:scaffold:done") || seen("harness:author:page:1:written") ? "active" : "pending";
     }
     if (i === pageCount + 2) {
       // Composing: the structural-gate + repair + motion block.
@@ -284,7 +296,10 @@ export function BuildPreviewClient({
         // 409 busy, 422 brand kit) still arrives on this first response and
         // falls through to the handling below unchanged.
         if (res.status === 202) {
-          res = await pollUntilSettled(scriptId, setProgress);
+          res = await pollUntilSettled(scriptId, (events, think) => {
+            setProgress(events);
+            setThinking(think);
+          });
         }
 
         if (res.status === CANCELLED_STATUS) {
@@ -765,6 +780,20 @@ export function BuildPreviewClient({
             })}
           </ul>
 
+          {/* The author's live reasoning, verbatim — the voice-over that turns
+              the long authoring stretch from a frozen spinner into a craftsman
+              at the bench. Server-curated to one line; absent (null) on
+              non-streamed builds, so this renders nothing there. */}
+          {thinking ? (
+            <p
+              key={thinking}
+              className="mt-3 w-full animate-[fadeIn_.5s_ease] border-l-2 border-hairline pl-2.5 font-mono text-[10px] leading-relaxed text-faint"
+            >
+              <span className="mr-1.5 select-none text-accent/70">▍</span>
+              {thinking}
+            </p>
+          ) : null}
+
           <div className="mt-auto flex w-full flex-col gap-2 pt-5">
             <button
               type="button"
@@ -772,7 +801,7 @@ export function BuildPreviewClient({
               disabled={stopping}
               className="w-full rounded-md border border-hairline px-3 py-1.5 text-[11.5px] text-muted transition-colors hover:border-red-500/40 hover:text-ink disabled:opacity-60"
             >
-              {stopping ? "Stopping — finishing this step…" : "Stop this build"}
+              {stopping ? "Stopping…" : "Stop this build"}
             </button>
             <a
               href={outlineHref}
