@@ -25,6 +25,14 @@ export interface AuthorStreamHooks {
   onText: (accumulated: string) => void;
 }
 
+/** RB_AUTHOR_STREAM=on: author over SSE even with no consumer (no-op hooks).
+ *  Exists because the 2026-09-01 probe measured Fireworks serving qwen
+ *  stream:true with 25-35% MORE content than the same non-streamed request —
+ *  so transport choice is a MODEL-BEHAVIOR variable, and experiments that
+ *  toggle stream critics must hold it constant across arms. Default off:
+ *  prod behavior unchanged. */
+const streamAlways = () => (process.env.RB_AUTHOR_STREAM ?? "off") === "on";
+
 /** One author attempt over the wire: streamed when hooks are given (thinking
  *  accumulated back into the result so harness-trace parity survives — trace
  *  review is protocol), plain castCall otherwise. */
@@ -32,6 +40,7 @@ const authorWire = async (
   call: Parameters<typeof castCall>[0],
   stream?: AuthorStreamHooks,
 ): Promise<CastResult> => {
+  if (!stream && streamAlways()) stream = { onAttemptStart: () => {}, onText: () => {} };
   if (!stream) return castCall(call);
   stream.onAttemptStart();
   let acc = "";
