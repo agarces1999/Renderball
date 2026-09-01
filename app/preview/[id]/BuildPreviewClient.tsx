@@ -151,6 +151,27 @@ export function BuildPreviewClient({
   // row shows a live clock plus an expectation, and past six quiet minutes it
   // says "taking longer than usual" instead of silence.
   const lastMarkAt = useRef(Date.now());
+
+  /** KEEP THE LIVE STEP IN VIEW (founder, 2026-08-31: "i see the first steps
+   *  completed and feel like its done" — the active row had scrolled below
+   *  the fold behind a wall of green checks). Whenever the ACTIVE step
+   *  advances, scroll it into view; scrolling only on CHANGE means a user
+   *  reading older steps isn't fought every render. */
+  const stepsListRef = useRef<HTMLUListElement | null>(null);
+  const lastFollowedStep = useRef(-1);
+  useEffect(() => {
+    const list = stepsListRef.current;
+    if (!list) return;
+    const rows = Array.from(list.querySelectorAll("[data-step-status]"));
+    let lastActive = -1;
+    rows.forEach((r, i) => {
+      if (r.getAttribute("data-step-status") === "active") lastActive = i;
+    });
+    if (lastActive >= 0 && lastActive !== lastFollowedStep.current) {
+      lastFollowedStep.current = lastActive;
+      (rows[lastActive] as HTMLElement).scrollIntoView({ block: "nearest", behavior: "smooth" });
+    }
+  });
   useEffect(() => {
     if (progress.length > 0) lastMarkAt.current = Date.now();
   }, [progress.length]);
@@ -707,7 +728,7 @@ export function BuildPreviewClient({
             </span>
           </div>
 
-          <ul className="w-full space-y-1.5 overflow-y-auto">
+          <ul ref={stepsListRef} className="w-full space-y-1.5 overflow-y-auto">
             {steps.map((label, i) => {
               // PACING MAY NEVER CLAIM "DONE" (founder, 2026-08-20: pages 1
               // and 2 showed green checks at 0:20 with an empty stage, then
@@ -808,6 +829,7 @@ const fmtClock = (s: number): string => `${Math.floor(s / 60)}:${String(s % 60).
 function StepRow({ label, status, aside }: { label: string; status: Status; aside?: string }) {
   return (
     <li
+      data-step-status={status}
       className={cn(
         "flex items-center gap-3 rounded-md border px-3.5 py-2.5 transition-colors",
         status === "active"
