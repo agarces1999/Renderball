@@ -154,3 +154,23 @@ wordmark) produced the pack's brand section.
   every author eval saves raw responses and READS the reasoning — checking the
   pack is engaged, the budget has headroom, no truncation markers, no
   fake-it planning. Outcome data alone missed that GLM was being squeezed.
+
+## Experiment hygiene: transport and sink load are MODEL variables (2026-09-01)
+
+Measured during the stream-critics A/B (evidence: qa/harness-lab/
+ab-stream-critics-2026-09-01 + ab2 + probe-stream-vs-call/probe-sink-load):
+
+- Fireworks serves qwen3p8-max `stream:true` with **25–35% more content** than
+  the byte-identical non-streamed request (3v3, every streamed call longer).
+- **Consumer-side load during the stream** (heavy per-delta work + concurrent
+  vision calls on the account) correlated with longer completions three
+  separate times (4/4, 4/4, 3/3 pairs). Cause unobservable from outside.
+
+Rules derived:
+1. Any A/B whose arms differ in transport (castCall vs castStream) or in
+   per-delta sink weight is comparing MODELS, not mechanisms. Hold both
+   constant across arms, always.
+2. Sinks on paid streams stay feather-light and throttled (the ceremony
+   voice-over: latest-line side-channel, 2s throttle, ≥800-char scan gate).
+3. Round-1 verdicts on any contaminated comparison are archived as
+   CONTAMINATED, never cited as clean.
