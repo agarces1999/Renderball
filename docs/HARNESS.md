@@ -174,3 +174,12 @@ Rules derived:
    voice-over: latest-line side-channel, 2s throttle, ≥800-char scan gate).
 3. Round-1 verdicts on any contaminated comparison are archived as
    CONTAMINATED, never cited as clean.
+
+**2026-09-02 followup — the transport length effect did not replicate.** A
+12-call probe ({call,stream} × {default,explicit sampling} × 3) showed
+overlapping distributions and no reliable direction (default-call mean 2556tok
+vs default-stream 2152; explicit arms reversed). The original 6/6 "stream
+writes 25-35% more" was sampling variance. Rules 1-3 above STAND as cheap
+experiment hygiene, but no transport effect is established. Per-call length
+variance on identical requests (1710-2911tok observed) dominates everything;
+n≥8 matched pairs or it isn't a finding.
