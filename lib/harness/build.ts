@@ -481,50 +481,25 @@ const lookAndReviseOnce = async (args: {
     if (b64) beforeShots.set(f.page, b64);
   }
 
-  // RB_EDIT_BLOCKS: revise via conflict-marker edits first — the revision has
-  // the same re-emission disease the patch had (12.6k tokens for ≤15% change),
-  // and blocks can't drift the pages the critics did NOT flag. Fallback and
-  // every downstream check (render, pairwise, floors) unchanged.
-  let revised: string | null = null;
-  if (editBlocksEnabled()) {
-    try {
-      const rb = await castCall({
-        system: "",
-        user: `${pack}\n\nYou already authored the file below. A design review flagged specific pages. Revise ONLY the flagged pages' sections — a surgical pass (M1-measured: healthy revisions touch ≤15% of the file). Keep the identity, chrome, and all other pages untouched.\n\n\`\`\`tsx\n${code}\n\`\`\`\n\nFLAGGED:\n${notes.map((f) => `Page ${f.page + 1}: ${f.weakness}`).join("\n")}\n\n${EDIT_BLOCKS_INSTRUCTION}`,
-        maxTokens: 8000,
-        signal,
-        model,
-        timeoutMs: 300_000,
-        effort: "high",
-        thinkingBudget: 6000,
-      });
-      const eb = parseEditBlocks(rb.text ?? "");
-      const applied = eb ? applyEditBlocks(code, eb) : null;
-      if (applied?.ok) {
-        revised = applied.code;
-        timeline.mark(`harness:revise:edit-blocks (${applied.applied} block(s))`);
-      } else {
-        timeline.mark(`harness:revise:edit-blocks fallback (${!eb ? "unparseable" : applied && !applied.ok ? applied.reason : "?"})`);
-      }
-    } catch (err) {
-      if (signal?.aborted) throw err;
-      timeline.mark(`harness:revise:edit-blocks fallback (${String(err).slice(0, 60)})`);
-    }
-  }
-  if (!revised) {
-    const r = await castCall({
-      system: "",
-      user: `${pack}\n\nYou already authored the file below. A design review flagged specific pages. Revise ONLY the flagged pages' sections — a surgical pass (M1-measured: healthy revisions touch ≤15% of the file). Keep the identity, chrome, and all other pages byte-identical. Reply with ONLY the complete revised file in one \`\`\`tsx block.\n\n\`\`\`tsx\n${code}\n\`\`\`\n\nFLAGGED:\n${notes.map((f) => `Page ${f.page + 1}: ${f.weakness}`).join("\n")}`,
-      maxTokens: 30_000,
-      signal,
-      model,
-      timeoutMs: 300_000,
-      effort: "high",
-      thinkingBudget: 6000,
-    });
-    const blocks = [...(r.text ?? "").matchAll(/```(?:tsx|typescript|jsx|ts)?\s*\n([\s\S]*?)```/g)].map((x) => x[1]);
-    revised = blocks.length ? blocks.reduce((a, b) => (b.length > a.length ? b : a)) : null;
-  }
+  // REVISION IS ALWAYS FULL-FILE — killed-by-data (founder blind verdict,
+  // 2026-09-02, ab6): the edit-block revision produced timid, under-filled
+  // pages ("a bunch of blank spaces"). Mechanism: revision fixes
+  // composition-scale weaknesses ("page feels empty"), which need the freedom
+  // to recompose a section; the block format's smallest-possible-edit bias is
+  // structurally wrong for that. Blocks remain ONLY on surgicalPatch, where
+  // defects are byte-scale and the bias is exactly right (6.4s vs 88-124s).
+  const r = await castCall({
+    system: "",
+    user: `${pack}\n\nYou already authored the file below. A design review flagged specific pages. Revise ONLY the flagged pages' sections — a surgical pass (M1-measured: healthy revisions touch ≤15% of the file). Keep the identity, chrome, and all other pages byte-identical. Reply with ONLY the complete revised file in one \`\`\`tsx block.\n\n\`\`\`tsx\n${code}\n\`\`\`\n\nFLAGGED:\n${notes.map((f) => `Page ${f.page + 1}: ${f.weakness}`).join("\n")}`,
+    maxTokens: 30_000,
+    signal,
+    model,
+    timeoutMs: 300_000,
+    effort: "high",
+    thinkingBudget: 6000,
+  });
+  const blocks = [...(r.text ?? "").matchAll(/```(?:tsx|typescript|jsx|ts)?\s*\n([\s\S]*?)```/g)].map((x) => x[1]);
+  const revised = blocks.length ? blocks.reduce((a, b) => (b.length > a.length ? b : a)) : null;
   if (!revised || revised.length < code.length * 0.6) return code;
 
   // Strict improvement: render the revision and let the pairwise judge decide
