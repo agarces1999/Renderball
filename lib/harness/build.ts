@@ -33,7 +33,7 @@ import { castCall } from "../llm/cast-provider";
 
 import { assemblePack, packAssetAllowlist, type PackInput } from "./pack";
 import { authorDeck, authorContinuation, mergeChapters, missingSections, authorStreamEnabled, type AuthorAttempt, type AuthorStreamHooks } from "./author";
-import { validateDeck, type TruthViolation } from "./validators";
+import { validateDeck, findLogoViolation, type TruthViolation } from "./validators";
 import { EarlyCriticRunner, streamCriticsEnabled, critiquePageShot, sceneIntent, type EarlyVerdict } from "./stream-critics";
 import { SectionWatcher } from "./stream-sections";
 
@@ -65,10 +65,11 @@ export const runHarnessPreviewBuild = async (args: HarnessBuildArgs): Promise<Ro
   const abortSignal = buildAbortSignal(scriptId);
   let earlyRunner: EarlyCriticRunner | null = null;
   const scenes: PackInput["scenes"] = (script.scenes ?? []).map(
-    (s: { label?: string; description?: string; content?: unknown }) => ({
+    (s: { label?: string; description?: string; content?: unknown; visual_concept?: string }) => ({
       label: s.label ?? "",
       description: s.description ?? "",
       content: typeof s.content === "string" ? s.content : JSON.stringify(s.content ?? {}),
+      ...(s.visual_concept?.trim() ? { visual: s.visual_concept } : {}),
     }),
   );
   const n = scenes.length;
@@ -254,19 +255,39 @@ export const runHarnessPreviewBuild = async (args: HarnessBuildArgs): Promise<Ro
 
     // ── Truth validators → one targeted patch, then ship FLAGGED if needed. ──
     let violations = validateDeck({ code, approvedText, sceneCount: n, allowedUrls, logoSrc: packInput.brand.logoSrc });
-    // Instrument-distrust ceiling (timing autopsy, 2026-08-27): the A/B batch
-    // burned 116-142s per build patching 28-55 PHANTOM violations from validator
-    // bugs. A deck does not invent dozens of numerals; an instrument does.
-    // Untrusted measurements can't block — and they can't SPEND either.
-    const SANITY_CEILING = 12;
-    if (violations.length > SANITY_CEILING) {
-      timeline.mark(`harness:validate:INSTRUMENT-SUSPECT (${violations.length} > ${SANITY_CEILING}) — no patch spent, shipping flagged for review`);
-    } else if (violations.length) {
-      timeline.mark(`harness:validate:${violations.length} violation(s) — patching`);
-      const patched = await surgicalPatch(code, violations, authored.model, abortSignal);
+    // Instrument distrust is PER KIND, not per deck (ab7 autopsy, 2026-09-02:
+    // the total-count cliff shipped a real fabrication on one twin — 12
+    // phantoms drowned it past the ceiling — while the other twin's patch
+    // obeyed phantom numeral orders and emptied the logo const). Only the
+    // numeral detector has ever flooded; when it floods, ONLY its findings
+    // are withheld. Structural kinds (missing-logo, foreign-image,
+    // unstable-piece-id) are always patched.
+    const NUMERAL_SANITY_CEILING = 12;
+    const numeralFindings = violations.filter((v) => v.kind === "invented-numeral");
+    const structuralFindings = violations.filter((v) => v.kind !== "invented-numeral");
+    const numeralsTrusted = numeralFindings.length <= NUMERAL_SANITY_CEILING;
+    if (!numeralsTrusted) {
+      timeline.mark(`harness:validate:NUMERAL-INSTRUMENT-SUSPECT (${numeralFindings.length} > ${NUMERAL_SANITY_CEILING}) — numeral patches withheld, structural patches still run`);
+    }
+    const toPatch = [...structuralFindings, ...(numeralsTrusted ? numeralFindings : [])];
+    if (toPatch.length) {
+      timeline.mark(`harness:validate:${toPatch.length} violation(s) — patching`);
+      const patched = await surgicalPatch(code, toPatch, authored.model, abortSignal);
+      // A patch may never DESTROY a brand asset (ab7: the phantom-numeral
+      // instruction "remove it" was obeyed by emptying the logo const — a
+      // deck the logo validator requires to contain those exact bytes).
+      // A patch that introduces a violation kind the input didn't have is
+      // rejected outright; the pre-patch code ships flagged instead.
       if (patched) {
-        code = patched;
-        violations = validateDeck({ code, approvedText, sceneCount: n, allowedUrls, logoSrc: packInput.brand.logoSrc });
+        const before = new Set(violations.map((v) => v.kind));
+        const after = validateDeck({ code: patched, approvedText, sceneCount: n, allowedUrls, logoSrc: packInput.brand.logoSrc });
+        const introduced = after.filter((v) => !before.has(v.kind));
+        if (introduced.length) {
+          timeline.mark(`harness:patch:REJECTED (introduced ${introduced.map((v) => v.kind).join(",")}) — pre-patch code ships`);
+        } else {
+          code = patched;
+          violations = after;
+        }
       }
     }
     timeline.mark(`harness:validate:${violations.length ? `residual ${violations.length} (shipping flagged)` : "clean"}`);
@@ -293,11 +314,17 @@ export const runHarnessPreviewBuild = async (args: HarnessBuildArgs): Promise<Ro
         authored.model,
         abortSignal,
       );
-      if (repaired) {
+      const repairLostLogo =
+        repaired !== null &&
+        findLogoViolation(repaired, packInput.brand.logoSrc).length > 0 &&
+        findLogoViolation(code, packInput.brand.logoSrc).length === 0;
+      if (repaired && !repairLostLogo) {
         code = repaired;
         await writeGeneratedFiles(genDir, { code, designCode: code, script });
         renderCheck = await verifyScenesRender(genDir, n, script);
         timeline.mark(`harness:gate:ssr-render:retry:${renderCheck.ok ? "passed" : "failed"}`);
+      } else if (repairLostLogo) {
+        timeline.mark("harness:repair:REJECTED (repair removed the brand logo)");
       }
     }
     if (!renderCheck.ok) {
@@ -454,6 +481,12 @@ const lookAndReviseOnce = async (args: {
     effort: "high",
     thinkingBudget: 6000,
   });
+  // Revision forensics (ab6/ab7 lesson, 2026-09-02: twice the question "what
+  // did the revision actually change?" was unanswerable because only
+  // post-everything code survives). Persist the input file and the raw reply
+  // next to the trace — every future quality dispute resolves from bytes.
+  await fsp.writeFile(path.join(genDir, "revision-before.tsx"), code).catch(() => {});
+  await fsp.writeFile(path.join(genDir, "revision-reply.txt"), r.text ?? "").catch(() => {});
   const blocks = [...(r.text ?? "").matchAll(/```(?:tsx|typescript|jsx|ts)?\s*\n([\s\S]*?)```/g)].map((x) => x[1]);
   const revised = blocks.length ? blocks.reduce((a, b) => (b.length > a.length ? b : a)) : null;
   if (!revised || revised.length < code.length * 0.6) return code;

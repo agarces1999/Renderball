@@ -43,6 +43,14 @@ export interface PackScene {
   description: string;
   /** The approved structured copy payload — stringified, verbatim. */
   content: string;
+  /** The outline's per-page composition/device plan (visual_concept). The
+   *  outline stage already authors this — gate-enforced concrete — and the
+   *  user approves it with the outline; until 2026-09-02 the harness DROPPED
+   *  it, so the author re-derived every page's device from scratch (ab7: a
+   *  page whose approved concept said "five tile rows, rounded-rectangle
+   *  cards" was authored as a plain bullet list). Feeding it is retrieval,
+   *  not scaffolding: the author keeps full styling ownership. */
+  visual?: string;
 }
 
 export interface PackInput {
@@ -81,7 +89,14 @@ export const assemblePack = (input: PackInput): string => {
   const sections = Array.from({ length: n }, (_, i) => `Section${i}`).join(", ");
 
   const outline = input.scenes
-    .map((s, i) => `Page ${i + 1} — ${s.label}\nIntent: ${s.description}\nApproved copy (use this text, compress freely, add no facts): ${s.content}`)
+    .map(
+      (s, i) =>
+        `Page ${i + 1} — ${s.label}\nIntent: ${s.description}\n${
+          s.visual?.trim()
+            ? `Approved visual concept (the user signed off on this direction — realize its device and composition, executing and refining freely): ${s.visual.trim()}\n`
+            : ""
+        }Approved copy (use this text, compress freely, add no facts): ${s.content}`,
+    )
     .join("\n\n");
 
   const assets = packAssetAllowlist(input);

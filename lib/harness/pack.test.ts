@@ -95,5 +95,22 @@ check("file contract demands the canonical font consts (founder's Zoom deck: fon
   assert(pack.includes("never inline a stack"), "inlining is banned — inlined stacks are what made fonts unswappable");
 });
 
+
+await check("the outline's visual_concept reaches the author (the ab7 dropped-field gap)", () => {
+  const pack = assemblePack({
+    briefPrompt: "test",
+    tone: undefined,
+    aspect: "16:9",
+    scenes: [
+      { label: "Scope", description: "intent", content: "{}", visual: "five tile rows, rounded-rectangle cards" },
+      { label: "Plain", description: "intent2", content: "{}" },
+    ],
+    brand: { brandName: "X", palette: [], logoSrc: null, mode: "light", background: "#ffffff", roles: {} },
+    assetUrls: [],
+  });
+  assert(pack.includes("five tile rows, rounded-rectangle cards"), "visual concept missing from pack");
+  assert(pack.includes("Approved visual concept"), "visual concept label missing");
+});
+
 console.log(`${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

@@ -19,6 +19,22 @@ export interface TruthViolation {
   patch: string;
 }
 
+/**
+ * Remove entire CLASSES of never-viewer-visible bytes before any numeral
+ * scanning: data-URIs, URLs, asset filenames, and hex colors. This is the
+ * generalization the four false-positive floods pointed at (136 attr-string
+ * coords → 55 hex → 40 apostrophe → 26 generics → 2026-09-02: 11 phantoms
+ * from ONE base64 logo const, which pushed a Stripe deck over the patch
+ * ceiling while its twin's patch obeyed the phantom orders and EMPTIED the
+ * logo). Encoded bytes are not claims; strip the class, not the token.
+ */
+const stripNonVisible = (code: string): string =>
+  code
+    .replace(/data:[a-zA-Z0-9/+.-]+;base64,[A-Za-z0-9+/=]+/g, " ")
+    .replace(/https?:\/\/[^\s"'`)>]+/g, " ")
+    .replace(/[\w./-]+\.(?:woff2?|ttf|otf|eot|png|jpe?g|gif|svg|webp|avif|mp4|css|js|json)\b[^\s"'`)>]*/g, " ")
+    .replace(/#[0-9a-fA-F]{3,8}\b/g, " ");
+
 /** Remove style={{...}} objects (brace-balanced) and numeric JSX props. */
 const stripLayout = (code: string): string => {
   let out = "";
@@ -61,7 +77,16 @@ const isStyleValueChunk = (chunk: string): boolean => {
   if (/^(rgba?|hsla?|calc|url|linear-gradient|radial-gradient)\(/i.test(t)) return true;
   if (/^[Mm]\s*-?\d/.test(t)) return true; // SVG path data
   const words = t.match(/[A-Za-z]{3,}/g) ?? [];
-  const nonUnit = words.filter((w) => !/^(px|rem|deg|rgba?|hsla?|solid|dashed|dotted|calc|var|auto|none|deg|vh|vw)$/i.test(w));
+  // CSS vocabulary counts as unit-speak: a template-literal @font-face block
+  // or "max-width: 640px" string is style plumbing, not a viewer claim (the
+  // font-asset hash "178166" was flagged as an invented statistic without
+  // these words on the list).
+  const nonUnit = words.filter(
+    (w) =>
+      !/^(px|rem|em|deg|rgba?|hsla?|solid|dashed|dotted|calc|var|auto|none|vh|vw|width|height|font|face|family|src|url|format|local|swap|weight|style|normal|italic|bold|serif|sans|mono|monospace|letter|spacing|line|margin|padding|border|radius|left|right|top|bottom|block|inline|flex|grid|absolute|relative|woff)$/i.test(
+        w,
+      ),
+  );
   return nonUnit.length === 0; // pure numbers/coords/units → geometry
 };
 
@@ -115,7 +140,7 @@ export const findInventedNumerals = (
     ...[...approvedText.matchAll(/\d[\d,.]*/g)].map((m) => m[0].replace(/[.,]$/, "")),
     ...pageIndexAllowance(sceneCount),
   ]);
-  return readableNumerals(stripLayout(code))
+  return readableNumerals(stripNonVisible(stripLayout(code)))
     .filter((tok) => !allowed.has(tok))
     .map((tok) => ({
       kind: "invented-numeral" as const,

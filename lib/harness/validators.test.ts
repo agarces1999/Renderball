@@ -90,5 +90,31 @@ await check("computed and duplicate Piece ids are violations the patch pass fixe
   assert(findUnstablePieceIds(clean).length === 0, "literal unique ids pass");
 });
 
+
+// ── the ab7 phantom-flood class (2026-09-02): non-visible byte classes ──────
+
+await check("base64 data-URI consts produce ZERO numeral flags (the 11-phantom logo flood)", () => {
+  const code = `const LOGO_URL =\n  "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI2NCIgNTMgMjkgNDIgNDEgNDUgNDMgMDAiPjwvc3ZnPg==";\n<img src={LOGO_URL} alt="Stripe"/>`;
+  const v = findInventedNumerals(code, "no numbers", 4);
+  assert(v.length === 0, `expected 0, got ${JSON.stringify(v.map((x) => x.detail))}`);
+});
+
+await check("font-face template literals and asset URLs produce ZERO flags (the 178166 hash)", () => {
+  const code = "const FACES = `@font-face{font-family:\"Sohne\";src:url(https://cdn.x.com/fonts/Sohne.cb178166.woff2) format(\"woff2\");font-display:swap;}`;\n<style>{FACES}</style>";
+  const v = findInventedNumerals(code, "no numbers", 4);
+  assert(v.length === 0, `expected 0, got ${JSON.stringify(v.map((x) => x.detail))}`);
+});
+
+await check("mid-string hex colors produce ZERO flags (the 533 leak)", () => {
+  const v = findInventedNumerals(`const BORDER = "1px solid #533afd"; <div><p>Clean page</p></div>`, "no numbers", 4);
+  assert(v.length === 0, `expected 0, got ${JSON.stringify(v.map((x) => x.detail))}`);
+});
+
+await check("REAL fabrications still flag after the stripping (the shipped 135-currencies lie)", () => {
+  const v = findInventedNumerals(`<div><p>135 currencies, 40+ methods</p></div>`, "global payments brief, no figures approved", 4);
+  const toks = v.map((x) => x.detail);
+  assert(toks.includes("135") && toks.includes("40"), `expected 135+40 flagged, got ${JSON.stringify(toks)}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exitCode = 1;

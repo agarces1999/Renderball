@@ -12,6 +12,7 @@
  */
 import { warmPool } from "./lib/render/sandbox/pool";
 import { activeBuildCount } from "./lib/render/build-jobs";
+import { flushSpend } from "./lib/spend/record";
 
 try {
   warmPool();
@@ -69,10 +70,16 @@ process.on("SIGTERM", () => {
   const tick = () => {
     const active = activeBuildCount();
     if (active === 0 || Date.now() - started > CAP_MS) {
-      console.log(
-        `[drain] exiting after ${Math.round((Date.now() - started) / 1000)}s (${active} build(s) still running)`,
-      );
-      process.exit(0);
+      // Settle the fire-and-forget spend ledger before dying — a prompt exit
+      // silently drops tail rows (observed 2026-09-02: a 13.8k-token call
+      // vanished from the ledger when its probe script exited immediately).
+      void Promise.race([flushSpend(), new Promise((r) => setTimeout(r, 3_000))]).finally(() => {
+        console.log(
+          `[drain] exiting after ${Math.round((Date.now() - started) / 1000)}s (${active} build(s) still running)`,
+        );
+        process.exit(0);
+      });
+      return;
     }
     console.log(`[drain] SIGTERM received — waiting on ${active} build(s)`);
     setTimeout(tick, 2_000);

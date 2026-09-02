@@ -183,3 +183,26 @@ writes 25-35% more" was sampling variance. Rules 1-3 above STAND as cheap
 experiment hygiene, but no transport effect is established. Per-call length
 variance on identical requests (1710-2911tok observed) dominates everything;
 n≥8 matched pairs or it isn't a finding.
+
+## A/B protocol rules (2026-09-02, ab6/ab7 lessons — binding for engine experiments)
+
+1. **n≥8 matched pairs or it is not a finding** (three single-pair "patterns"
+   died this week under replication). One pair may only ever kill an obviously
+   broken arm, never crown one.
+2. **Interleave arms** (ABBA…) — never all-of-A-then-all-of-B: fleet drift,
+   prefix-cache warmth and local warm-state are order-locked confounds.
+3. **Replica pinning is a confound**: x-session-affinity keys per scriptId, so
+   each arm's whole build lands on ONE Fireworks replica. At small n, replica
+   identity rides the flag. Note it in every writeup; strip the header only in
+   lab probes that need replica-independence.
+4. **Hold transport + sink load constant across arms** (see the 2026-09-01
+   section above).
+5. **Archive BEFORE anything else, per build**: harness-trace, timeline, code,
+   warnings — and now revision-before.tsx + revision-reply.txt (persisted by
+   the pipeline itself since 2026-09-02). Raw author streams still are not
+   persisted; capture them in the runner when stream mechanics are the subject.
+6. **Lab scripts await flushSpend() before process.exit** — fire-and-forget
+   ledger writes lose tail rows on prompt exit (observed: probe-6's second
+   call, 13.8k tokens, missing from SpendRecord).
+7. **Deletion/cleanup of experiment decks needs its own explicit founder
+   confirmation at the moment of deletion** — never inherited from the plan.
