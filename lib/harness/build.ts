@@ -36,7 +36,6 @@ import { authorDeck, authorContinuation, mergeChapters, missingSections, authorS
 import { validateDeck, type TruthViolation } from "./validators";
 import { EarlyCriticRunner, streamCriticsEnabled, critiquePageShot, sceneIntent, type EarlyVerdict } from "./stream-critics";
 import { SectionWatcher } from "./stream-sections";
-import { EDIT_BLOCKS_INSTRUCTION, applyEditBlocks, editBlocksEnabled, parseEditBlocks } from "./edit-blocks";
 
 interface HarnessBuildArgs {
   // Loose on purpose: LoadedScript/LoadedBrief stay owned by run-preview-build.
@@ -264,7 +263,7 @@ export const runHarnessPreviewBuild = async (args: HarnessBuildArgs): Promise<Ro
       timeline.mark(`harness:validate:INSTRUMENT-SUSPECT (${violations.length} > ${SANITY_CEILING}) — no patch spent, shipping flagged for review`);
     } else if (violations.length) {
       timeline.mark(`harness:validate:${violations.length} violation(s) — patching`);
-      const patched = await surgicalPatch(code, violations, authored.model, abortSignal, (m) => timeline.mark(`harness:patch:${m}`));
+      const patched = await surgicalPatch(code, violations, authored.model, abortSignal);
       if (patched) {
         code = patched;
         violations = validateDeck({ code, approvedText, sceneCount: n, allowedUrls, logoSrc: packInput.brand.logoSrc });
@@ -293,7 +292,6 @@ export const runHarnessPreviewBuild = async (args: HarnessBuildArgs): Promise<Ro
         })),
         authored.model,
         abortSignal,
-        (m) => timeline.mark(`harness:repair:${m}`),
       );
       if (repaired) {
         code = repaired;
@@ -379,43 +377,8 @@ export const runHarnessPreviewBuild = async (args: HarnessBuildArgs): Promise<Ro
   }
 };
 
-/** Full-file targeted patch: name the exact defects, demand minimal edits.
- *  RB_EDIT_BLOCKS=on tries conflict-marker edits FIRST (probe 2026-09-02:
- *  the same 2-defect fix cost 130 tokens/2s as blocks vs 13,813/62s as a
- *  re-emission — and blocks cannot drift untouched pages). Any parse/apply
- *  failure falls through to the full-file path below, so the worst case is
- *  exactly today; the truth validators re-run after either path. */
-const surgicalPatch = async (
-  code: string,
-  violations: TruthViolation[],
-  model: string,
-  signal?: AbortSignal,
-  onMode?: (mode: string) => void,
-): Promise<string | null> => {
-  if (editBlocksEnabled()) {
-    try {
-      const r = await castCall({
-        system: "",
-        user: `Below is a complete React deck file, followed by specific defects. Fix every defect with the smallest possible edits. Change nothing else — no restyling, no rewrites.\n\n\`\`\`tsx\n${code}\n\`\`\`\n\nDEFECTS:\n${violations.map((v, i) => `${i + 1}. ${v.patch}`).join("\n")}\n\n${EDIT_BLOCKS_INSTRUCTION}`,
-        maxTokens: 4000,
-        signal,
-        model,
-        timeoutMs: 180_000,
-        effort: "high",
-        thinkingBudget: 4000,
-      });
-      const blocks = parseEditBlocks(r.text ?? "");
-      const applied = blocks ? applyEditBlocks(code, blocks) : null;
-      if (applied?.ok) {
-        onMode?.(`edit-blocks (${applied.applied} block(s))`);
-        return applied.code;
-      }
-      onMode?.(`edit-blocks fallback (${!blocks ? "unparseable" : applied && !applied.ok ? applied.reason : "?"}) — full file`);
-    } catch (err) {
-      if (signal?.aborted) throw err; // a user stop must not burn a fallback call
-      onMode?.(`edit-blocks fallback (${String(err).slice(0, 60)}) — full file`);
-    }
-  }
+/** Full-file targeted patch: name the exact defects, demand minimal edits. */
+const surgicalPatch = async (code: string, violations: TruthViolation[], model: string, signal?: AbortSignal): Promise<string | null> => {
   const r = await castCall({
     system: "",
     user: `Below is a complete React deck file, followed by specific defects. Apply the SMALLEST possible edits that fix every defect. Change nothing else — no restyling, no rewrites. Reply with ONLY the corrected complete file in one \`\`\`tsx block.\n\n\`\`\`tsx\n${code}\n\`\`\`\n\nDEFECTS:\n${violations.map((v, i) => `${i + 1}. ${v.patch}`).join("\n")}`,
@@ -481,50 +444,18 @@ const lookAndReviseOnce = async (args: {
     if (b64) beforeShots.set(f.page, b64);
   }
 
-  // RB_EDIT_BLOCKS: revise via conflict-marker edits first — the revision has
-  // the same re-emission disease the patch had (12.6k tokens for ≤15% change),
-  // and blocks can't drift the pages the critics did NOT flag. Fallback and
-  // every downstream check (render, pairwise, floors) unchanged.
-  let revised: string | null = null;
-  if (editBlocksEnabled()) {
-    try {
-      const rb = await castCall({
-        system: "",
-        user: `${pack}\n\nYou already authored the file below. A design review flagged specific pages. Revise ONLY the flagged pages' sections — a surgical pass (M1-measured: healthy revisions touch ≤15% of the file). Keep the identity, chrome, and all other pages untouched.\n\n\`\`\`tsx\n${code}\n\`\`\`\n\nFLAGGED:\n${notes.map((f) => `Page ${f.page + 1}: ${f.weakness}`).join("\n")}\n\n${EDIT_BLOCKS_INSTRUCTION}`,
-        maxTokens: 8000,
-        signal,
-        model,
-        timeoutMs: 300_000,
-        effort: "high",
-        thinkingBudget: 6000,
-      });
-      const eb = parseEditBlocks(rb.text ?? "");
-      const applied = eb ? applyEditBlocks(code, eb) : null;
-      if (applied?.ok) {
-        revised = applied.code;
-        timeline.mark(`harness:revise:edit-blocks (${applied.applied} block(s))`);
-      } else {
-        timeline.mark(`harness:revise:edit-blocks fallback (${!eb ? "unparseable" : applied && !applied.ok ? applied.reason : "?"})`);
-      }
-    } catch (err) {
-      if (signal?.aborted) throw err;
-      timeline.mark(`harness:revise:edit-blocks fallback (${String(err).slice(0, 60)})`);
-    }
-  }
-  if (!revised) {
-    const r = await castCall({
-      system: "",
-      user: `${pack}\n\nYou already authored the file below. A design review flagged specific pages. Revise ONLY the flagged pages' sections — a surgical pass (M1-measured: healthy revisions touch ≤15% of the file). Keep the identity, chrome, and all other pages byte-identical. Reply with ONLY the complete revised file in one \`\`\`tsx block.\n\n\`\`\`tsx\n${code}\n\`\`\`\n\nFLAGGED:\n${notes.map((f) => `Page ${f.page + 1}: ${f.weakness}`).join("\n")}`,
-      maxTokens: 30_000,
-      signal,
-      model,
-      timeoutMs: 300_000,
-      effort: "high",
-      thinkingBudget: 6000,
-    });
-    const blocks = [...(r.text ?? "").matchAll(/```(?:tsx|typescript|jsx|ts)?\s*\n([\s\S]*?)```/g)].map((x) => x[1]);
-    revised = blocks.length ? blocks.reduce((a, b) => (b.length > a.length ? b : a)) : null;
-  }
+  const r = await castCall({
+    system: "",
+    user: `${pack}\n\nYou already authored the file below. A design review flagged specific pages. Revise ONLY the flagged pages' sections — a surgical pass (M1-measured: healthy revisions touch ≤15% of the file). Keep the identity, chrome, and all other pages byte-identical. Reply with ONLY the complete revised file in one \`\`\`tsx block.\n\n\`\`\`tsx\n${code}\n\`\`\`\n\nFLAGGED:\n${notes.map((f) => `Page ${f.page + 1}: ${f.weakness}`).join("\n")}`,
+    maxTokens: 30_000,
+    signal,
+    model,
+    timeoutMs: 300_000,
+    effort: "high",
+    thinkingBudget: 6000,
+  });
+  const blocks = [...(r.text ?? "").matchAll(/```(?:tsx|typescript|jsx|ts)?\s*\n([\s\S]*?)```/g)].map((x) => x[1]);
+  const revised = blocks.length ? blocks.reduce((a, b) => (b.length > a.length ? b : a)) : null;
   if (!revised || revised.length < code.length * 0.6) return code;
 
   // Strict improvement: render the revision and let the pairwise judge decide
