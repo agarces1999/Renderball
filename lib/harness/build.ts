@@ -36,6 +36,10 @@ import { authorDeck, authorContinuation, mergeChapters, missingSections, authorS
 import { validateDeck, findLogoViolation, type TruthViolation } from "./validators";
 import { EarlyCriticRunner, streamCriticsEnabled, critiquePageShot, sceneIntent, type EarlyVerdict } from "./stream-critics";
 import { SectionWatcher } from "./stream-sections";
+import { EDIT_BLOCKS_INSTRUCTION, applyEditBlocks, editBlocksEnabled, parseEditBlocks } from "./edit-blocks";
+import { spliceSections } from "./splice-sections";
+import { authorDraws, rankDraws } from "./draws";
+import { authorParallel, authorParallelEnabled } from "./parallel-author";
 
 interface HarnessBuildArgs {
   // Loose on purpose: LoadedScript/LoadedBrief stay owned by run-preview-build.
@@ -173,7 +177,8 @@ export const runHarnessPreviewBuild = async (args: HarnessBuildArgs): Promise<Ro
     timeline.mark("harness:author:start");
     const CHAPTER = 6;
     const onAttempt = (a: AuthorAttempt) => timeline.mark(`harness:author:${a.model.split("/").pop()}:${a.ok ? "ok" : "failed"} (${a.seconds}s, ${a.outputTokens}tok)`);
-    const firstEnd = n <= 8 ? n : CHAPTER;
+    // Parallel authoring writes every page at once — no chapters to continue.
+    const firstEnd = authorParallelEnabled() ? n : n <= 8 ? n : CHAPTER;
     const basePack = n <= 8 ? pack : assemblePack({ ...packInput, chapterEmitEnd: firstEnd });
     // ── Early critics (RB_STREAM_CRITICS, flag-gated OFF): critique each page
     // the moment its section closes in the author stream. Single-breath decks
@@ -224,11 +229,68 @@ export const runHarnessPreviewBuild = async (args: HarnessBuildArgs): Promise<Ro
             },
           }
         : undefined;
-    const authored = await authorDeck(basePack, firstEnd, {
-      onAttempt,
-      signal: abortSignal,
-      ...(streamHooks ? { stream: streamHooks } : {}),
-    });
+    // RB_AUTHOR_DRAWS=2 (10x program, flagged, default 1): sample the deck
+    // twice concurrently and let the per-page critics rank the draws
+    // (lib/harness/draws.ts). The extra draw carries no stream hooks — the
+    // ceremony narrates draw 1 — and the ranking verdicts ride into the loop
+    // so the winner's critic pass is not paid twice.
+    // RB_AUTHOR_PARALLEL=on (10x program, flagged, default off): design pass +
+    // concurrent page passes (lib/harness/parallel-author.ts). Any failure
+    // falls back to today's one-call author, so the worst case is today plus
+    // the failed attempt's time.
+    const parallel = authorParallelEnabled();
+    const draws = parallel ? 1 : authorDraws();
+    const drawErrors: unknown[] = [];
+    const authoredAll = parallel
+      ? [
+          await authorParallel(packInput, n, { onAttempt, signal: abortSignal, mark: (l) => timeline.mark(l) }).catch(async (err: unknown) => {
+            if (abortSignal?.aborted) throw err;
+            timeline.mark(`harness:author:parallel:fallback (${String(err).slice(0, 100)})`);
+            return authorDeck(basePack, firstEnd, { onAttempt, signal: abortSignal, ...(streamHooks ? { stream: streamHooks } : {}) });
+          }),
+        ]
+      : await Promise.all(
+      Array.from({ length: draws }, (_, k) =>
+        authorDeck(basePack, firstEnd, {
+          onAttempt: k === 0 ? onAttempt : (a) => timeline.mark(`harness:author:draw ${k + 1}:${a.ok ? "ok" : "failed"} (${a.seconds}s, ${a.outputTokens}tok)`),
+          signal: abortSignal,
+          ...(k === 0 && streamHooks ? { stream: streamHooks } : {}),
+        }).catch((err: unknown) => {
+          // Any draw may die (the first verification build lost draw 1 to a
+          // transport "fetch failed" while draw 2 finished): the deck proceeds
+          // with whichever draws survived; only NO survivor is today's failure.
+          if (draws === 1 || abortSignal?.aborted) throw err;
+          drawErrors.push(err);
+          timeline.mark(`harness:author:draw ${k + 1}:absent (${String(err).slice(0, 80)})`);
+          return null;
+        }),
+      ),
+    );
+    if (!authoredAll.some((a) => a)) throw drawErrors[0] ?? new Error("harness author: every draw failed");
+    const authored = authoredAll.find((a): a is NonNullable<typeof a> => !!a)!;
+    let drawVerdicts: { code: string; verdicts: Map<number, EarlyVerdict> } | null = null;
+    if (draws > 1 && n <= 8) {
+      const live = authoredAll.filter((a): a is NonNullable<typeof a> => !!a);
+      if (live.length > 1) {
+        const ranking = await rankDraws({
+          genDir,
+          script,
+          scenes,
+          n,
+          draws: live.map((a) => ({
+            code: a.code,
+            violations: validateDeck({ code: a.code, approvedText, sceneCount: n, allowedUrls, logoSrc: packInput.brand.logoSrc }).length,
+          })),
+          log: (line) => timeline.mark(line),
+        });
+        const win = live[ranking.winner];
+        timeline.mark(`harness:draws:winner draw ${ranking.winner + 1} (flagged ${ranking.flagged.map((f) => (f === null ? "?" : f)).join(" vs ")})`);
+        authored.code = win.code;
+        authored.thinking = win.thinking;
+        authored.attempts = live.flatMap((a) => a.attempts);
+        drawVerdicts = { code: win.code, verdicts: ranking.verdicts };
+      }
+    }
     let code = authored.code;
     const chapterThinking: string[] = [authored.thinking];
     for (let start = firstEnd; start < n; start += CHAPTER) {
@@ -272,7 +334,7 @@ export const runHarnessPreviewBuild = async (args: HarnessBuildArgs): Promise<Ro
     const toPatch = [...structuralFindings, ...(numeralsTrusted ? numeralFindings : [])];
     if (toPatch.length) {
       timeline.mark(`harness:validate:${toPatch.length} violation(s) — patching`);
-      const patched = await surgicalPatch(code, toPatch, authored.model, abortSignal);
+      const patched = await surgicalPatch(code, toPatch, authored.model, abortSignal, (m) => timeline.mark(`harness:patch:${m}`));
       // A patch may never DESTROY a brand asset (ab7: the phantom-numeral
       // instruction "remove it" was obeyed by emptying the logo const — a
       // deck the logo validator requires to contain those exact bytes).
@@ -313,6 +375,7 @@ export const runHarnessPreviewBuild = async (args: HarnessBuildArgs): Promise<Ro
         })),
         authored.model,
         abortSignal,
+        (m) => timeline.mark(`harness:repair:${m}`),
       );
       const repairLostLogo =
         repaired !== null &&
@@ -360,6 +423,7 @@ export const runHarnessPreviewBuild = async (args: HarnessBuildArgs): Promise<Ro
           ],
           authored.model,
           abortSignal,
+          (m) => timeline.mark(`harness:style-repair:${m}`),
         );
         const lostLogo =
           repaired !== null &&
@@ -395,8 +459,15 @@ export const runHarnessPreviewBuild = async (args: HarnessBuildArgs): Promise<Ro
         // whose FINAL render inputs hash-match what was critiqued are reused —
         // an author retry or surgical patch silently demotes its pages to the
         // ordinary critic path below. Never worse than today by construction.
-        const early = earlyRunner ? await earlyRunner.finish(code) : undefined;
+        let early = earlyRunner ? await earlyRunner.finish(code) : undefined;
         if (early?.size) timeline.mark(`harness:stream-critics:${early.size}/${n} verdicts arrived during authoring`);
+        // Draw-ranking verdicts judged exactly these bytes → reuse them (a
+        // patch or repair that changed the code demotes them, like the
+        // stream verdicts' sig check does).
+        if (drawVerdicts && drawVerdicts.code === code && drawVerdicts.verdicts.size) {
+          early = new Map([...(early ?? new Map<number, EarlyVerdict>()), ...drawVerdicts.verdicts]);
+          timeline.mark(`harness:draws:${drawVerdicts.verdicts.size}/${n} ranking verdicts reused`);
+        }
         code = await lookAndReviseOnce({ genDir, script, scenes, code, pack, model: authored.model, timeline, n, signal: abortSignal, early });
       } catch (err) {
         timeline.mark(`harness:loop:skipped (${String(err).slice(0, 80)})`);
@@ -458,8 +529,50 @@ export const runHarnessPreviewBuild = async (args: HarnessBuildArgs): Promise<Ro
   }
 };
 
-/** Full-file targeted patch: name the exact defects, demand minimal edits. */
-const surgicalPatch = async (code: string, violations: TruthViolation[], model: string, signal?: AbortSignal): Promise<string | null> => {
+/** Full-file targeted patch: name the exact defects, demand minimal edits.
+ *
+ *  RB_EDIT_BLOCKS=on (10x program, 2026-09-04; default OFF — flip only on the
+ *  founder's word after the flagged A/B): conflict-marker edits FIRST, for the
+ *  PATCH site only. The receipt: the same 2-defect fix on the real 31KB heist
+ *  deck cost 130 tokens / 2s as SEARCH/REPLACE blocks vs 13,813 tokens / 62s
+ *  as a full-file re-emission (probe 2026-09-02); in the baseline table the
+ *  edit-block patch took 6s where full-file patches take 35-170s. Blocks
+ *  cannot drift pages they do not name. The REVISION stays full-file by the
+ *  founder's blind verdict (ab6: block-scale edits are structurally wrong for
+ *  composition-scale weaknesses). Any parse/apply failure falls through to the
+ *  full-file path, so the worst case is exactly today; the truth validators
+ *  re-run after either path. */
+const surgicalPatch = async (
+  code: string,
+  violations: TruthViolation[],
+  model: string,
+  signal?: AbortSignal,
+  onMode?: (mode: string) => void,
+): Promise<string | null> => {
+  if (editBlocksEnabled()) {
+    try {
+      const r = await castCall({
+        system: "",
+        user: `Below is a complete React deck file, followed by specific defects. Fix every defect with the smallest possible edits. Change nothing else — no restyling, no rewrites.\n\n\`\`\`tsx\n${code}\n\`\`\`\n\nDEFECTS:\n${violations.map((v, i) => `${i + 1}. ${v.patch}`).join("\n")}\n\n${EDIT_BLOCKS_INSTRUCTION}`,
+        maxTokens: 4000,
+        signal,
+        model,
+        timeoutMs: 180_000,
+        effort: "high",
+        thinkingBudget: 4000,
+      });
+      const blocks = parseEditBlocks(r.text ?? "");
+      const applied = blocks ? applyEditBlocks(code, blocks) : null;
+      if (applied?.ok) {
+        onMode?.(`edit-blocks (${applied.applied} block(s))`);
+        return applied.code;
+      }
+      onMode?.(`edit-blocks fallback (${!blocks ? "unparseable" : applied && !applied.ok ? applied.reason : "?"}) — full file`);
+    } catch (err) {
+      if (signal?.aborted) throw err; // a user stop must not burn a fallback call
+      onMode?.(`edit-blocks fallback (${String(err).slice(0, 60)}) — full file`);
+    }
+  }
   const r = await castCall({
     system: "",
     user: `Below is a complete React deck file, followed by specific defects. Apply the SMALLEST possible edits that fix every defect. Change nothing else — no restyling, no rewrites. Reply with ONLY the corrected complete file in one \`\`\`tsx block.\n\n\`\`\`tsx\n${code}\n\`\`\`\n\nDEFECTS:\n${violations.map((v, i) => `${i + 1}. ${v.patch}`).join("\n")}`,
@@ -529,25 +642,61 @@ const lookAndReviseOnce = async (args: {
     if (b64) beforeShots.set(f.page, b64);
   }
 
-  const r = await castCall({
-    system: "",
-    user: `${pack}\n\nYou already authored the file below. A design review flagged specific pages. Revise ONLY the flagged pages' sections — a surgical pass (M1-measured: healthy revisions touch ≤15% of the file). Keep the identity, chrome, and all other pages byte-identical. Reply with ONLY the complete revised file in one \`\`\`tsx block.\n\n\`\`\`tsx\n${code}\n\`\`\`\n\nFLAGGED:\n${notes.map((f) => `Page ${f.page + 1}: ${f.weakness}`).join("\n")}`,
-    maxTokens: 30_000,
-    signal,
-    model,
-    timeoutMs: 300_000,
-    effort: "high",
-    thinkingBudget: 6000,
-  });
+  const flaggedList = notes.map((f) => `Page ${f.page + 1}: ${f.weakness}`).join("\n");
+  let revised: string | null = null;
+  let replyText = "";
+  // SECTION-SCOPED revision (RB_REVISE_SCOPE=section; 10x program 2026-09-04,
+  // default OFF until the flagged A/B): the model re-emits ONLY the flagged
+  // Section components — complete pages, full compositional freedom inside
+  // each — and they are spliced over the originals. Different from the
+  // block-scale edit-block revision the founder rejected (ab6, "a bunch of
+  // blank spaces"): a whole page is the unit, not a line. Why: the full-file
+  // revision re-emits ~17k tokens (160-190s, ≈ the author call) to change one
+  // or two pages; a page is ~3-4k tokens (~35s). Anything unusable falls
+  // through to the full-file path, so the worst case is exactly today.
+  if (reviseScopeSection()) {
+    const rs = await castCall({
+      system: "",
+      user: `${pack}\n\nYou already authored the file below. A design review flagged specific pages. Re-emit ONLY the flagged pages — each as its COMPLETE \`export const SectionN\` component, recomposed with full freedom to fix the weakness (occupy the canvas, strengthen the device), using the file's existing design system, constants, helpers and chrome exactly as the other pages do. Do not emit the other pages or the module preamble. Reply with ONLY the flagged Section components in one \`\`\`tsx block.\n\n\`\`\`tsx\n${code}\n\`\`\`\n\nFLAGGED:\n${flaggedList}`,
+      maxTokens: 12_000,
+      signal,
+      model,
+      timeoutMs: 240_000,
+      effort: "high",
+      thinkingBudget: 6000,
+    });
+    replyText = rs.text ?? "";
+    const spliced = spliceSections(code, replyText, notes.map((f) => f.page));
+    if (spliced.ok) {
+      revised = spliced.code;
+      timeline.mark(`harness:revise:section-scoped (${spliced.replaced.map((p) => p + 1).join(",")} re-emitted)`);
+    } else {
+      timeline.mark(`harness:revise:section-scoped fallback (${spliced.reason}) — full file`);
+    }
+  }
+  if (!revised) {
+    const r = await castCall({
+      system: "",
+      user: `${pack}\n\nYou already authored the file below. A design review flagged specific pages. Revise ONLY the flagged pages' sections — a surgical pass (M1-measured: healthy revisions touch ≤15% of the file). Keep the identity, chrome, and all other pages byte-identical. Reply with ONLY the complete revised file in one \`\`\`tsx block.\n\n\`\`\`tsx\n${code}\n\`\`\`\n\nFLAGGED:\n${flaggedList}`,
+      maxTokens: 30_000,
+      signal,
+      model,
+      timeoutMs: 300_000,
+      effort: "high",
+      thinkingBudget: 6000,
+    });
+    replyText = r.text ?? "";
+    const blocks = [...replyText.matchAll(/```(?:tsx|typescript|jsx|ts)?\s*\n([\s\S]*?)```/g)].map((x) => x[1]);
+    const full = blocks.length ? blocks.reduce((a, b) => (b.length > a.length ? b : a)) : null;
+    revised = full && full.length >= code.length * 0.6 ? full : null;
+  }
   // Revision forensics (ab6/ab7 lesson, 2026-09-02: twice the question "what
   // did the revision actually change?" was unanswerable because only
   // post-everything code survives). Persist the input file and the raw reply
   // next to the trace — every future quality dispute resolves from bytes.
   await fsp.writeFile(path.join(genDir, "revision-before.tsx"), code).catch(() => {});
-  await fsp.writeFile(path.join(genDir, "revision-reply.txt"), r.text ?? "").catch(() => {});
-  const blocks = [...(r.text ?? "").matchAll(/```(?:tsx|typescript|jsx|ts)?\s*\n([\s\S]*?)```/g)].map((x) => x[1]);
-  const revised = blocks.length ? blocks.reduce((a, b) => (b.length > a.length ? b : a)) : null;
-  if (!revised || revised.length < code.length * 0.6) return code;
+  await fsp.writeFile(path.join(genDir, "revision-reply.txt"), replyText).catch(() => {});
+  if (!revised) return code;
 
   // Strict improvement: render the revision and let the pairwise judge decide
   // per flagged page. Revision wins only on majority — else the original stays.
@@ -586,6 +735,8 @@ const lookAndReviseOnce = async (args: {
   timeline.mark(`harness:revise:rejected (${wins}/${notes.length} — original stays)`);
   return code;
 };
+
+const reviseScopeSection = (): boolean => (process.env.RB_REVISE_SCOPE ?? "file") === "section";
 
 const shotBase64 = async (shotPath: string | undefined, genDir: string, i: number): Promise<string | null> => {
   for (const p of [shotPath, path.join(measureOutDir(genDir), `measure-scene-${i}.png`)]) {

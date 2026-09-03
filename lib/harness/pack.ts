@@ -65,6 +65,16 @@ export interface PackInput {
   brand: PackBrandFacts;
   /** Extra asset URLs the author may reference (brand files). */
   assetUrls: string[];
+  /** PARALLEL AUTHORING (RB_AUTHOR_PARALLEL, 10x program 2026-09-04): the
+   *  deck is written in two passes — a DESIGN pass that emits the module
+   *  preamble (design system, chrome, helpers, keyframes) plus a plan per
+   *  page, then N PAGE passes in parallel, each emitting one Section against
+   *  the fixed preamble. Only the FILE CONTRACT changes per pass; outline,
+   *  brand facts, truth rules, composition and motion directives are the same
+   *  words every pass reads. Omit for the one-call author. */
+  parallel?:
+    | { pass: "design" }
+    | { pass: "page"; page: number; preamble: string; plans: string };
 }
 
 export const CANVAS_BY_ASPECT: Record<PackInput["aspect"], { w: number; h: number }> = {
@@ -139,20 +149,42 @@ export const assemblePack = (input: PackInput): string => {
     assets.length ? `Allowed asset URLs (the ONLY external URLs permitted anywhere in the file):\n${assets.map((u) => `  - ${u}`).join("\n")}` : `No asset URLs — the file must reference no external URLs at all.`,
   ].filter((l): l is string => !!l).join("\n");
 
-  return `You are the design engine of a premium presentation studio. Author a complete ${n}-page deck as ONE self-contained React file. This is your only pass: no revisions follow, so compose at full ambition now.
+  const par = input.parallel;
+  const opening = par?.pass === "design"
+    ? `You are the design engine of a premium presentation studio. This ${n}-page deck is authored in TWO PASSES and this is the DESIGN PASS: you design the whole deck's identity and plan every page, but emit no page yet. Compose at full ambition — the page passes execute exactly what you lay down here.`
+    : par?.pass === "page"
+      ? `You are the design engine of a premium presentation studio. This ${n}-page deck is authored in TWO PASSES; the design pass is done and its module preamble is FIXED. This call writes ONE page — page ${par.page + 1} — at full ambition, exactly on its plan.`
+      : `You are the design engine of a premium presentation studio. Author a complete ${n}-page deck as ONE self-contained React file. This is your only pass: no revisions follow, so compose at full ambition now.`;
+  const passContract = par?.pass === "design"
+    ? `- DESIGN PASS OUTPUT, part 1 — the complete MODULE PREAMBLE in one \`\`\`tsx block: the two imports and \`type Script = any;\`, \`const PALETTE\`, \`FONT_DISPLAY\`/\`FONT_BODY\`/\`FONT_MONO\`, the deck's single <style> component (every @font-face and every @keyframes the pages will use), the chrome component every page renders (lockup, page number, footer rail — it takes a \`page\` prop and renders that <style>), and EVERY shared helper component and constant the pages will need (cards, stat tiles, kickers, device primitives, easing constants). Do NOT emit any \`SectionN\` — the page passes do. The preamble must compile on its own.
+- DESIGN PASS OUTPUT, part 2 — the PAGE PLANS in one \`\`\`text block after the code: for each page 1-${n}, 4-8 lines headed \`Page K — <label>\`: the concrete graphic device, the layout zones with canvas coordinates, the type moments (headline size/placement), the motion beats (which elements enter, in what order, which helper/keyframe), and which shared helpers it uses. No two pages may use the same device.`
+    : par?.pass === "page"
+      ? `- The MODULE PREAMBLE below is FIXED: reference its constants, helpers, keyframes and chrome exactly by name. Do NOT re-emit or modify it. Define NOTHING at module scope — no imports, no new top-level constants or components (put page-local helpers INSIDE the section body).
+- Emit ONLY \`export const Section${par.page}: React.FC<{ script?: Script }>\` for page ${par.page + 1}, following ITS plan below. The other pages' plans are given so devices stay distinct and the story flows — do not write them.`
+      : `- ${input.chapterEmitEnd && input.chapterEmitEnd < n
+          ? `This ${n}-page deck is authored in chapters. THIS call: export ONLY \`Section0\` through \`Section${input.chapterEmitEnd - 1}\` (pages 1-${input.chapterEmitEnd}). Later chapters continue the SAME file — so declare every shared constant, helper, and chrome component at module top level now, and design the identity to carry all ${n} pages.`
+          : `Export exactly ${n} components: \`export const Section0\` through \`export const Section${n - 1}\` (React.FC<{ script?: Script }>), one per page, in outline order.`}`;
+  const passContext = par?.pass === "page"
+    ? `\n\nTHE FIXED MODULE PREAMBLE (already in the file — reference, never re-emit):\n\n\`\`\`tsx\n${par.preamble.trim()}\n\`\`\`\n\nTHE PAGE PLANS (yours is page ${par.page + 1}):\n\n${par.plans.trim()}\n`
+    : "";
+  const output = par?.pass === "design"
+    ? `OUTPUT: reply with the preamble in one \`\`\`tsx block, then the page plans in one \`\`\`text block. No commentary.`
+    : par?.pass === "page"
+      ? `OUTPUT: reply with ONLY the \`Section${par.page}\` component in a single \`\`\`tsx block. No commentary before or after.`
+      : `OUTPUT: reply with ONLY the complete file in a single \`\`\`tsx code block. No commentary before or after.`;
+
+  return `${opening}
 
 THE APPROVED OUTLINE (verbatim — the user has signed off on this story):
 
 ${outline}
 
 Deck tone: ${input.tone ?? "confident, premium, editorial"}.
-Original brief, for grounding: ${input.briefPrompt}
+Original brief, for grounding: ${input.briefPrompt}${passContext}
 
 FILE CONTRACT:
 - TypeScript React. Start with \`import React from "react";\` then \`import { Piece } from "./Piece";\` and nothing else imported. Then \`type Script = any;\`
-- ${input.chapterEmitEnd && input.chapterEmitEnd < n
-    ? `This ${n}-page deck is authored in chapters. THIS call: export ONLY \`Section0\` through \`Section${input.chapterEmitEnd - 1}\` (pages 1-${input.chapterEmitEnd}). Later chapters continue the SAME file — so declare every shared constant, helper, and chrome component at module top level now, and design the identity to carry all ${n} pages.`
-    : `Export exactly ${n} components: \`export const Section0\` through \`export const Section${n - 1}\` (React.FC<{ script?: Script }>), one per page, in outline order.`}
+${passContract}
 - Each section renders a full ${w}x${h} page: root div style {{ position: "absolute", inset: 0, width: "100%", height: "100%", overflow: "hidden" }} with an explicit background.
 - Inline styles only (React.CSSProperties objects). No CSS files, no Tailwind, no hooks, no state, no refs.
 - EDITABILITY GRAMMAR (hard): inside each section, wrap every visually distinct block in \`<Piece id="sN.pM" kind="...">\` ... \`</Piece>\` — N = page index, M = a per-page counter. The wrapper is transparent: the block inside it positions ITSELF (position: "absolute" with its own coordinates). Use kind="chrome" for the recurring page furniture (lockup, page number, footer rail — one chrome Piece per page, listed LAST in the section) and kind="diegetic" for everything else. One graphic device = ONE Piece (a whole SVG diagram is one Piece). Headline, supporting text, quote cards, stat rows: each its own Piece. Shared helper components and constants live at module top level, OUTSIDE the sections — never inside a Piece. Piece ids are LITERAL strings, unique on their page — NEVER render a <Piece> inside a loop or compute its id (repetition belongs INSIDE one Piece: put the .map inside the wrapper, not around it).
@@ -186,5 +218,5 @@ MOTION (the deck is presented live — pages move, purposefully; this is a signa
 - Declare every @keyframes in the deck's single <style> element (the same one that carries any @font-face), and render that <style> on EVERY page from the chrome component every section renders — each page is served as its own document, so keyframes rendered only on page 1 leave pages 2+ motionless. Prefix the names "rb-" and reference them from inline styles via the animation shorthand (e.g. animation: "rb-rise 700ms cubic-bezier(0.2,0.7,0.2,1) 120ms backwards"). Stagger with literal delays — no Math.random, no Date.
 - Reduced motion is handled by the host; add no media queries.
 
-OUTPUT: reply with ONLY the complete file in a single \`\`\`tsx code block. No commentary before or after.`;
+${output}`;
 };
