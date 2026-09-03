@@ -331,6 +331,60 @@ export const runHarnessPreviewBuild = async (args: HarnessBuildArgs): Promise<Ro
       await fsp.writeFile(path.join(genDir, "build-timeline.json"), JSON.stringify(timeline.toJSON(), null, 2)).catch(() => {});
       return { status: 500, body: { error: "one or more scenes failed to render", stage: "harness-render", render_errors: renderCheck.errors } };
     }
+
+    // RENDER TRUTH for the deck-level <style> (motion, 2026-09-03): the first
+    // motion build rendered its @keyframes on page 1 only and pages 2-5
+    // shipped static; the same shape strands brand fonts on pages 2+. The
+    // static check ran before the patch; this is the rendered fact, and it is
+    // the only thing that sees a `page === 1 && <style>` guard. One targeted
+    // patch, then re-verify; a gap that survives ships flagged, never blocks.
+    {
+      const facts = renderCheck.facts ?? [];
+      const wantsKeyframes = /@keyframes/.test(code);
+      const wantsFontFace = /@font-face/.test(code);
+      const gaps = facts.filter((f) => (wantsKeyframes && !f.keyframes) || (wantsFontFace && !f.fontFace));
+      if (gaps.length && facts.length) {
+        const pages = gaps.map((g) => g.scene + 1).join(", ");
+        timeline.mark(`harness:gate:style-every-page:FAILED (pages ${pages} render without the deck <style>) — patching`);
+        const repaired = await surgicalPatch(
+          code,
+          [
+            {
+              kind: "style-not-on-every-page" as const,
+              detail: pages,
+              patch:
+                `Pages ${pages} render WITHOUT the deck's <style> (its @font-face / @keyframes rules), so they lose their fonts and motion — ` +
+                `each page is served as its own document. Render that <style> unconditionally on every page (inside the chrome component every Section renders, ` +
+                `with no page-index guard), changing nothing else.`,
+            },
+          ],
+          authored.model,
+          abortSignal,
+        );
+        const lostLogo =
+          repaired !== null &&
+          findLogoViolation(repaired, packInput.brand.logoSrc).length > 0 &&
+          findLogoViolation(code, packInput.brand.logoSrc).length === 0;
+        if (repaired && !lostLogo) {
+          await writeGeneratedFiles(genDir, { code: repaired, designCode: repaired, script });
+          const again = await verifyScenesRender(genDir, n, script);
+          const stillGapped = (again.facts ?? []).filter((f) => (wantsKeyframes && !f.keyframes) || (wantsFontFace && !f.fontFace));
+          if (again.ok && stillGapped.length === 0) {
+            code = repaired;
+            timeline.mark("harness:gate:style-every-page:repaired");
+          } else {
+            // Put the pre-patch bytes back: a patch that broke a render or did
+            // not close the gap must not ship over code that rendered.
+            await writeGeneratedFiles(genDir, { code, designCode: code, script });
+            timeline.mark(
+              `harness:gate:style-every-page:${again.ok ? `still gapped (pages ${stillGapped.map((g) => g.scene + 1).join(", ")})` : "repair broke a render"} — pre-patch code ships, flagged`,
+            );
+          }
+        } else {
+          timeline.mark(`harness:gate:style-every-page:${lostLogo ? "repair REJECTED (removed the logo)" : "no repair"} — ships flagged`);
+        }
+      }
+    }
     for (let i = 0; i < n; i++) timeline.mark(`design:fill:scene:${i}:done`);
     timeline.mark("design:fills:done");
 

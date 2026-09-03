@@ -13,7 +13,7 @@
 import { findForeignImageSrcs } from "../agents/emission-guards";
 
 export interface TruthViolation {
-  kind: "invented-numeral" | "foreign-image" | "missing-logo" | "unstable-piece-id";
+  kind: "invented-numeral" | "foreign-image" | "missing-logo" | "unstable-piece-id" | "style-not-on-every-page";
   detail: string;
   /** One-line patch instruction for the surgical fix call. */
   patch: string;
@@ -30,6 +30,11 @@ export interface TruthViolation {
  */
 const stripNonVisible = (code: string): string =>
   code
+    // <style> blocks (@font-face, and since motion shipped, @keyframes): the
+    // percentages and pixel offsets in "0% { transform: translateY(24px) }"
+    // are never read by a viewer, but the JSX-text extractor below would see
+    // them as prose between ">" and "<".
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/g, " ")
     .replace(/data:[a-zA-Z0-9/+.-]+;base64,[A-Za-z0-9+/=]+/g, " ")
     .replace(/https?:\/\/[^\s"'`)>]+/g, " ")
     .replace(/[\w./-]+\.(?:woff2?|ttf|otf|eot|png|jpe?g|gif|svg|webp|avif|mp4|css|js|json)\b[^\s"'`)>]*/g, " ")
@@ -76,6 +81,9 @@ const isStyleValueChunk = (chunk: string): boolean => {
   if (t.startsWith("#")) return true;
   if (/^(rgba?|hsla?|calc|url|linear-gradient|radial-gradient)\(/i.test(t)) return true;
   if (/^[Mm]\s*-?\d/.test(t)) return true; // SVG path data
+  // A CSS at-rule block held in a template const (`const KEYFRAMES = \`@keyframes
+  // rb-rise { from { opacity: 0 } … }\``) and rendered into a <style> later.
+  if (/@(?:keyframes|font-face|media)\b/.test(t)) return true;
   const words = t.match(/[A-Za-z]{3,}/g) ?? [];
   // CSS vocabulary counts as unit-speak: a template-literal @font-face block
   // or "max-width: 640px" string is style plumbing, not a viewer claim (the
@@ -205,6 +213,66 @@ export const findUnstablePieceIds = (code: string): TruthViolation[] => {
   return out;
 };
 
+/**
+ * The deck's <style> (@font-face, and since motion, @keyframes) must reach
+ * EVERY page: each page is served as its own document. The first motion build
+ * (2026-09-03) rendered `<DeckStyle />` inside Section0 only — "a single
+ * <style> rendered once" read as once per DECK — and pages 2-5 shipped with
+ * animation properties pointing at keyframes that did not exist: static, with
+ * no error anywhere. Same failure shape leaves pages 2+ without brand fonts.
+ *
+ * Static reachability, one level of indirection: a <style> is fine when it
+ * sits inside a component rendered at least sceneCount times (the chrome), or
+ * inside a component rendered by such a component, or directly inside every
+ * Section. Anything else — a Section-owned style, a component used once — is
+ * a page-1-only style and gets a targeted patch.
+ */
+export const findStyleNotOnEveryPage = (code: string, sceneCount: number): TruthViolation[] => {
+  if (sceneCount <= 1 || !/<style\b/.test(code)) return [];
+  // Top-level declarations, in order — each <style> belongs to the nearest one above it.
+  const decls = [...code.matchAll(/^(?:export\s+)?(?:const|function)\s+([A-Za-z_$][\w$]*)/gm)].map((m) => ({
+    name: m[1],
+    at: m.index ?? 0,
+  }));
+  const ownerAt = (idx: number): string | null => {
+    let owner: string | null = null;
+    for (const d of decls) {
+      if (d.at <= idx) owner = d.name;
+      else break;
+    }
+    return owner;
+  };
+  const uses = (name: string): number => (code.match(new RegExp(`<${name}\\b`, "g")) ?? []).length;
+  const isSection = (name: string | null): boolean => !!name && /^Section\d+$/.test(name);
+  const reachesEveryPage = (name: string | null, depth = 0): boolean => {
+    if (!name) return false;
+    if (isSection(name)) return false;
+    if (uses(name) >= sceneCount) return true;
+    if (depth >= 2) return false;
+    // Rendered by a component that itself reaches every page?
+    for (const m of code.matchAll(new RegExp(`<${name}\\b`, "g"))) {
+      const parent = ownerAt(m.index ?? 0);
+      if (parent && parent !== name && reachesEveryPage(parent, depth + 1)) return true;
+    }
+    return false;
+  };
+  const styles = [...code.matchAll(/<style\b/g)].map((m) => ownerAt(m.index ?? 0));
+  const inSections = styles.filter((o) => isSection(o)).length;
+  if (inSections >= sceneCount) return [];
+  if (styles.some((o) => reachesEveryPage(o))) return [];
+  const owner = styles[0] ?? "unknown";
+  return [
+    {
+      kind: "style-not-on-every-page" as const,
+      detail: String(owner),
+      patch:
+        `The deck's <style> (its @font-face / @keyframes rules) lives in "${owner}", which is not rendered by every page — ` +
+        `each page is served as its own document, so the other pages lose their fonts and their motion. ` +
+        `Render that <style> unconditionally inside the chrome component every Section renders (or directly in every Section), changing nothing else.`,
+    },
+  ];
+};
+
 export const validateDeck = (args: {
   code: string;
   approvedText: string;
@@ -216,4 +284,5 @@ export const validateDeck = (args: {
   ...findImageViolations(args.code, args.allowedUrls),
   ...findLogoViolation(args.code, args.logoSrc),
   ...findUnstablePieceIds(args.code),
+  ...findStyleNotOnEveryPage(args.code, args.sceneCount),
 ];

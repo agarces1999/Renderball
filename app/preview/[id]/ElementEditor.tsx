@@ -19,6 +19,7 @@ const HOST_SCALE = ["on", "1", "true", "yes"].includes(
   String(process.env.NEXT_PUBLIC_RB_HOST_SCALE ?? "").trim().toLowerCase(),
 );
 import { parseFmt, serializeFmt, type FreetextFormat } from "../../../lib/edit/freetext";
+import { MOTION_SETTLE_CAP_MS, SETTLE_CSS, SETTLE_STYLE_ID } from "../../../lib/render/settle-css";
 
 /**
  * The visual element editor overlay. Sits over the scene iframe (same `relative`
@@ -95,6 +96,14 @@ export interface ElementEditorHandle {
    * reload cleared the selection it depended on.
    */
   regenerateSelected: (instruction: string) => void;
+  /**
+   * Animate the CURRENTLY selected element with this motion instruction
+   * (2026-09-03) — the regenerate path in motion-only mode, then the page's
+   * choreography replays so the user SEES what they just asked for.
+   */
+  animateSelected: (instruction: string) => void;
+  /** Replay the current page's entrance choreography in place (no reload). */
+  replayMotion: () => void;
 }
 
 /** A snapshot of the editor's chrome-relevant state, for a shell toolbar. */
@@ -419,7 +428,7 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
   const [showAll, setShowAll] = useState(defaultShowAll);
   const [allPieces, setAllPieces] = useState<PieceRef[]>([]);
   const [busy, setBusyState] = useState<
-    null | "regenerate" | "delete" | "move" | "text" | "insert" | "resize" | "undo" | "front" | "back" | "duplicate"
+    null | "regenerate" | "animate" | "delete" | "move" | "text" | "insert" | "resize" | "undo" | "front" | "back" | "duplicate"
   >(null);
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
@@ -597,8 +606,23 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
   /** Same, for a press that landed inside the frame rather than on the overlay. */
   const pendingIframeDblRef = useRef<{ piece: Element; target: HTMLElement; x: number; y: number } | null>(null);
   const dragHandlersRef = useRef<{ move: (e: MouseEvent) => void; up: (e: MouseEvent) => void } | null>(null);
-  /** Live scene nodes being dragged, with whatever transform they already had. */
-  const liveNodesRef = useRef<{ el: HTMLElement; base: string }[]>([]);
+  /** Live scene nodes being dragged, with whatever transform they already had —
+   *  and, when a CSS animation was holding their pose, what to put back. */
+  type LiveNode = {
+    el: HTMLElement;
+    base: string;
+    restore?: { animation: string; opacity: string; transform: string };
+  };
+  const liveNodesRef = useRef<LiveNode[]>([]);
+  /** An animate op wants the page's motion replayed once its result is on
+   *  screen — set before the commit, consumed by whichever path lands it
+   *  (the in-place morph, or the fallback reload's attach). */
+  const replayAfterLoadRef = useRef(false);
+  /** Generation of the pending settle-after-entrance wait. A replay cancels
+   *  the animations an earlier wait was watching, which RESOLVES that wait
+   *  (cancel rejects `finished`, caught) — without this guard it settled the
+   *  page instantly and the fresh replay jumped straight to its end. */
+  const settleGenRef = useRef(0);
   const pendingRef = useRef<null | { dx: number; dy: number; bypass?: boolean }>(null);
   const rafRef = useRef(0);
   /** The selection frame element, driven imperatively during a gesture. */
@@ -610,11 +634,11 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
    * Their existing transform is captured so an entry animation's transform is
    * composed with, never clobbered.
    */
-  const livePieceNodes = (pieceId: string): { el: HTMLElement; base: string }[] => {
+  const livePieceNodes = (pieceId: string): LiveNode[] => {
     const doc = iframeRef.current?.contentDocument;
     const wrap = doc?.querySelector(`[data-piece="${CSS.escape(pieceId)}"]`);
     if (!wrap) return [];
-    const out: { el: HTMLElement; base: string }[] = [];
+    const out: LiveNode[] = [];
     for (const child of Array.from(wrap.children)) {
       // NOT `instanceof HTMLElement`: these nodes live in the IFRAME's realm,
       // so the parent window's constructor never matches them and the check
@@ -623,9 +647,96 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
       // is realm-agnostic.
       const el = child as HTMLElement;
       if (!el.style) continue;
-      out.push({ el, base: el.style.transform || "" });
+      const node: LiveNode = { el, base: el.style.transform || "" };
+      // MOTION (2026-09-03): a CSS animation outranks inline styles in the
+      // cascade, so a node still holding an entrance frame — grabbed
+      // mid-flight, or authored with fill-mode "forwards" against the
+      // contract — would ignore the drag's transform entirely. Pin the pose
+      // it is PAINTED in (computed opacity + transform), stop the animation,
+      // and compose the drag with that; clearLiveDrag puts it all back.
+      try {
+        const cs = el.ownerDocument.defaultView?.getComputedStyle(el);
+        if (cs && cs.animationName && cs.animationName !== "none") {
+          node.restore = { animation: el.style.animation, opacity: el.style.opacity, transform: el.style.transform };
+          const painted = cs.transform === "none" ? "" : cs.transform;
+          el.style.animation = "none";
+          el.style.opacity = cs.opacity;
+          el.style.transform = painted;
+          node.base = painted;
+        }
+      } catch {
+        /* pinning is best-effort — a settled node drags fine without it */
+      }
+      out.push(node);
     }
     return out;
+  };
+
+  /**
+   * MOTION: a page's first visit plays its entrance; once every animation has
+   * finished (or the cap passes — an ambient loop never finishes) the live
+   * document is settled IN PLACE, so later morphs and drags land static
+   * without a reload. The server already settles post-edit reloads, in which
+   * case the style is present and this is a no-op.
+   */
+  const settleAfterEntrance = (doc: Document | null | undefined) => {
+    try {
+      if (!doc?.head || doc.getElementById(SETTLE_STYLE_ID)) return;
+      const anims = typeof doc.getAnimations === "function" ? doc.getAnimations() : [];
+      // Only FINITE animations are awaited — an ambient loop's `finished`
+      // never resolves and would push every settle to the cap.
+      const finite = anims.filter((a) => {
+        try {
+          return Number.isFinite(a.effect?.getComputedTiming().endTime ?? Infinity);
+        } catch {
+          return false;
+        }
+      });
+      const finished = Promise.all(finite.map((a) => a.finished.catch(() => undefined)));
+      const cap = new Promise<void>((resolve) => setTimeout(resolve, MOTION_SETTLE_CAP_MS));
+      const gen = ++settleGenRef.current;
+      void Promise.race([finished, cap]).then(() => {
+        if (gen !== settleGenRef.current) return; // a replay superseded this wait
+        if (!doc.head || doc.getElementById(SETTLE_STYLE_ID)) return;
+        const style = doc.createElement("style");
+        style.id = SETTLE_STYLE_ID;
+        style.textContent = SETTLE_CSS;
+        doc.head.appendChild(style);
+      });
+    } catch {
+      /* settling is best-effort — the page is merely left animated */
+    }
+  };
+
+  /**
+   * Replay the page's choreography in place: lift the settle style, restart
+   * every CSS animation from zero, then settle again once it has played.
+   *
+   * Restart by toggling `animation` off, forcing a reflow, and putting the
+   * inline value back — NOT via getAnimations().cancel()/play(): Chrome drops
+   * a finished CSS animation from getAnimations() (no forwards fill → no
+   * effect → gone), so after the entrance has played that list holds only
+   * the ambient loops and a cancel/play replay restarts nothing visible
+   * (measured 2026-09-03: 1 animation listed of 9 authored).
+   */
+  const replayMotionIn = (doc: Document | null | undefined) => {
+    try {
+      if (!doc?.body) return;
+      doc.getElementById(SETTLE_STYLE_ID)?.remove();
+      const view = doc.defaultView;
+      const animated: { el: HTMLElement; anim: string }[] = [];
+      doc.querySelectorAll<HTMLElement>("*").forEach((el) => {
+        if (!el.style || !view) return;
+        const cs = view.getComputedStyle(el);
+        if (cs.animationName && cs.animationName !== "none") animated.push({ el, anim: el.style.animation });
+      });
+      for (const { el } of animated) el.style.animation = "none";
+      void doc.body.offsetWidth; // reflow: the engine sees the animations removed
+      for (const { el, anim } of animated) el.style.animation = anim;
+      settleAfterEntrance(doc);
+    } catch {
+      /* best-effort */
+    }
   };
 
   /** Drop the live drag styling — after the gesture, or after the reload lands. */
@@ -635,7 +746,13 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
       rafRef.current = 0;
     }
     for (const n of liveNodesRef.current) {
-      n.el.style.transform = n.base;
+      if (n.restore) {
+        n.el.style.transform = n.restore.transform;
+        n.el.style.opacity = n.restore.opacity;
+        n.el.style.animation = n.restore.animation;
+      } else {
+        n.el.style.transform = n.base;
+      }
       n.el.style.willChange = "";
     }
     // The FRAME's transform is imperative too — React never manages it, so a
@@ -1470,6 +1587,9 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
           style.textContent = "[data-piece] *:hover { cursor: pointer; }";
           doc.head?.appendChild(style);
         }
+        // MOTION: let a first visit's entrance play, then settle the live
+        // document so edits land static (no-op on server-settled reloads).
+        settleAfterEntrance(doc);
         // The NEW document is live now — recompute anything measured against the
         // old one (x-ray rects) and restore the selection a move/regen preserved.
         setDocTick((t) => t + 1);
@@ -1513,6 +1633,12 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
               /* ignore — reselect is best-effort */
             }
           }, 60);
+        }
+        // An animate op that fell back to a reload: its result is on screen
+        // now (settled by the server) — replay so the new motion is seen.
+        if (isTargetDoc && replayAfterLoadRef.current) {
+          replayAfterLoadRef.current = false;
+          setTimeout(() => replayMotionIn(iframe.contentDocument), 80);
         }
       } catch {
         /* cross-origin — should not happen (SAMEORIGIN) */
@@ -2965,6 +3091,31 @@ export const ElementEditor = forwardRef<ElementEditorHandle, Props>(
           }
         })();
       },
+      animateSelected: (instruction: string) => {
+        void (async () => {
+          const text = instruction.trim();
+          if (!selected || !text || busy) return;
+          setBusy("animate");
+          const ok = await post(`${apiBase}/animate-element`, {
+            scriptId,
+            sceneIndex,
+            pieceId: selected.pieceId,
+            instruction: text,
+          });
+          setBusy(null);
+          if (ok) {
+            replayAfterLoadRef.current = true;
+            await settleCommit(selected.pieceId, { afterMorph: selected.pieceId });
+            // The morph path lands in THIS document — replay now. The reload
+            // path parks the reselect intent and attach() replays on arrival.
+            if (reselectIdRef.current !== selected.pieceId) {
+              replayAfterLoadRef.current = false;
+              replayMotionIn(iframeRef.current?.contentDocument);
+            }
+          }
+        })();
+      },
+      replayMotion: () => replayMotionIn(iframeRef.current?.contentDocument),
       /** Parents call this after their own same-scene commits (brand
        *  re-skin): morph-first, and the caller falls back to a reload when
        *  it returns false. */

@@ -426,7 +426,18 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
   // Edit mode renders SETTLED (entry animations at their end state): interactions are
   // instant and rects are stable — you edit a static scene, you WATCH motion in play
   // mode. Toggling edit changes the src, so the browser swaps modes naturally.
-  const iframeSrc = `/api/preview/${scriptId}/iframe?scene=${heldScene ?? sceneIndex}&v=${reloadKey}${editing || isDeck ? "&settle=1" : ""}`;
+  //
+  // DECKS move (founder, 2026-09-03: "for launch let's allow motion"): a page's
+  // FIRST visit plays its entrance — the editor is where the page is watched
+  // too — and every post-edit reload of the SAME page lands settled, so an
+  // edit never replays the choreography. "Same page" = the reload key has
+  // moved since the page was entered. (Morph-path edits never reload; the
+  // editor settles the live document itself once the entrance has played.)
+  const shownScene = heldScene ?? sceneIndex;
+  const pageEntryRef = useRef({ scene: shownScene, key: reloadKey });
+  if (pageEntryRef.current.scene !== shownScene) pageEntryRef.current = { scene: shownScene, key: reloadKey };
+  const settled = isDeck ? reloadKey !== pageEntryRef.current.key : editing;
+  const iframeSrc = `/api/preview/${scriptId}/iframe?scene=${shownScene}&v=${reloadKey}${settled ? "&settle=1" : ""}`;
 
   // Quality NOTES (the collapsible panel's content) vs anything the banner
   // must surface. thin_brief is not a quality note — it is a statement about
@@ -703,6 +714,8 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
                     pageBrief={currentScene?.visual_concept ?? null}
                     busy={ed.busy}
                     onRegenerate={(instruction) => editorRef.current?.regenerateSelected(instruction)}
+                    onAnimate={(instruction) => editorRef.current?.animateSelected(instruction)}
+                    onReplayMotion={() => editorRef.current?.replayMotion()}
                   />
                 ) : (
                   <BrandPanel
@@ -791,7 +804,10 @@ export function PreviewClient({ scriptId, script, initialWarnings, isBlank = fal
               >
                 <SceneFrame
                   key={previewIndex}
-                  src={`/api/preview/${scriptId}/iframe?scene=${previewIndex}&v=${reloadKey}&settle=1`}
+                  // Presenting: every page arrives with its entrance (the key
+                  // remounts per page). Reduced-motion viewers get it at rest
+                  // via the scene document's own media rule.
+                  src={`/api/preview/${scriptId}/iframe?scene=${previewIndex}&v=${reloadKey}`}
                   title={`Preview page ${previewIndex + 1}`}
                   canvas={{ w: dims.width, h: dims.height }}
                 />

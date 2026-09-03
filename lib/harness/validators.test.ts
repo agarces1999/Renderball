@@ -3,7 +3,7 @@
  * SVG attribute strings flooded 136 false violations. Geometry is never a
  * claim; only viewer-readable text is.
  */
-import { findInventedNumerals, findLogoViolation, findUnstablePieceIds } from "./validators";
+import { findInventedNumerals, findLogoViolation, findUnstablePieceIds, findStyleNotOnEveryPage } from "./validators";
 
 let passed = 0;
 let failed = 0;
@@ -114,6 +114,80 @@ await check("REAL fabrications still flag after the stripping (the shipped 135-c
   const v = findInventedNumerals(`<div><p>135 currencies, 40+ methods</p></div>`, "global payments brief, no figures approved", 4);
   const toks = v.map((x) => x.detail);
   assert(toks.includes("135") && toks.includes("40"), `expected 135+40 flagged, got ${JSON.stringify(toks)}`);
+});
+
+await check("motion: @keyframes inside a <style> block are never viewer-readable numerals (2026-09-03)", () => {
+  const code = `
+    const Chrome = () => (
+      <div>
+        <style>{\`
+          @font-face { font-family: "Brand"; src: url(brand.woff2) format("woff2"); }
+          @keyframes rb-rise { 0% { opacity: 0; transform: translateY(24px); } 100% { opacity: 1; transform: none; } }
+          @keyframes rb-draw { from { stroke-dashoffset: 1200; } to { stroke-dashoffset: 0; } }
+        \`}</style>
+        <p style={{ animation: "rb-rise 700ms ease-out 120ms backwards" }}>Roast-date honesty.</p>
+      </div>
+    );`;
+  const v = findInventedNumerals(code, "no numbers in this brief", 6);
+  assert(v.length === 0, `expected 0 violations, got ${JSON.stringify(v.map((x) => x.detail))}`);
+});
+
+await check("motion: a keyframes template const rendered into <style> later is style plumbing, not a claim", () => {
+  const code = `const KEYFRAMES = \`@keyframes rb-pulse { 50% { opacity: 0.55; transform: scale(1.04); } }\`;
+    <div><p>Every single bag.</p></div>`;
+  const v = findInventedNumerals(code, "no numbers", 6);
+  assert(v.length === 0, `expected 0 violations, got ${JSON.stringify(v.map((x) => x.detail))}`);
+});
+
+await check("style-on-every-page: the first motion build's shape (a DeckStyle rendered by Section0 only) is flagged", () => {
+  const code = `
+const GLOBAL_CSS = \`@keyframes rb-rise { from { opacity: 0 } to { opacity: 1 } }\`;
+const DeckStyle: React.FC = () => <style>{GLOBAL_CSS}</style>;
+const ChromeRail: React.FC<{ page: number }> = ({ page }) => <div>{page}</div>;
+export const Section0 = () => (<div><DeckStyle /><ChromeRail page={1} /></div>);
+export const Section1 = () => (<div><ChromeRail page={2} /></div>);
+export const Section2 = () => (<div><ChromeRail page={3} /></div>);`;
+  const v = findStyleNotOnEveryPage(code, 3);
+  // detail names the component that owns the <style> (DeckStyle) — the one used by Section0 alone
+  assert(v.length === 1 && v[0].kind === "style-not-on-every-page" && v[0].detail === "DeckStyle", `got ${JSON.stringify(v)}`);
+});
+
+await check("style-on-every-page: a <style> inside the chrome every section renders is clean", () => {
+  const code = `
+const ChromeRail: React.FC<{ page: number }> = ({ page }) => (
+  <div><style>{\`@font-face { font-family: "X"; src: url(x.woff2); }\`}</style>{page}</div>
+);
+export const Section0 = () => (<div><ChromeRail page={1} /></div>);
+export const Section1 = () => (<div><ChromeRail page={2} /></div>);
+export const Section2 = () => (<div><ChromeRail page={3} /></div>);`;
+  assert(findStyleNotOnEveryPage(code, 3).length === 0, "chrome-rendered style must pass");
+});
+
+await check("style-on-every-page: one level of indirection (DeckStyle inside the chrome) is clean; a page-guarded style is not", () => {
+  const good = `
+const DeckStyle = () => <style>{"@keyframes rb-x { }"}</style>;
+const Chrome = ({ page }: { page: number }) => (<div><DeckStyle />{page}</div>);
+export const Section0 = () => (<Chrome page={1} />);
+export const Section1 = () => (<Chrome page={2} />);`;
+  assert(findStyleNotOnEveryPage(good, 2).length === 0, "indirect chrome style must pass");
+  const guarded = `
+const Chrome = ({ page }: { page: number }) => (<div>{page === 1 && <style>{"@font-face {}"}</style>}{page}</div>);
+export const Section0 = () => (<Chrome page={1} />);
+export const Section1 = () => (<Chrome page={2} />);`;
+  // A guard is invisible to static reachability — the render-time truth is
+  // what the second motion build measures; this documents the known gap.
+  assert(findStyleNotOnEveryPage(guarded, 2).length === 0, "known gap: a runtime page guard passes the static check");
+  const direct = `
+export const Section0 = () => (<div><style>{"@keyframes rb-x { }"}</style></div>);
+export const Section1 = () => (<div><style>{"@keyframes rb-x { }"}</style></div>);`;
+  assert(findStyleNotOnEveryPage(direct, 2).length === 0, "a style inside every Section passes");
+  assert(findStyleNotOnEveryPage(direct, 3).length === 1, "two Section-owned styles for a 3-page deck is a page-3-less deck");
+});
+
+await check("motion: the style strip does not hide a real fabrication next to it", () => {
+  const code = `<div><style>{\`@keyframes rb-rise { 0% { opacity: 0 } 100% { opacity: 1 } }\`}</style><p>Trusted by 4,000 cafes</p></div>`;
+  const v = findInventedNumerals(code, "no numbers", 6);
+  assert(v.length === 1 && v[0].detail === "4,000", `expected only 4,000 flagged, got ${JSON.stringify(v.map((x) => x.detail))}`);
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

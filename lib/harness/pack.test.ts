@@ -112,5 +112,26 @@ await check("the outline's visual_concept reaches the author (the ab7 dropped-fi
   assert(pack.includes("Approved visual concept"), "visual concept label missing");
 });
 
+check("motion directive: entrance choreography + the settled-state invariant reach the author (2026-09-03)", () => {
+  const pack = assemblePack(baseInput());
+  assert(pack.includes("MOTION (the deck is presented live"), "motion section present");
+  assert(pack.includes('animation-fill-mode "backwards"'), "the fill-mode rule is what keeps measurement, export and the editor honest");
+  assert(pack.includes("static inline style IS the final designed state"), "the invariant is stated as such");
+  assert(pack.includes("never write a static opacity: 0"), "the static-hidden anti-pattern is named");
+  assert(pack.includes('Prefix the names "rb-"'), "keyframe naming instructed");
+  assert(pack.includes("Reduced motion is handled by the host"), "no author-side media queries");
+  // The first motion build rendered the keyframes <style> on page 1 only —
+  // "rendered once" read as once per DECK — and pages 2-5 shipped static.
+  assert(pack.includes("render that <style> on EVERY page"), "every-page rule for the keyframes style");
+});
+
+check("the @font-face <style> is demanded on EVERY page (each page is its own document)", () => {
+  const input = baseInput();
+  input.brand.fonts = { display: { stack: '"Happy Face", sans-serif', faceSrc: "https://x.test/h.woff2" } };
+  const pack = assemblePack(input);
+  assert(pack.includes("renders on EVERY page"), "font style must not be a page-1-only render");
+  assert(!pack.includes("rendered once in your chrome component"), "the ambiguous 'rendered once' wording is gone");
+});
+
 console.log(`${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

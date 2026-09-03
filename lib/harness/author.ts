@@ -83,7 +83,14 @@ export const HARNESS_AUTHORS: HarnessAuthor[] = [
   { model: "accounts/fireworks/models/deepseek-v4-pro-0813" },
 ];
 
-const AUTHOR_MAX_TOKENS = 30_000;
+// 40k, not 30k (2026-09-03): the motion contract adds ~3k output tokens per
+// 5-page deck (heist outline: 18,952 → 24,614 tokens, 42.8KB → 51KB), and the
+// first motion build's first attempt died at exactly 30,000 tokens with
+// "missing exports" — the cap, not the model. Thinking (≤8k) + code for 6-8
+// single-breath pages now sums past 30k routinely. Fireworks accepts 40k and
+// 64k for qwen3p8-max (probed 2026-09-03); a higher cap only matters when the
+// model has more to say, so it cannot lengthen a normal call.
+const AUTHOR_MAX_TOKENS = 40_000;
 const AUTHOR_TIMEOUT_MS = 360_000;
 
 /** Largest fenced code block, thinking stripped. Null when no fence closed. */

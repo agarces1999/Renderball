@@ -23,6 +23,8 @@ import { useEffect, useRef, useState } from "react";
 interface Provenance {
   origin: "marquee" | "regen" | "added";
   prompt?: string;
+  /** The last motion instruction (lib/edit/provenance.ts). */
+  motion?: string;
   at: string;
 }
 
@@ -33,6 +35,8 @@ export function ElementPanel({
   pageBrief,
   busy,
   onRegenerate,
+  onAnimate,
+  onReplayMotion,
 }: {
   scriptId: string;
   pieceId: string;
@@ -48,12 +52,21 @@ export function ElementPanel({
    * probe of the fetch version watched the tab disappear mid-regen.
    */
   onRegenerate: (instruction: string) => void;
+  /** Same machinery, motion-only (2026-09-03): the editor's animate on the
+   *  selected piece, so selection and this panel survive the commit. */
+  onAnimate: (instruction: string) => void;
+  /** Replay the page's choreography in place — how the user watches motion
+   *  after an edit has settled the page. */
+  onReplayMotion?: () => void;
 }) {
   const [map, setMap] = useState<Record<string, Provenance>>({});
   const [draft, setDraft] = useState("");
+  const [motionDraft, setMotionDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
   const seededFor = useRef<{ pieceId: string; value: string } | null>(null);
+  const motionSeededFor = useRef<{ pieceId: string; value: string } | null>(null);
   const working = busy === "regenerate";
+  const animating = busy === "animate";
 
   useEffect(() => {
     let cancelled = false;
@@ -100,6 +113,15 @@ export function ElementPanel({
     setError(null);
   }, [pieceId, prov?.prompt]);
 
+  // The motion box seeds from the last motion ask the same way the prompt box
+  // seeds from the last regen — and never from each other.
+  useEffect(() => {
+    const incoming = prov?.motion ?? "";
+    if (motionSeededFor.current?.pieceId === pieceId && motionSeededFor.current.value === incoming) return;
+    motionSeededFor.current = { pieceId, value: incoming };
+    setMotionDraft(incoming);
+  }, [pieceId, prov?.motion]);
+
   const originLine = prov
     ? prov.origin === "marquee"
       ? "You asked for:"
@@ -113,6 +135,12 @@ export function ElementPanel({
     if (!instruction || busy) return;
     setError(null);
     onRegenerate(instruction);
+  };
+  const animate = () => {
+    const instruction = motionDraft.trim();
+    if (!instruction || busy) return;
+    setError(null);
+    onAnimate(instruction);
   };
 
   return (
@@ -156,6 +184,44 @@ export function ElementPanel({
       <p className="text-center font-mono text-[10px] text-faint">
         uses tokens · only this element changes
       </p>
+
+      <div className="border-t border-hairline pt-4">
+        <div className="flex items-baseline justify-between">
+          <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-faint">
+            {prov?.motion ? "Last animated with:" : "Motion"}
+          </p>
+          {onReplayMotion && (
+            <button
+              type="button"
+              onClick={onReplayMotion}
+              disabled={!!busy}
+              className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted transition-colors hover:text-ink disabled:opacity-50"
+              title="Replay this page's motion"
+            >
+              ▶ Replay page
+            </button>
+          )}
+        </div>
+        <textarea
+          value={motionDraft}
+          onChange={(e) => setMotionDraft(e.target.value)}
+          rows={2}
+          disabled={animating}
+          placeholder='e.g. "fade up from below" · "draw the line in" · "gentle pulse" · "no motion"'
+          className="mt-1.5 w-full resize-y rounded-md border border-hairline bg-surface-2 px-2.5 py-2 text-[12.5px] leading-relaxed text-ink outline-none focus:border-accent-line disabled:opacity-60"
+        />
+        <button
+          type="button"
+          disabled={animating || !!busy || !motionDraft.trim()}
+          onClick={animate}
+          className="mt-2 rounded-full border border-hairline bg-surface px-3 py-2 text-[13px] font-semibold text-ink transition-colors hover:border-accent-line disabled:opacity-50"
+        >
+          {animating ? "Animating…" : "Animate this element"}
+        </button>
+        <p className="mt-2 text-center font-mono text-[10px] text-faint">
+          uses tokens · only this element&apos;s motion changes
+        </p>
+      </div>
       {error && <p className="text-[12px] leading-relaxed text-ink">{error}</p>}
     </div>
   );

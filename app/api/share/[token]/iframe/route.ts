@@ -82,8 +82,14 @@ export async function GET(request: Request, { params }: { params: { token: strin
     return goneDoc();
   }
 
-  // Always settled: a viewer is reading a document, not watching it assemble.
-  const result = await renderSceneDoc(shared.scriptId, sceneIndex, shared.script, { settle: true });
+  // Motion plays for the audience (founder, 2026-09-03: motion is the
+  // differentiator, and a shared link is where the audience meets the deck):
+  // each page a viewer arrives on runs its entrance once. `settle=1` keeps a
+  // static render available for anything that reads rather than watches.
+  // Reduced-motion viewers get the page at rest via the scene document's own
+  // media rule.
+  const settle = url.searchParams.get("settle") === "1";
+  const result = await renderSceneDoc(shared.scriptId, sceneIndex, shared.script, { settle });
   // A render failure is ONE page having trouble, not a dead link — the shared
   // goneDoc copy ("no longer active") told recipients the sender revoked a
   // link that works fine one arrow-press away. Distinct copy, same chrome.

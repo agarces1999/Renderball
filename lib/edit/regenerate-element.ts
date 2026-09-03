@@ -30,6 +30,11 @@ export interface RegenerateElementInput {
   sceneIndex: number;
   pieceId: string;
   instruction?: string;
+  /** "animate" (2026-09-03): the same one-piece op with the model told to
+   *  change ONLY the element's motion — its own ledger op, spend stage, undo
+   *  label and provenance field, so the two kinds of edit stay distinguishable
+   *  everywhere they are counted. */
+  mode?: "regenerate" | "animate";
 }
 export interface RegenerateElementResult {
   ok: boolean;
@@ -43,6 +48,7 @@ export const regenerateElement = async (
   input: RegenerateElementInput,
 ): Promise<RegenerateElementResult> => {
   const { genDir, sceneIndex, pieceId, instruction } = input;
+  const animate = input.mode === "animate";
   const scriptId = path.basename(genDir);
 
   // Every LLM regen lands in .data/usage.jsonl — editor regens were previously
@@ -50,7 +56,7 @@ export const regenerateElement = async (
   const logUsage = (usage: Usage | undefined, failed: boolean) => {
     if (usage) {
       void recordUsage({
-        op: "regen-element",
+        op: animate ? "animate-element" : "regen-element",
         model: MODELS.codingAgentBuild,
         scriptId,
         usage,
@@ -61,7 +67,7 @@ export const regenerateElement = async (
 
   // Serialize with any other edit to the same video (move/delete/regen) so their
   // read-modify-write of manifest + Composition.tsx cannot interleave.
-  return withSpend({ stage: "edit.regen", scriptId }, () =>
+  return withSpend({ stage: animate ? "edit.animate" : "edit.regen", scriptId }, () =>
   withGenDirLock(genDir, async () => {
   const d = await readDecomposed(genDir);
   const scene = d.scenes.find((s) => s.sceneIndex === sceneIndex);
@@ -101,10 +107,11 @@ export const regenerateElement = async (
     siblings,
     sceneIndex,
     instruction,
+    mode: input.mode,
   });
   if (!regen.ok || !regen.body) {
     logUsage(regen.usage, true); // failed attempts are still billed
-    return { ok: false, usage: regen.usage, error: regen.error || "regeneration failed" };
+    return { ok: false, usage: regen.usage, error: regen.error || (animate ? "animation failed" : "regeneration failed") };
   }
   const newBody = makeBody(regen.body);
 
@@ -127,13 +134,13 @@ export const regenerateElement = async (
 
   const undo = await captureUndo(genDir);
   await writePieceBody(genDir, writeId, newBody);
-  const commit = await commitGenDir(genDir, "regenerated element", { checkRender: true });
+  const commit = await commitGenDir(genDir, animate ? "animated element" : "regenerated element", { checkRender: true });
   if (!commit.ok) {
     if (priorBody !== undefined) await writePieceBody(genDir, writeId, priorBody);
     logUsage(regen.usage, true); // failed attempts are still billed
-    return { ok: false, usage: regen.usage, error: commit.error ?? "regeneration failed" };
+    return { ok: false, usage: regen.usage, error: commit.error ?? (animate ? "animation failed" : "regeneration failed") };
   }
-  await commitUndo(genDir, undo, "regenerate");
+  await commitUndo(genDir, undo, animate ? "animate" : "regenerate");
 
   logUsage(regen.usage, false);
   return { ok: true, code: commit.code, body: regen.body, usage: regen.usage };

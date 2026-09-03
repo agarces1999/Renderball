@@ -55,6 +55,12 @@ const { renderToStaticMarkup } = nodeRequire("react-dom/server") as {
 export interface RenderCheck {
   ok: boolean;
   errors: { scene: number; error: string }[];
+  /** Per-scene facts about the RENDERED markup (motion, 2026-09-03): each
+   *  page is served as its own document, so a deck-level <style> must appear
+   *  in every page's markup or that page has no fonts and no keyframes. Only
+   *  render truth sees a `page === 1 && <style>` guard — static reachability
+   *  (validators.findStyleNotOnEveryPage) cannot. */
+  facts?: { scene: number; keyframes: boolean; fontFace: boolean; animations: boolean }[];
 }
 
 /**
@@ -110,6 +116,7 @@ export const verifyScenesRender = async (
 
   const mod = moduleObj.exports;
   const errors: { scene: number; error: string }[] = [];
+  const facts: NonNullable<RenderCheck["facts"]> = [];
   for (let i = 0; i < sceneCount; i++) {
     const Section =
       [`Section${i}`, `Scene${i}Slide`, `Scene${i}`, `Slide${i}`]
@@ -122,10 +129,16 @@ export const verifyScenesRender = async (
       continue;
     }
     try {
-      renderToStaticMarkup(React.createElement(Section, { script }));
+      const html = renderToStaticMarkup(React.createElement(Section, { script }));
+      facts.push({
+        scene: i,
+        keyframes: /@keyframes/.test(html),
+        fontFace: /@font-face/.test(html),
+        animations: /animation:/.test(html),
+      });
     } catch (err) {
       errors.push({ scene: i, error: err instanceof Error ? err.message.slice(0, 140) : String(err) });
     }
   }
-  return { ok: errors.length === 0, errors };
+  return { ok: errors.length === 0, errors, facts };
 };

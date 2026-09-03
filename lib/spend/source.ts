@@ -219,6 +219,7 @@ const LEGACY_STAGE: Record<string, string> = {
   // group with it or the breakdown shows the same spend twice under two names.
   "vision-qa": "vision",
   "regen-element": "edit.regen",
+  "animate-element": "edit.animate",
   "insert-element": "edit.insert",
   "failed-stream-attempt": "build.failed-stream",
 };

@@ -15,6 +15,7 @@ import type { Script } from "../../src/schema";
 import { dimensionsForScript, WIDE_LOCKUP_RATIO } from "./build-wrapper";
 import { inlineAssetSrcs } from "../edit/image-assets";
 import { FIT_TEXT_SCRIPT, textFitEnabled } from "./fit-text";
+import { REDUCED_MOTION_CSS, SETTLE_CSS, SETTLE_STYLE_ID } from "./settle-css";
 
 // react-dom/server via runtime require to bypass Next's app-router static check.
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -375,12 +376,12 @@ export async function renderSceneDoc(
     : "";
 
   // Settled mode: the !important longhand beats inline shorthand delays, jumping
-  // finite fill-forwards entry animations to their final frame (infinite ambient
-  // loops just phase-shift — they keep looping). Matches measure-scene + MP4 truth.
-  const settleCss = opts.settle
-    ? `
-  *, *::before, *::after { animation-delay: -100000s !important; }`
-    : "";
+  // finite entry animations to their final frame (infinite ambient loops just
+  // phase-shift — they keep looping). Matches measure-scene + MP4 truth. Its OWN
+  // <style> element, by id: the editor removes it to replay a page's
+  // choreography and re-adds it once the entrance has played, so edits land
+  // static without a reload (lib/render/settle-css.ts).
+  const settleStyle = opts.settle ? `<style id="${SETTLE_STYLE_ID}">${SETTLE_CSS}</style>` : "";
 
   /**
    * Who scales the slide.
@@ -434,6 +435,7 @@ export async function renderSceneDoc(
 <head>
 <meta charset="utf-8" />
 <title>Preview · Scene ${sceneIndex}</title>
+${settleStyle}
 <style>
   /* TRANSPARENT, never a colour. This document is always letterboxed inside
      somebody else's frame — fit() below scales the canvas into whatever box it
@@ -455,7 +457,8 @@ export async function renderSceneDoc(
      translucent pixels (canvas 1920x1080 at 0,0 in a 1920x1080 viewport). What
      is behind the canvas cannot reach a PNG or a PDF. */
   html, body { margin: 0; padding: 0; background: transparent; overflow: hidden; height: 100%; }
-  body { display: flex; align-items: center; justify-content: center; }${settleCss}
+  body { display: flex; align-items: center; justify-content: center; }
+  ${REDUCED_MOTION_CSS}
   .renderball-canvas {
     width: ${dims.width}px;
     height: ${dims.height}px;

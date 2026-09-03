@@ -14,6 +14,7 @@ import {
 import { cn } from "../../../../lib/cn";
 import { SceneFrame } from "../../../../components/SceneFrame";
 import { BrandPanel } from "../../../../components/BrandPanel";
+import { ElementPanel } from "../../../../components/ElementPanel";
 import { StructuralPanel } from "../../../../components/StructuralPanel";
 
 /**
@@ -75,7 +76,7 @@ export function DevEditClient({
     });
   const [playMotion, setPlayMotion] = useState(false);
   const router = useRouter();
-  const [panelTab, setPanelTab] = useState<"copy" | "brand">("copy");
+  const [panelTab, setPanelTab] = useState<"copy" | "brand" | "element">("copy");
   const [pageBusy, setPageBusy] = useState(false);
 
   /**
@@ -139,7 +140,13 @@ export function DevEditClient({
     selected: null,
   });
 
-  const iframeSrc = `/api/dev/${scriptId}/iframe?scene=${sceneIndex}&v=${reloadKey}${playMotion ? "" : "&settle=1"}`;
+  // Mirrors PreviewClient's deck policy (motion, 2026-09-03): a page's first
+  // visit plays its entrance, post-edit reloads of the same page land settled.
+  // "▶ Play" still forces motion on every reload with the overlay unmounted.
+  const pageEntryRef = useRef({ scene: sceneIndex, key: reloadKey });
+  if (pageEntryRef.current.scene !== sceneIndex) pageEntryRef.current = { scene: sceneIndex, key: reloadKey };
+  const settled = !playMotion && reloadKey !== pageEntryRef.current.key;
+  const iframeSrc = `/api/dev/${scriptId}/iframe?scene=${sceneIndex}&v=${reloadKey}${settled ? "&settle=1" : ""}`;
   const scene = scenes[sceneIndex];
 
   const goTo = useCallback(
@@ -180,6 +187,17 @@ export function DevEditClient({
       cancelled = true;
     };
   }, [scriptId, sceneIndex, reloadKey]);
+
+  // Element tab, mirroring PreviewClient (motion, 2026-09-03): selecting a
+  // piece opens the Element panel — regenerate / animate / replay — so the
+  // headless QA lane can exercise the Animate UI without a session. The
+  // panel's provenance fetch hits the session-scoped route and degrades to
+  // the page brief here, which is the honest label anyway.
+  const selectedPieceId = ed.selected?.pieceId ?? null;
+  useEffect(() => {
+    if (selectedPieceId) setPanelTab("element");
+    else setPanelTab((t) => (t === "element" ? "copy" : t));
+  }, [selectedPieceId]);
 
   const controls: EditorToolController = useMemo(
     () => ({
@@ -265,7 +283,7 @@ export function DevEditClient({
           // largest surfaces.
           <div className="flex h-full flex-col">
             <div className="flex shrink-0 gap-1 border-b border-hairline px-3 pt-2.5">
-              {(["copy", "brand"] as const).map((t) => (
+              {(ed.selected ? (["copy", "brand", "element"] as const) : (["copy", "brand"] as const)).map((t) => (
                 <button
                   key={t}
                   type="button"
@@ -283,7 +301,18 @@ export function DevEditClient({
               ))}
             </div>
             <div className="min-h-0 flex-1 overflow-y-auto">
-              {panelTab === "brand" ? (
+              {panelTab === "element" && ed.selected ? (
+                <ElementPanel
+                  scriptId={scriptId}
+                  pieceId={ed.selected.pieceId}
+                  kind={ed.selected.kind}
+                  pageBrief={scene?.description ?? null}
+                  busy={ed.busy}
+                  onRegenerate={(instruction) => editorRef.current?.regenerateSelected(instruction)}
+                  onAnimate={(instruction) => editorRef.current?.animateSelected(instruction)}
+                  onReplayMotion={() => editorRef.current?.replayMotion()}
+                />
+              ) : panelTab === "brand" ? (
                 <BrandPanel scriptId={scriptId} apiBase="/api/dev" />
               ) : (
                 <ScriptPanel

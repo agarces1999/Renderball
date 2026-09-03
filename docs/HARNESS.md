@@ -206,3 +206,60 @@ n≥8 matched pairs or it isn't a finding.
    call, 13.8k tokens, missing from SpendRecord).
 7. **Deletion/cleanup of experiment decks needs its own explicit founder
    confirmation at the moment of deletion** — never inherited from the plan.
+
+## Motion (founder, 2026-09-03: "for launch let's allow motion … definitely a differentiator")
+
+Decks move. The author gets a MOTION block in the pack (`lib/harness/pack.ts`)
+and the editor gets **Animate** next to Regenerate (`lib/agents/regenerate-piece.ts`
+ANIMATE_SYSTEM via `regenerateElement({ mode: "animate" })`,
+`/api/preview/animate-element`). Doctrine-clean: the model authors the
+choreography; code only feeds the contract and checks the one invariant that
+keeps every measuring surface honest.
+
+**The invariant — the static inline style IS the final designed state.**
+Entrances use `animation-fill-mode: backwards`; the hidden pose lives only in
+the keyframes' from-frame; nothing static is `opacity: 0` or offset. Why this
+exact rule and not "fill-mode: forwards": everything that MEASURES a page
+reads it *settled* (`animation-delay: -100000s`, `lib/render/settle-css.ts`) —
+layout gates (`measure-scene`), export (`export-static`), thumbnails
+(`thumbnail` → export), the critic's screenshots, and post-edit editor
+reloads — and a forwards-filled animation also outranks inline styles in the
+cascade, which would defeat the editor's live drag (it moves nodes by inline
+`transform`). The editor additionally pins a node's painted pose before a drag
+(`livePieceNodes`) so even a disobedient author cannot break the gesture.
+
+Where motion plays: a page's first visit in the editor (post-edit reloads and
+in-place morphs land settled — the editor settles the live document itself
+once the entrance has finished, `settleAfterEntrance`), the presenting mode,
+and the share viewer (`settle=1` still available). Reduced-motion viewers get
+every page at rest via a media rule in the scene document. Validators strip
+`<style>` blocks and at-rule template literals before numeral scanning
+(keyframe percentages are not claims).
+
+Per-element Animate writes the piece's own `@keyframes` in a `<style>` inside
+the piece (uniquely prefixed by piece id) — self-contained, so the
+zero-neighbor guarantee and undo/rollback hold unchanged. Provenance keeps the
+motion ask in its own `motion` field. Ledger op `animate-element`, stage
+`edit.animate`.
+
+**First motion build (heist outline, 2026-09-03, $0.68, 806s) — what it
+taught.** The author obeyed the invariant to the letter (8 keyframes, 45
+animated elements, 39 `backwards`, 0 `forwards`/`both`, 0 static-hidden, no
+media queries) but rendered the keyframes `<style>` on page 1 only — the
+pack's "a single `<style>` rendered once" read as once per DECK — so pages
+2-5 shipped static with animation properties pointing at nothing. The same
+sentence had governed `@font-face` since 2026-08-31; 1 of 6 corpus decks
+carries a `page === 1 && <style>` guard, i.e. brand fonts on page 1 only.
+Three fixes: the pack now says every page, each page being its own document;
+`validators.findStyleNotOnEveryPage` (static reachability, one level of
+indirection) patches the `<DeckStyle/>`-in-Section0 shape before render; and
+the SSR gate reports per-page markup facts (`RenderCheck.facts`) so build.ts
+patches from rendered truth — the only thing that sees a page-index guard.
+Second lesson: the first author attempt died at exactly 30,000 tokens
+("missing exports") — motion adds ~3k output tokens per 5 pages (18,952 →
+24,614 on the same outline) and thinking (≤8k) + code for 6-8 single-breath
+pages now sums past 30k; `AUTHOR_MAX_TOKENS` is 40k (Fireworks accepts 40k
+and 64k for qwen3p8-max, probed). Editor lesson: Chrome drops a finished CSS
+animation from `getAnimations()`, so replay restarts motion by toggling
+`animation` on the elements, and settle-after-entrance awaits only finite
+animations (loops never finish).

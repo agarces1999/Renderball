@@ -29,6 +29,31 @@ HARD RULES:
 - Define NOTHING at module scope and reference NO undefined components — use only the provided consts + inline JSX/SVG (and <Img> for images).
 - It must be valid TSX that compiles when inlined.`;
 
+/**
+ * ANIMATE mode (founder, 2026-09-03: "just like we have regenerate for
+ * elements let's have animate for elements as well with prompts"). The same
+ * one-piece, zero-neighbor op, with the task inverted: the element is
+ * finished and ONLY its motion changes. The rules below are the same contract
+ * the author receives at build time (lib/harness/pack.ts MOTION) — the settled
+ * end state must equal the designed layout, because export, thumbnails,
+ * measurement and the editor all read the page settled.
+ */
+const ANIMATE_SYSTEM = `You add MOTION to ONE element ("piece") of a presentation page, IN PLACE. The element is otherwise finished: you change its motion and nothing else.
+
+You are given the page's shared design system (module consts already in scope) and the element's current JSX. Re-emit ONLY the replacement JSX for this ONE element.
+
+HARD RULES:
+- Output ONLY the JSX for this ONE element — no imports, no prose, no markdown fence, no <Piece> wrapper. It is inlined verbatim where the old element was.
+- Change NOTHING but motion. Text, colors, fonts, sizes, positions, structure, props and every existing style stay byte-identical. The only permitted additions are animation properties in inline styles (animation, animationDelay, animationFillMode, transformOrigin, willChange — React camelCase) and ONE <style> element holding your @keyframes.
+- Put that <style> as the FIRST child inside the element's outermost tag: <div ...><style>{\`@keyframes rb-... { ... }\`}</style> ...the unchanged children... </div>. If the outermost element cannot hold children (an <img>), wrap it in a <div style={{ position: "absolute", left, top, width, height }}> that takes over its placement, and put the <style> and the image (now width/height "100%") inside.
+- Name every keyframe with the prefix "rb-<element id with dots replaced by dashes>-" so it cannot collide with the deck's own keyframes, and define every keyframe you reference. You may also reuse a @keyframes the design system already defines, by name.
+- THE INVARIANT: the element's static inline style IS its resting state. Entrances use animation-fill-mode "backwards" (never "forwards" or "both"); the hidden starting pose lives ONLY in the keyframes' from-frame, and the animation ends at the element's own designed appearance (to { opacity: 1; transform: none }). Never add a static opacity: 0 or an offset transform. The deck is exported, thumbnailed and edited at its settled end state, so anything that does not rest on its static styles is a defect.
+- Animate only opacity, transform, and stroke-dashoffset/stroke-dasharray — never width, height, left, top, font-size or color.
+- Entrances are finite (300-1200ms, ease-out, literal delays). A loop (infinite) is allowed only when asked for, only on INNER parts of the element (a dot, a ring, a bar's fill) — never on text and never on the outermost element — subtle, 3-12s, ease-in-out.
+- If the instruction asks to remove motion ("no animation", "make it still"), remove every animation property and any <style> of keyframes the element carries, returning the element at rest.
+- Animation is CSS only. No Remotion hooks, no state, no Math.random, no Date. Define NOTHING at module scope; reference NO undefined components.
+- It must be valid TSX that compiles when inlined.`;
+
 // Long inlined data-URIs are elided from READ-ONLY context (preamble + sibling
 // summaries) — measured 97% of Arc's 505KB preamble was base64 ≈ ~130k junk
 // tokens per regen. Never elided from the piece body itself: the model re-emits
@@ -55,6 +80,8 @@ export interface RegenPieceInput {
    */
   brandBlock?: string | null;
   model?: string;
+  /** "animate": the element is finished; only its motion changes (ANIMATE_SYSTEM). */
+  mode?: "regenerate" | "animate";
 }
 export interface RegenPieceResult {
   ok: boolean;
@@ -67,27 +94,30 @@ export const regeneratePiece = async (
   input: RegenPieceInput,
 ): Promise<RegenPieceResult> => {
   const { preamble, piece, siblings, sceneIndex, instruction } = input;
+  const animate = input.mode === "animate";
   const model = input.model || MODELS.codingAgentBuild;
   const client = getBuildClient();
 
   const user = [
-    `THIS ELEMENT to regenerate — scene ${sceneIndex}, id "${piece.id}", kind "${piece.kind}". Current JSX:`,
+    `THIS ELEMENT to ${animate ? "animate" : "regenerate"} — scene ${sceneIndex}, id "${piece.id}", kind "${piece.kind}". Current JSX:`,
     "```tsx",
     piece.body.trim(),
     "```",
     "",
     siblings.length
-      ? `SIBLING ELEMENTS in this scene (do NOT overlap or restyle these — context only):\n${siblings.map(siblingLine).join("\n")}`
+      ? `SIBLING ELEMENTS in this scene (do NOT overlap or restyle these — context only${animate ? "; if they animate, stagger after their entrances" : ""}):\n${siblings.map(siblingLine).join("\n")}`
       : "(no sibling elements)",
     "",
-    `INSTRUCTION: ${instruction?.trim() || "Regenerate this element with a fresh, higher-quality take on the same content and role."}`,
+    animate
+      ? `MOTION INSTRUCTION: ${instruction?.trim() || "Give this element a purposeful entrance."}`
+      : `INSTRUCTION: ${instruction?.trim() || "Regenerate this element with a fresh, higher-quality take on the same content and role."}`,
     "",
     "Re-emit ONLY the replacement JSX for THIS element.",
   ].join("\n");
 
   let response;
   try {
-    response = await withTransientRetry("regen-piece", () =>
+    response = await withTransientRetry(animate ? "animate-piece" : "regen-piece", () =>
       client.messages
         .stream(
         {
@@ -98,7 +128,7 @@ export const regeneratePiece = async (
           // (z.ai honors Anthropic-compat caching — build calls measure 86-139k
           // cache-read tokens). Only the small piece+instruction turn re-prefills.
           system: [
-            { type: "text", text: SYSTEM },
+            { type: "text", text: animate ? ANIMATE_SYSTEM : SYSTEM },
             // Placed BEFORE the cached design-system block so brand rules are
             // read as constraints on everything that follows. Uncached: it is
             // small, and it changes whenever the user edits their brand.

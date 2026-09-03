@@ -30,6 +30,12 @@ export interface ElementProvenance {
   origin: ProvenanceOrigin;
   /** The user's words, verbatim. Absent for deterministic hand-adds. */
   prompt?: string;
+  /** The last MOTION instruction ("fade up from below", "draw the line in").
+   *  Its own field, not `prompt`: animating an element must not overwrite the
+   *  instruction that made it, or the panel's "Edit the prompt" box would
+   *  re-seed with a motion ask and a regenerate would rebuild the element
+   *  from it. */
+  motion?: string;
   at: string;
   /**
    * Generation facts for diffusion-made pieces (image/icon), kept so a later
