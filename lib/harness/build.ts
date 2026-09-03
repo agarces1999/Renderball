@@ -457,6 +457,10 @@ const lookAndReviseOnce = async (args: {
       const shot = await shotBase64(before[i]?.screenshotPath, genDir, i);
       if (!shot) return null;
       const v = await critiquePageShot(shot, sceneIntent(scenes[i], i));
+      // A real per-page mark the moment THIS verdict lands (critics run in
+      // parallel, so these tick in one by one) — the ceremony's checking
+      // step shows them as they arrive. No streaming involved.
+      timeline.mark(`harness:critic:page ${i + 1} ${v.weakness ? "flagged" : "clean"}`);
       return v.weakness ? { page: i, weakness: v.weakness } : null;
     })().catch(() => null)),
   );

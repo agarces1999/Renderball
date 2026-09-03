@@ -105,17 +105,36 @@ type Phase =
 type Status = "done" | "active" | "pending";
 
 import { SceneFrame } from "../../../components/SceneFrame";
+/** Crawled brand facts for the ceremony's foundation moment — all known at t=0. */
+export interface CeremonyBrand {
+  palette: string[];
+  display: string | null;
+  body: string | null;
+  logo: string | null;
+  site: string | null;
+}
+/** One approved page: label + real headline + the outline's design direction. */
+export interface CeremonyPage {
+  label: string;
+  headline: string;
+  concept: string;
+}
+
 export function BuildPreviewClient({
   scriptId,
   kind = "video",
   sceneLabels,
   outlineHref = "/documents",
+  ceremonyBrand = null,
+  ceremonyPages = [],
 }: {
   scriptId: string;
   kind?: "deck" | "video";
   sceneLabels: string[];
   /** The approved outline's review page — the exit and the stop both land here. */
   outlineHref?: string;
+  ceremonyBrand?: CeremonyBrand | null;
+  ceremonyPages?: CeremonyPage[];
 }) {
   const isDeck = kind === "deck";
   const steps = useMemo(() => {
@@ -754,6 +773,29 @@ export function BuildPreviewClient({
               const paced: Status = i < current ? "active" : i === current ? "active" : "pending";
               const status: Status = realStatus(i) ?? paced;
               const checking = i === steps.length - 2;
+              // Per-page reviewer verdicts (real marks from the critic pass) —
+              // the checking step ticks page by page instead of grinding mute.
+              const reviseSettled = seen("harness:revise:kept") || seen("harness:revise:rejected");
+              const ticks =
+                checking && status === "active" && seen("harness:critic:")
+                  ? sceneLabels.map((_, pIdx) => {
+                      const n = pIdx + 1;
+                      const clean =
+                        seen(`harness:critic:page ${n} clean`) ||
+                        seen(`harness:critic:page ${n} reused early verdict (ship`);
+                      const flagged =
+                        seen(`harness:critic:page ${n} flagged`) ||
+                        seen(`harness:critic:page ${n} reused early verdict (flagged`);
+                      return clean
+                        ? { text: `page ${n} · reviewed — clean`, state: "ok" as const }
+                        : flagged
+                          ? {
+                              text: `page ${n} · flagged — ${reviseSettled ? "redesigned" : "redesigning"}`,
+                              state: "flag" as const,
+                            }
+                          : { text: `page ${n} · reviewing`, state: "busy" as const };
+                    })
+                  : undefined;
               const composing = i === steps.length - 3;
               const repairing =
                 composing && seen("gates:structural:judged") && !seen("design:repairs:done");
@@ -767,6 +809,7 @@ export function BuildPreviewClient({
                 <StepRow
                   key={i}
                   aside={foundationAside}
+                  ticks={ticks}
                   label={
                     checking && repairRounds > 0
                       ? `${label} — fixing what failed (round ${repairRounds})`
@@ -840,14 +883,7 @@ export function BuildPreviewClient({
         />
       ))}
       {mounted.length === 0 && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-center">
-          <div className="orb orb-spin h-12 w-12 opacity-60" aria-hidden />
-          <p className="max-w-[34ch] text-[13px] leading-relaxed text-muted">
-            Reading your brand — pulling the palette, the type and the
-            chrome. The canvas appears here next, then each page fills in as
-            it is designed.
-          </p>
-        </div>
+        <CeremonyStage brand={ceremonyBrand} pages={ceremonyPages} isDeck={isDeck} />
       )}
     </EditorShell>
   );
@@ -855,7 +891,130 @@ export function BuildPreviewClient({
 
 const fmtClock = (s: number): string => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 
-function StepRow({ label, status, aside }: { label: string; status: Status; aside?: string }) {
+/**
+ * The wait, filled with what we truthfully hold at t=0 (founder slice,
+ * 2026-09-02 — the minimal cut, deliberately: no choreography): first the
+ * crawled brand assembling (answers "did it get my brand?"), then a quiet
+ * cycle through the APPROVED plan — each page's real headline and the
+ * outline's design direction. It presents the plan; it never claims to know
+ * which page is being written, because without streaming we don't.
+ */
+function CeremonyStage({ brand, pages, isDeck }: { brand: CeremonyBrand | null; pages: CeremonyPage[]; isDeck: boolean }) {
+  // -1 = the brand intro; then the plan cards on a slow cycle.
+  const [idx, setIdx] = useState(brand ? -1 : 0);
+  useEffect(() => {
+    if (pages.length === 0) return;
+    let cycle: number | undefined;
+    const intro = window.setTimeout(
+      () => {
+        setIdx(0);
+        cycle = window.setInterval(() => setIdx((i) => (i + 1) % pages.length), 7000);
+      },
+      brand ? 9000 : 0,
+    );
+    return () => {
+      window.clearTimeout(intro);
+      if (cycle !== undefined) window.clearInterval(cycle);
+    };
+  }, [brand, pages.length]);
+
+  // No data at all (no crawl, prose-only outline): the honest generic copy.
+  if (!brand && pages.length === 0) {
+    return (
+      <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-center">
+        <div className="orb orb-spin h-12 w-12 opacity-60" aria-hidden />
+        <p className="max-w-[34ch] text-[13px] leading-relaxed text-muted">
+          Reading your brand — pulling the palette, the type and the chrome.
+          The canvas appears here next, then each page fills in as it is
+          designed.
+        </p>
+      </div>
+    );
+  }
+
+  if (idx === -1 && brand) {
+    return (
+      <div className="absolute inset-0 flex flex-col items-center justify-center gap-6 text-center">
+        <div className="font-mono text-[10.5px] uppercase tracking-[0.2em] text-muted animate-[fadeIn_.5s_ease]">
+          Reading the brand{brand.site ? ` — ${brand.site}` : ""}
+        </div>
+        {brand.palette.length > 0 && (
+          <div className="flex gap-2.5">
+            {brand.palette.map((hex, i) => (
+              <div
+                key={hex + i}
+                className="h-10 w-10 rounded-lg border border-hairline animate-[fadeIn_.45s_ease_both]"
+                style={{ background: hex, animationDelay: `${120 + i * 110}ms` }}
+              />
+            ))}
+          </div>
+        )}
+        {(brand.display || brand.body) && (
+          <div className="flex flex-col gap-1 animate-[fadeIn_.5s_ease_.8s_both]">
+            {brand.display && <div className="font-mono text-[11px] text-muted">{brand.display} — display face</div>}
+            {brand.body && <div className="font-mono text-[11px] text-faint">{brand.body} — body face</div>}
+          </div>
+        )}
+        <div className="flex items-center gap-2.5 animate-[fadeIn_.5s_ease_1.1s_both]">
+          {brand.logo && (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={brand.logo} alt="" className="h-6 w-auto max-w-[120px] object-contain" />
+          )}
+          <span className="text-[11px] text-faint">
+            {brand.palette.length ? `${brand.palette.length} colors` : ""}
+            {brand.display || brand.body ? " · type" : ""}
+            {brand.logo ? " · logo" : ""} — captured
+          </span>
+        </div>
+      </div>
+    );
+  }
+
+  const p = pages[Math.max(idx, 0)] ?? pages[0];
+  return (
+    <div className="absolute inset-0 flex flex-col items-center justify-center gap-5 px-10 text-center">
+      <div key={idx} className="flex max-w-[520px] flex-col items-center gap-4 animate-[fadeIn_.6s_ease]">
+        <div className="font-mono text-[10.5px] uppercase tracking-[0.2em] text-accent-text">
+          The approved plan · {isDeck ? "Page" : "Scene"} {Math.max(idx, 0) + 1} of {pages.length}
+        </div>
+        <div className="font-display text-[30px] font-bold leading-tight tracking-tight text-ink">
+          {p.headline || p.label || `${isDeck ? "Page" : "Scene"} ${Math.max(idx, 0) + 1}`}
+        </div>
+        {p.headline && p.label && <div className="text-[13px] text-ink-soft">{p.label}</div>}
+        {p.concept && (
+          <div className="max-w-[440px] border-t border-hairline pt-3 font-mono text-[11px] leading-relaxed text-muted">
+            Design direction: {p.concept}
+          </div>
+        )}
+      </div>
+      <div className="flex gap-1.5">
+        {pages.map((_, i) => (
+          <div
+            key={i}
+            className="h-1.5 w-1.5 rounded-full transition-colors duration-500"
+            style={{ background: i === Math.max(idx, 0) ? "var(--accent)" : "var(--hairline-strong)" }}
+          />
+        ))}
+      </div>
+      <p className="text-[10.5px] text-faint">
+        The plan you approved — the designer is composing it now. {isDeck ? "Pages" : "Scenes"} appear here as they render.
+      </p>
+    </div>
+  );
+}
+
+function StepRow({
+  label,
+  status,
+  aside,
+  ticks,
+}: {
+  label: string;
+  status: Status;
+  aside?: string;
+  /** Real per-page sub-events under an active step (the checking verdicts). */
+  ticks?: { text: string; state: "ok" | "flag" | "busy" }[];
+}) {
   return (
     <li
       data-step-status={status}
@@ -886,6 +1045,26 @@ function StepRow({ label, status, aside }: { label: string; status: Status; asid
         {status === "active" && aside ? (
           <span className="mt-1 block font-mono text-[10.5px] tabular-nums leading-relaxed text-muted">
             {aside}
+          </span>
+        ) : null}
+        {status === "active" && ticks?.length ? (
+          <span className="mt-1.5 flex flex-col gap-1">
+            {ticks.map((t) => (
+              <span key={t.text} className="flex items-center gap-1.5 font-mono text-[10.5px] leading-snug">
+                {t.state === "ok" ? (
+                  <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden>
+                    <path d="M1.5 5.2l2.3 2.3L8.6 2.6" stroke="var(--accent-text)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                ) : t.state === "flag" ? (
+                  <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden>
+                    <circle cx="5" cy="5" r="3.4" stroke="var(--accent-text)" strokeWidth="1.5" />
+                  </svg>
+                ) : (
+                  <span className="h-2 w-2 animate-pulse rounded-full border border-faint" />
+                )}
+                <span className={t.state === "busy" ? "text-muted" : "text-ink-soft"}>{t.text}</span>
+              </span>
+            ))}
           </span>
         ) : null}
       </span>

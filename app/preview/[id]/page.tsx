@@ -130,12 +130,48 @@ export default async function PreviewPage({
   // The build ceremony wears the EDITOR's shell now (founder, 2026-08-14), so
   // it brings its own chrome — an AppHeader on top would stack two headers.
   if (!compositionExists || outlineAwaitingBuild) {
+    // Ceremony data (founder slice, 2026-09-02): the crawled brand facts and
+    // the approved per-page plan — both ALREADY known at t=0 — so the wait
+    // shows this deck's own identity and blueprint instead of a spinner.
+    // Everything defensive: a brief without a crawl yields null and the
+    // ceremony falls back to its generic copy.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const be: any = (brief as any)?.brand_extract?.ok ? (brief as any).brand_extract : undefined;
+    const ceremonyBrand = be
+      ? {
+          palette: (Array.isArray(be.palette) ? be.palette : [])
+            .filter((h: unknown): h is string => typeof h === "string" && /^#[0-9a-fA-F]{3,8}$/.test(h))
+            .slice(0, 6),
+          display: typeof be.font_roles?.display === "string" ? be.font_roles.display : null,
+          body: typeof be.font_roles?.body === "string" ? be.font_roles.body : null,
+          logo: typeof be.logo_hd === "string" ? be.logo_hd : null,
+          site: typeof be.url === "string" ? be.url.replace(/^https?:\/\/(www\.)?/, "").replace(/\/$/, "") : null,
+        }
+      : null;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const ceremonyPages = script.scenes.map((s: any) => {
+      let headline = "";
+      const c = s?.content;
+      try {
+        const parsed = typeof c === "string" ? JSON.parse(c) : c;
+        if (parsed && typeof parsed === "object") headline = String(parsed.headline ?? "");
+      } catch {
+        /* content is prose, not JSON — no headline to show */
+      }
+      return {
+        label: String(s?.label ?? ""),
+        headline: headline.slice(0, 90),
+        concept: String(s?.visual_concept ?? "").slice(0, 160),
+      };
+    });
     return (
       <BuildPreviewClient
         scriptId={params.id}
         kind={isDeck ? "deck" : "video"}
         sceneLabels={script.scenes.map((s) => s.label ?? "")}
         outlineHref={backHref}
+        ceremonyBrand={ceremonyBrand}
+        ceremonyPages={ceremonyPages}
       />
     );
   }
