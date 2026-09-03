@@ -372,31 +372,31 @@ function SlideRail({ active, onJump }: { active: number; onJump: (i: number) => 
         </Link>
       </div>
 
-      <div className="mt-1 flex flex-1 flex-col gap-1.5 overflow-hidden">
+      <div className="mt-1 flex flex-1 flex-col gap-1.5 overflow-y-auto overflow-x-hidden pr-0.5">
         <p className="px-1 font-mono text-[9.5px] uppercase tracking-[0.16em] text-faint">
           Document
         </p>
         {SECTIONS.map((s, i) => {
           const on = i === active;
+          // Preview-first rows, exactly like the real editor's rail (founder,
+          // 2026-08-30: "just the preview, no title" — the rail reads as the
+          // document, not a nav list). The label survives as tooltip + a11y.
           return (
             <button
               key={s.id}
               type="button"
               onClick={() => onJump(i)}
-              className={`group flex items-center gap-2 rounded-md border p-1.5 text-left transition-all ${
+              title={s.label}
+              aria-label={s.label}
+              className={`group relative overflow-hidden rounded-md border text-left transition-all ${
                 on
-                  ? "border-accent-line bg-accent-soft"
-                  : "border-hairline bg-surface hover:border-hairline-strong"
+                  ? "border-accent-line ring-1 ring-accent-line"
+                  : "border-hairline hover:border-hairline-strong"
               }`}
             >
-              <span className="font-mono text-[9px] tabular-nums text-faint">
-                {String(i + 1).padStart(2, "0")}
-              </span>
               <RailThumb section={s} on={on} />
-              <span
-                className={`flex-1 truncate text-[11.5px] ${on ? "text-ink" : "text-muted"}`}
-              >
-                {s.label}
+              <span className="absolute bottom-1 left-1 rounded-[3px] bg-surface/85 px-1 font-mono text-[8.5px] tabular-nums leading-[13px] text-muted">
+                {String(i + 1).padStart(2, "0")}
               </span>
             </button>
           );
@@ -415,33 +415,28 @@ function SlideRail({ active, onJump }: { active: number; onJump: (i: number) => 
   );
 }
 
-/** A 16:9 chip that previews the section's slide — the rail reads as a real
- *  slide rail rather than a nav list. */
+/** A real miniature of the section's slide — the ACTUAL snapshotted DOM the
+ *  canvas renders, scaled down (the same move the editor's rail made:
+ *  previews, not stand-ins). Animations are frozen via .rb-minithumb so
+ *  seven minis cost nothing and the rail stays quiet. */
 function RailThumb({ section, on }: { section: Section; on: boolean }) {
   const slide = DEMO_DECKS[section.deck]?.slides[section.slide];
+  const html = useMemo(() => (slide ? { __html: slide.html } : null), [slide]);
+  if (!html) {
+    // CI / pre-snapshot state: a plain chip instead of a broken mini.
+    return <span className="block aspect-video w-full bg-surface-2" aria-hidden />;
+  }
   return (
     <span
-      className={`block aspect-video w-9 shrink-0 overflow-hidden rounded-[3px] border ${
-        on ? "border-accent-line" : "border-hairline"
-      }`}
+      className={`rb-minithumb block aspect-video w-full overflow-hidden ${on ? "" : "opacity-90"}`}
       style={{ background: slide?.bg ?? "var(--surface-2)" }}
       aria-hidden
     >
       <span
-        className="block h-[3px] w-2/3 rounded-full"
-        style={{ margin: "4px 0 0 3px", background: slide?.ink ?? "var(--muted)", opacity: 0.9 }}
-      />
-      <span
-        className="block h-[1.5px] w-1/2 rounded-full"
-        style={{ margin: "2px 0 0 3px", background: slide?.ink ?? "var(--faint)", opacity: 0.35 }}
-      />
-      <span
-        className="block h-[1.5px] w-2/5 rounded-full"
-        style={{ margin: "1.5px 0 0 3px", background: slide?.ink ?? "var(--faint)", opacity: 0.35 }}
-      />
-      <span
-        className="block h-[4px] w-1/4 rounded-[1px]"
-        style={{ margin: "3px 0 0 3px", background: slide?.accent ?? "var(--accent)" }}
+        className="block origin-top-left"
+        // 158px row width over the slide's 1920 authoring width.
+        style={{ width: 1920, height: 1080, transform: "scale(0.0823)", position: "relative", display: "block" }}
+        dangerouslySetInnerHTML={html}
       />
     </span>
   );

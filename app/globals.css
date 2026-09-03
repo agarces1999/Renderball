@@ -332,3 +332,12 @@
   from { opacity: 0; }
   to { opacity: 1; }
 }
+
+/* Landing rail miniatures render the REAL snapshotted slide DOM scaled tiny —
+   freeze their animations so seven minis cost nothing and the rail is calm
+   (the full-size canvas keeps its motion). */
+.rb-minithumb * {
+  animation: none !important;
+  transition: none !important;
+  pointer-events: none !important;
+}
