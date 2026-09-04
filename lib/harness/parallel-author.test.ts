@@ -92,5 +92,18 @@ await check("pack passes: design asks for preamble + plans and no sections; page
   assert(/Export exactly 2 components/.test(one) && !/DESIGN PASS/.test(one), "one-call contract unchanged");
 });
 
+await check("prompt-only story: the pack asks the design pass to write the story; plans parse back into scenes", async () => {
+  const { storyFromPlans } = await import("./parallel-author");
+  const base: PackInput = { briefPrompt: "Pitch Acme's new API to CTOs", tone: undefined, aspect: "16:9", scenes: [{ label: "", description: "", content: "" }, { label: "", description: "", content: "" }], brand: { brandName: "Acme", palette: [], logoSrc: null, mode: "light", background: "#fff" }, assetUrls: [], storyFromPrompt: true, parallel: { pass: "design" } };
+  const pack = assemblePack(base);
+  assert(/THE STORY \(yours to write/.test(pack) && /You write the story: 2 pages/.test(pack), "story instruction present");
+  assert(/first the STORY lines/.test(pack) && /Headline:/.test(pack), "design pass asked for story lines per page");
+  assert(!/THE APPROVED OUTLINE/.test(pack), "no outline header");
+  const plans = "Page 1 — Casing the target\nIntent: make CTOs feel the blind spot.\nHeadline: The vault has no blueprint\nCopy: You deployed a model you cannot read.\n- device: radar\nPage 2 — The crew\nIntent: introduce the tools.\nHeadline: Meet the crew\nCopy: Probes, autoencoders.\n- device: rack";
+  const story = storyFromPlans(plans, 2);
+  assert(story[0].label === "Casing the target" && /blind spot/.test(story[0].description) && /vault has no blueprint/.test(story[0].content), `page 1 parsed: ${JSON.stringify(story[0])}`);
+  assert(story[1].label === "The crew" && /Meet the crew/.test(story[1].content), `page 2 parsed: ${JSON.stringify(story[1])}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exitCode = 1;

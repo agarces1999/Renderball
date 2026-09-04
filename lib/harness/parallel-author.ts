@@ -90,6 +90,25 @@ export const extractSection = (raw: string, k: number): { code: string; leaked: 
   return null;
 };
 
+/** Story lines the design pass wrote per page (RB_STORY=prompt): the label from
+ *  `Page K — <label>` and the Intent/Headline/Copy lines that follow it — what
+ *  the critics judge against and what the truth validators treat as approved. */
+export const storyFromPlans = (plans: string, n: number): { label: string; description: string; content: string }[] => {
+  const out: { label: string; description: string; content: string }[] = [];
+  for (let k = 1; k <= n; k++) {
+    const re = new RegExp(`^\\s*Page\\s*${k}\\s*[—–:-]+\\s*(.+)$`, "m");
+    const m = re.exec(plans);
+    if (!m) { out.push({ label: `Page ${k}`, description: "", content: "" }); continue; }
+    const start = (m.index ?? 0) + m[0].length;
+    const next = new RegExp(`^\\s*Page\\s*${k + 1}\\s*[—–:-]+`, "m").exec(plans.slice(start));
+    const block = plans.slice(start, next ? start + (next.index ?? 0) : undefined);
+    const grab = (key: string) => (new RegExp(`^\\s*[-*•]?\\s*${key}\\s*:\\s*(.+)$`, "mi").exec(block)?.[1] ?? "").trim();
+    const intent = grab("Intent"), headline = grab("Headline"), copy = grab("Copy");
+    out.push({ label: m[1].trim(), description: intent, content: JSON.stringify({ headline, body: copy }) });
+  }
+  return out;
+};
+
 export const assembleParallel = (preamble: string, sections: { index: number; code: string }[]): string =>
   `${preamble.trimEnd()}\n\n${[...sections].sort((a, b) => a.index - b.index).map((s) => s.code.trim()).join("\n\n")}\n`;
 
@@ -106,7 +125,7 @@ export const authorParallel = async (
      *  fingerprint matches; store a freshly designed one. */
     brandSystem?: { key: string; fingerprint: string; scriptId: string };
   },
-): Promise<{ code: string; model: string; attempts: AuthorAttempt[]; thinking: string }> => {
+): Promise<{ code: string; model: string; attempts: AuthorAttempt[]; thinking: string; plans?: string }> => {
   const author = socketOrder()[0];
   const attempts: AuthorAttempt[] = [];
   const thinking: string[] = [];
@@ -250,5 +269,5 @@ export const authorParallel = async (
   const code = assembleParallel(design.preamble, pages);
   const gaps = missingSections(code, n);
   if (gaps.length) throw new Error(`parallel author: assembly missing ${gaps.join(", ")}`);
-  return { code, model: author.model, attempts, thinking: thinking.join("\n\n") };
+  return { code, model: author.model, attempts, thinking: thinking.join("\n\n"), plans: design.plans };
 };

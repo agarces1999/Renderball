@@ -25,6 +25,7 @@ import { measureScenes } from "../render/measure-scene";
 import { writeGeneratedFiles } from "../render/build-wrapper";
 import { callZaiVision, extractJsonFromReasoning } from "../render/zai-vision";
 import { SectionWatcher, finalSigs, type CompletedSection } from "./stream-sections";
+import { founderRubricEnabled, founderCriticPrompt } from "./rubric";
 import type { AuthorStreamHooks } from "./author";
 
 export const streamCriticsEnabled = (): boolean => (process.env.RB_STREAM_CRITICS ?? "off") === "on";
@@ -45,7 +46,11 @@ export const critiquePageShot = async (
 ): Promise<{ weakness: string | null }> => {
   const r = await callZaiVision(
     shotB64,
-    `This slide was authored for the intent: "${intent}". Judge it against that intent for an executive audience. Reply ONLY JSON: {"ship": true|false, "weakness": "<the ONE decisive weakness, or empty if ship>"}`,
+    // RB_CRITIC_RUBRIC=founder: the founder's own grading order (mistakes →
+    // occupancy → device → brand → hierarchy), written from his verdicts.
+    founderRubricEnabled()
+      ? founderCriticPrompt(intent)
+      : `This slide was authored for the intent: "${intent}". Judge it against that intent for an executive audience. Reply ONLY JSON: {"ship": true|false, "weakness": "<the ONE decisive weakness, or empty if ship>"}`,
     // 8192 = build.ts's CRITIC_TOKENS: judgment thinking ate 2048 in M5 — never lower.
     { timeoutMs: 120_000, maxTokens: 8192, stage: "harness-critic" },
   );

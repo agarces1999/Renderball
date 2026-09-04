@@ -122,7 +122,12 @@ export const callZaiVision = async (
   // (qwen3p8-max) reads images on this wire, probe-verified (exact headline +
   // page marker back from a real slide), so the reviser can look at its own
   // page. Still the ONE image wire; the doctrine holds.
-  opts: { disableThinking?: boolean; maxTokens?: number; timeoutMs?: number; stage?: string; model?: string } = {},
+  // thinkingBudget: cap the reasoning tokens of a THINKING model on a long
+  // code-emitting call (the seeing revision): thinking counts toward
+  // max_tokens on this wire, and an uncapped think left too little room for
+  // the code (stripe-thesis-1: a page truncated mid-emission). Sent only when
+  // given and only to families that accept the param.
+  opts: { disableThinking?: boolean; maxTokens?: number; timeoutMs?: number; stage?: string; model?: string; thinkingBudget?: number } = {},
 ): Promise<ZaiVisionResult> => {
   const model = opts.model ?? VISION_MODEL;
   // Sniff the real type from the decoded magic bytes. This wrapped EVERY bare
@@ -161,7 +166,14 @@ export const callZaiVision = async (
         // 46 with it off) and can return empty content unless thinking is
         // explicitly disabled. Sent only for GLM/Kimi-family ids — other
         // overrides must never receive the (unknown-to-them) param.
-        ...(opts.disableThinking && /glm|kimi/i.test(model)
+        // Qwen thinks by default and its reasoning counts toward max_tokens:
+        // a judgment call without an explicit budget gets half its budget
+        // for thinking (probe 2026-09-04: an uncapped think swallowed a
+        // 1,500-token answer). Kimi/GLM keep their measured behavior.
+        ...(!opts.disableThinking && (opts.thinkingBudget || /qwen/i.test(model))
+          ? { thinking: { type: "enabled", budget_tokens: Math.max(1024, Math.floor(opts.thinkingBudget ?? Math.min(6000, (opts.maxTokens ?? 1200) / 2))) } }
+          : {}),
+        ...(opts.disableThinking && /glm|kimi|qwen/i.test(model)
           ? { thinking: { type: "disabled" } }
           : {}),
         messages: [

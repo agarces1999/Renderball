@@ -83,6 +83,12 @@ export interface PackInput {
     | { pass: "design" }
     | { pass: "plan"; preamble: string }
     | { pass: "page"; page: number; preamble: string; plans: string };
+  /** PROMPT-ONLY STORY (RB_STORY=prompt; founder 2026-09-04: "maybe we start
+   *  from the prompt and let qwen do his internal brief"): no outline stage —
+   *  the design pass writes the story itself (label, intent, copy, visual
+   *  concept per page) inside the PAGE PLANS, then the page passes execute
+   *  it. `scenes` still carries the page count; their text is ignored. */
+  storyFromPrompt?: boolean;
 }
 
 export const CANVAS_BY_ASPECT: Record<PackInput["aspect"], { w: number; h: number }> = {
@@ -106,16 +112,18 @@ export const assemblePack = (input: PackInput): string => {
   const n = input.scenes.length;
   const sections = Array.from({ length: n }, (_, i) => `Section${i}`).join(", ");
 
-  const outline = input.scenes
-    .map(
-      (s, i) =>
-        `Page ${i + 1} — ${s.label}\nIntent: ${s.description}\n${
-          s.visual?.trim()
-            ? `Approved visual concept (the user signed off on this direction — realize its device and composition, executing and refining freely): ${s.visual.trim()}\n`
-            : ""
-        }Approved copy (use this text, compress freely, add no facts): ${s.content}`,
-    )
-    .join("\n\n");
+  const outline = input.storyFromPrompt
+    ? `(No outline was written. You write the story: ${n} pages that carry the brief below to its audience — a real narrative arc, one idea per page, ending on the ask. Every claim and number must come from the brief or the brand facts; invent none.)`
+    : input.scenes
+        .map(
+          (s, i) =>
+            `Page ${i + 1} — ${s.label}\nIntent: ${s.description}\n${
+              s.visual?.trim()
+                ? `Approved visual concept (the user signed off on this direction — realize its device and composition, executing and refining freely): ${s.visual.trim()}\n`
+                : ""
+            }Approved copy (use this text, compress freely, add no facts): ${s.content}`,
+        )
+        .join("\n\n");
 
   const assets = packAssetAllowlist(input);
   const roles = input.brand.roles ?? {};
@@ -170,9 +178,10 @@ export const assemblePack = (input: PackInput): string => {
       : `You are the design engine of a premium presentation studio. Author a complete ${n}-page deck as ONE self-contained React file. This is your only pass: no revisions follow, so compose at full ambition now.`;
   const passContract = par?.pass === "design"
     ? `- DESIGN PASS OUTPUT, part 1 — the complete MODULE PREAMBLE in one \`\`\`tsx block: the two imports and \`type Script = any;\`, \`const PALETTE\`, \`FONT_DISPLAY\`/\`FONT_BODY\`/\`FONT_MONO\`, the deck's single <style> component (every @font-face and every @keyframes the pages will use), the chrome component every page renders (lockup, page number, footer rail — it takes a \`page\` prop and renders that <style>), and EVERY shared helper component and constant the pages will need (cards, stat tiles, kickers, device primitives, easing constants). Do NOT emit any \`SectionN\` — the page passes do. The preamble must compile on its own.
-- DESIGN PASS OUTPUT, part 2 — the PAGE PLANS in one \`\`\`text block after the code: for each page 1-${n}, 4-8 lines headed \`Page K — <label>\`: the concrete graphic device, the layout zones with canvas coordinates, the type moments (headline size/placement), the motion beats (which elements enter, in what order, which helper/keyframe), and which shared helpers it uses. No two pages may use the same device.`
+- DESIGN PASS OUTPUT, part 2 — the PAGE PLANS in one \`\`\`text block after the code: for each page 1-${n}, ${input.storyFromPrompt ? "first the STORY lines — \`Intent:\` (one sentence: what this page must make the audience think or feel), \`Headline:\` (the exact display headline), \`Copy:\` (1-3 sentences of supporting copy, every fact from the brief) — then " : ""}4-8 lines headed \`Page K — <label>\`: the concrete graphic device, the layout zones with canvas coordinates, the type moments (headline size/placement), the motion beats (which elements enter, in what order, which helper/keyframe), and which shared helpers it uses. No two pages may use the same device.`
     : par?.pass === "plan"
-      ? `- PLAN PASS OUTPUT — the PAGE PLANS in one \`\`\`text block and nothing else: for each page 1-${n}, 4-8 lines headed \`Page K — <label>\`: the concrete graphic device (built from the system's helpers and primitives, or drawn as SVG), the layout zones with canvas coordinates, the type moments, the motion beats (which elements enter, in what order, which keyframe from the system), and which shared helpers it uses. No two pages may use the same device. Emit NO code.`
+      ? `- PLAN PASS OUTPUT — the PAGE PLANS in one \`\`\`text block and nothing else: for each page 1-${n}, 4-8 lines headed \`Page K — <label>\`: the concrete graphic device (built from the system's helpers and primitives, or drawn as SVG), the layout zones with canvas coordinates, the type moments, the motion beats (which elements enter, in what order, which keyframe from the system), and which shared helpers it uses. No two pages may use the same device. Emit NO code.
+- THE SYSTEM IS THE BRAND'S IDENTITY, NOT A TEMPLATE (founder rule): its palette roles, type, chrome, keyframes and primitives keep this deck consistent with the brand's other decks — the compositions must NOT repeat. Invent each page's device and layout fresh for THIS story; use the helpers as materials, never as a page layout; a page may build its own device inline when the materials do not fit. Creativity per page, consistency per brand.`
       : par?.pass === "page"
       ? `- The MODULE PREAMBLE below is FIXED: reference its constants, helpers, keyframes and chrome exactly by name. Do NOT re-emit or modify it. Define NOTHING at module scope — no imports, no new top-level constants or components (put page-local helpers INSIDE the section body).
 - Emit ONLY \`export const Section${par.page}: React.FC<{ script?: Script }>\` for page ${par.page + 1}, following ITS plan below. The other pages' plans are given so devices stay distinct and the story flows — do not write them.`
@@ -194,7 +203,7 @@ export const assemblePack = (input: PackInput): string => {
 
   return `${opening}
 
-THE APPROVED OUTLINE (verbatim — the user has signed off on this story):
+${input.storyFromPrompt ? "THE STORY (yours to write — see below):" : "THE APPROVED OUTLINE (verbatim — the user has signed off on this story):"}
 
 ${outline}
 

@@ -39,7 +39,8 @@ import { SectionWatcher } from "./stream-sections";
 import { EDIT_BLOCKS_INSTRUCTION, applyEditBlocks, editBlocksEnabled, parseEditBlocks } from "./edit-blocks";
 import { spliceSections, pagesForDetails } from "./splice-sections";
 import { authorDraws, rankDraws } from "./draws";
-import { authorParallel, authorParallelEnabled } from "./parallel-author";
+import { authorParallel, authorParallelEnabled, storyFromPlans } from "./parallel-author";
+import { founderRubricEnabled, founderPairwisePrompt } from "./rubric";
 import { readDesignCard } from "./design-card";
 import { brandSystemEnabled, brandSystemKey, brandFingerprint } from "./brand-system";
 
@@ -153,8 +154,13 @@ export const runHarnessPreviewBuild = async (args: HarnessBuildArgs): Promise<Ro
     // costs one vision call (~25-50s, ~$0.01) on a brand's first build.
     const designCard = await readDesignCard(be?.site_screenshot, (m) => timeline.mark(`harness:design-card:${m}`));
 
+    // RB_STORY=prompt (founder 2026-09-04, "let qwen do his internal brief"):
+    // the outline's text is not fed; the design pass writes the story. Needs
+    // the parallel author (the story lives in its plans). Lab flag.
+    const storyFromPrompt = (process.env.RB_STORY ?? "outline") === "prompt" && authorParallelEnabled();
     const packInput: PackInput = {
-      briefPrompt: String(brief?.prompt ?? brief?.brief ?? ""),
+      briefPrompt: String(brief?.prompt ?? brief?.brief ?? brief?.freeform_prompt ?? ""),
+      ...(storyFromPrompt ? { storyFromPrompt: true } : {}),
       tone: script.config?.tone,
       aspect,
       scenes,
@@ -177,7 +183,7 @@ export const runHarnessPreviewBuild = async (args: HarnessBuildArgs): Promise<Ro
         .filter((u: unknown): u is string => typeof u === "string"),
     };
     const pack = assemblePack(packInput);
-    const approvedText = [packInput.briefPrompt, ...scenes.map((s) => `${s.label} ${s.description} ${s.content}`)].join("\n");
+    let approvedText = [packInput.briefPrompt, ...(storyFromPrompt ? [] : scenes.map((s) => `${s.label} ${s.description} ${s.content}`))].join("\n");
     const allowedUrls = packAssetAllowlist(packInput);
 
     // ── Author: one mind, one file — in ONE breath up to 8 pages, in
@@ -285,6 +291,14 @@ export const runHarnessPreviewBuild = async (args: HarnessBuildArgs): Promise<Ro
     );
     if (!authoredAll.some((a) => a)) throw drawErrors[0] ?? new Error("harness author: every draw failed");
     const authored = authoredAll.find((a): a is NonNullable<typeof a> => !!a)!;
+    // Prompt-only story: the design pass's story becomes the critics' intents
+    // and the truth validators' approved text (the model's own copy).
+    if (storyFromPrompt && typeof (authored as { plans?: string }).plans === "string") {
+      const story = storyFromPlans((authored as { plans?: string }).plans ?? "", n);
+      story.forEach((st, i) => { if (scenes[i]) { scenes[i].label = st.label || scenes[i].label; scenes[i].description = st.description || scenes[i].description; scenes[i].content = st.content || scenes[i].content; } });
+      approvedText = [packInput.briefPrompt, (authored as { plans?: string }).plans ?? ""].join("\n");
+      timeline.mark(`harness:story:written by the design pass (${story.filter((x) => x.description).length}/${n} pages carry an intent)`);
+    }
     let drawVerdicts: { code: string; verdicts: Map<number, EarlyVerdict> } | null = null;
     if (draws > 1 && n <= 8) {
       const live = authoredAll.filter((a): a is NonNullable<typeof a> => !!a);
@@ -747,10 +761,16 @@ const lookAndReviseOnce = async (args: {
       const rv = await callZaiVision(
         visionShots,
         `${sectionPrompt}\n\nThe attached images are the RENDERED flagged pages, in this order: ${seen}. Look at them: fix what you see (collisions, clipping, empty regions, weak hierarchy) as well as what the review named.`,
-        { timeoutMs: 240_000, maxTokens: 12_000, stage: "harness-revise-vision", model },
+        // 20k, not 12k: thinking counts toward max_tokens on the vision wire
+        // (stripe-thesis-1: a page came back truncated → "implausibly small"
+        // → full-file fallback). The reasoning is capped separately.
+        { timeoutMs: 300_000, maxTokens: 20_000, stage: "harness-revise-vision", model, thinkingBudget: 6000 },
       );
       replyText = rv.text ?? "";
-      timeline.mark(`harness:revise:vision (${visionShots.length} page image(s) attached)`);
+      // Forensics: the vision reply survives even when the splice refuses and
+      // the full-file fallback overwrites revision-reply.txt.
+      await fsp.writeFile(path.join(genDir, "revision-vision-reply.txt"), replyText).catch(() => {});
+      timeline.mark(`harness:revise:vision (${visionShots.length} page image(s) attached, ${rv.usage?.output_tokens ?? "?"} tok)`);
     } else {
       const rs = await castCall({
         system: "",
@@ -813,7 +833,9 @@ const lookAndReviseOnce = async (args: {
       if (!a || !b) return false;
       const r2 = await callZaiVision(
         [a, b],
-        `Two versions of one slide (FIRST then SECOND), intent: "${sceneIntent(scenes[f.page], f.page)}". Which better achieves the intent? Reply ONLY JSON: {"winner":"FIRST"|"SECOND"}`,
+        founderRubricEnabled()
+          ? founderPairwisePrompt(sceneIntent(scenes[f.page], f.page))
+          : `Two versions of one slide (FIRST then SECOND), intent: "${sceneIntent(scenes[f.page], f.page)}". Which better achieves the intent? Reply ONLY JSON: {"winner":"FIRST"|"SECOND"}`,
         { timeoutMs: 120_000, maxTokens: CRITIC_TOKENS, stage: "harness-pairwise" },
       );
       const raw = (r2.text ?? "").match(/\{[\s\S]*\}/)?.[0] ?? extractJsonFromReasoning(r2.text ?? "");

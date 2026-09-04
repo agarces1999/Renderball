@@ -168,8 +168,15 @@ export const MODELS = {
  * lib/render/zai-vision.ts on a wire where images verifiably arrive — never
  * through an Anthropic-compat proxy that silently drops image blocks.
  */
+// 2026-09-04 (founder: "switch all to qwen"): the author model now reads
+// images on this account (probe-verified: exact headline + page marker back
+// from a real slide; `thinking: disabled` honored — reasoning_tokens 0), so
+// the critic, the pairwise judge, the design-card read and the crawl reads
+// run on the SAME mind that writes the deck. On 7 founder-graded pairs Qwen
+// as judge agreed 4/5 vs Kimi 3/5 (docs/10X.md §4a). Kimi stays reachable via
+// RB_VISION_MODEL for A/Bs. NOT PUSHED without the founder's word.
 export const VISION_MODEL =
-  process.env.RB_VISION_MODEL || "accounts/fireworks/models/kimi-k2p6";
+  process.env.RB_VISION_MODEL || "accounts/fireworks/models/qwen3p8-max";
 
 /**
  * Reasoning + output config for the build/composition calls on GLM 5.2 (z.ai).
