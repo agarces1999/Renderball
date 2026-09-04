@@ -81,6 +81,7 @@ export interface PackInput {
    *  words every pass reads. Omit for the one-call author. */
   parallel?:
     | { pass: "design" }
+    | { pass: "plan"; preamble: string }
     | { pass: "page"; page: number; preamble: string; plans: string };
 }
 
@@ -162,13 +163,17 @@ export const assemblePack = (input: PackInput): string => {
   const par = input.parallel;
   const opening = par?.pass === "design"
     ? `You are the design engine of a premium presentation studio. This ${n}-page deck is authored in TWO PASSES and this is the DESIGN PASS: you design the whole deck's identity and plan every page, but emit no page yet. Compose at full ambition — the page passes execute exactly what you lay down here.`
-    : par?.pass === "page"
+    : par?.pass === "plan"
+      ? `You are the design engine of a premium presentation studio. This brand already has a DECK SYSTEM (the module preamble below — its identity, chrome, helpers and keyframes are FIXED and reused across the brand's decks). This call PLANS every page of this ${n}-page deck against that system; the page passes then write the pages. Plan at full ambition — the pages execute exactly what you lay down.`
+      : par?.pass === "page"
       ? `You are the design engine of a premium presentation studio. This ${n}-page deck is authored in TWO PASSES; the design pass is done and its module preamble is FIXED. This call writes ONE page — page ${par.page + 1} — at full ambition, exactly on its plan.`
       : `You are the design engine of a premium presentation studio. Author a complete ${n}-page deck as ONE self-contained React file. This is your only pass: no revisions follow, so compose at full ambition now.`;
   const passContract = par?.pass === "design"
     ? `- DESIGN PASS OUTPUT, part 1 — the complete MODULE PREAMBLE in one \`\`\`tsx block: the two imports and \`type Script = any;\`, \`const PALETTE\`, \`FONT_DISPLAY\`/\`FONT_BODY\`/\`FONT_MONO\`, the deck's single <style> component (every @font-face and every @keyframes the pages will use), the chrome component every page renders (lockup, page number, footer rail — it takes a \`page\` prop and renders that <style>), and EVERY shared helper component and constant the pages will need (cards, stat tiles, kickers, device primitives, easing constants). Do NOT emit any \`SectionN\` — the page passes do. The preamble must compile on its own.
 - DESIGN PASS OUTPUT, part 2 — the PAGE PLANS in one \`\`\`text block after the code: for each page 1-${n}, 4-8 lines headed \`Page K — <label>\`: the concrete graphic device, the layout zones with canvas coordinates, the type moments (headline size/placement), the motion beats (which elements enter, in what order, which helper/keyframe), and which shared helpers it uses. No two pages may use the same device.`
-    : par?.pass === "page"
+    : par?.pass === "plan"
+      ? `- PLAN PASS OUTPUT — the PAGE PLANS in one \`\`\`text block and nothing else: for each page 1-${n}, 4-8 lines headed \`Page K — <label>\`: the concrete graphic device (built from the system's helpers and primitives, or drawn as SVG), the layout zones with canvas coordinates, the type moments, the motion beats (which elements enter, in what order, which keyframe from the system), and which shared helpers it uses. No two pages may use the same device. Emit NO code.`
+      : par?.pass === "page"
       ? `- The MODULE PREAMBLE below is FIXED: reference its constants, helpers, keyframes and chrome exactly by name. Do NOT re-emit or modify it. Define NOTHING at module scope — no imports, no new top-level constants or components (put page-local helpers INSIDE the section body).
 - Emit ONLY \`export const Section${par.page}: React.FC<{ script?: Script }>\` for page ${par.page + 1}, following ITS plan below. The other pages' plans are given so devices stay distinct and the story flows — do not write them.`
       : `- ${input.chapterEmitEnd && input.chapterEmitEnd < n
@@ -176,10 +181,14 @@ export const assemblePack = (input: PackInput): string => {
           : `Export exactly ${n} components: \`export const Section0\` through \`export const Section${n - 1}\` (React.FC<{ script?: Script }>), one per page, in outline order.`}`;
   const passContext = par?.pass === "page"
     ? `\n\nTHE FIXED MODULE PREAMBLE (already in the file — reference, never re-emit):\n\n\`\`\`tsx\n${par.preamble.trim()}\n\`\`\`\n\nTHE PAGE PLANS (yours is page ${par.page + 1}):\n\n${par.plans.trim()}\n`
-    : "";
+    : par?.pass === "plan"
+      ? `\n\nTHE BRAND'S DECK SYSTEM (the fixed module preamble — plan with its helpers, primitives, chrome and keyframes):\n\n\`\`\`tsx\n${par.preamble.trim()}\n\`\`\`\n`
+      : "";
   const output = par?.pass === "design"
     ? `OUTPUT: reply with the preamble in one \`\`\`tsx block, then the page plans in one \`\`\`text block. No commentary.`
-    : par?.pass === "page"
+    : par?.pass === "plan"
+      ? `OUTPUT: reply with ONLY the page plans in one \`\`\`text block. No code, no commentary.`
+      : par?.pass === "page"
       ? `OUTPUT: reply with ONLY the \`Section${par.page}\` component in a single \`\`\`tsx block. No commentary before or after.`
       : `OUTPUT: reply with ONLY the complete file in a single \`\`\`tsx code block. No commentary before or after.`;
 

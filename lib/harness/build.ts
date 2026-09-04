@@ -41,6 +41,7 @@ import { spliceSections } from "./splice-sections";
 import { authorDraws, rankDraws } from "./draws";
 import { authorParallel, authorParallelEnabled } from "./parallel-author";
 import { readDesignCard } from "./design-card";
+import { brandSystemEnabled, brandSystemKey, brandFingerprint } from "./brand-system";
 
 interface HarnessBuildArgs {
   // Loose on purpose: LoadedScript/LoadedBrief stay owned by run-preview-build.
@@ -251,7 +252,15 @@ export const runHarnessPreviewBuild = async (args: HarnessBuildArgs): Promise<Ro
     const drawErrors: unknown[] = [];
     const authoredAll = parallel
       ? [
-          await authorParallel(packInput, n, { onAttempt, signal: abortSignal, mark: (l) => timeline.mark(l), rank: { genDir, script, scenes } }).catch(async (err: unknown) => {
+          await authorParallel(packInput, n, {
+            onAttempt,
+            signal: abortSignal,
+            mark: (l) => timeline.mark(l),
+            rank: { genDir, script, scenes },
+            ...(brandSystemEnabled()
+              ? { brandSystem: { key: brandSystemKey(be?.url, packInput.brand.brandName), fingerprint: brandFingerprint(packInput.brand), scriptId } }
+              : {}),
+          }).catch(async (err: unknown) => {
             if (abortSignal?.aborted) throw err;
             timeline.mark(`harness:author:parallel:fallback (${String(err).slice(0, 100)})`);
             return authorDeck(basePack, firstEnd, { onAttempt, signal: abortSignal, ...(streamHooks ? { stream: streamHooks } : {}) });

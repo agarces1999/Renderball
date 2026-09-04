@@ -21,6 +21,7 @@ import { assemblePack, type PackInput } from "./pack";
 import { missingSections, socketOrder, type AuthorAttempt } from "./author";
 import { sectionSpans } from "./splice-sections";
 import { pageDraws, rankPageDraws } from "./draws";
+import { loadBrandSystem, saveBrandSystem, touchBrandSystem } from "./brand-system";
 
 export const authorParallelEnabled = (): boolean => (process.env.RB_AUTHOR_PARALLEL ?? "off") === "on";
 
@@ -101,6 +102,9 @@ export const authorParallel = async (
     mark?: (line: string) => void;
     /** For RB_PAGE_DRAWS>1: where and what to render candidates against. */
     rank?: { genDir: string; script: unknown; scenes: { label?: string; description?: string }[] };
+    /** RB_BRAND_SYSTEM: reuse this brand's stored deck system when its
+     *  fingerprint matches; store a freshly designed one. */
+    brandSystem?: { key: string; fingerprint: string; scriptId: string };
   },
 ): Promise<{ code: string; model: string; attempts: AuthorAttempt[]; thinking: string }> => {
   const author = socketOrder()[0];
@@ -113,8 +117,48 @@ export const authorParallel = async (
   };
   const dial = author.thinkingBudget ? { effort: "high" as const, thinkingBudget: author.thinkingBudget } : {};
 
-  // ── design pass (one retry) ──
+  // ── stored deck system → plan-only pass (the thesis's second deck) ──
   let design: { preamble: string; plans: string } | null = null;
+  let reused = false;
+  if (opts?.brandSystem) {
+    const stored = await loadBrandSystem(opts.brandSystem.key, opts.brandSystem.fingerprint);
+    if (stored) {
+      for (let tryN = 0; tryN < 2 && !design; tryN++) {
+        const t0 = Date.now();
+        try {
+          const r = await castCall({
+            system: "",
+            user: assemblePack({ ...packInput, parallel: { pass: "plan", preamble: stored.preamble } }),
+            maxTokens: 8000,
+            signal: opts?.signal,
+            model: author.model,
+            timeoutMs: 180_000,
+            ...dial,
+          });
+          const text = fences(r.text ?? "").filter((f) => !CODE_LANGS.has(f.lang)).map((f) => f.body).reduce((a, b) => (b.length > a.length ? b : a), "") || (r.text ?? "");
+          const plans = text.trim();
+          if (r.thinking) thinking.push(`─── plan (system reused) ───\n${r.thinking}`);
+          const ok = /Page\s*1\b/i.test(plans) && plans.length > 200;
+          record("plan", t0, r.outputTokens, ok ? undefined : "plan reply lacked page plans");
+          if (ok) design = { preamble: stored.preamble, plans };
+        } catch (err) {
+          if (opts?.signal?.aborted) throw err;
+          record("plan", t0, 0, String(err).slice(0, 200));
+        }
+      }
+      if (design) {
+        reused = true;
+        await touchBrandSystem(opts.brandSystem.key);
+        opts?.mark?.(`harness:brand-system:reused (saved ${stored.savedAt.slice(0, 10)}, ${stored.uses + 1} decks) — plan-only pass`);
+      } else {
+        opts?.mark?.("harness:brand-system:stored system present but the plan pass failed — designing fresh");
+      }
+    } else {
+      opts?.mark?.("harness:brand-system:none stored for this brand (or brand facts changed) — designing");
+    }
+  }
+
+  // ── design pass (one retry) ──
   for (let tryN = 0; tryN < 2 && !design; tryN++) {
     const t0 = Date.now();
     try {
@@ -136,7 +180,13 @@ export const authorParallel = async (
     }
   }
   if (!design) throw new Error("parallel author: design pass failed twice");
-  opts?.mark?.(`harness:author:parallel:design ok (${design.preamble.length} bytes, ${design.plans.split("\n").length} plan lines)`);
+  if (!reused) {
+    opts?.mark?.(`harness:author:parallel:design ok (${design.preamble.length} bytes, ${design.plans.split("\n").length} plan lines)`);
+    if (opts?.brandSystem) {
+      await saveBrandSystem({ key: opts.brandSystem.key, fingerprint: opts.brandSystem.fingerprint, preamble: design.preamble, scriptId: opts.brandSystem.scriptId });
+      opts?.mark?.("harness:brand-system:stored for this brand's next deck");
+    }
+  }
 
   // ── page passes (concurrent; one retry each) ──
   // Page passes think less than the design pass: the plan is already written.
