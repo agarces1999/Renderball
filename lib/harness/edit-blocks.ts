@@ -103,4 +103,8 @@ export const EDIT_BLOCKS_INSTRUCTION = `Reply with the EDITS ONLY, as one or mor
 >>>>>>> REPLACE
 Rules: each SEARCH must be an exact, unique match in the file; make the smallest blocks that fix the problem; multiple blocks are fine; do NOT re-emit the whole file; no commentary.`;
 
-export const editBlocksEnabled = (): boolean => (process.env.RB_EDIT_BLOCKS ?? "off") === "on";
+// DEFAULT ON since 2026-09-04 (founder: "agree to build and push" on the
+// page-scale fixes, after blind pairs graded the fast lane a "minimal" quality
+// tax for ~120s/deck): the PATCH site only; unparseable blocks fall through to
+// the full-file patch. RB_EDIT_BLOCKS=off restores the old path.
+export const editBlocksEnabled = (): boolean => (process.env.RB_EDIT_BLOCKS ?? "on") === "on";

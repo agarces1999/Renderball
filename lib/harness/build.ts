@@ -866,7 +866,10 @@ const lookAndReviseOnce = async (args: {
   return code;
 };
 
-const reviseScopeSection = (): boolean => (process.env.RB_REVISE_SCOPE ?? "file") === "section";
+// DEFAULT "section" since 2026-09-04 (founder decision): the revision re-emits
+// only the flagged pages, spliced over the originals; any refusal falls
+// through to the full-file revision. RB_REVISE_SCOPE=file restores it.
+const reviseScopeSection = (): boolean => (process.env.RB_REVISE_SCOPE ?? "section") === "section";
 const reviseVisionEnabled = (): boolean => (process.env.RB_REVISE_VISION ?? "off") === "on";
 const renderTruthNotesEnabled = (): boolean => (process.env.RB_RENDER_TRUTH ?? "off") === "on";
 

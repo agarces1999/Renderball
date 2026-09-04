@@ -39,7 +39,10 @@ export const authorStreamEnabled = (): boolean => streamAlways();
  *  so transport choice is a MODEL-BEHAVIOR variable, and experiments that
  *  toggle stream critics must hold it constant across arms. Default off:
  *  prod behavior unchanged. */
-const streamAlways = () => (process.env.RB_AUTHOR_STREAM ?? "off") === "on";
+// DEFAULT ON since 2026-09-04: the stream critics need the author over SSE
+// (founder's fast-lane decision; the streamed author's blind record was
+// 4W-3T-0L). RB_AUTHOR_STREAM=off restores the plain call.
+const streamAlways = () => (process.env.RB_AUTHOR_STREAM ?? "on") === "on";
 
 /** One author attempt over the wire: streamed when hooks are given (thinking
  *  accumulated back into the result so harness-trace parity survives — trace

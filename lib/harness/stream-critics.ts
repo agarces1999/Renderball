@@ -28,7 +28,10 @@ import { SectionWatcher, finalSigs, type CompletedSection } from "./stream-secti
 import { founderRubricEnabled, founderCriticPrompt } from "./rubric";
 import type { AuthorStreamHooks } from "./author";
 
-export const streamCriticsEnabled = (): boolean => (process.env.RB_STREAM_CRITICS ?? "off") === "on";
+// DEFAULT ON since 2026-09-04 (founder decision on the fast lane): critics
+// judge pages as they stream out of the author; sig-verified reuse, never
+// harmful by construction. RB_STREAM_CRITICS=off restores the join-only path.
+export const streamCriticsEnabled = (): boolean => (process.env.RB_STREAM_CRITICS ?? "on") === "on";
 
 /** ONE definition of the page-intent line — VERBATIM the format build.ts has
  *  always sent (the unbound-copy postmortem is what happens when prompt
