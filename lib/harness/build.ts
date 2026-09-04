@@ -191,7 +191,7 @@ export const runHarnessPreviewBuild = async (args: HarnessBuildArgs): Promise<Ro
     // length runs the harness; longer decks honestly take longer). ──
     timeline.mark("harness:author:start");
     const CHAPTER = 6;
-    const onAttempt = (a: AuthorAttempt) => timeline.mark(`harness:author:${a.model.split("/").pop()}:${a.ok ? "ok" : "failed"} (${a.seconds}s, ${a.outputTokens}tok)`);
+    const onAttempt = (a: AuthorAttempt) => timeline.mark(`harness:author:${a.model.split("/").pop()}:${a.ok ? "ok" : "failed"} (${a.seconds}s, ${a.outputTokens}tok)${a.ok || !a.failure ? "" : ` — ${String(a.failure).slice(0, 100)}`}`);
     // Parallel authoring writes every page at once — no chapters to continue.
     const firstEnd = authorParallelEnabled() ? n : n <= 8 ? n : CHAPTER;
     const basePack = n <= 8 ? pack : assemblePack({ ...packInput, chapterEmitEnd: firstEnd });
