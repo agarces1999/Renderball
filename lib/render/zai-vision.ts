@@ -118,8 +118,13 @@ export const callZaiVision = async (
   // image attachment used to spend Kimi tokens completely invisibly (the
   // onUsage hook in read-image.ts was never wired through extract-text.ts),
   // which is a verbatim repeat of the bug app/new/actions.ts documents.
-  opts: { disableThinking?: boolean; maxTokens?: number; timeoutMs?: number; stage?: string } = {},
+  // model: per-call override (10x program, 2026-09-04) — the AUTHOR model
+  // (qwen3p8-max) reads images on this wire, probe-verified (exact headline +
+  // page marker back from a real slide), so the reviser can look at its own
+  // page. Still the ONE image wire; the doctrine holds.
+  opts: { disableThinking?: boolean; maxTokens?: number; timeoutMs?: number; stage?: string; model?: string } = {},
 ): Promise<ZaiVisionResult> => {
+  const model = opts.model ?? VISION_MODEL;
   // Sniff the real type from the decoded magic bytes. This wrapped EVERY bare
   // base64 image as image/png unconditionally, so a JPEG went to the provider
   // announcing itself as a PNG — a mislabel that costs nothing until the day a
@@ -148,7 +153,7 @@ export const callZaiVision = async (
         "content-type": "application/json",
       },
       body: JSON.stringify({
-        model: VISION_MODEL,
+        model,
         max_tokens: opts.maxTokens ?? 1200,
         ...(process.env.RB_FIREWORKS_SERVICE_TIER ? { service_tier: process.env.RB_FIREWORKS_SERVICE_TIER } : {}),
         // GLM and Kimi VLMs are thinking models: on terse extraction tasks
@@ -156,7 +161,7 @@ export const callZaiVision = async (
         // 46 with it off) and can return empty content unless thinking is
         // explicitly disabled. Sent only for GLM/Kimi-family ids — other
         // overrides must never receive the (unknown-to-them) param.
-        ...(opts.disableThinking && /glm|kimi/i.test(VISION_MODEL)
+        ...(opts.disableThinking && /glm|kimi/i.test(model)
           ? { thinking: { type: "disabled" } }
           : {}),
         messages: [
@@ -191,7 +196,7 @@ export const callZaiVision = async (
     // design-language, brand colors, logo agent, document image OCR). Two of
     // those six recorded nothing at all before this line existed.
     void recordSpend({
-      model: VISION_MODEL,
+      model,
       stage: opts.stage,
       defaultStage: "vision",
       inputTokens: u.prompt_tokens ?? 0,
@@ -214,7 +219,7 @@ export const callZaiVision = async (
     // does not record one: rejected, not served.
     if (!(err instanceof Error) || !/^fireworks vision \d/.test(err.message)) {
       void recordSpend({
-        model: VISION_MODEL,
+        model,
         stage: opts.stage,
         defaultStage: "vision",
         ok: false,

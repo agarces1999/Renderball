@@ -25,7 +25,7 @@ import { warmSceneThumbs } from "../render/thumbnail";
 import { readDocumentBrand } from "../brand/document-brand";
 import { documentBrandFromExtract } from "../documents/brand-crawl";
 import { measureScenes } from "../render/measure-scene";
-import { measureOutDir } from "../render/render-truth-gates";
+import { measureOutDir, findRenderTruthFailures } from "../render/render-truth-gates";
 import { verifyScenesRender } from "../render/ssr-render";
 import { writeGeneratedFiles } from "../render/build-wrapper";
 import { callZaiVision, extractJsonFromReasoning } from "../render/zai-vision";
@@ -632,6 +632,35 @@ const lookAndReviseOnce = async (args: {
     })().catch(() => null)),
   );
   const notes = pageNotes.filter((x): x is { page: number; weakness: string } => x !== null);
+  // RB_RENDER_TRUTH=on (10x program, flagged): the legacy render-truth battery
+  // (overflow, cross/intra-piece overlap, rule-through-text, … — the 14
+  // canonical kinds that blocked the cast engine) runs on the SAME measurement
+  // the critics judged, and its findings NAME the defect to the reviser. Code
+  // reports; the model fixes. Never a repair, never a block: a page with a
+  // mechanical finding simply joins the revision list with the finding spelled
+  // out ("Page 3: overflow — 'Money movement…' crosses the right edge").
+  if (renderTruthNotesEnabled()) {
+    try {
+      const rt = await findRenderTruthFailures(before);
+      const byPage = new Map<number, string[]>();
+      for (const f of rt.findings) {
+        if (f.scene < 0 || f.scene >= n) continue;
+        const list = byPage.get(f.scene) ?? [];
+        if (list.length < 4) list.push(`${f.kind} — ${f.detail.slice(0, 160)}`);
+        byPage.set(f.scene, list);
+      }
+      for (const [page, list] of byPage) {
+        const mech = `Render-truth findings on this page: ${list.join("; ")}.`;
+        const existing = notes.find((x) => x.page === page);
+        if (existing) existing.weakness = `${existing.weakness} ${mech}`;
+        else notes.push({ page, weakness: mech });
+      }
+      notes.sort((a, b) => a.page - b.page);
+      timeline.mark(`harness:render-truth:${rt.findings.length} finding(s) on ${byPage.size} page(s)`);
+    } catch (err) {
+      timeline.mark(`harness:render-truth:skipped (${String(err).slice(0, 80)})`);
+    }
+  }
   timeline.mark(`harness:critic:done (${notes.length} page(s) flagged)`);
   if (!notes.length) return code;
   // Snapshot the flagged pages' pixels now — the revision re-measure
@@ -655,17 +684,36 @@ const lookAndReviseOnce = async (args: {
   // or two pages; a page is ~3-4k tokens (~35s). Anything unusable falls
   // through to the full-file path, so the worst case is exactly today.
   if (reviseScopeSection()) {
-    const rs = await castCall({
-      system: "",
-      user: `${pack}\n\nYou already authored the file below. A design review flagged specific pages. Re-emit ONLY the flagged pages — each as its COMPLETE \`export const SectionN\` component, recomposed with full freedom to fix the weakness (occupy the canvas, strengthen the device), using the file's existing design system, constants, helpers and chrome exactly as the other pages do. Do not emit the other pages or the module preamble. Reply with ONLY the flagged Section components in one \`\`\`tsx block.\n\n\`\`\`tsx\n${code}\n\`\`\`\n\nFLAGGED:\n${flaggedList}`,
-      maxTokens: 12_000,
-      signal,
-      model,
-      timeoutMs: 240_000,
-      effort: "high",
-      thinkingBudget: 6000,
-    });
-    replyText = rs.text ?? "";
+    const sectionPrompt = `${pack}\n\nYou already authored the file below. A design review flagged specific pages. Re-emit ONLY the flagged pages — each as its COMPLETE \`export const SectionN\` component, recomposed with full freedom to fix the weakness (occupy the canvas, strengthen the device), using the file's existing design system, constants, helpers and chrome exactly as the other pages do. Do not emit the other pages or the module preamble. Reply with ONLY the flagged Section components in one \`\`\`tsx block.\n\n\`\`\`tsx\n${code}\n\`\`\`\n\nFLAGGED:\n${flaggedList}`;
+    // RB_REVISE_VISION=on (10x program, flagged): the reviser SEES the flagged
+    // pages. Today the critic looks and writes one sentence; the author then
+    // revises blind. The author model reads images on the vision wire
+    // (probe-verified 2026-09-04), so the rendered pages ride along with the
+    // request — "look at your page" instead of "someone said your page is
+    // weak". Same section-scoped output, same splice, same pairwise judge.
+    const visionShots = reviseVisionEnabled() ? notes.map((f) => beforeShots.get(f.page)).filter((s): s is string => !!s) : [];
+    if (visionShots.length) {
+      const seen = notes.filter((f) => beforeShots.has(f.page)).map((f) => `Page ${f.page + 1}`).join(", ");
+      const rv = await callZaiVision(
+        visionShots,
+        `${sectionPrompt}\n\nThe attached images are the RENDERED flagged pages, in this order: ${seen}. Look at them: fix what you see (collisions, clipping, empty regions, weak hierarchy) as well as what the review named.`,
+        { timeoutMs: 240_000, maxTokens: 12_000, stage: "harness-revise-vision", model },
+      );
+      replyText = rv.text ?? "";
+      timeline.mark(`harness:revise:vision (${visionShots.length} page image(s) attached)`);
+    } else {
+      const rs = await castCall({
+        system: "",
+        user: sectionPrompt,
+        maxTokens: 12_000,
+        signal,
+        model,
+        timeoutMs: 240_000,
+        effort: "high",
+        thinkingBudget: 6000,
+      });
+      replyText = rs.text ?? "";
+    }
     const spliced = spliceSections(code, replyText, notes.map((f) => f.page));
     if (spliced.ok) {
       revised = spliced.code;
@@ -737,6 +785,8 @@ const lookAndReviseOnce = async (args: {
 };
 
 const reviseScopeSection = (): boolean => (process.env.RB_REVISE_SCOPE ?? "file") === "section";
+const reviseVisionEnabled = (): boolean => (process.env.RB_REVISE_VISION ?? "off") === "on";
+const renderTruthNotesEnabled = (): boolean => (process.env.RB_RENDER_TRUTH ?? "off") === "on";
 
 const shotBase64 = async (shotPath: string | undefined, genDir: string, i: number): Promise<string | null> => {
   for (const p of [shotPath, path.join(measureOutDir(genDir), `measure-scene-${i}.png`)]) {
