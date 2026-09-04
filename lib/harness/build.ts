@@ -822,7 +822,7 @@ const lookAndReviseOnce = async (args: {
   const check = await verifyScenesRender(genDir, n, script);
   if (!check.ok) {
     await writeGeneratedFiles(genDir, { code, designCode: code, script });
-    timeline.mark("harness:revise:rejected (revision broke a render)");
+    timeline.mark(`harness:revise:rejected (revision broke a render: ${String(check.errors?.[0] ?? "").slice(0, 120)})`);
     return code;
   }
   const after = await measureScenes(genDir, script, measureOutDir(genDir));

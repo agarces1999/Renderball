@@ -38,10 +38,24 @@ export const spliceSections = (code: string, reply: string, flagged: number[]): 
   if (!orig.length) return { ok: false, reason: "no sections in the original" };
   const wanted = [...new Set(flagged)].sort((a, b) => a - b);
   if (!wanted.length) return { ok: false, reason: "nothing flagged" };
+  // Module-level declarations the reply put BEFORE its first section (a new
+  // helper the rewritten page needs): hoisted in front of the original's first
+  // section, so the page does not reference an identifier that never made it
+  // in (heist-fastv2-1: "revision broke a render" — exactly this).
+  const preface = fresh.length ? body.slice(0, fresh[0].start) : "";
+  const hoisted = preface
+    .split("\n")
+    .filter((l) => /^(?:const|let|function|type|interface)\s/.test(l) || /^\s+/.test(l) || /^[}\])];]?\s*$/.test(l))
+    .join("\n")
+    .trim();
+  const hoist = hoisted && /^(?:const|let|function|type|interface)\s/m.test(hoisted) && !/^import\s/m.test(preface) ? `${hoisted}\n\n` : "";
   const repl = new Map<number, string>();
   for (const idx of wanted) {
     const f = fresh.find((s) => s.index === idx);
     const o = orig.find((s) => s.index === idx);
+    // No renaming here (unlike the parallel author's page pass): the reviser
+    // sees the whole file, so a section returned under another number IS that
+    // other page's content — splicing it in would duplicate a page.
     if (!f || !o) return { ok: false, reason: `Section${idx} missing from the reply` };
     const text = body.slice(f.start, f.end).trimEnd() + "\n\n";
     if (text.length < 400 || text.length < (o.end - o.start) * 0.4) return { ok: false, reason: `Section${idx} re-emission implausibly small` };
@@ -49,8 +63,9 @@ export const spliceSections = (code: string, reply: string, flagged: number[]): 
   }
   let out = "";
   let cursor = 0;
-  for (const o of orig) {
+  for (const [i, o] of orig.entries()) {
     out += code.slice(cursor, o.start);
+    if (i === 0 && hoist) out += hoist;
     out += repl.get(o.index) ?? code.slice(o.start, o.end);
     cursor = o.end;
   }

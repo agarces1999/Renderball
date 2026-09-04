@@ -58,6 +58,16 @@ await check("two flagged pages both replaced, in file order", () => {
   assert(r.replaced.join(",") === "0,2", "replaced list sorted");
 });
 
+await check("a helper the reply declared before its section is hoisted in front of the first page", () => {
+  const reply = "```tsx\nconst Badge: React.FC<{ t: string }> = ({ t }) => <span>{t}</span>;\n\n" + page(1, "ONE-WITH-BADGE") + "```";
+  const r = spliceSections(deck, reply, [1]);
+  assert(r.ok, `expected ok, got ${JSON.stringify(r)}`);
+  if (!r.ok) return;
+  const iBadge = r.code.indexOf("const Badge"), iS0 = r.code.indexOf("export const Section0"), iPal = r.code.indexOf("const PALETTE");
+  assert(iBadge > iPal && iBadge < iS0, "hoisted after the preamble, before Section0");
+  assert(r.code.includes("ONE-WITH-BADGE") && sectionSpans(r.code).length === 3, "page replaced, exports intact");
+});
+
 await check("pagesForDetails: a defect is located on its page; a preamble-only defect returns null", () => {
   const withNumeral = deck.replace("two</p>", "two 4,000 cafes</p>");
   assert(JSON.stringify(pagesForDetails(withNumeral, ["4,000"])) === "[2]", "numeral on page 3 (index 2)");
