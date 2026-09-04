@@ -2,7 +2,7 @@
  * Section-scoped revision splice: only flagged pages change; anything
  * unusable refuses so the caller falls back to the full-file path.
  */
-import { sectionSpans, spliceSections } from "./splice-sections";
+import { sectionSpans, spliceSections, pagesForDetails } from "./splice-sections";
 
 let passed = 0;
 let failed = 0;
@@ -56,6 +56,13 @@ await check("two flagged pages both replaced, in file order", () => {
   const i2 = r.code.indexOf("TWO-REVISED");
   assert(i0 > 0 && i1 > i0 && i2 > i1, "order preserved");
   assert(r.replaced.join(",") === "0,2", "replaced list sorted");
+});
+
+await check("pagesForDetails: a defect is located on its page; a preamble-only defect returns null", () => {
+  const withNumeral = deck.replace("two</p>", "two 4,000 cafes</p>");
+  assert(JSON.stringify(pagesForDetails(withNumeral, ["4,000"])) === "[2]", "numeral on page 3 (index 2)");
+  assert(pagesForDetails(deck, ["PALETTE = { accent"]) === null, "preamble-only detail → null (full-file fallback)");
+  assert(JSON.stringify(pagesForDetails(withNumeral, ["4,000", "zero</p>"])) === "[0,2]", "several defects → sorted pages");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

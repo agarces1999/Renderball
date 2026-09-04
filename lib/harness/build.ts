@@ -37,7 +37,7 @@ import { validateDeck, findLogoViolation, type TruthViolation } from "./validato
 import { EarlyCriticRunner, streamCriticsEnabled, critiquePageShot, sceneIntent, type EarlyVerdict } from "./stream-critics";
 import { SectionWatcher } from "./stream-sections";
 import { EDIT_BLOCKS_INSTRUCTION, applyEditBlocks, editBlocksEnabled, parseEditBlocks } from "./edit-blocks";
-import { spliceSections } from "./splice-sections";
+import { spliceSections, pagesForDetails } from "./splice-sections";
 import { authorDraws, rankDraws } from "./draws";
 import { authorParallel, authorParallelEnabled } from "./parallel-author";
 import { readDesignCard } from "./design-card";
@@ -566,6 +566,39 @@ const surgicalPatch = async (
   signal?: AbortSignal,
   onMode?: (mode: string) => void,
 ): Promise<string | null> => {
+  // RB_PATCH_SCOPE=section (2026-09-04, the founder's "no search/replace"
+  // alternative): every fix is a PAGE. Locate each defect's page by its
+  // literal detail, re-emit only those pages as complete Sections, splice.
+  // A defect that lives in the preamble (a logo const) has no page → the
+  // full-file path below. Same truth re-validation after either path.
+  if ((process.env.RB_PATCH_SCOPE ?? "file") === "section") {
+    const pages = pagesForDetails(code, violations.map((v) => v.detail));
+    if (pages && pages.length) {
+      try {
+        const r = await castCall({
+          system: "",
+          user: `Below is a complete React deck file, followed by specific defects. The defects live on page(s) ${pages.map((p) => p + 1).join(", ")}. Re-emit ONLY those pages — each as its COMPLETE \`export const SectionN\` component — with the defects fixed and NOTHING else changed (same layout, same styles, same text apart from the fix). Do not emit the other pages or the module preamble. Reply with ONLY the re-emitted Section components in one \`\`\`tsx block.\n\n\`\`\`tsx\n${code}\n\`\`\`\n\nDEFECTS:\n${violations.map((v, i) => `${i + 1}. ${v.patch}`).join("\n")}`,
+          maxTokens: 12_000,
+          signal,
+          model,
+          timeoutMs: 240_000,
+          effort: "high",
+          thinkingBudget: 4000,
+        });
+        const spliced = spliceSections(code, r.text ?? "", pages);
+        if (spliced.ok) {
+          onMode?.(`page-scoped (${pages.map((p) => p + 1).join(",")} re-emitted)`);
+          return spliced.code;
+        }
+        onMode?.(`page-scoped fallback (${spliced.reason}) — full file`);
+      } catch (err) {
+        if (signal?.aborted) throw err;
+        onMode?.(`page-scoped fallback (${String(err).slice(0, 60)}) — full file`);
+      }
+    } else {
+      onMode?.("page-scoped: a defect lives outside every page — full file");
+    }
+  }
   if (editBlocksEnabled()) {
     try {
       const r = await castCall({

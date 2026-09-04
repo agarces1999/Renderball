@@ -60,3 +60,30 @@ export const spliceSections = (code: string, reply: string, flagged: number[]): 
   if (exported !== expected) return { ok: false, reason: "splice lost or duplicated a section export" };
   return { ok: true, code: out, replaced: wanted };
 };
+
+
+/**
+ * Which pages a set of defect details live on (page-scoped patch,
+ * RB_PATCH_SCOPE=section, 2026-09-04 — the founder's "no search/replace"
+ * alternative: the unit of every fix is a page). A detail that only occurs
+ * in the module preamble (a logo const, a shared helper) has no page →
+ * null → the caller falls back to the full-file patch.
+ */
+export const pagesForDetails = (code: string, details: string[]): number[] | null => {
+  const spans = sectionSpans(code);
+  if (!spans.length) return null;
+  const pages = new Set<number>();
+  for (const d of details) {
+    const needle = d.trim();
+    if (!needle) continue;
+    let found = false;
+    for (const sp of spans) {
+      if (code.slice(sp.start, sp.end).includes(needle)) {
+        pages.add(sp.index);
+        found = true;
+      }
+    }
+    if (!found) return null; // lives outside every section (preamble) or is not literal
+  }
+  return [...pages].sort((a, b) => a - b);
+};
