@@ -295,7 +295,12 @@ export const runHarnessPreviewBuild = async (args: HarnessBuildArgs): Promise<Ro
     // and the truth validators' approved text (the model's own copy).
     if (storyFromPrompt && typeof (authored as { plans?: string }).plans === "string") {
       const story = storyFromPlans((authored as { plans?: string }).plans ?? "", n);
-      story.forEach((st, i) => { if (scenes[i]) { scenes[i].label = st.label || scenes[i].label; scenes[i].description = st.description || scenes[i].description; scenes[i].content = st.content || scenes[i].content; } });
+      story.forEach((st, i) => {
+        if (scenes[i]) { scenes[i].label = st.label || scenes[i].label; scenes[i].description = st.description || scenes[i].description; scenes[i].content = st.content || scenes[i].content; }
+        // The product's surfaces (rail labels, copy panel, share titles) read
+        // the script — the story Qwen wrote must be what they show.
+        if (script.scenes?.[i]) { script.scenes[i].label = st.label || script.scenes[i].label; script.scenes[i].description = st.description || script.scenes[i].description; if (st.content) script.scenes[i].content = st.content; }
+      });
       approvedText = [packInput.briefPrompt, (authored as { plans?: string }).plans ?? ""].join("\n");
       timeline.mark(`harness:story:written by the design pass (${story.filter((x) => x.description).length}/${n} pages carry an intent)`);
     }
@@ -335,6 +340,11 @@ export const runHarnessPreviewBuild = async (args: HarnessBuildArgs): Promise<Ro
     const missingAfterMerge = n > 8 ? missingSections(code, n) : [];
     if (missingAfterMerge.length) throw new Error(`chapter merge left gaps: ${missingAfterMerge.join(", ")}`);
     timeline.mark("design:scaffold:done");
+    // Forensics: the design pass's plans (and, prompt-only, its story).
+    if ("plans" in authored && typeof (authored as { plans?: string }).plans === "string") {
+      await fsp.mkdir(genDir, { recursive: true }).catch(() => {});
+      await fsp.writeFile(path.join(genDir, "design-plans.txt"), (authored as { plans?: string }).plans ?? "").catch(() => {});
+    }
     // Trace review is protocol: persist the author's reasoning next to the deck.
     // mkdir first — this runs BEFORE writeGeneratedFiles creates the genDir, and
     // the verification build proved the silent .catch was eating the ENOENT.
