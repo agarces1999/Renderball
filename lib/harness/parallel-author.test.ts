@@ -55,6 +55,14 @@ await check("page reply → exactly its Section (extra sections and prose ignore
   assert(!!l && l.leaked && /const LOCAL = 3/.test(l.code), "a module-level leak is kept and flagged");
 });
 
+await check("a reply holding exactly one mis-numbered section is taken as the page (renamed), not retried", () => {
+  const raw = "```tsx\n" + section(2, "off by one") + "```";
+  const got = extractSection(raw, 1);
+  assert(!!got && /export const Section1\b/.test(got.code) && !/Section2/.test(got.code), `got ${got?.code.slice(0, 50)}`);
+  const two = "```tsx\n" + section(2, "a") + section(3, "b") + "```";
+  assert(extractSection(two, 1) === null, "two sections, neither mine → still refused");
+});
+
 await check("assembly yields a file with every Section, in order, preamble first", () => {
   const code = assembleParallel(PREAMBLE, [
     { index: 2, code: section(2, "c") },

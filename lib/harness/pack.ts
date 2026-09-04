@@ -36,6 +36,13 @@ export interface PackBrandFacts {
     body?: { stack: string; faceSrc?: string };
     mono?: { stack: string };
   };
+  /** DESIGN-LANGUAGE CARD (RB_DESIGN_CARD, 10x program 2026-09-04): a vision
+   *  read of the brand's own homepage screenshot — mood, density, radii,
+   *  type character, how the accent is really used, surfaces, imagery style,
+   *  what not to do. Hex codes and font names cannot say "pill corners only
+   *  on CTAs, sharp elsewhere; color as flat full-bleed bands; no shadows"
+   *  (the Anthropic probe's exact reading). Read once per brand, cached. */
+  designCard?: string;
 }
 
 export interface PackScene {
@@ -142,6 +149,9 @@ export const assemblePack = (input: PackInput): string => {
         ]
           .filter(Boolean)
           .join("\n")}`
+      : null,
+    input.brand.designCard?.trim()
+      ? `DESIGN LANGUAGE (read from the brand's own homepage — match this look, not merely the palette; where it conflicts with a generic "premium deck" instinct, the brand wins):\n${input.brand.designCard.trim()}`
       : null,
     input.brand.logoSrc
       ? `The REAL brand logo is provided as an asset URL below. Use it as the lockup in every page's chrome (an <img> at natural aspect, height 24-36px) and larger where the story calls for it. Do not draw your own logo and do not write the brand name as plain text where the logo should be.`

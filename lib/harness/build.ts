@@ -40,6 +40,7 @@ import { EDIT_BLOCKS_INSTRUCTION, applyEditBlocks, editBlocksEnabled, parseEditB
 import { spliceSections } from "./splice-sections";
 import { authorDraws, rankDraws } from "./draws";
 import { authorParallel, authorParallelEnabled } from "./parallel-author";
+import { readDesignCard } from "./design-card";
 
 interface HarnessBuildArgs {
   // Loose on purpose: LoadedScript/LoadedBrief stay owned by run-preview-build.
@@ -145,6 +146,12 @@ export const runHarnessPreviewBuild = async (args: HarnessBuildArgs): Promise<Ro
       ? script.config.aspect_ratio
       : "16:9") as PackInput["aspect"];
 
+    // RB_DESIGN_CARD=on (10x program, flagged): read the brand's homepage
+    // screenshot ONCE into a design-language card (lib/harness/design-card.ts)
+    // and hand it to the author. Cached per screenshot URL on disk; a miss
+    // costs one vision call (~25-50s, ~$0.01) on a brand's first build.
+    const designCard = await readDesignCard(be?.site_screenshot, (m) => timeline.mark(`harness:design-card:${m}`));
+
     const packInput: PackInput = {
       briefPrompt: String(brief?.prompt ?? brief?.brief ?? ""),
       tone: script.config?.tone,
@@ -162,6 +169,7 @@ export const runHarnessPreviewBuild = async (args: HarnessBuildArgs): Promise<Ro
           ...(rawRoles.monochrome === true ? { monochrome: true } : {}),
         },
         ...(Object.keys(brandFonts).length ? { fonts: brandFonts } : {}),
+        ...(designCard ? { designCard } : {}),
       },
       assetUrls: (brief?.brand_files ?? [])
         .map((f: { url?: string }) => f.url)
@@ -243,7 +251,7 @@ export const runHarnessPreviewBuild = async (args: HarnessBuildArgs): Promise<Ro
     const drawErrors: unknown[] = [];
     const authoredAll = parallel
       ? [
-          await authorParallel(packInput, n, { onAttempt, signal: abortSignal, mark: (l) => timeline.mark(l) }).catch(async (err: unknown) => {
+          await authorParallel(packInput, n, { onAttempt, signal: abortSignal, mark: (l) => timeline.mark(l), rank: { genDir, script, scenes } }).catch(async (err: unknown) => {
             if (abortSignal?.aborted) throw err;
             timeline.mark(`harness:author:parallel:fallback (${String(err).slice(0, 100)})`);
             return authorDeck(basePack, firstEnd, { onAttempt, signal: abortSignal, ...(streamHooks ? { stream: streamHooks } : {}) });

@@ -20,6 +20,7 @@ import { castCall } from "../llm/cast-provider";
 import { assemblePack, type PackInput } from "./pack";
 import { missingSections, socketOrder, type AuthorAttempt } from "./author";
 import { sectionSpans } from "./splice-sections";
+import { pageDraws, rankPageDraws } from "./draws";
 
 export const authorParallelEnabled = (): boolean => (process.env.RB_AUTHOR_PARALLEL ?? "off") === "on";
 
@@ -65,9 +66,18 @@ export const extractSection = (raw: string, k: number): { code: string; leaked: 
   const candidates = fs.length ? fs.map((f) => f.body) : [raw];
   for (const body of candidates) {
     const spans = sectionSpans(body);
-    const mine = spans.find((s) => s.index === k);
+    let mine = spans.find((s) => s.index === k);
+    let renamed = false;
+    // Off-by-one is the model's most common miss here (the first parallel
+    // build: "page 2 reply lacked Section1" — it wrote Section2). A reply
+    // holding exactly ONE section is unambiguous: take it as page k's.
+    if (!mine && spans.length === 1) {
+      mine = spans[0];
+      renamed = true;
+    }
     if (!mine) continue;
-    const code = body.slice(mine.start, mine.end).trimEnd();
+    let code = body.slice(mine.start, mine.end).trimEnd();
+    if (renamed) code = code.replace(/^export const Section\d+\b/, `export const Section${k}`);
     if (code.length < 300) continue;
     const before = body.slice(0, mine.start);
     if (/^\s*import\s/m.test(before)) return null;
@@ -85,7 +95,13 @@ export const assembleParallel = (preamble: string, sections: { index: number; co
 export const authorParallel = async (
   packInput: PackInput,
   n: number,
-  opts?: { onAttempt?: (a: AuthorAttempt) => void; signal?: AbortSignal; mark?: (line: string) => void },
+  opts?: {
+    onAttempt?: (a: AuthorAttempt) => void;
+    signal?: AbortSignal;
+    mark?: (line: string) => void;
+    /** For RB_PAGE_DRAWS>1: where and what to render candidates against. */
+    rank?: { genDir: string; script: unknown; scenes: { label?: string; description?: string }[] };
+  },
 ): Promise<{ code: string; model: string; attempts: AuthorAttempt[]; thinking: string }> => {
   const author = socketOrder()[0];
   const attempts: AuthorAttempt[] = [];
@@ -123,9 +139,13 @@ export const authorParallel = async (
   opts?.mark?.(`harness:author:parallel:design ok (${design.preamble.length} bytes, ${design.plans.split("\n").length} plan lines)`);
 
   // ── page passes (concurrent; one retry each) ──
-  const pageDial = author.thinkingBudget ? { effort: "high" as const, thinkingBudget: Math.min(author.thinkingBudget, 4000) } : {};
-  const pages = await Promise.all(
-    Array.from({ length: n }, (_, k) => (async () => {
+  // Page passes think less than the design pass: the plan is already written.
+  // RB_PAGE_THINKING tunes it (first parallel build: 5 pages × ~4k thinking
+  // tokens was most of the extra cost); 0 = provider default (no dial).
+  const pageBudget = Number(process.env.RB_PAGE_THINKING ?? "4000");
+  const pageDial = author.thinkingBudget && pageBudget > 0 ? { effort: "high" as const, thinkingBudget: Math.min(author.thinkingBudget, Math.max(1024, pageBudget)) } : {};
+  const draws = opts?.rank ? pageDraws() : 1;
+  const onePage = async (k: number, draw: number): Promise<{ index: number; code: string } | null> => {
       for (let tryN = 0; tryN < 2; tryN++) {
         const t0 = Date.now();
         try {
@@ -139,10 +159,10 @@ export const authorParallel = async (
             ...pageDial,
           });
           const got = extractSection(r.text ?? "", k);
-          if (r.thinking) thinking.push(`─── page ${k + 1} ───\n${r.thinking}`);
-          record(`page${k + 1}`, t0, r.outputTokens, got ? undefined : `page ${k + 1} reply lacked Section${k}`);
+          if (r.thinking) thinking.push(`─── page ${k + 1}${draw ? ` draw ${draw + 1}` : ""} ───\n${r.thinking}`);
+          record(`page${k + 1}${draw ? `d${draw + 1}` : ""}`, t0, r.outputTokens, got ? undefined : `page ${k + 1} reply lacked Section${k}`);
           if (got) {
-            opts?.mark?.(`harness:author:page:${k + 1}:written${got.leaked ? " (module-level leak kept)" : ""}`);
+            if (draw === 0) opts?.mark?.(`harness:author:page:${k + 1}:written${got.leaked ? " (module-level leak kept)" : ""}`);
             return { index: k, code: got.code };
           }
         } catch (err) {
@@ -151,11 +171,33 @@ export const authorParallel = async (
         }
       }
       return null;
-    })()),
+  };
+  // All pages × all draws concurrently; draw 0 of every page must land, extra
+  // draws are optional (a dead spare is just absent from the ranking).
+  const grid = await Promise.all(
+    Array.from({ length: n }, (_, k) => Promise.all(Array.from({ length: draws }, (_, d) => onePage(k, d)))),
   );
-  const missing = pages.map((p, k) => (p ? null : k + 1)).filter((x): x is number => x !== null);
+  const missing = grid.map((row, k) => (row[0] ? null : k + 1)).filter((x): x is number => x !== null);
   if (missing.length) throw new Error(`parallel author: pages ${missing.join(", ")} failed twice`);
-  const code = assembleParallel(design.preamble, pages.filter((p): p is { index: number; code: string } => !!p));
+  let pages: { index: number; code: string }[] = grid.map((row) => row[0]!);
+  if (draws > 1 && opts?.rank) {
+    const candidates = grid.map((row) => row.filter((p): p is { index: number; code: string } => !!p).map((p) => p.code));
+    if (candidates.some((c) => c.length > 1)) {
+      const ranked = await rankPageDraws({
+        genDir: opts.rank.genDir,
+        script: opts.rank.script,
+        scenes: opts.rank.scenes,
+        n,
+        preamble: design.preamble,
+        candidates,
+        assemble: assembleParallel,
+        log: opts.mark,
+      });
+      pages = candidates.map((c, k) => ({ index: k, code: c[ranked.winners[k]] ?? c[0] }));
+      opts?.mark?.(`harness:page-draws:winners ${ranked.winners.map((w) => w + 1).join(",")} of ${draws}`);
+    }
+  }
+  const code = assembleParallel(design.preamble, pages);
   const gaps = missingSections(code, n);
   if (gaps.length) throw new Error(`parallel author: assembly missing ${gaps.join(", ")}`);
   return { code, model: author.model, attempts, thinking: thinking.join("\n\n") };

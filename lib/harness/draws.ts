@@ -95,3 +95,75 @@ export const rankDraws = async (args: {
   const best = order[0];
   return { winner: best.k, flagged: judged.map((j) => j.flagged), verdicts: best.verdicts };
 };
+
+
+/**
+ * PER-PAGE best-of-N inside the parallel author (RB_PAGE_DRAWS; 10x thesis,
+ * 2026-09-04): pages are cheap (~3-8k tokens each), so sample each page N
+ * times and let the critic keep the best — the deck becomes the best of N
+ * attempts on EVERY page, for pennies. Each candidate is rendered as scene k
+ * of a temporary deck assembled from the other pages' first candidates (so
+ * the module compiles and the chrome is real), screenshotted, and judged by
+ * the same critic that gates revision. Ties keep the first candidate.
+ */
+export const pageDraws = (): number => {
+  const n = Number(process.env.RB_PAGE_DRAWS ?? "1");
+  return Number.isFinite(n) && n >= 1 ? Math.min(Math.floor(n), 3) : 1;
+};
+
+export const rankPageDraws = async (args: {
+  genDir: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  script: any;
+  scenes: { label?: string; description?: string }[];
+  n: number;
+  preamble: string;
+  /** candidates[k] = the page-k candidates in draw order (≥1 each). */
+  candidates: string[][];
+  assemble: (preamble: string, sections: { index: number; code: string }[]) => string;
+  critic?: typeof critiquePageShot;
+  log?: (line: string) => void;
+}): Promise<{ winners: number[]; flagged: (number | null)[][] }> => {
+  const critic = args.critic ?? critiquePageShot;
+  const base = args.candidates.map((c) => c[0]);
+  const judge = async (k: number, i: number): Promise<number | null> => {
+    if (i === 0 && args.candidates[k].length === 1) return null;
+    const dir = path.join(os.tmpdir(), "rb-page-draws", `${path.basename(args.genDir)}-${k}-${i}`);
+    try {
+      const sections = base.map((code, j) => ({ index: j, code: j === k ? args.candidates[k][i] : code }));
+      const code = args.assemble(args.preamble, sections);
+      await writeGeneratedFiles(dir, { code, designCode: code, script: args.script }, { persist: false });
+      const m = await measureScenes(dir, args.script, path.join(dir, "shots"), { screenshots: true, onlyScenes: [k] });
+      const shot = m[k]?.screenshotPath;
+      if (!shot) return null;
+      const v = await critic((await fsp.readFile(shot)).toString("base64"), sceneIntent(args.scenes[k], k));
+      return v.weakness ? 1 : 0;
+    } catch (err) {
+      args.log?.(`harness:page-draws:page ${k + 1} draw ${i + 1} failed to render (${String(err).slice(0, 80)})`);
+      return null;
+    } finally {
+      await fsp.rm(dir, { recursive: true, force: true }).catch(() => {});
+    }
+  };
+  const flagged: (number | null)[][] = [];
+  const winners: number[] = [];
+  for (let k = 0; k < args.n; k++) {
+    const cands = args.candidates[k] ?? [];
+    if (cands.length <= 1) {
+      flagged.push(cands.map(() => null));
+      winners.push(0);
+      continue;
+    }
+    const scores = await Promise.all(cands.map((_, i) => judge(k, i)));
+    flagged.push(scores);
+    let best = 0;
+    for (let i = 1; i < scores.length; i++) {
+      const a = scores[best] ?? Number.POSITIVE_INFINITY;
+      const b = scores[i] ?? Number.POSITIVE_INFINITY;
+      if (b < a) best = i;
+    }
+    winners.push(best);
+    args.log?.(`harness:page-draws:page ${k + 1}: ${scores.map((x) => (x === null ? "?" : x ? "flagged" : "clean")).join(" vs ")} → draw ${best + 1}`);
+  }
+  return { winners, flagged };
+};

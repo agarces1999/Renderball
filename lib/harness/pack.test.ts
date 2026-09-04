@@ -133,5 +133,14 @@ check("the @font-face <style> is demanded on EVERY page (each page is its own do
   assert(!pack.includes("rendered once in your chrome component"), "the ambiguous 'rendered once' wording is gone");
 });
 
+check("design-language card renders under BRAND FACTS with authority (2026-09-04)", () => {
+  const input = baseInput();
+  input.brand.designCard = "Mood: restrained, institutional.\nRadii: pill CTAs only; sharp elsewhere.\nSurfaces: flat, no shadows.";
+  const pack = assemblePack(input);
+  assert(pack.includes("DESIGN LANGUAGE (read from the brand's own homepage"), "card section present");
+  assert(pack.includes("pill CTAs only; sharp elsewhere"), "card text verbatim");
+  assert(!assemblePack(baseInput()).includes("DESIGN LANGUAGE"), "no phantom section without a card");
+});
+
 console.log(`${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
